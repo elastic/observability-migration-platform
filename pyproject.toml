@@ -133,3 +133,6 @@ exclude = ["build/", "dist/", ".venv/"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-x -q"
+markers = [
+  "live_kibana: requires live Kibana credentials (KIBANA_URL, KIBANA_API_KEY)",
+]

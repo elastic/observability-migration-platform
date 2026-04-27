@@ -1,0 +1,33 @@
+{
+  "title": "Smoke DD Multi",
+  "id": "smoke-dd-multi",
+  "description": "",
+  "layout_type": "ordered",
+  "template_variables": [
+    {
+      "name": "host",
+      "prefix": "host",
+      "default": "*",
+      "defaults": ["a", "b"],
+      "available_values": ["a", "b", "c"]
+    }
+  ],
+  "widgets": [
+    {
+      "id": 1,
+      "definition": {
+        "type": "timeseries",
+        "title": "DD Panel A",
+        "requests": [{"q": "avg:system.load.1{host:$host}"}]
+      }
+    },
+    {
+      "id": 2,
+      "definition": {
+        "type": "timeseries",
+        "title": "DD Panel B",
+        "requests": [{"q": "avg:system.cpu.user{host:$host}"}]
+      }
+    }
+  ]
+}

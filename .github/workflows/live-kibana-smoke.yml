@@ -1,0 +1,46 @@
+name: live-kibana-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Variable-controls smoke
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OBS_MIGRATION_LIVE_KIBANA_REQUIRED: "1"
+      KIBANA_URL: ${{ secrets.SMOKE_KIBANA_URL }}
+      KIBANA_API_KEY: ${{ secrets.SMOKE_KIBANA_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project and uv
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest pyyaml uv
+
+      - name: Warm up kb-dashboard-cli
+        run: uvx --from kb-dashboard-cli kb-dashboard-cli --version
+
+      - name: Run live-Kibana smoke tests
+        run: pytest -m live_kibana -v tests/e2e/test_variable_controls_smoke.py

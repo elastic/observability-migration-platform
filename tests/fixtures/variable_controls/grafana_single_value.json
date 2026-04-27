@@ -1,0 +1,32 @@
+{
+  "title": "Smoke Single",
+  "uid": "smoke-grafana-single",
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "definition": "label_values(up, instance)",
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Panel A",
+      "datasource": {"type": "prometheus", "uid": "x"},
+      "targets": [{"refId": "A", "expr": "rate(http_requests_total{instance=\"$instance\"}[5m])"}],
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 12}
+    },
+    {
+      "type": "timeseries",
+      "title": "Panel B",
+      "datasource": {"type": "prometheus", "uid": "x"},
+      "targets": [{"refId": "A", "expr": "sum(rate(http_errors_total{instance=\"$instance\"}[5m]))"}],
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 12}
+    }
+  ]
+}
