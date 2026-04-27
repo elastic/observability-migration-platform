@@ -35,32 +35,6 @@ equivalent to the `obs-migrate` entry point.
 For full command walkthroughs, env-file setup, and end-to-end flows, see
 [`docs/command-contract.md`](docs/command-contract.md).
 
-## Examples
-
-Migrate dashboards and alerts together (`--assets all`). Rules are created
-disabled and tagged `obs-migration` for review:
-
-```bash
-.venv/bin/obs-migrate migrate \
-  --source grafana \
-  --assets all \
-  --input-mode files \
-  --input-dir examples/alerting/grafana \
-  --output-dir migration_output \
-  --kibana-url "$KIBANA_ENDPOINT" \
-  --kibana-api-key "$KEY" \
-  --upload \
-  --create-alert-rules
-```
-
-Compile dashboard YAML to NDJSON locally (no upload):
-
-```bash
-.venv/bin/obs-migrate compile \
-  --yaml-dir migration_output/dashboards/yaml \
-  --output-dir migration_output/dashboards/compiled
-```
-
 ## Compatibility
 
 - **Python**: 3.11+

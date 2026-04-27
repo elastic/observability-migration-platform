@@ -58,11 +58,12 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("`run_summary.json`", text)
         self.assertNotIn("Datadog also writes a root", text)
 
-    def test_root_readme_uses_assets_examples_and_split_dashboard_paths(self):
+    def test_root_readme_does_not_drift_to_legacy_dashboard_paths(self):
+        # The root README is intentionally short and routes readers to
+        # `docs/command-contract.md` for command snippets (see AGENTS.md).
+        # We only guard against drift to legacy/pre-split output paths in
+        # case examples are reintroduced.
         text = ROOT_README.read_text(encoding="utf-8")
-        self.assertIn("--assets all", text)
-        self.assertIn("--yaml-dir migration_output/dashboards/yaml", text)
-        self.assertIn("--output-dir migration_output/dashboards/compiled", text)
         self.assertNotIn("--yaml-dir migration_output/yaml", text)
         self.assertNotIn("--output-dir migration_output/compiled", text)
 
