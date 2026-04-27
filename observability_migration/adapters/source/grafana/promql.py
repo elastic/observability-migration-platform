@@ -601,12 +601,48 @@ def _le_float_alt(value: str) -> str | None:
 _FLOAT_LABEL_NAMES = frozenset({"le"})
 
 
-def _matcher_to_esql(matcher, resolver):
+_VAR_TOKEN_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _extract_single_var_name(value: str) -> str | None:
+    matches = list(_VAR_TOKEN_RE.finditer(value))
+    if len(matches) != 1:
+        return None
+    name = matches[0].group(1) or matches[0].group(2)
+    span = matches[0].span()
+    bare = value[: span[0]] + value[span[1] :]
+    if bare:
+        return None
+    return name
+
+
+def _bound_param_clause(label, op, var_name, multi):
+    if multi:
+        if op == "=~":
+            return f"MV_CONTAINS(?{var_name}, {label})"
+        if op == "!~":
+            return f"NOT MV_CONTAINS(?{var_name}, {label})"
+        return None
+    if op == "=" or op == "=~":
+        return f"{label} == ?{var_name}"
+    if op == "!=" or op == "!~":
+        return f"{label} != ?{var_name}"
+    return None
+
+
+def _matcher_to_esql(matcher, resolver, *, binding_map=None):
     label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
     op = matcher["op"]
     value = matcher["value"]
     if not label:
         return None
+    if binding_map:
+        var_name = _extract_single_var_name(value)
+        if var_name and var_name in binding_map:
+            from observability_migration.core.variable_classifier import AcceptedBinding
+            binding = binding_map[var_name]
+            if isinstance(binding, AcceptedBinding):
+                return _bound_param_clause(label, op, var_name, binding.multi)
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
     # false-positives on regex end-of-string anchors like ".*cam(era)?$".
@@ -643,10 +679,10 @@ def _build_where_lines(filters):
     return [f"| WHERE {flt}" for flt in filters if flt]
 
 
-def _selector_filters(matchers, resolver):
+def _selector_filters(matchers, resolver, *, binding_map=None):
     filters = []
     for matcher in matchers:
-        filter_expr = _matcher_to_esql(matcher, resolver)
+        filter_expr = _matcher_to_esql(matcher, resolver, binding_map=binding_map)
         if filter_expr:
             filters.append(filter_expr)
     return filters
