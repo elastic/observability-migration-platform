@@ -22,3 +22,25 @@ def test_rejected_binding_unknown_reason_is_caught_at_construction():
     import pytest
     with pytest.raises(ValueError):
         vc.RejectedBinding(reason="not_a_real_reason")
+
+
+def test_reject_reasons_tuple_and_literal_agree():
+    from typing import get_args
+    assert set(get_args(vc.RejectReason)) == set(vc.REJECT_REASONS)
+
+
+def test_every_reject_reason_constructs_a_rejected_binding():
+    for reason in vc.REJECT_REASONS:
+        binding = vc.RejectedBinding(reason=reason)
+        assert binding.reason == reason
+
+
+def test_variable_binding_map_accepts_heterogeneous_values():
+    bm: vc.VariableBindingMap = {
+        "accepted_var": vc.AcceptedBinding(
+            field="service.instance.id", multi=False, options_query="FROM x"
+        ),
+        "rejected_var": vc.RejectedBinding(reason="include_all_unsupported"),
+    }
+    assert isinstance(bm["accepted_var"], vc.AcceptedBinding)
+    assert isinstance(bm["rejected_var"], vc.RejectedBinding)

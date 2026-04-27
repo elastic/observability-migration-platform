@@ -5,7 +5,7 @@ See docs/roadmap/2026-04-27-kibana-variable-controls-design.md for the design.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 REJECT_REASONS: Final[tuple[str, ...]] = (
     "unsupported_variable_type",
@@ -57,6 +57,10 @@ RejectReason = Literal[
     "verifier_failed_data_view_split",
 ]
 
+assert set(get_args(RejectReason)) == set(REJECT_REASONS), (
+    "RejectReason Literal and REJECT_REASONS tuple must list the same codes"
+)
+
 
 @dataclass(frozen=True)
 class AcceptedBinding:
@@ -67,7 +71,7 @@ class AcceptedBinding:
 
 @dataclass(frozen=True)
 class RejectedBinding:
-    reason: str
+    reason: RejectReason
 
     def __post_init__(self) -> None:
         if self.reason not in REJECT_REASONS:
