@@ -82,3 +82,10 @@ class RejectedBinding:
 
 
 VariableBindingMap = dict[str, AcceptedBinding | RejectedBinding]
+
+
+def compute_min_kibana_version(binding_map: VariableBindingMap) -> str:
+    has_multi_value = any(
+        isinstance(b, AcceptedBinding) and b.multi for b in binding_map.values()
+    )
+    return "9.3.0" if has_multi_value else "9.1.0"

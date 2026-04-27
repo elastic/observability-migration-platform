@@ -44,3 +44,25 @@ def test_variable_binding_map_accepts_heterogeneous_values():
     }
     assert isinstance(bm["accepted_var"], vc.AcceptedBinding)
     assert isinstance(bm["rejected_var"], vc.RejectedBinding)
+
+
+def test_compute_min_kibana_version_empty_map():
+    assert vc.compute_min_kibana_version({}) == "9.1.0"
+
+
+def test_compute_min_kibana_version_single_value_only():
+    bm = {"x": vc.AcceptedBinding(field="f", multi=False, options_query="FROM y")}
+    assert vc.compute_min_kibana_version(bm) == "9.1.0"
+
+
+def test_compute_min_kibana_version_one_multi_value():
+    bm = {
+        "x": vc.AcceptedBinding(field="f", multi=True, options_query="FROM y"),
+        "y": vc.AcceptedBinding(field="g", multi=False, options_query="FROM y"),
+    }
+    assert vc.compute_min_kibana_version(bm) == "9.3.0"
+
+
+def test_compute_min_kibana_version_rejected_multi_does_not_lift_floor():
+    bm = {"x": vc.RejectedBinding(reason="include_all_unsupported")}
+    assert vc.compute_min_kibana_version(bm) == "9.1.0"
