@@ -164,12 +164,48 @@ def phase1_check(query: str) -> list[str]:
 # Phase 2: LIMIT 0
 # ---------------------------------------------------------------------------
 
+_PHASE_B_VAR_PARAM_RE = re.compile(r"\?([A-Za-z_][A-Za-z0-9_]*)")
+_PHASE_B_MV_CONTAINS_RE = re.compile(
+    r"\b(?:NOT\s+)?MV_CONTAINS\s*\(\s*\?([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([^)]+)\)"
+)
+_PHASE_B_TIME_PARAMS = frozenset({"_tstart", "_tend"})
+_PHASE_B_VALIDATION_PLACEHOLDER = '"_phase_b_validation_placeholder"'
+
+
 def _sub_time_params(query: str) -> str:
     now_ms = int(time.time() * 1000)
     ago_ms = now_ms - 6 * 3600 * 1000
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now_ms / 1000))
     ago_iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ago_ms / 1000))
-    return query.replace("?_tstart", f'"{ago_iso}"').replace("?_tend", f'"{now_iso}"')
+    rendered = query.replace("?_tstart", f'"{ago_iso}"').replace("?_tend", f'"{now_iso}"')
+    return _sub_variable_params(rendered)
+
+
+def _sub_variable_params(query: str) -> str:
+    """Replace phase-B variable-control ``?param`` placeholders with safe literals.
+
+    Variable controls are bound by Kibana at dashboard runtime; the validation
+    script probes ES directly without that binding, so an unresolved ``?varname``
+    yields an "Invalid call to dataType on an unresolved object" error. Substitute
+    a string literal for value usages and rewrite ``MV_CONTAINS`` clauses to a
+    tautological ``IS NOT NULL`` so the field reference is still type-checked.
+    """
+    def _repl_mv(match):
+        var_name = match.group(1)
+        if var_name in _PHASE_B_TIME_PARAMS:
+            return match.group(0)
+        field = match.group(2).strip()
+        return f"({field} IS NOT NULL)"
+
+    rendered = _PHASE_B_MV_CONTAINS_RE.sub(_repl_mv, query)
+
+    def _repl_param(match):
+        var_name = match.group(1)
+        if var_name in _PHASE_B_TIME_PARAMS:
+            return match.group(0)
+        return _PHASE_B_VALIDATION_PLACEHOLDER
+
+    return _PHASE_B_VAR_PARAM_RE.sub(_repl_param, rendered)
 
 
 def _inject_limit_zero(query: str) -> str:

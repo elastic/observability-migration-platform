@@ -20,11 +20,49 @@ KNOWN_FIELD_ALIASES = {
     "node_interrupts_total": "node_intr_total",
 }
 
+_VALIDATION_PLACEHOLDER = '"_phase_b_validation_placeholder"'
+_TIME_PARAM_NAMES = frozenset({"_tstart", "_tend"})
+_VARIABLE_PARAM_RE = re.compile(r"\?([A-Za-z_][A-Za-z0-9_]*)")
+_MV_CONTAINS_RE = re.compile(
+    r"\b(?:NOT\s+)?MV_CONTAINS\s*\(\s*\?([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([^)]+)\)"
+)
+
 
 def validate_esql(query, es_url, index_pattern="metrics-*", es_api_key=None):
     """Validate an ES|QL query against Elasticsearch. Returns (ok, error_message)."""
     probe = _run_esql_query(query, es_url, es_api_key=es_api_key)
     return probe["ok"], probe["error"]
+
+
+def _materialize_variable_params(query):
+    """Replace phase-B variable-control ``?param`` placeholders with safe literals.
+
+    Variable controls are bound by Kibana at dashboard runtime, not by ES at
+    validation time, so a validation probe sees an unresolved ``?varname``.
+    Substitute a string literal for value usages and rewrite ``MV_CONTAINS``
+    clauses to a tautological ``IS NOT NULL`` so the field reference is still
+    type-checked against the cluster mapping. Time placeholders ``?_tstart`` and
+    ``?_tend`` are handled separately by ``materialize_dashboard_time_query``.
+    """
+    if not query:
+        return query
+
+    def _repl_mv(match):
+        var_name = match.group(1)
+        if var_name in _TIME_PARAM_NAMES:
+            return match.group(0)
+        field = match.group(2).strip()
+        return f"({field} IS NOT NULL)"
+
+    rendered = _MV_CONTAINS_RE.sub(_repl_mv, query)
+
+    def _repl_param(match):
+        var_name = match.group(1)
+        if var_name in _TIME_PARAM_NAMES:
+            return match.group(0)
+        return _VALIDATION_PLACEHOLDER
+
+    return _VARIABLE_PARAM_RE.sub(_repl_param, rendered)
 
 
 def materialize_dashboard_time_query(
@@ -42,6 +80,7 @@ def materialize_dashboard_time_query(
     )
     rendered = rendered.replace("?_tstart", time_from)
     rendered = rendered.replace("?_tend", time_to)
+    rendered = _materialize_variable_params(rendered)
     return rendered
 
 

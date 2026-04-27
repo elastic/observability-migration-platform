@@ -2469,6 +2469,40 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("NOW() - 1 hour", captured["query"])
         self.assertIn("NOW()", captured["query"])
 
+    def test_materialize_substitutes_phase_b_value_parameters(self):
+        query = (
+            "FROM metrics-*\n"
+            "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
+            "| WHERE service.instance.id == ?instance"
+        )
+        rendered = esql_validate.materialize_dashboard_time_query(query)
+        self.assertNotIn("?instance", rendered)
+        self.assertIn(esql_validate._VALIDATION_PLACEHOLDER, rendered)
+        self.assertIn("NOW() - 1 hour", rendered)
+
+    def test_materialize_rewrites_mv_contains_to_is_not_null(self):
+        query = (
+            "FROM metrics-*\n"
+            "| WHERE MV_CONTAINS(?instance, service.instance.id)"
+        )
+        rendered = esql_validate.materialize_dashboard_time_query(query)
+        self.assertNotIn("?instance", rendered)
+        self.assertNotIn("MV_CONTAINS", rendered)
+        self.assertIn("(service.instance.id IS NOT NULL)", rendered)
+
+    def test_materialize_rewrites_negated_mv_contains(self):
+        query = "FROM x | WHERE NOT MV_CONTAINS(?env, namespace)"
+        rendered = esql_validate.materialize_dashboard_time_query(query)
+        self.assertNotIn("?env", rendered)
+        self.assertNotIn("MV_CONTAINS", rendered)
+        self.assertIn("(namespace IS NOT NULL)", rendered)
+
+    def test_materialize_leaves_time_params_untouched_when_no_variable_params(self):
+        query = "FROM x | WHERE @timestamp >= ?_tstart"
+        rendered = esql_validate.materialize_dashboard_time_query(query)
+        self.assertNotIn("?_tstart", rendered)
+        self.assertNotIn("_phase_b_validation_placeholder", rendered)
+
     def test_sync_result_queries_to_yaml_persists_validation_fixes(self):
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
