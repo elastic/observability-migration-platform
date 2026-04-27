@@ -89,3 +89,15 @@ def compute_min_kibana_version(binding_map: VariableBindingMap) -> str:
         isinstance(b, AcceptedBinding) and b.multi for b in binding_map.values()
     )
     return "9.3.0" if has_multi_value else "9.1.0"
+
+
+def build_options_query(*, data_view: str, field: str) -> str:
+    if not data_view or not field:
+        raise ValueError("data_view and field must be non-empty")
+    return (
+        f"FROM {data_view}\n"
+        f"| WHERE {field} IS NOT NULL\n"
+        f"| STATS BY {field}\n"
+        f"| KEEP {field}\n"
+        f"| LIMIT 1000"
+    )

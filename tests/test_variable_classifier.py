@@ -66,3 +66,28 @@ def test_compute_min_kibana_version_one_multi_value():
 def test_compute_min_kibana_version_rejected_multi_does_not_lift_floor():
     bm = {"x": vc.RejectedBinding(reason="include_all_unsupported")}
     assert vc.compute_min_kibana_version(bm) == "9.1.0"
+
+
+def test_build_options_query_shape():
+    q = vc.build_options_query(data_view="metrics-*", field="service.instance.id")
+    assert q == (
+        "FROM metrics-*\n"
+        "| WHERE service.instance.id IS NOT NULL\n"
+        "| STATS BY service.instance.id\n"
+        "| KEEP service.instance.id\n"
+        "| LIMIT 1000"
+    )
+
+
+def test_build_options_query_is_deterministic():
+    a = vc.build_options_query(data_view="logs-*", field="host.name")
+    b = vc.build_options_query(data_view="logs-*", field="host.name")
+    assert a == b
+
+
+def test_build_options_query_rejects_empty_inputs():
+    import pytest
+    with pytest.raises(ValueError):
+        vc.build_options_query(data_view="", field="host.name")
+    with pytest.raises(ValueError):
+        vc.build_options_query(data_view="metrics-*", field="")
