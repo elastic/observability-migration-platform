@@ -396,6 +396,76 @@ def grafana_macro_rule(context):
     return None
 
 
+# Inside aggregator parentheses, capture an identifier that is not itself a
+# function call (negative lookahead on ``(``) so ``SUM(RATE(metric, 5m))``
+# yields ``metric`` rather than ``RATE``.
+_METRIC_REF_AGG_RE = re.compile(
+    r"\b(?:AVG|SUM|MAX|MIN|COUNT|RATE|IRATE|INCREASE|MEDIAN|STDDEV|VARIANCE|"
+    r"COUNT_DISTINCT|PERCENTILE|FIRST|LAST)\("
+    r"(?:[A-Za-z_][\w.]*\()*"        # peel zero or more nested function calls
+    r"([A-Za-z_][\w.]*)\b(?!\s*\()",  # captured identifier must not be a call
+    re.IGNORECASE,
+)
+_METRIC_REF_NULL_RE = re.compile(
+    r"\b([A-Za-z_][\w.]*)\s+IS\s+(?:NOT\s+)?NULL\b",
+    re.IGNORECASE,
+)
+_METRIC_REF_RLIKE_RE = re.compile(
+    r"\b([A-Za-z_][\w.]*)\s+(?:NOT\s+)?(?:RLIKE|LIKE)\b",
+    re.IGNORECASE,
+)
+_ESQL_METRIC_BLOCKLIST = frozenset({
+    "time_bucket", "timestamp_bucket", "step", "value", "values",
+    "computed_value", "result", "count", "constant_value",
+    "@timestamp", "log_count",
+    # Common translator-introduced internal aliases that occasionally slip
+    # past the negative-lookahead.
+    "inner_val", "outer_val",
+    # ES|QL keywords / common function names that may appear bare in some
+    # syntactic positions (e.g. inside CASE) and should never be treated as
+    # field references.
+    "NOT", "AND", "OR", "TRUE", "FALSE", "NULL", "IS", "BY", "ON", "AS",
+    "CASE", "WHERE", "LIMIT", "SORT", "STATS", "EVAL", "KEEP", "DROP",
+    "RENAME", "FROM", "WHEN", "THEN", "ELSE", "END",
+})
+
+_ESQL_BLOCKLIST_LOWER = frozenset(name.lower() for name in _ESQL_METRIC_BLOCKLIST)
+
+
+def _extract_metric_references(esql_query):
+    """Best-effort extraction of metric/field names referenced by an ES|QL query.
+
+    Returns the set of identifiers that look like field references — pulled
+    from aggregator arguments, ``IS NOT NULL`` predicates, and
+    ``RLIKE``/``LIKE`` filters. Translator-introduced aliases such as
+    ``time_bucket`` are excluded via ``_ESQL_METRIC_BLOCKLIST``; identifiers
+    starting with ``_`` (internal) or ``?`` (parameters) are also dropped. The
+    resulting set is the input to a cluster-membership check that downgrades
+    panels referencing fields the cluster does not have.
+
+    Note: STATS aliases that re-use the metric name (e.g.
+    ``STATS metric = AVG(metric)``) intentionally remain in the set — the
+    aggregator argument is the real field reference and we must validate it.
+    """
+    if not esql_query:
+        return set()
+    refs: set[str] = set()
+    for pattern in (_METRIC_REF_AGG_RE, _METRIC_REF_NULL_RE, _METRIC_REF_RLIKE_RE):
+        for match in pattern.finditer(esql_query):
+            refs.add(match.group(1))
+    # Identifiers Grafana's ``label_<var>`` fallback emits are validated by
+    # the ``leaked_label_variables`` validator instead — they should not be
+    # double-reported as missing-cluster-fields here.
+    return {
+        ref for ref in refs
+        if ref not in _ESQL_METRIC_BLOCKLIST
+        and ref.lower() not in _ESQL_BLOCKLIST_LOWER
+        and not ref.startswith("_")
+        and not ref.startswith("?")
+        and not ref.startswith("label_")
+    }
+
+
 def _detect_leaked_label_variables(esql_query, candidates):
     """Return any ``label_<var>`` tokens that survived translation into ES|QL.
 
@@ -2141,6 +2211,46 @@ def rendered_query_required_rule(context):
     context.confidence = 0.0
     _append_unique(context.warnings, "No ES|QL query was produced")
     return "missing ES|QL output"
+
+
+@QUERY_VALIDATORS.register("cluster_known_metrics", priority=35)
+def cluster_known_metrics_rule(context):
+    """Reject panels whose ES|QL references metrics the cluster does not have.
+
+    Only runs when a SchemaResolver with cluster discovery is available.
+    Without ``--es-url`` (or when discovery returned no field cache), the
+    resolver's ``field_exists`` returns ``None`` and we cannot tell whether a
+    metric is genuinely missing, so we skip the check. With cluster discovery,
+    any referenced field that the cluster confirms missing (``False``) means
+    the panel will fail at runtime with "Unknown column [...]" — downgrade it
+    here so the broken query never ships.
+    """
+    if context.feasibility == "not_feasible":
+        return None
+    resolver = context.resolver
+    if resolver is None:
+        return None
+    field_exists = getattr(resolver, "field_exists", None)
+    if not callable(field_exists):
+        return None
+    refs = _extract_metric_references(context.esql_query or "")
+    if not refs:
+        return None
+    missing: list[str] = []
+    for ref in sorted(refs):
+        result = field_exists(ref)
+        if result is False:
+            missing.append(ref)
+    if not missing:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    reason = (
+        f"Cluster does not have metric(s): {', '.join(missing)}. The panel "
+        "would emit ES|QL referencing fields absent from the cluster mapping."
+    )
+    _append_unique(context.warnings, reason)
+    return reason
 
 
 @QUERY_VALIDATORS.register("leaked_label_variables", priority=40)
