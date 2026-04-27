@@ -1509,6 +1509,135 @@ def _make_binary_fragment(expr, left_frag, op, right_frag):
     )
 
 
+_DOTTED_IDENT_RE = re.compile(
+    r"\b([A-Za-z_][\w]*\.[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\b"
+)
+_DOT_SENTINEL = "__OBSDOT__"
+
+
+def _encode_dotted_identifiers(expr):
+    """Replace ``service.name``-style dotted identifiers with a sentinel.
+
+    The Rust-backed ``promql-parser`` rejects dots inside identifiers, but
+    OTEL semantic-convention dashboards regularly use them in label positions
+    (``sum by (service.name) (rate(http_requests_total{http.route="/api"}[5m]))``).
+    Encode dots as ``__OBSDOT__`` outside string literals so the parser
+    accepts the expression; decoding happens immediately after the parser
+    returns so the rest of the pipeline sees the original dotted names.
+    Returns ``(encoded_expr, had_substitution)``.
+    """
+    if "." not in expr:
+        return expr, False
+    pieces: list[str] = []
+    buffer: list[str] = []
+    in_quote: str | None = None
+    had_sub = False
+
+    def _flush_unquoted(text: str) -> str:
+        nonlocal had_sub
+        if "." not in text:
+            return text
+
+        def _sub(match):
+            nonlocal had_sub
+            had_sub = True
+            return match.group(1).replace(".", _DOT_SENTINEL)
+
+        return _DOTTED_IDENT_RE.sub(_sub, text)
+
+    for ch in expr:
+        if in_quote is not None:
+            buffer.append(ch)
+            if ch == in_quote and (len(buffer) < 2 or buffer[-2] != "\\"):
+                pieces.append("".join(buffer))
+                buffer = []
+                in_quote = None
+            continue
+        if ch in ('"', "'"):
+            if buffer:
+                pieces.append(_flush_unquoted("".join(buffer)))
+                buffer = []
+            in_quote = ch
+            buffer.append(ch)
+            continue
+        buffer.append(ch)
+    if buffer:
+        if in_quote is not None:
+            pieces.append("".join(buffer))
+        else:
+            pieces.append(_flush_unquoted("".join(buffer)))
+    return "".join(pieces), had_sub
+
+
+def _decode_dotted_identifiers(text):
+    if text and _DOT_SENTINEL in text:
+        return text.replace(_DOT_SENTINEL, ".")
+    return text
+
+
+def _decode_fragment_in_place(frag, _seen=None):
+    """Restore dotted identifiers inside a freshly-parsed fragment.
+
+    Walks every string the rest of the translator pipeline reads (metric name,
+    matcher labels and values, group labels, range function, nested-aggregator
+    metadata, and binary-expr / nested children stored under ``extra``) so
+    downstream stages never see the ``__OBSDOT__`` sentinel.
+    """
+    if not frag:
+        return frag
+    if _seen is None:
+        _seen = set()
+    fid = id(frag)
+    if fid in _seen:
+        return frag
+    _seen.add(fid)
+    if frag.metric:
+        frag.metric = _decode_dotted_identifiers(frag.metric)
+    if frag.raw_expr:
+        frag.raw_expr = _decode_dotted_identifiers(frag.raw_expr)
+    if frag.range_func:
+        frag.range_func = _decode_dotted_identifiers(frag.range_func)
+    if frag.outer_agg:
+        frag.outer_agg = _decode_dotted_identifiers(frag.outer_agg)
+    decoded_matchers = []
+    for matcher in frag.matchers or []:
+        decoded_matchers.append({
+            "label": _decode_dotted_identifiers(matcher.get("label", "")),
+            "op": matcher.get("op", ""),
+            "value": _decode_dotted_identifiers(matcher.get("value", "")),
+        })
+    frag.matchers = decoded_matchers
+    if frag.group_labels:
+        frag.group_labels = [_decode_dotted_identifiers(g) for g in frag.group_labels]
+    if frag.extra:
+        for key in (
+            "inner_group", "outer_group", "preferred_group_labels",
+            "by_labels", "without_labels", "on_labels", "ignoring_labels",
+            "group_left", "group_right",
+        ):
+            value = frag.extra.get(key)
+            if isinstance(value, list):
+                frag.extra[key] = [_decode_dotted_identifiers(v) for v in value]
+        for key in (
+            "inner_metric", "outer_metric", "inner_agg", "scalar_value",
+            "label_filter",
+        ):
+            value = frag.extra.get(key)
+            if isinstance(value, str):
+                frag.extra[key] = _decode_dotted_identifiers(value)
+        for nested_key in ("left_frag", "right_frag", "inner_frag", "outer_frag"):
+            nested = frag.extra.get(nested_key)
+            if nested is not None and hasattr(nested, "matchers"):
+                _decode_fragment_in_place(nested, _seen)
+        nested_reasons = frag.extra.get("not_feasible_reasons")
+        if isinstance(nested_reasons, list):
+            frag.extra["not_feasible_reasons"] = [
+                _decode_dotted_identifiers(r) if isinstance(r, str) else r
+                for r in nested_reasons
+            ]
+    return frag
+
+
 def _parse_fragment(expr, depth=0):
     """Parse a PromQL expression into a PromQLFragment using the AST parser.
 
@@ -1525,8 +1654,9 @@ def _parse_fragment(expr, depth=0):
     if logql_frag:
         return logql_frag
 
+    parse_input, had_dots = _encode_dotted_identifiers(expr)
     try:
-        ast = promql_parser.parse(expr)
+        ast = promql_parser.parse(parse_input)
     except (ValueError, TypeError, Exception) as exc:
         sanitized_expr, label_map = _sanitize_promql_labels_for_ast(expr)
         if label_map and sanitized_expr != expr:
@@ -1542,8 +1672,11 @@ def _parse_fragment(expr, depth=0):
         frag = _new_fragment(expr, backend="regex")
         frag.extra["parse_error"] = str(exc)
         return frag
-    frag = _ast_from_node(ast, expr)
+    frag = _ast_from_node(ast, parse_input)
     frag.extra.setdefault("parser_backend", "ast")
+    if had_dots:
+        _decode_fragment_in_place(frag)
+        frag.raw_expr = expr
     return frag
 
 

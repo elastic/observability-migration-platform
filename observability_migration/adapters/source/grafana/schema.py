@@ -225,6 +225,12 @@ class SchemaResolver:
             pass
 
     def resolve_label(self, label):
+        resolved = self._resolve_label_unboxed(label)
+        if resolved is None:
+            return None
+        return self._prefer_aggregatable_subfield(resolved)
+
+    def _resolve_label_unboxed(self, label):
         if label in self._rule_pack.ignored_labels:
             return None
         if label in self._rule_pack.label_rewrites:
@@ -299,6 +305,28 @@ class SchemaResolver:
                 return candidate
         default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
         return f"prometheus.{metric_name}{default_suffix}"
+
+    def _prefer_aggregatable_subfield(self, field_name):
+        """When ``field_name`` is a non-aggregatable ``text`` field but the
+        cluster also exposes ``<field_name>.keyword`` as ``keyword``, return
+        the ``.keyword`` form so ES|QL ``STATS BY`` and ``RLIKE`` operations
+        on OTEL semantic-convention labels (``http.route``,
+        ``http.response.status_code``, etc.) actually work.
+        """
+        if not field_name or not self._field_cache:
+            return field_name
+        if field_name.endswith(".keyword"):
+            return field_name
+        capability = self.field_capability(field_name)
+        if not capability or not capability.type:
+            return field_name
+        if capability.type != "text" or capability.aggregatable:
+            return field_name
+        keyword_alias = f"{field_name}.keyword"
+        if keyword_alias in self._field_cache:
+            return keyword_alias
+        return field_name
+
 
     def resolve_labels(self, labels):
         resolved = []

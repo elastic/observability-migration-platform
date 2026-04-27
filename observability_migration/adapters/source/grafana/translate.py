@@ -414,6 +414,10 @@ _METRIC_REF_RLIKE_RE = re.compile(
     r"\b([A-Za-z_][\w.]*)\s+(?:NOT\s+)?(?:RLIKE|LIKE)\b",
     re.IGNORECASE,
 )
+_BY_CLAUSE_RE = re.compile(
+    r"\bBY\s+(.+?)(?:\n|\||$)", re.IGNORECASE | re.DOTALL,
+)
+_BY_FIELD_PARTS_RE = re.compile(r"[,\s]+")
 _ESQL_METRIC_BLOCKLIST = frozenset({
     "time_bucket", "timestamp_bucket", "step", "value", "values",
     "computed_value", "result", "count", "constant_value",
@@ -453,6 +457,17 @@ def _extract_metric_references(esql_query):
     for pattern in (_METRIC_REF_AGG_RE, _METRIC_REF_NULL_RE, _METRIC_REF_RLIKE_RE):
         for match in pattern.finditer(esql_query):
             refs.add(match.group(1))
+    for clause_match in _BY_CLAUSE_RE.finditer(esql_query):
+        clause = clause_match.group(1)
+        for part in _BY_FIELD_PARTS_RE.split(clause):
+            part = part.strip().rstrip(",").strip()
+            if not part or "(" in part or ")" in part or '"' in part:
+                continue
+            if "=" in part:
+                # Aliased projection like ``time_bucket = BUCKET(...)`` — we
+                # only want bare field references on the right of ``BY``.
+                continue
+            refs.add(part)
     # Identifiers Grafana's ``label_<var>`` fallback emits are validated by
     # the ``leaked_label_variables`` validator instead — they should not be
     # double-reported as missing-cluster-fields here.
@@ -2428,6 +2443,21 @@ def translate_promql_to_esql(
         context.confidence = 0.0
     else:
         context.confidence = 0.85 if not context.warnings else 0.6
+    # Belt-and-suspenders: any ``__OBSDOT__`` sentinel that survived
+    # ``_decode_fragment_in_place`` (e.g. through a downstream code path that
+    # built the ES|QL string from a non-fragment data source) is converted back
+    # to a literal dot before the query reaches consumers.
+    if context.esql_query and "__OBSDOT__" in context.esql_query:
+        context.esql_query = context.esql_query.replace("__OBSDOT__", ".")
+    if context.metric_name and "__OBSDOT__" in context.metric_name:
+        context.metric_name = context.metric_name.replace("__OBSDOT__", ".")
+    if context.output_metric_field and "__OBSDOT__" in context.output_metric_field:
+        context.output_metric_field = context.output_metric_field.replace("__OBSDOT__", ".")
+    if context.output_group_fields:
+        context.output_group_fields = [
+            f.replace("__OBSDOT__", ".") if isinstance(f, str) else f
+            for f in context.output_group_fields
+        ]
     context.query_ir = build_query_ir(context)
     contract, evaluation, fulfillment = _build_metric_contract_artifacts(
         context.query_ir,

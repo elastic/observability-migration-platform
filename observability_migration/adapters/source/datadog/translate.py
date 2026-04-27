@@ -243,7 +243,112 @@ def translate_widget(
         result.warnings.append(f"translation error: {exc}")
         result.semantic_losses.append(str(exc))
 
+    _enforce_cluster_known_metrics(result, field_map)
+
     return result
+
+
+def _enforce_cluster_known_metrics(result, field_map):
+    """Mark widgets ``not_feasible`` when their ES|QL references fields the
+    cluster does not have.
+
+    Mirrors the Grafana ``cluster_known_metrics`` validator: skipped silently
+    when no cluster capabilities have been loaded; otherwise extracts metric
+    references from the emitted ES|QL, infers the query context (``metric``
+    vs ``log``) from the ``FROM`` index pattern, and checks each reference
+    via ``FieldMapProfile.field_exists``. If the ``FROM`` index pattern
+    itself has zero loaded capabilities (no live data stream matches), the
+    panel is downgraded wholesale — every reference would fail with
+    "Unknown column [@timestamp]" at runtime because no schema exists.
+    """
+    if result.status == "not_feasible":
+        return
+    field_exists = getattr(field_map, "field_exists", None)
+    if not callable(field_exists):
+        return
+    esql = result.esql_query or ""
+    if not esql:
+        return
+
+    from_match = re.search(r"\b(?:FROM|TS)\s+([\w.*?,-]+)", esql, re.IGNORECASE)
+    from_pattern = from_match.group(1) if from_match else ""
+    is_log_query = bool(from_pattern and "logs" in from_pattern)
+    context = "log" if is_log_query else "metric"
+
+    # Only fire the empty-pattern check when cluster discovery has run at all.
+    # ``metric_field_caps`` populated tells us the cluster was reachable; if
+    # ``log_field_caps`` is then empty for a logs query, the cluster genuinely
+    # has no logs index and the panel will fail at render time. Without any
+    # discovery (test profiles, offline runs), we cannot tell — skip silently.
+    metric_caps_loaded = bool(getattr(field_map, "metric_field_caps", None))
+    log_caps_loaded = bool(getattr(field_map, "log_field_caps", None))
+    if (
+        is_log_query
+        and metric_caps_loaded
+        and not log_caps_loaded
+    ):
+        result.status = "not_feasible"
+        reason = (
+            f"Cluster has no indices matching pattern: {from_pattern}. The "
+            "widget would fail at runtime because no logs schema exists."
+        )
+        result.warnings.append(reason)
+        result.reasons.append(reason)
+        return
+
+    refs = _extract_metric_references_for_validation(esql)
+    if not refs:
+        return
+    missing = [
+        ref for ref in sorted(refs)
+        if field_exists(ref, context=context) is False
+    ]
+    if not missing:
+        return
+    result.status = "not_feasible"
+    reason = (
+        f"Cluster does not have metric(s): {', '.join(missing)}. The widget "
+        "would emit ES|QL referencing fields absent from the cluster mapping."
+    )
+    result.warnings.append(reason)
+    result.reasons.append(reason)
+
+
+_DD_METRIC_AGG_RE = re.compile(
+    r"\b(?:AVG|SUM|MAX|MIN|COUNT|RATE|IRATE|INCREASE|MEDIAN|STDDEV|VARIANCE|"
+    r"COUNT_DISTINCT|PERCENTILE|FIRST|LAST)\("
+    r"(?:[A-Za-z_][\w.]*\()*"
+    r"([A-Za-z_][\w.]*)\b(?!\s*\()",
+    re.IGNORECASE,
+)
+_DD_METRIC_NULL_RE = re.compile(
+    r"\b([A-Za-z_][\w.]*)\s+IS\s+(?:NOT\s+)?NULL\b",
+    re.IGNORECASE,
+)
+_DD_METRIC_BLOCKLIST = frozenset({
+    "time_bucket", "value", "values", "computed_value", "result", "count",
+    "constant_value", "@timestamp", "log_count", "inner_val", "outer_val",
+    "rate", "irate", "avg", "sum", "max", "min", "median", "stddev",
+    "variance", "count_distinct", "percentile", "first", "last",
+    "bucket", "tbucket", "round", "floor", "ceil", "abs",
+    "coalesce", "case", "to_string", "to_double", "to_long",
+    "not", "and", "or", "true", "false", "null", "is",
+})
+
+
+def _extract_metric_references_for_validation(esql_query: str) -> set[str]:
+    if not esql_query:
+        return set()
+    refs: set[str] = set()
+    for pattern in (_DD_METRIC_AGG_RE, _DD_METRIC_NULL_RE):
+        for match in pattern.finditer(esql_query):
+            refs.add(match.group(1))
+    return {
+        ref for ref in refs
+        if ref.lower() not in _DD_METRIC_BLOCKLIST
+        and not ref.startswith("_")
+        and not ref.startswith("?")
+    }
 
 
 # ---------------------------------------------------------------------------

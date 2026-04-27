@@ -131,6 +131,27 @@ class FieldMapProfile:
     def has_conflicting_types(self, field_name: str, context: str = "") -> bool:
         return has_conflicting_types(self.field_capability(field_name, context=context))
 
+    def field_exists(self, field_name: str, context: str = "") -> bool | None:
+        """Return True/False/None for whether the LIVE cluster has ``field_name``.
+
+        Only ``metric_field_caps`` / ``log_field_caps`` are populated by
+        ``load_live_field_capabilities``; ``field_caps`` may be pre-populated
+        with built-in profile mappings even without a cluster connection, so
+        consulting it here would give a false negative (a field absent from
+        the static mapping that may still exist in the cluster). Returns
+        ``None`` when no live caps for the relevant context have loaded so
+        callers can distinguish "we cannot tell" from "we checked and missing".
+        """
+        if context == "metric":
+            cache = self.metric_field_caps
+        elif context == "log":
+            cache = self.log_field_caps
+        else:
+            cache = self.metric_field_caps or self.log_field_caps
+        if not cache:
+            return None
+        return self.field_capability(field_name, context=context) is not None
+
     def load_live_field_capabilities(self, es_url: str, es_api_key: str = "") -> dict[str, int]:
         """Populate field capabilities from the live target cluster."""
         metric_caps = fetch_field_capabilities(es_url, self.metric_index, es_api_key=es_api_key)
