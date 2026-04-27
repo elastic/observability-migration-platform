@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from observability_migration.core import variable_classifier as vc
 
 
@@ -283,3 +285,82 @@ def test_grafana_data_view_split_rejects():
         panel_data_view=lambda p: "metrics-*" if p["datasource"]["uid"] == "metrics" else "logs-*",
     )
     assert bm["instance"].reason == "data_view_split"
+
+
+@dataclass
+class _StubTV:
+    name: str
+    tag: str = ""
+    default: str = ""
+    defaults: list = None  # type: ignore[assignment]
+    prefix: str = ""
+
+    def __post_init__(self):
+        if self.defaults is None:
+            self.defaults = []
+
+
+class _StubFieldMap:
+    def __init__(self, mapping=None):
+        self._mapping = mapping if mapping is not None else {"host": "host.name"}
+
+    def map_tag(self, tag, context=""):
+        return self._mapping.get(tag)
+
+
+def _datadog_widget_filter(tag, value):
+    return {"requests": [{"q": f"avg:metric{{{tag}:{value}}}"}]}
+
+
+def test_datadog_no_tag_field_rejects():
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="scope", tag="")],
+        widgets=[],
+        field_map=_StubFieldMap(),
+        data_view="metrics-*",
+    )
+    assert bm["scope"].reason == "no_tag_field"
+
+
+def test_datadog_wildcard_default_rejects():
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="host", tag="host", default="*")],
+        widgets=[],
+        field_map=_StubFieldMap(),
+        data_view="metrics-*",
+    )
+    assert bm["host"].reason == "wildcard_default"
+
+
+def test_datadog_field_resolution_failed_rejects():
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="region", tag="region")],
+        widgets=[],
+        field_map=_StubFieldMap(mapping={}),
+        data_view="metrics-*",
+    )
+    assert bm["region"].reason == "field_resolution_failed"
+
+
+def test_datadog_accepts_single_tag():
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="host", tag="host")],
+        widgets=[_datadog_widget_filter("host", "$host")],
+        field_map=_StubFieldMap(),
+        data_view="metrics-*",
+    )
+    binding = bm["host"]
+    assert isinstance(binding, vc.AcceptedBinding)
+    assert binding.field == "host.name"
+    assert binding.multi is False
+
+
+def test_datadog_accepts_multi_when_default_star():
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="host", tag="host", default="*", defaults=["a", "b"])],
+        widgets=[_datadog_widget_filter("host", "$host")],
+        field_map=_StubFieldMap(),
+        data_view="metrics-*",
+    )
+    assert isinstance(bm["host"], vc.AcceptedBinding)
+    assert bm["host"].multi is True

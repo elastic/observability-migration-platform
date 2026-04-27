@@ -266,3 +266,69 @@ def _classify_one_grafana(
     return AcceptedBinding(
         field=canonical_field, multi=multi, options_query=options_query
     )
+
+
+def classify_datadog_variables(
+    *,
+    variables,
+    widgets,
+    field_map,
+    data_view: str,
+) -> VariableBindingMap:
+    binding_map: VariableBindingMap = {}
+    for tv in variables:
+        name = getattr(tv, "name", "")
+        if not name:
+            continue
+        binding_map[name] = _classify_one_datadog(
+            tv=tv, name=name, widgets=widgets, field_map=field_map, data_view=data_view
+        )
+    return binding_map
+
+
+def _datadog_value_has_template(value: str) -> bool:
+    return bool(re.search(r"\$[A-Za-z_]", value))
+
+
+def _classify_one_datadog(*, tv, name, widgets, field_map, data_view):
+    if not _VALID_IDENTIFIER_RE.match(name):
+        return RejectedBinding(reason="invalid_variable_name")
+    if name.lower() in ESQL_RESERVED_WORDS:
+        return RejectedBinding(reason="reserved_identifier")
+    tag = getattr(tv, "tag", "") or getattr(tv, "prefix", "")
+    if not tag:
+        return RejectedBinding(reason="no_tag_field")
+
+    default = getattr(tv, "default", "") or ""
+    defaults = list(getattr(tv, "defaults", []) or [])
+    if "*" in default and not defaults:
+        return RejectedBinding(reason="wildcard_default")
+
+    field = field_map.map_tag(tag, context="metric") if field_map else None
+    if not field:
+        return RejectedBinding(reason="field_resolution_failed")
+
+    multi = bool(defaults) or default == "*"
+
+    canonical_field = field
+    for widget in widgets:
+        for request in widget.get("requests", []) or []:
+            q = str(request.get("q") or "")
+            for match in re.finditer(
+                r"([A-Za-z0-9_:.-]+)\s*:\s*([^\s,}]+)", q,
+            ):
+                w_tag = match.group(1)
+                w_value = match.group(2)
+                if w_tag != tag:
+                    continue
+                if not _datadog_value_has_template(w_value):
+                    continue
+                if w_value.count("$") > 1 or "|" in w_value:
+                    return RejectedBinding(reason="mixed_or_branches")
+                bare = w_value.replace(f"${name}.value", "").replace(f"${name}", "")
+                if bare:
+                    if "*" in bare or "?" in bare:
+                        return RejectedBinding(reason="wildcard_default")
+
+    options_query = build_options_query(data_view=data_view, field=canonical_field)
+    return AcceptedBinding(field=canonical_field, multi=multi, options_query=options_query)
