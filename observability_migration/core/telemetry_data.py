@@ -38,9 +38,42 @@ def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = Non
     return value
 
 
+def resolved_stream_name(index_pattern: str, stream: dict[str, Any]) -> str:
+    """Pick a concrete data-stream name that honors required dataset/namespace.
+
+    Dashboards that carry a ``data_stream.dataset == "prometheus"`` filter
+    require synthetic data to land in a stream whose ``data_stream.dataset``
+    constant_keyword matches. Without this resolution, the bulk-ingest target
+    stays pinned to ``metrics-generic-default`` and every doc is rejected with
+    "failed to parse field [data_stream.dataset]".
+
+    To avoid polluting the user's real ``-default`` data stream when the
+    resolved dataset matches an existing one, the namespace is forced to
+    ``synthetic`` for any non-default dataset, yielding stream names like
+    ``metrics-prometheus-synthetic``.
+    """
+    base = concrete_stream_name(index_pattern)
+    parts = base.split("-")
+    if len(parts) < 3:
+        return base
+    required_values = stream.get("required_values") or {}
+    dataset_options = required_values.get("data_stream.dataset") or []
+    namespace_options = required_values.get("data_stream.namespace") or []
+    dataset = dataset_options[0] if dataset_options else parts[1]
+    if namespace_options:
+        namespace = namespace_options[0]
+    elif dataset != parts[1]:
+        namespace = SYNTHETIC_NAMESPACE
+    else:
+        namespace = parts[2]
+    parts[1] = dataset
+    parts[2] = namespace
+    return "-".join(parts)
+
+
 def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
     """Build an index template for one stream contract."""
-    concrete_name = concrete_stream_name(index_pattern, stream)
+    concrete_name = resolved_stream_name(index_pattern, stream)
     stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
     is_metrics = stream_type == "metrics"
     dataset = _dataset_from_stream(concrete_name)
@@ -118,11 +151,9 @@ def generate_documents(
     counter_state: dict[tuple[str, str, int], float] = {}
 
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
-        concrete_name = concrete_stream_name(index_pattern, stream)
+        concrete_name = resolved_stream_name(index_pattern, stream)
         stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
         is_metrics = stream_type == "metrics"
-        dataset = _dataset_from_stream(concrete_name)
-        namespace = _namespace_from_stream(concrete_name)
         combinations = _dimension_combinations(stream, max_combinations=max_combinations)
         metric_fields = {
             field_name: info
@@ -141,10 +172,11 @@ def generate_documents(
             for combo_idx, dimensions in enumerate(combinations):
                 doc: dict[str, Any] = {
                     "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "data_stream.type": stream_type,
-                    "data_stream.dataset": dataset,
-                    "data_stream.namespace": namespace,
-                    **dimensions,
+                    **{
+                        key: value
+                        for key, value in dimensions.items()
+                        if not key.startswith("data_stream.")
+                    },
                 }
                 if is_metrics:
                     for field_name, info in metric_fields.items():
@@ -174,7 +206,7 @@ def setup_templates_and_streams(
     recreate: bool = True,
 ) -> None:
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
-        concrete_name = concrete_stream_name(index_pattern, stream)
+        concrete_name = resolved_stream_name(index_pattern, stream)
         template_name = f"telemetry-data-{concrete_name}"
         if recreate:
             request("DELETE", f"/_data_stream/{concrete_name}", None, "application/json")
@@ -526,11 +558,13 @@ def _raise_on_error(result: dict[str, Any], action: str) -> None:
 
 
 __all__ = [
+    "SYNTHETIC_NAMESPACE",
     "IngestSummary",
     "bulk_lines",
     "concrete_stream_name",
     "generate_documents",
     "ingest_documents",
     "plan_index_template",
+    "resolved_stream_name",
     "setup_templates_and_streams",
 ]

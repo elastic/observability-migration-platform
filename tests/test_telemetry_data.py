@@ -5,9 +5,11 @@ import datetime
 import unittest
 
 from observability_migration.core.telemetry_data import (
+    SYNTHETIC_NAMESPACE,
     concrete_stream_name,
     generate_documents,
     plan_index_template,
+    resolved_stream_name,
 )
 
 
@@ -40,14 +42,14 @@ class TelemetryDataTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(template["index_patterns"], ["metrics-prometheus-default"])
+        self.assertEqual(template["index_patterns"], [f"metrics-prometheus-{SYNTHETIC_NAMESPACE}"])
         self.assertEqual(
             template["template"]["mappings"]["properties"]["data_stream.dataset"]["value"],
             "prometheus",
         )
         self.assertTrue(docs)
-        self.assertTrue(all(index == "metrics-prometheus-default" for index, _doc in docs))
-        self.assertTrue(all(doc["data_stream.dataset"] == "prometheus" for _index, doc in docs))
+        self.assertTrue(all(index == f"metrics-prometheus-{SYNTHETIC_NAMESPACE}" for index, _doc in docs))
+        self.assertTrue(all("data_stream.dataset" not in doc for _index, doc in docs))
 
     def test_generate_documents_uses_concrete_stream_dataset_for_ambiguous_filters(self):
         contract = {
@@ -72,7 +74,76 @@ class TelemetryDataTests(unittest.TestCase):
 
         self.assertTrue(docs)
         self.assertTrue(all(index == "metrics-generic-default" for index, _doc in docs))
-        self.assertTrue(all(doc["data_stream.dataset"] == "generic" for _index, doc in docs))
+        self.assertTrue(all("data_stream.dataset" not in doc for _index, doc in docs))
+
+    def test_resolved_stream_name_defaults_to_concrete(self):
+        self.assertEqual(resolved_stream_name("metrics-*", {}), "metrics-generic-default")
+        self.assertEqual(
+            resolved_stream_name("metrics-prometheus-*", {}),
+            "metrics-prometheus-default",
+        )
+
+    def test_resolved_stream_name_routes_by_required_dataset_with_synthetic_namespace(self):
+        stream = {"required_values": {"data_stream.dataset": ["prometheus"]}}
+        self.assertEqual(
+            resolved_stream_name("metrics-*", stream),
+            f"metrics-prometheus-{SYNTHETIC_NAMESPACE}",
+        )
+
+    def test_resolved_stream_name_keeps_default_namespace_when_dataset_unchanged(self):
+        stream = {"required_values": {"data_stream.dataset": ["generic"]}}
+        self.assertEqual(
+            resolved_stream_name("metrics-*", stream),
+            "metrics-generic-default",
+        )
+
+    def test_resolved_stream_name_honors_explicit_namespace(self):
+        stream = {
+            "required_values": {
+                "data_stream.dataset": ["prometheus"],
+                "data_stream.namespace": ["staging"],
+            }
+        }
+        self.assertEqual(
+            resolved_stream_name("metrics-*", stream),
+            "metrics-prometheus-staging",
+        )
+
+    def test_generate_documents_drops_data_stream_keys_from_doc_body(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "service.name": {"role": "dimension"},
+                        "node_cpu_seconds_total": {
+                            "role": "metric", "metric_kind": "counter",
+                        },
+                    },
+                    "required_values": {
+                        "data_stream.dataset": ["prometheus"],
+                    },
+                    "control_fields": ["service.name"],
+                }
+            }
+        }
+        docs = list(generate_documents(
+            contract,
+            now=datetime.datetime(2026, 4, 27, 12, tzinfo=datetime.UTC),
+            data_hours=0.25,
+            interval_sec=300,
+            max_combinations=2,
+        ))
+        self.assertTrue(docs)
+        for stream_name, doc in docs:
+            self.assertEqual(
+                stream_name, f"metrics-prometheus-{SYNTHETIC_NAMESPACE}",
+                f"docs should land in dataset-routed stream, got {stream_name}",
+            )
+            for key in doc:
+                self.assertFalse(
+                    key.startswith("data_stream."),
+                    f"doc body must not include {key}",
+                )
 
     def test_plan_index_template_maps_generated_control_dimensions(self):
         stream = {
