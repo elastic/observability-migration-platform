@@ -208,5 +208,59 @@ class TestDetectServerless(unittest.TestCase):
         self.assertFalse(detect_serverless("https://kb.test"))
 
 
+class AssertMinKibanaVersionTests(unittest.TestCase):
+    @patch("observability_migration.targets.kibana.serverless._session")
+    def test_passes_when_cluster_meets_floor(self, session_factory):
+        session = session_factory.return_value
+        session.get.return_value.json.return_value = {"version": {"number": "9.3.5"}}
+        session.get.return_value.raise_for_status.return_value = None
+        from observability_migration.targets.kibana.serverless import (
+            assert_min_kibana_version,
+        )
+        assert_min_kibana_version(
+            kibana_url="https://k.example", api_key="x", required="9.3.0",
+        )
+
+    @patch("observability_migration.targets.kibana.serverless._session")
+    def test_raises_when_cluster_below_floor(self, session_factory):
+        from observability_migration.targets.kibana.serverless import (
+            KibanaVersionTooLowError,
+            assert_min_kibana_version,
+        )
+        session = session_factory.return_value
+        session.get.return_value.json.return_value = {"version": {"number": "9.1.5"}}
+        session.get.return_value.raise_for_status.return_value = None
+        with self.assertRaises(KibanaVersionTooLowError):
+            assert_min_kibana_version(
+                kibana_url="https://k.example", api_key="x", required="9.3.0",
+            )
+
+    @patch("observability_migration.targets.kibana.serverless._session")
+    def test_raises_when_version_missing_from_status_response(self, session_factory):
+        from observability_migration.targets.kibana.serverless import (
+            KibanaVersionTooLowError,
+            assert_min_kibana_version,
+        )
+        session = session_factory.return_value
+        session.get.return_value.json.return_value = {}
+        session.get.return_value.raise_for_status.return_value = None
+        with self.assertRaises(KibanaVersionTooLowError):
+            assert_min_kibana_version(
+                kibana_url="https://k.example", api_key="x", required="9.1.0",
+            )
+
+    @patch("observability_migration.targets.kibana.serverless._session")
+    def test_passes_when_required_is_91_and_cluster_is_91(self, session_factory):
+        session = session_factory.return_value
+        session.get.return_value.json.return_value = {"version": {"number": "9.1.0"}}
+        session.get.return_value.raise_for_status.return_value = None
+        from observability_migration.targets.kibana.serverless import (
+            assert_min_kibana_version,
+        )
+        assert_min_kibana_version(
+            kibana_url="https://k.example", api_key="x", required="9.1.0",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

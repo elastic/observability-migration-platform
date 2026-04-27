@@ -395,7 +395,54 @@ def detect_serverless(
         return False
 
 
+# ---------------------------------------------------------------------------
+# Version-floor guard for dashboard upload
+# ---------------------------------------------------------------------------
+
+class KibanaVersionTooLowError(RuntimeError):
+    """Raised when the target Kibana cluster is below a dashboard's required floor."""
+
+
+def _parse_version(s: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in s.split("."))
+
+
+def assert_min_kibana_version(
+    *,
+    kibana_url: str,
+    api_key: str,
+    required: str,
+) -> None:
+    """GET /api/status and raise KibanaVersionTooLowError if the cluster is below required.
+
+    Intended as a pre-upload guard: a dashboard YAML may declare a
+    ``minimum_kibana_version`` (e.g. ``9.3.0``) because it relies on features
+    such as variable controls. Calling this helper before
+    :func:`import_saved_objects` ensures we fail fast with a clear message
+    rather than letting an older Kibana mis-render the dashboard.
+    """
+    base = _api_base(kibana_url)
+    response = _session().get(
+        f"{base}/api/status",
+        headers={"Authorization": f"ApiKey {api_key}"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    data = response.json()
+    version_str = (data.get("version") or {}).get("number") or ""
+    if not version_str:
+        raise KibanaVersionTooLowError(
+            "could not determine Kibana version from /api/status response"
+        )
+    if _parse_version(version_str) < _parse_version(required):
+        raise KibanaVersionTooLowError(
+            f"Kibana cluster is {version_str}; dashboard requires {required}"
+        )
+
+
 __all__ = [
+    "KibanaVersionTooLowError",
+    "assert_min_kibana_version",
     "create_data_view",
     "delete_dashboards",
     "delete_data_view",
