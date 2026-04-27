@@ -3167,10 +3167,27 @@ def translate_variables(
     rule_pack=None,
     resolver=None,
     repeat_variable_names=None,
+    *,
+    binding_map=None,
 ):
+    from observability_migration.core.variable_classifier import AcceptedBinding
+
     rule_pack = rule_pack or RulePackConfig()
-    controls = []
+    accepted_controls = []
+    rejected_controls = []
     for var in template_list:
+        name = var.get("name", "")
+        if binding_map and isinstance(binding_map.get(name), AcceptedBinding):
+            binding = binding_map[name]
+            accepted_controls.append({
+                "type": "esql",
+                "variable_name": name,
+                "variable_type": "multi_values" if binding.multi else "values",
+                "multiple": binding.multi,
+                "label": var.get("label") or name,
+                "query": binding.options_query,
+            })
+            continue
         context = VariableContext(
             variable=var,
             data_view=datasource_index,
@@ -3181,8 +3198,8 @@ def translate_variables(
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
         if context.control:
-            controls.append(context.control)
-    return controls
+            rejected_controls.append(context.control)
+    return accepted_controls + rejected_controls
 
 
 def _panel_sort_key(panel):
