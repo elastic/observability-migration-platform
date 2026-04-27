@@ -1439,16 +1439,33 @@ def nested_agg_family_rule(context):
         context.translation_complete = True
         return "translated nested count(count()) expression"
 
+    inner_metric_expr = frag.metric
+    requires_ts_source = False
+    if (
+        inner_agg_name != "count"
+        and resolver is not None
+        and resolver.is_counter(frag.metric)
+    ):
+        rate_window = context.range_window or rp.default_rate_window
+        inner_metric_expr = f"RATE({frag.metric}, {rate_window})"
+        requires_ts_source = True
+        _append_unique(
+            context.warnings,
+            f"Wrapped counter metric {frag.metric} in RATE({rate_window}) "
+            "before nested aggregation; raw SUM/AVG/MAX on counters fails "
+            "ES|QL type-checking on counter_double / counter_long fields.",
+        )
     first_stats_expr = (
-        f"{inner_alias} = {esql_inner_agg}({physical_metric})"
+        f"{inner_alias} = {esql_inner_agg}({inner_metric_expr})"
         if inner_agg_name != "count"
         else f"{inner_alias} = COUNT(*)"
     )
+    source_keyword = "TS" if requires_ts_source else "FROM"
     second_stats_arg = inner_alias
     if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
         context.output_group_fields = []
         summary_lines = [
-            f"FROM {context.index}",
+            f"{source_keyword} {context.index}",
             f"| WHERE {rp.from_time_filter}",
             *_build_where_lines(filters),
         ]
@@ -1469,7 +1486,7 @@ def nested_agg_family_rule(context):
         )
         context.esql_query = "\n".join(
             [
-                f"FROM {context.index}",
+                f"{source_keyword} {context.index}",
                 f"| WHERE {rp.from_time_filter}",
                 *_build_where_lines(filters),
                 *( [count_presence_filter] if count_presence_filter else [] ),
@@ -1480,7 +1497,7 @@ def nested_agg_family_rule(context):
         )
 
     context.parser_backend = "fragment"
-    context.source_type = "FROM"
+    context.source_type = source_keyword
     context.metric_name = result_alias
     context.output_metric_field = result_alias
     context.translation_complete = True
@@ -2211,6 +2228,54 @@ def rendered_query_required_rule(context):
     context.confidence = 0.0
     _append_unique(context.warnings, "No ES|QL query was produced")
     return "missing ES|QL output"
+
+
+_FROM_INDEX_RE = re.compile(
+    r"\b(?:FROM|TS)\s+([\w.*?,-]+)", re.IGNORECASE,
+)
+
+
+def _extract_from_index_patterns(esql_query):
+    """Return the index patterns mentioned in any ``FROM``/``TS`` clauses."""
+    if not esql_query:
+        return []
+    return list(dict.fromkeys(_FROM_INDEX_RE.findall(esql_query)))
+
+
+@QUERY_VALIDATORS.register("cluster_index_pattern_has_data", priority=33)
+def cluster_index_pattern_has_data_rule(context):
+    """Reject panels whose ``FROM`` index pattern matches no cluster index.
+
+    A panel that targets ``FROM logs-*`` against a cluster with zero ``logs-*``
+    data streams cannot possibly load — ES rejects the query with
+    "Unknown column [@timestamp]" because there is no schema to validate
+    against. Mark the panel as not_feasible so the broken query never ships.
+    """
+    if context.feasibility == "not_feasible":
+        return None
+    resolver = context.resolver
+    check = getattr(resolver, "index_pattern_has_any_concrete_index", None)
+    if not callable(check):
+        return None
+    missing: list[str] = []
+    for pattern in _extract_from_index_patterns(context.esql_query or ""):
+        # Only flag wildcard patterns; literal index names are validated by the
+        # field-membership rule and concrete-name typos surface there.
+        if not any(token in pattern for token in ("*", "?", ",")):
+            continue
+        if check(pattern) is False:
+            missing.append(pattern)
+    if not missing:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    reason = (
+        f"Cluster has no indices matching pattern(s): {', '.join(missing)}. "
+        "The panel would fail with \"Unknown column [@timestamp]\" because no "
+        "schema exists at query time."
+    )
+    _append_unique(context.warnings, reason)
+    return reason
 
 
 @QUERY_VALIDATORS.register("cluster_known_metrics", priority=35)

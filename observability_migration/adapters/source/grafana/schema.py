@@ -85,6 +85,7 @@ class SchemaResolver:
         self._concrete_index_cache = None
         self._schema_profile = None
         self._schema_profile_cache_id = None
+        self._index_pattern_presence_cache: dict[str, bool | None] = {}
 
     def _candidate_fields(self, label):
         candidates = []
@@ -368,6 +369,45 @@ class SchemaResolver:
     def concrete_index_candidates(self):
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
+
+    def index_pattern_has_any_concrete_index(self, index_pattern):
+        """Return True/False/None for whether ``index_pattern`` resolves to any
+        live data stream or index in the cluster.
+
+        Returns ``None`` when no cluster connection is configured, so callers
+        can distinguish "we cannot tell" from "we checked and it's empty".
+        Per-pattern result is cached so a panel-by-panel translator does not
+        issue a fresh HTTP request for every panel that targets the same
+        index pattern.
+        """
+        pattern = (index_pattern or "").strip()
+        if not pattern:
+            return None
+        if not self._es_url:
+            return None
+        if not any(token in pattern for token in ("*", "?", ",")):
+            return None
+        if pattern in self._index_pattern_presence_cache:
+            return self._index_pattern_presence_cache[pattern]
+        try:
+            resp = requests.get(
+                f"{self._es_url}/_resolve/index/{pattern}",
+                headers=self._es_headers(),
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                self._index_pattern_presence_cache[pattern] = None
+                return None
+            body = resp.json()
+            for bucket in ("data_streams", "indices"):
+                if body.get(bucket):
+                    self._index_pattern_presence_cache[pattern] = True
+                    return True
+            self._index_pattern_presence_cache[pattern] = False
+            return False
+        except Exception:
+            self._index_pattern_presence_cache[pattern] = None
+            return None
 
 
 __all__ = ["SchemaResolver"]

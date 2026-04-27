@@ -3080,6 +3080,9 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
         cache = {}
         setattr(resolver, "_alternate_resolvers", cache)
     if index_pattern not in cache:
+        # Forward the API key from the parent resolver so cluster discovery
+        # actually authenticates; without it every field_caps / _resolve/index
+        # call comes back 401 and is silently treated as "no info".
         cache[index_pattern] = SchemaResolver(
             rule_pack or RulePackConfig(),
             es_url=es_url,

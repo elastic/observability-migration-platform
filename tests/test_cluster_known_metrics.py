@@ -19,15 +19,21 @@ from observability_migration.adapters.source.grafana.rules import RulePackConfig
 class _StubResolver:
     """Mimics SchemaResolver.field_exists for unit tests."""
 
-    def __init__(self, missing=None, present=None):
+    def __init__(self, missing=None, present=None, missing_patterns=None):
         self._missing = set(missing or [])
         self._present = set(present or [])
+        self._missing_patterns = set(missing_patterns or [])
 
     def field_exists(self, field_name):
         if field_name in self._missing:
             return False
         if field_name in self._present:
             return True
+        return None
+
+    def index_pattern_has_any_concrete_index(self, pattern):
+        if pattern in self._missing_patterns:
+            return False
         return None
 
     def resolve_label(self, label):
@@ -172,6 +178,59 @@ class ClusterKnownMetricsRuleTests(unittest.TestCase):
             resolver=resolver,
         )
         self.assertNotEqual(result.feasibility, "not_feasible")
+
+
+class FromIndexPatternRuleTests(unittest.TestCase):
+    def test_extract_from_picks_pattern(self):
+        self.assertEqual(
+            translate._extract_from_index_patterns("FROM metrics-prometheus-* | LIMIT 0"),
+            ["metrics-prometheus-*"],
+        )
+
+    def test_extract_from_picks_ts_keyword(self):
+        self.assertEqual(
+            translate._extract_from_index_patterns("TS metrics-* | STATS x = AVG(metric)"),
+            ["metrics-*"],
+        )
+
+    def test_extract_from_dedups_and_preserves_order(self):
+        patterns = translate._extract_from_index_patterns(
+            "FROM logs-* | EVAL m = METADATA(\"FROM logs-*\")"
+        )
+        self.assertEqual(patterns, ["logs-*"])
+
+    def test_index_pattern_no_match_downgrades_panel(self):
+        resolver = _StubResolver(missing_patterns={"logs-*"})
+        # We can't run a logs panel through translate_promql_to_esql directly,
+        # so simulate by building a minimal context and invoking the validator.
+        ctx = translate.TranslationContext(
+            promql_expr="logs",
+            data_view="logs-*",
+            index="logs-*",
+            rule_pack=RulePackConfig(),
+            resolver=resolver,
+            esql_query="FROM logs-* | KEEP @timestamp, message",
+            feasibility="feasible",
+        )
+        translate.cluster_index_pattern_has_data_rule(ctx)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertTrue(
+            any("logs-*" in w for w in ctx.warnings),
+            f"expected logs-* warning in {ctx.warnings!r}",
+        )
+
+    def test_index_pattern_no_resolver_is_a_noop(self):
+        ctx = translate.TranslationContext(
+            promql_expr="logs",
+            data_view="logs-*",
+            index="logs-*",
+            rule_pack=RulePackConfig(),
+            resolver=None,
+            esql_query="FROM logs-* | KEEP @timestamp",
+            feasibility="feasible",
+        )
+        translate.cluster_index_pattern_has_data_rule(ctx)
+        self.assertEqual(ctx.feasibility, "feasible")
 
 
 if __name__ == "__main__":
