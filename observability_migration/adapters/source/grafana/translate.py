@@ -381,15 +381,39 @@ def _resolve_logs_message_field(rule_pack, resolver):
 
 @QUERY_PREPROCESSORS.register("grafana_macros", priority=10)
 def grafana_macro_rule(context):
+    unresolved: set[str] = set()
     clean_expr = preprocess_grafana_macros(
         context.promql_expr,
         context.rule_pack,
         binding_map=context.binding_map,
+        unresolved_out=unresolved,
     )
     context.clean_expr = clean_expr
+    if unresolved:
+        context.metadata["unresolved_grafana_variables"] = sorted(unresolved)
     if clean_expr != context.promql_expr:
         return "expanded Grafana macros"
     return None
+
+
+def _detect_leaked_label_variables(esql_query, candidates):
+    """Return any ``label_<var>`` tokens that survived translation into ES|QL.
+
+    ``candidates`` is the set of variable names ``preprocess_grafana_macros``
+    had to degrade to ``label_<var>``. The matcher rewriter drops ``label_<var>``
+    references that land inside label matchers and LogQL line filters drop them
+    too, so the harmless cases never reach the final ES|QL. Anything that does
+    survive is in an arithmetic / EVAL / STATS position where ES will fail with
+    "Unknown column [label_<var>]" at validation time.
+    """
+    if not candidates or not esql_query:
+        return []
+    leaked = []
+    for name in candidates:
+        token = f"label_{name}"
+        if re.search(rf"\b{re.escape(token)}\b", esql_query):
+            leaked.append(name)
+    return sorted(leaked)
 
 
 @QUERY_PREPROCESSORS.register("parse_fragment", priority=20)
@@ -2117,6 +2141,37 @@ def rendered_query_required_rule(context):
     context.confidence = 0.0
     _append_unique(context.warnings, "No ES|QL query was produced")
     return "missing ES|QL output"
+
+
+@QUERY_VALIDATORS.register("leaked_label_variables", priority=40)
+def leaked_label_variables_rule(context):
+    """Reject panels whose final ES|QL still references ``label_<var>`` tokens.
+
+    ``preprocess_grafana_macros`` rewrites bare ``$var`` to ``label_<var>`` so
+    the PromQL parser does not choke. Inside label matchers / LogQL line
+    filters those tokens are dropped downstream (matcher converter returns
+    None on ``label_*``-valued matchers) and never reach the final ES|QL.
+    Anything that does survive is in an arithmetic / EVAL / STATS position
+    that ES will reject with "Unknown column [label_<var>]" at validation
+    time. Mark the panel as not-feasible so the broken query is never
+    compiled into the dashboard.
+    """
+    if context.feasibility == "not_feasible":
+        return None
+    candidates = context.metadata.get("unresolved_grafana_variables") or []
+    leaked = _detect_leaked_label_variables(context.esql_query or "", candidates)
+    if not leaked:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    names = ", ".join(f"${name}" for name in leaked)
+    reason = (
+        f"Unresolved Grafana template variable(s) leaked into output ES|QL: "
+        f"{names}. The translator rewrites these to literal label_<var> "
+        "column references that do not exist in any cluster."
+    )
+    _append_unique(context.warnings, reason)
+    return reason
 
 
 _logger = logging.getLogger(__name__)

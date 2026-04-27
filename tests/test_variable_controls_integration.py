@@ -77,18 +77,40 @@ class GrafanaCorpusPhaseBIntegration(unittest.TestCase):
         )
 
     def test_no_leftover_source_token_for_accepted_vars(self):
+        """No accepted-variable ``$varname`` should survive in compiled ES|QL.
+
+        Markdown stubs emitted for ``not_feasible`` panels intentionally
+        preserve the original PromQL (including its ``$varname``) for
+        documentation; only check ES|QL query strings.
+        """
         yaml_dir = self.tmp / "dashboards" / "yaml"
+        esql_queries: list[str] = []
+        for yaml_path in yaml_dir.glob("*.yaml"):
+            doc = yaml.safe_load(yaml_path.read_text()) or {}
+
+            def _walk(items):
+                for item in items or []:
+                    if "section" in item:
+                        yield from _walk(item.get("section", {}).get("panels"))
+                        continue
+                    yield item
+
+            for dashboard in doc.get("dashboards", []):
+                for panel in _walk(dashboard.get("panels")):
+                    esql_block = panel.get("esql") or {}
+                    query = esql_block.get("query")
+                    if isinstance(query, str):
+                        esql_queries.append(query)
+                    elif isinstance(query, list):
+                        esql_queries.extend(part for part in query if isinstance(part, str))
+        text = "\n".join(esql_queries)
         for dashboard in self.report.get("dashboards", []):
             accepted = dashboard.get("variables", {}).get("accepted", [])
-            if not accepted:
-                continue
-            yaml_files = list(yaml_dir.glob("*.yaml"))
-            text = "\n".join(f.read_text() for f in yaml_files)
             for binding in accepted:
                 pattern = re.compile(rf"\${binding['name']}\b")
                 self.assertFalse(
                     pattern.search(text),
-                    f"accepted variable ${binding['name']} should not survive in YAML",
+                    f"accepted variable ${binding['name']} should not survive in any ES|QL query",
                 )
 
     def test_idempotent_byte_identical_yaml(self):

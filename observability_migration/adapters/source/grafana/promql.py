@@ -213,12 +213,22 @@ class FormulaPlan:
     warnings: list = field(default_factory=list)
 
 
-def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None):
+def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None, unresolved_out=None):
     """Replace Grafana-specific macros with valid PromQL placeholders.
 
     When ``binding_map`` accepts a template variable, ``$var`` references inside
     label matchers are preserved so the downstream matcher rewriter can emit a
     parameterized clause (``field == ?var``) instead of broadening to ``.*``.
+
+    Bare ``$var`` references that fall outside label matchers (e.g. arithmetic
+    operands such as ``rate(...) - $scrape_interval``) are rewritten to
+    ``label_<var>`` so the downstream PromQL parser does not choke on the
+    leftover ``$``. That substitution is a degradation: the resulting
+    ``label_<var>`` is a literal column reference that almost never resolves to
+    a real cluster field, and emitting it produces invalid ES|QL at runtime.
+    When ``unresolved_out`` is supplied, every variable name we had to degrade
+    this way is added to it so callers can mark the panel as not-feasible
+    instead of shipping an invalid field reference.
     """
     accepted_names: set[str] = set()
     if binding_map:
@@ -269,12 +279,20 @@ def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None):
             return match.group(0)
         return f'{{{match.group(1)}{match.group(2)}=~".*"{match.group(4)}}}'
 
-    result = re.sub(
-        r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
-    )
-    result = re.sub(
-        r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
-    )
+    # Iterate until stable so multi-matcher blocks like
+    # ``{instance="$node",job="$job"}`` get every matcher broadened, not just
+    # the first one. Each ``re.sub`` pass replaces one matcher per ``{...}``
+    # block; the loop runs at most once per matcher in the largest block.
+    for _ in range(8):
+        previous = result
+        result = re.sub(
+            r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
+        )
+        result = re.sub(
+            r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
+        )
+        if result == previous:
+            break
     # ${var} and ${var:format} — Grafana advanced variable interpolation.
     # Must run before the bare $var substitution so the opening brace isn't
     # left as a dangling token that confuses the PromQL AST parser.
@@ -290,6 +308,8 @@ def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None):
             return match.group(0)
         if name in accepted_names:
             return match.group(0)
+        if unresolved_out is not None:
+            unresolved_out.add(name)
         return f"label_{name}"
 
     result = re.sub(r"\$(\w+)", _label_unless_accepted, result)
