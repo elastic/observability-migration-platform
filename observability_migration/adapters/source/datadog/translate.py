@@ -72,6 +72,24 @@ _DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>[smhdw])$", re.IGNORECAS
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
+_DD_VAR_RE = re.compile(r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\.value)?")
+
+
+def _extract_dd_single_var(value: str) -> str | None:
+    """Return the single Datadog template-variable name embedded in ``value``.
+
+    Returns ``None`` when ``value`` contains zero or multiple variables, or
+    when any non-whitespace text remains after stripping the match. Handles
+    both ``$name`` and ``$name.value`` forms.
+    """
+    matches = list(_DD_VAR_RE.finditer(value))
+    if len(matches) != 1:
+        return None
+    name = matches[0].group("name")
+    bare = _DD_VAR_RE.sub("", value).strip()
+    if bare:
+        return None
+    return name
 
 
 class _RequiresManualError(ValueError):
@@ -1611,12 +1629,33 @@ def _series_reducer_expr(reducer: str, field: str) -> str:
     }[reducer]
 
 
-def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> str:
+def _tag_filter_to_esql(
+    filt,
+    field_map: FieldMapProfile,
+    context: str = "",
+    *,
+    binding_map: dict[str, Any] | None = None,
+) -> str:
     if not isinstance(filt, TagFilter):
         return ""
 
     es_field = _esql_identifier(field_map.map_tag(filt.key, context=context))
     value = filt.value or ""
+
+    if binding_map:
+        var_name = _extract_dd_single_var(value)
+        if var_name and var_name in binding_map:
+            from observability_migration.core.variable_classifier import (
+                AcceptedBinding,
+            )
+
+            binding = binding_map[var_name]
+            if isinstance(binding, AcceptedBinding):
+                if binding.multi:
+                    op = "NOT " if filt.negated else ""
+                    return f"{op}MV_CONTAINS(?{var_name}, {es_field})"
+                op = "!=" if filt.negated else "=="
+                return f"{es_field} {op} ?{var_name}"
 
     if value == "*" and not filt.negated:
         return ""
