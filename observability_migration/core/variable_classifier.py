@@ -4,6 +4,7 @@ See docs/roadmap/2026-04-27-kibana-variable-controls-design.md for the design.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
@@ -100,4 +101,168 @@ def build_options_query(*, data_view: str, field: str) -> str:
         f"| STATS BY {field}\n"
         f"| KEEP {field}\n"
         f"| LIMIT 1000"
+    )
+
+
+ESQL_RESERVED_WORDS: Final[frozenset[str]] = frozenset({
+    "from", "where", "stats", "by", "keep", "drop", "rename",
+    "eval", "sort", "limit", "enrich", "mv_expand", "lookup",
+    "join", "grok", "dissect",
+})
+
+_VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LABEL_VALUES_RE = re.compile(r"label_values\s*\(\s*([^,]+?)\s*,\s*([A-Za-z0-9_]+)\s*\)")
+_REGEX_META_RE = re.compile(r"[][(){}|^$+*?\\]")
+
+
+def _grafana_definition_text(var: dict) -> str:
+    definition = var.get("definition")
+    if isinstance(definition, str) and definition.strip():
+        return definition
+    query = var.get("query")
+    if isinstance(query, dict):
+        text = query.get("query") or query.get("definition") or ""
+        return str(text)
+    if isinstance(query, str):
+        return query
+    return ""
+
+
+def _extract_label_from_definition(text: str) -> str | None:
+    match = _LABEL_VALUES_RE.search(text)
+    if not match:
+        return None
+    return match.group(2)
+
+
+def _grafana_panel_matchers_for(var_name: str, panel: dict) -> list[dict]:
+    """Return matchers in `panel` that reference ``$var_name``.
+
+    Each matcher dict carries ``field``, ``op``, and ``value_template``
+    (the raw text inside the quotes).
+    """
+    out: list[dict] = []
+    for target in panel.get("targets", []) or []:
+        expr = target.get("expr", "") or ""
+        if (
+            f"${var_name}" not in expr
+            and f"${{{var_name}}}" not in expr
+            and f"[[{var_name}]]" not in expr
+        ):
+            continue
+        for m in re.finditer(
+            r'(?P<field>[A-Za-z_][A-Za-z0-9_:]*)\s*(?P<op>=~|!~|=|!=)\s*"(?P<value>[^"]*)"',
+            expr,
+        ):
+            value = m.group("value")
+            if (
+                f"${var_name}" in value
+                or f"${{{var_name}}}" in value
+                or f"[[{var_name}]]" in value
+            ):
+                out.append({
+                    "field": m.group("field"),
+                    "op": m.group("op"),
+                    "value_template": value,
+                })
+    return out
+
+
+def classify_grafana_variables(
+    *,
+    variables: list[dict],
+    panels: list[dict],
+    resolver,
+    repeat_variable_names: set[str],
+    data_view: str,
+    panel_data_view=None,
+) -> VariableBindingMap:
+    """Classify Grafana template variables for ES|QL parameter eligibility."""
+    binding_map: VariableBindingMap = {}
+    for var in variables:
+        name = var.get("name", "")
+        if not name:
+            continue
+        result = _classify_one_grafana(
+            var=var,
+            name=name,
+            panels=panels,
+            resolver=resolver,
+            repeat_variable_names=repeat_variable_names,
+            data_view=data_view,
+            panel_data_view=panel_data_view,
+        )
+        binding_map[name] = result
+    return binding_map
+
+
+def _classify_one_grafana(
+    *,
+    var,
+    name,
+    panels,
+    resolver,
+    repeat_variable_names,
+    data_view,
+    panel_data_view,
+):
+    if not _VALID_IDENTIFIER_RE.match(name):
+        return RejectedBinding(reason="invalid_variable_name")
+    if name.lower() in ESQL_RESERVED_WORDS:
+        return RejectedBinding(reason="reserved_identifier")
+    if var.get("type") != "query":
+        return RejectedBinding(reason="unsupported_variable_type")
+    if name in repeat_variable_names:
+        return RejectedBinding(reason="drives_repeat")
+
+    definition = _grafana_definition_text(var)
+    label = _extract_label_from_definition(definition)
+    if label is None:
+        return RejectedBinding(reason="unknown_definition_shape")
+
+    field = resolver.resolve_control_field(label) if resolver else None
+    if not field:
+        return RejectedBinding(reason="field_resolution_failed")
+    if not (resolver.field_exists(field) is not False):
+        return RejectedBinding(reason="field_resolution_failed")
+
+    multi = bool(var.get("multi"))
+    include_all = bool(var.get("includeAll"))
+    if include_all and not multi:
+        return RejectedBinding(reason="include_all_unsupported")
+
+    observed_field: str | None = None
+    observed_data_view: str | None = None
+    for panel in panels:
+        matchers = _grafana_panel_matchers_for(name, panel)
+        if not matchers:
+            continue
+        if panel_data_view is not None:
+            dv = panel_data_view(panel)
+            if observed_data_view is None:
+                observed_data_view = dv
+            elif observed_data_view != dv:
+                return RejectedBinding(reason="data_view_split")
+        for matcher in matchers:
+            template = matcher["value_template"]
+            stripped = template.replace(f"${{{name}}}", "").replace(f"${name}", "")
+            if _REGEX_META_RE.search(stripped):
+                return RejectedBinding(reason="regex_template")
+            if matcher["op"] == "=" and multi:
+                return RejectedBinding(reason="multi_value_with_eq_operator")
+            mapped = resolver.resolve_label(matcher["field"]) if resolver else None
+            if mapped is None:
+                continue
+            if observed_field is None:
+                observed_field = mapped
+            elif observed_field != mapped:
+                return RejectedBinding(reason="inconsistent_field_use")
+
+    canonical_field = observed_field or field
+    canonical_data_view = observed_data_view or data_view
+    options_query = build_options_query(
+        data_view=canonical_data_view, field=canonical_field
+    )
+    return AcceptedBinding(
+        field=canonical_field, multi=multi, options_query=options_query
     )

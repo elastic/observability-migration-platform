@@ -91,3 +91,195 @@ def test_build_options_query_rejects_empty_inputs():
         vc.build_options_query(data_view="", field="host.name")
     with pytest.raises(ValueError):
         vc.build_options_query(data_view="metrics-*", field="")
+
+
+def _grafana_var(**overrides):
+    base = {
+        "name": "instance",
+        "label": "instance",
+        "type": "query",
+        "definition": "label_values(up, instance)",
+        "multi": False,
+        "includeAll": False,
+        "hide": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+def _grafana_panel_using(var_name, *, op="=", value_template=None, field="instance"):
+    template = value_template if value_template is not None else f"${var_name}"
+    return {
+        "type": "timeseries",
+        "datasource": {"type": "prometheus", "uid": "x"},
+        "targets": [{"expr": f'metric{{{field}{op}"{template}"}}', "refId": "A"}],
+    }
+
+
+class _StubResolver:
+    def __init__(self, mapping=None):
+        self._mapping = (
+            mapping if mapping is not None else {"instance": "service.instance.id"}
+        )
+
+    def resolve_label(self, label):
+        return self._mapping.get(label)
+
+    def resolve_control_field(self, label):
+        return self._mapping.get(label)
+
+    def field_exists(self, field):
+        return field in self._mapping.values()
+
+
+def test_grafana_unsupported_variable_type_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(type="custom")],
+        panels=[],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert isinstance(bm["instance"], vc.RejectedBinding)
+    assert bm["instance"].reason == "unsupported_variable_type"
+
+
+def test_grafana_drives_repeat_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[],
+        resolver=_StubResolver(),
+        repeat_variable_names={"instance"},
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "drives_repeat"
+
+
+def test_grafana_unknown_definition_shape_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(definition="query_result(up)")],
+        panels=[],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "unknown_definition_shape"
+
+
+def test_grafana_field_resolution_failed_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[],
+        resolver=_StubResolver(mapping={}),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "field_resolution_failed"
+
+
+def test_grafana_inconsistent_field_use_rejects():
+    panels = [
+        _grafana_panel_using("instance", field="instance"),
+        _grafana_panel_using("instance", field="other_instance"),
+    ]
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=panels,
+        resolver=_StubResolver(mapping={
+            "instance": "service.instance.id",
+            "other_instance": "host.name",
+        }),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "inconsistent_field_use"
+
+
+def test_grafana_regex_template_rejects():
+    panel = _grafana_panel_using("instance", op="=~", value_template="prefix-$instance.*")
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[panel],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "regex_template"
+
+
+def test_grafana_include_all_single_select_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(includeAll=True, multi=False)],
+        panels=[_grafana_panel_using("instance")],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["instance"].reason == "include_all_unsupported"
+
+
+def test_grafana_invalid_variable_name_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(name="bad-name")],
+        panels=[],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["bad-name"].reason == "invalid_variable_name"
+
+
+def test_grafana_reserved_identifier_rejects():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(name="where")],
+        panels=[_grafana_panel_using("where")],
+        resolver=_StubResolver(mapping={"where": "service.instance.id"}),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert bm["where"].reason == "reserved_identifier"
+
+
+def test_grafana_accepts_simple_single_value():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[_grafana_panel_using("instance")],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    binding = bm["instance"]
+    assert isinstance(binding, vc.AcceptedBinding)
+    assert binding.field == "service.instance.id"
+    assert binding.multi is False
+    assert "service.instance.id" in binding.options_query
+
+
+def test_grafana_accepts_multi_value():
+    panel = _grafana_panel_using("instance", op="=~")
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var(multi=True)],
+        panels=[panel],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    binding = bm["instance"]
+    assert isinstance(binding, vc.AcceptedBinding)
+    assert binding.multi is True
+
+
+def test_grafana_data_view_split_rejects():
+    panels = [
+        {**_grafana_panel_using("instance"), "datasource": {"uid": "metrics"}},
+        {**_grafana_panel_using("instance"), "datasource": {"uid": "logs"}},
+    ]
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=panels,
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+        panel_data_view=lambda p: "metrics-*" if p["datasource"]["uid"] == "metrics" else "logs-*",
+    )
+    assert bm["instance"].reason == "data_view_split"
