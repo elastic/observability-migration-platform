@@ -143,34 +143,53 @@ def generate_dashboard_yaml(
 def _build_controls_from_template_vars(
     template_vars: list[TemplateVariable],
     data_view: str,
-    field_map: FieldMapProfile | None,
+    field_map: FieldMapProfile | None = None,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build Kibana dashboard controls from Datadog template variables.
 
-    Maps each template variable's tag to an ES field via the field map and
-    emits an ``options`` control that Kibana applies as a dashboard-level filter.
+    When ``binding_map`` provides an ``AcceptedBinding`` for a variable, emit
+    a typed ESQL control using the precomputed options query. Otherwise fall
+    back to the legacy ``options`` control that maps the variable's tag to an
+    ES field via the field map. Accepted controls are emitted before legacy
+    ones (spec §8.4 ordering).
     """
+    from observability_migration.core.variable_classifier import AcceptedBinding
+
     _UNRESOLVABLE_VARS = {"scope"}
 
-    controls: list[dict[str, Any]] = []
+    accepted_controls: list[dict[str, Any]] = []
+    legacy_controls: list[dict[str, Any]] = []
     for tv in template_vars:
+        name = tv.name
+        if binding_map and isinstance(binding_map.get(name), AcceptedBinding):
+            binding = binding_map[name]
+            accepted_controls.append({
+                "type": "esql",
+                "variable_name": name,
+                "variable_type": "multi_values" if binding.multi else "values",
+                "multiple": binding.multi,
+                "label": name,
+                "query": binding.options_query,
+            })
+            continue
         tag = tv.tag or tv.prefix
         if not tag:
-            if tv.name.lower() in _UNRESOLVABLE_VARS:
+            if name.lower() in _UNRESOLVABLE_VARS:
                 continue
-            tag = tv.name
+            tag = name
         if not tag:
             continue
         es_field = field_map.map_tag(tag, context="metric") if field_map else tag
-        control: dict[str, Any] = {
+        legacy_controls.append({
             "type": "options",
-            "label": tv.name,
+            "label": name,
             "data_view": data_view,
             "field": es_field,
             "multiple": len(tv.defaults) > 1 or tv.default == "*",
-        }
-        controls.append(control)
-    return controls
+        })
+    return accepted_controls + legacy_controls
 
 
 def _panel_data_index(panel: dict[str, Any]) -> str:
