@@ -64,6 +64,8 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    variable_bindings: dict = field(default_factory=dict)  # {dashboard_title: {var_name: AcceptedBinding | RejectedBinding}}
+    panel_parameterizations: dict = field(default_factory=dict)  # {dashboard_title: {"?varname": count}}
 
 
 @dataclass
@@ -379,6 +381,51 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
+def _serialize_variables_block(per_dashboard_bindings, per_dashboard_param_counts, dashboard_name):
+    """Render the per-dashboard `variables` and `panel_parameterizations` blocks for the report.
+
+    Phase B keeps `accepted_fields` / `accepted_functions` / `accepted_intervals` empty;
+    phase 2 will populate them. `verifier_failed_*` reasons land in `verifier_downgraded`,
+    not `rejected` — they reflect post-translation verifier downgrades, not classifier rejects.
+    """
+    from observability_migration.core.variable_classifier import (
+        AcceptedBinding,
+        RejectedBinding,
+    )
+
+    bindings = (per_dashboard_bindings or {}).get(dashboard_name, {}) or {}
+    accepted = [
+        {"name": name, "field": binding.field, "multi": binding.multi}
+        for name, binding in bindings.items()
+        if isinstance(binding, AcceptedBinding)
+    ]
+    rejected = [
+        {"name": name, "reason": binding.reason}
+        for name, binding in bindings.items()
+        if isinstance(binding, RejectedBinding)
+        and not binding.reason.startswith("verifier_failed_")
+    ]
+    verifier_downgraded = [
+        {"name": name, "reason": binding.reason}
+        for name, binding in bindings.items()
+        if isinstance(binding, RejectedBinding)
+        and binding.reason.startswith("verifier_failed_")
+    ]
+    return {
+        "variables": {
+            "accepted": accepted,
+            "accepted_fields": [],
+            "accepted_functions": [],
+            "accepted_intervals": [],
+            "rejected": rejected,
+            "verifier_downgraded": verifier_downgraded,
+        },
+        "panel_parameterizations": dict(
+            (per_dashboard_param_counts or {}).get(dashboard_name, {}) or {}
+        ),
+    }
+
+
 def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None):
     report = {
         "summary": {
@@ -417,6 +464,11 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
         }
     if verification_payload:
         report["verification"] = verification_payload
+    aggregated_variable_bindings: dict = {}
+    aggregated_panel_parameterizations: dict = {}
+    for r in results:
+        aggregated_variable_bindings.update(getattr(r, "variable_bindings", {}) or {})
+        aggregated_panel_parameterizations.update(getattr(r, "panel_parameterizations", {}) or {})
     for r in results:
         runtime_summary = build_runtime_summary(r)
         r.runtime_summary = runtime_summary
@@ -477,6 +529,13 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "alert_summary": getattr(r, "alert_summary", {}),
             "translation_error": r.translation_error,
         }
+        d.update(
+            _serialize_variables_block(
+                aggregated_variable_bindings,
+                aggregated_panel_parameterizations,
+                r.dashboard_title,
+            )
+        )
         report["dashboards"].append(d)
 
     with open(output_path, "w") as f:
@@ -488,6 +547,7 @@ __all__ = [
     "PanelResult",
     "_ir_to_dict",
     "_panel_query_index",
+    "_serialize_variables_block",
     "build_runtime_summary",
     "mark_panel_requires_manual_after_failed_validation",
     "mark_panel_requires_manual_after_validation",
