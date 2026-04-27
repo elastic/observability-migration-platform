@@ -370,6 +370,47 @@ class SchemaResolver:
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
 
+    def fetch_distinct_field_values(self, field_name, *, limit=20):
+        """Return up to ``limit`` distinct values for ``field_name`` in the
+        cluster.
+
+        Returns an empty list when no cluster connection is configured, the
+        request fails, or the field has no values. Used to populate variable-
+        control defaults so Kibana renders dashboards with sensible initial
+        selections instead of leaving the picker empty (which crashes ES with
+        ``DataType.isCounter() because t is null`` on parameter-bound queries).
+        """
+        if not self._es_url or not field_name:
+            return []
+        try:
+            query = (
+                f"FROM {self._index_pattern}\n"
+                f"| WHERE {field_name} IS NOT NULL\n"
+                f"| STATS BY {field_name}\n"
+                f"| KEEP {field_name}\n"
+                f"| LIMIT {int(limit)}"
+            )
+            resp = requests.post(
+                f"{self._es_url}/_query",
+                json={"query": query},
+                headers=self._es_headers(),
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return []
+            body = resp.json()
+            values = []
+            for row in body.get("values", []) or []:
+                if not row:
+                    continue
+                value = row[0]
+                if value is None:
+                    continue
+                values.append(str(value))
+            return values
+        except Exception:
+            return []
+
     def index_pattern_has_any_concrete_index(self, index_pattern):
         """Return True/False/None for whether ``index_pattern`` resolves to any
         live data stream or index in the cluster.

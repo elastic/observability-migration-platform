@@ -69,6 +69,7 @@ class AcceptedBinding:
     field: str
     multi: bool
     options_query: str
+    default_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,25 @@ def compute_min_kibana_version(binding_map: VariableBindingMap) -> str:
         isinstance(b, AcceptedBinding) and b.multi for b in binding_map.values()
     )
     return "9.3.0" if has_multi_value else "9.1.0"
+
+
+def _fetch_default_values(resolver_or_map, field_name: str) -> tuple[str, ...]:
+    """Best-effort cluster fetch of distinct values for ``field_name``.
+
+    Returns an empty tuple when the resolver/field-map can't run cluster
+    queries. Used to populate ``ESQLQuery*SelectControl.default`` so Kibana
+    loads dashboards with values pre-selected; without a default, Kibana shows
+    "Select a value" and panel queries that reference ``?param`` crash ES with
+    ``DataType.isCounter() because t is null``.
+    """
+    fetcher = getattr(resolver_or_map, "fetch_distinct_field_values", None)
+    if not callable(fetcher):
+        return ()
+    try:
+        values = fetcher(field_name, limit=20) or []
+    except Exception:
+        return ()
+    return tuple(str(v) for v in values if v is not None)
 
 
 def build_options_query(*, data_view: str, field: str) -> str:
@@ -278,7 +298,10 @@ def _classify_one_grafana(
         data_view=canonical_data_view, field=canonical_field
     )
     return AcceptedBinding(
-        field=canonical_field, multi=multi, options_query=options_query
+        field=canonical_field,
+        multi=multi,
+        options_query=options_query,
+        default_values=_fetch_default_values(resolver, canonical_field),
     )
 
 
@@ -351,4 +374,9 @@ def _classify_one_datadog(*, tv, name, widgets, field_map, data_view):
                         return RejectedBinding(reason="wildcard_default")
 
     options_query = build_options_query(data_view=data_view, field=canonical_field)
-    return AcceptedBinding(field=canonical_field, multi=multi, options_query=options_query)
+    return AcceptedBinding(
+        field=canonical_field,
+        multi=multi,
+        options_query=options_query,
+        default_values=_fetch_default_values(field_map, canonical_field),
+    )

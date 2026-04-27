@@ -3186,14 +3186,18 @@ def translate_variables(
         name = var.get("name", "")
         if binding_map and isinstance(binding_map.get(name), AcceptedBinding):
             binding = binding_map[name]
-            accepted_controls.append({
+            control = {
                 "type": "esql",
                 "variable_name": name,
                 "variable_type": "multi_values" if binding.multi else "values",
                 "multiple": binding.multi,
                 "label": var.get("label") or name,
                 "query": binding.options_query,
-            })
+            }
+            defaults = list(binding.default_values or ())
+            if defaults:
+                control["default"] = defaults if binding.multi else defaults[0]
+            accepted_controls.append(control)
             continue
         context = VariableContext(
             variable=var,

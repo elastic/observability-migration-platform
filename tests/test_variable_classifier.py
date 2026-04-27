@@ -257,6 +257,51 @@ def test_grafana_accepts_simple_single_value():
     assert "service.instance.id" in binding.options_query
 
 
+def test_grafana_populates_default_values_from_resolver():
+    """When the resolver supports cluster discovery, the binding carries
+    real distinct-values so Kibana renders the dashboard pre-populated."""
+    class _ResolverWithFetch:
+        def __init__(self):
+            self._mapping = {"instance": "service.instance.id"}
+
+        def resolve_label(self, label):
+            return self._mapping.get(label)
+
+        def resolve_control_field(self, label):
+            return self._mapping.get(label)
+
+        def field_exists(self, field):
+            return True
+
+        def fetch_distinct_field_values(self, field, *, limit=20):
+            assert field == "service.instance.id"
+            return ["host-1", "host-2", "host-3"]
+
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[_grafana_panel_using("instance")],
+        resolver=_ResolverWithFetch(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    binding = bm["instance"]
+    assert isinstance(binding, vc.AcceptedBinding)
+    assert binding.default_values == ("host-1", "host-2", "host-3")
+
+
+def test_grafana_default_values_empty_when_fetcher_absent():
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[_grafana_panel_using("instance")],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    binding = bm["instance"]
+    assert isinstance(binding, vc.AcceptedBinding)
+    assert binding.default_values == ()
+
+
 def test_grafana_accepts_multi_value():
     panel = _grafana_panel_using("instance", op="=~")
     bm = vc.classify_grafana_variables(

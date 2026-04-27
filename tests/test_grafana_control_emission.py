@@ -57,6 +57,52 @@ def test_accepted_multi_value_emits_multi_select():
     assert controls[0]["multiple"] is True
 
 
+def test_accepted_with_default_values_emits_default_list_for_multi():
+    bm = {"instance": vc.AcceptedBinding(
+        field="service.instance.id", multi=True,
+        options_query="FROM x", default_values=("a", "b", "c"),
+    )}
+    controls = translate_variables(
+        template_list=[{"name": "instance", "label": "Instance",
+                        "type": "query", "definition": "label_values(up, instance)",
+                        "multi": True}],
+        datasource_index="metrics-*",
+        resolver=_resolver(),
+        binding_map=bm,
+    )
+    assert controls[0]["default"] == ["a", "b", "c"]
+
+
+def test_accepted_with_default_values_emits_first_for_single():
+    bm = {"instance": vc.AcceptedBinding(
+        field="service.instance.id", multi=False,
+        options_query="FROM x", default_values=("first-host",),
+    )}
+    controls = translate_variables(
+        template_list=[{"name": "instance", "label": "Instance",
+                        "type": "query", "definition": "label_values(up, instance)"}],
+        datasource_index="metrics-*",
+        resolver=_resolver(),
+        binding_map=bm,
+    )
+    assert controls[0]["default"] == "first-host"
+
+
+def test_accepted_without_default_values_omits_default_key():
+    bm = {"instance": vc.AcceptedBinding(
+        field="service.instance.id", multi=True, options_query="FROM x",
+    )}
+    controls = translate_variables(
+        template_list=[{"name": "instance", "label": "Instance",
+                        "type": "query", "definition": "label_values(up, instance)",
+                        "multi": True}],
+        datasource_index="metrics-*",
+        resolver=_resolver(),
+        binding_map=bm,
+    )
+    assert "default" not in controls[0]
+
+
 def test_rejected_variable_emits_classic_options():
     bm = {"instance": vc.RejectedBinding(reason="include_all_unsupported")}
     controls = translate_variables(

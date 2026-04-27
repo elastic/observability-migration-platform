@@ -171,14 +171,18 @@ def _build_controls_from_template_vars(
         name = tv.name
         if binding_map and isinstance(binding_map.get(name), AcceptedBinding):
             binding = binding_map[name]
-            accepted_controls.append({
+            control: dict[str, Any] = {
                 "type": "esql",
                 "variable_name": name,
                 "variable_type": "multi_values" if binding.multi else "values",
                 "multiple": binding.multi,
                 "label": name,
                 "query": binding.options_query,
-            })
+            }
+            defaults = list(binding.default_values or ())
+            if defaults:
+                control["default"] = defaults if binding.multi else defaults[0]
+            accepted_controls.append(control)
             continue
         tag = tv.tag or tv.prefix
         if not tag:
