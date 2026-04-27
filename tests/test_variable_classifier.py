@@ -364,3 +364,27 @@ def test_datadog_accepts_multi_when_default_star():
     )
     assert isinstance(bm["host"], vc.AcceptedBinding)
     assert bm["host"].multi is True
+
+
+def test_disable_env_var_short_circuits_grafana(monkeypatch):
+    monkeypatch.setenv("OBS_MIGRATION_DISABLE_VARIABLE_CONTROLS", "1")
+    bm = vc.classify_grafana_variables(
+        variables=[_grafana_var()],
+        panels=[_grafana_panel_using("instance")],
+        resolver=_StubResolver(),
+        repeat_variable_names=set(),
+        data_view="metrics-*",
+    )
+    assert isinstance(bm["instance"], vc.RejectedBinding)
+    assert bm["instance"].reason == "unsupported_variable_type"
+
+
+def test_disable_env_var_short_circuits_datadog(monkeypatch):
+    monkeypatch.setenv("OBS_MIGRATION_DISABLE_VARIABLE_CONTROLS", "1")
+    bm = vc.classify_datadog_variables(
+        variables=[_StubTV(name="host", tag="host")],
+        widgets=[_datadog_widget_filter("host", "$host")],
+        field_map=_StubFieldMap(),
+        data_view="metrics-*",
+    )
+    assert bm["host"].reason == "unsupported_variable_type"

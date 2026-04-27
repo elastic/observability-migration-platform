@@ -4,6 +4,7 @@ See docs/roadmap/2026-04-27-kibana-variable-controls-design.md for the design.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
@@ -110,6 +111,13 @@ ESQL_RESERVED_WORDS: Final[frozenset[str]] = frozenset({
     "join", "grok", "dissect",
 })
 
+_DISABLE_ENV_VAR = "OBS_MIGRATION_DISABLE_VARIABLE_CONTROLS"
+
+
+def _is_disabled() -> bool:
+    return os.environ.get(_DISABLE_ENV_VAR) == "1"
+
+
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LABEL_VALUES_RE = re.compile(r"label_values\s*\(\s*([^,]+?)\s*,\s*([A-Za-z0-9_]+)\s*\)")
 _REGEX_META_RE = re.compile(r"[][(){}|^$+*?\\]")
@@ -178,6 +186,12 @@ def classify_grafana_variables(
     panel_data_view=None,
 ) -> VariableBindingMap:
     """Classify Grafana template variables for ES|QL parameter eligibility."""
+    if _is_disabled():
+        return {
+            v["name"]: RejectedBinding(reason="unsupported_variable_type")
+            for v in variables
+            if v.get("name")
+        }
     binding_map: VariableBindingMap = {}
     for var in variables:
         name = var.get("name", "")
@@ -275,6 +289,12 @@ def classify_datadog_variables(
     field_map,
     data_view: str,
 ) -> VariableBindingMap:
+    if _is_disabled():
+        return {
+            getattr(v, "name", ""): RejectedBinding(reason="unsupported_variable_type")
+            for v in variables
+            if getattr(v, "name", "")
+        }
     binding_map: VariableBindingMap = {}
     for tv in variables:
         name = getattr(tv, "name", "")
