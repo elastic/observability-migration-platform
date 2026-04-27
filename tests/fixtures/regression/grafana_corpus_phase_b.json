@@ -1,0 +1,52 @@
+{
+  "Diverse Panel Types Test": {
+    "accepted": [
+      "instance"
+    ],
+    "rejected": [
+      "datasource"
+    ],
+    "verifier_downgraded": []
+  },
+  "Home - Migration Test Lab": {
+    "accepted": [],
+    "rejected": [
+      "DS_PROMETHEUS"
+    ],
+    "verifier_downgraded": []
+  },
+  "Kubernetes / Views / Global": {
+    "accepted": [],
+    "rejected": [
+      "datasource",
+      "job",
+      "resolution"
+    ],
+    "verifier_downgraded": [
+      "cluster"
+    ]
+  },
+  "Node Exporter Full": {
+    "accepted": [
+      "job",
+      "node"
+    ],
+    "rejected": [
+      "datasource",
+      "diskdevices"
+    ],
+    "verifier_downgraded": []
+  },
+  "Prometheus 2.0 (by FUSAKLA)": {
+    "accepted": [],
+    "rejected": [
+      "aggregation_interval",
+      "datasource",
+      "influx_datasource",
+      "scrape_interval"
+    ],
+    "verifier_downgraded": [
+      "instance"
+    ]
+  }
+}
