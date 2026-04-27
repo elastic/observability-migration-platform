@@ -66,6 +66,7 @@ class MigrationResult:
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
     variable_bindings: dict = field(default_factory=dict)  # {dashboard_title: {var_name: AcceptedBinding | RejectedBinding}}
     panel_parameterizations: dict = field(default_factory=dict)  # {dashboard_title: {"?varname": count}}
+    version_floor_reason: str = ""  # populated when a multi-value binding raises the per-dashboard Kibana floor
 
 
 @dataclass
@@ -381,7 +382,12 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def _serialize_variables_block(per_dashboard_bindings, per_dashboard_param_counts, dashboard_name):
+def _serialize_variables_block(
+    per_dashboard_bindings,
+    per_dashboard_param_counts,
+    dashboard_name,
+    version_floor_reason="",
+):
     """Render the per-dashboard `variables` and `panel_parameterizations` blocks for the report.
 
     Phase B keeps `accepted_fields` / `accepted_functions` / `accepted_intervals` empty;
@@ -411,7 +417,7 @@ def _serialize_variables_block(per_dashboard_bindings, per_dashboard_param_count
         if isinstance(binding, RejectedBinding)
         and binding.reason.startswith("verifier_failed_")
     ]
-    return {
+    block = {
         "variables": {
             "accepted": accepted,
             "accepted_fields": [],
@@ -424,6 +430,9 @@ def _serialize_variables_block(per_dashboard_bindings, per_dashboard_param_count
             (per_dashboard_param_counts or {}).get(dashboard_name, {}) or {}
         ),
     }
+    if version_floor_reason:
+        block["version_floor_reason"] = version_floor_reason
+    return block
 
 
 def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None):
@@ -534,6 +543,7 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
                 aggregated_variable_bindings,
                 aggregated_panel_parameterizations,
                 r.dashboard_title,
+                version_floor_reason=getattr(r, "version_floor_reason", "") or "",
             )
         )
         report["dashboards"].append(d)

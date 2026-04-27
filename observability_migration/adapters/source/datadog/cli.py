@@ -225,12 +225,33 @@ def _run_dashboard_pipeline(
             ]
             _print_preflight_summary(preflight_result)
 
+        binding_map = _build_datadog_binding_map(dashboard, field_map)
+
         panel_results: list[TranslationResult] = []
         for widget in dashboard.widgets:
-            panel_results.append(_translate_widget(widget, field_map, args))
+            panel_results.append(
+                _translate_widget(widget, field_map, args, binding_map=binding_map)
+            )
             if widget.children:
                 for child in widget.children:
-                    panel_results.append(_translate_widget(child, field_map, args))
+                    panel_results.append(
+                        _translate_widget(child, field_map, args, binding_map=binding_map)
+                    )
+
+        post_verifier = _verify_and_walk_back_datadog(
+            dashboard=dashboard,
+            field_map=field_map,
+            args=args,
+            binding_map=binding_map,
+            panel_results=panel_results,
+            data_view=field_map.metric_index,
+        )
+        _populate_dashboard_variable_bindings(
+            dashboard_result=dashboard_result,
+            dashboard=dashboard,
+            post_verifier=post_verifier,
+            panel_results=panel_results,
+        )
 
         dashboard_result.panel_results = panel_results
         dashboard_yaml = generate_dashboard_yaml(
@@ -241,6 +262,7 @@ def _run_dashboard_pipeline(
             logs_dataset_filter=field_map.logs_dataset_filter,
             logs_index=field_map.logs_index,
             field_map=field_map,
+            binding_map=post_verifier,
         )
 
         stem = _allocate_yaml_stem(
@@ -383,10 +405,164 @@ def _translate_widget(
     widget: NormalizedWidget,
     field_map: Any,
     args: argparse.Namespace,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> TranslationResult:
     """Plan and translate a single widget."""
     plan = plan_widget(widget)
-    return translate_widget(widget, plan, field_map)
+    return translate_widget(widget, plan, field_map, binding_map=binding_map)
+
+
+def _flatten_datadog_widgets(dashboard: Any) -> list[dict[str, Any]]:
+    """Return raw-dict widgets for the classifier (group children flattened)."""
+    raws: list[dict[str, Any]] = []
+    for widget in dashboard.widgets:
+        raw = getattr(widget, "raw_definition", None) or {}
+        if raw:
+            raws.append(dict(raw))
+        for child in getattr(widget, "children", []) or []:
+            child_raw = getattr(child, "raw_definition", None) or {}
+            if child_raw:
+                raws.append(dict(child_raw))
+    return raws
+
+
+def _build_datadog_binding_map(dashboard: Any, field_map: FieldMapProfile) -> dict[str, Any]:
+    """Run the Datadog template-variable feasibility classifier."""
+    from observability_migration.core.variable_classifier import (
+        classify_datadog_variables,
+    )
+
+    return classify_datadog_variables(
+        variables=list(getattr(dashboard, "template_variables", []) or []),
+        widgets=_flatten_datadog_widgets(dashboard),
+        field_map=field_map,
+        data_view=field_map.metric_index,
+    )
+
+
+def _datadog_widget_var_refs(widget: NormalizedWidget) -> set[str]:
+    """Return the set of Datadog template-variable names referenced by a widget."""
+    import re as _re
+
+    pattern = _re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+    out: set[str] = set()
+    for query in getattr(widget, "queries", []) or []:
+        raw = getattr(query, "raw_query", "") or ""
+        for match in pattern.finditer(raw):
+            out.add(match.group(1))
+    return out
+
+
+def _verify_and_walk_back_datadog(
+    *,
+    dashboard: Any,
+    field_map: FieldMapProfile,
+    args: argparse.Namespace,
+    binding_map: dict[str, Any],
+    panel_results: list[TranslationResult],
+    data_view: str,
+) -> dict[str, Any]:
+    """Run the post-translation verifier and re-translate any walked-back widgets."""
+    from observability_migration.core.variable_classifier import (
+        AcceptedBinding,
+        RejectedBinding,
+    )
+    from observability_migration.core.variable_control_verifier import (
+        PanelTranslationRecord,
+        verify_bindings,
+    )
+
+    if not binding_map:
+        return binding_map
+
+    flattened: list[NormalizedWidget] = []
+    for widget in dashboard.widgets:
+        flattened.append(widget)
+        for child in getattr(widget, "children", []) or []:
+            flattened.append(child)
+
+    records: list[PanelTranslationRecord] = []
+    by_widget_id: dict[str, NormalizedWidget] = {w.id: w for w in flattened}
+    for result in panel_results:
+        widget = by_widget_id.get(result.widget_id)
+        refs: set[str] = set()
+        if widget is not None:
+            refs = _datadog_widget_var_refs(widget)
+        records.append(
+            PanelTranslationRecord(
+                panel_id=str(result.title or result.widget_id or "panel"),
+                compiled_esql=str(result.esql_query or ""),
+                source_var_refs=refs,
+                data_view=str(data_view or ""),
+            )
+        )
+
+    post_verifier = verify_bindings(records, binding_map)
+    if post_verifier == binding_map:
+        return post_verifier
+
+    downgraded_names = {
+        name for name, binding in post_verifier.items()
+        if isinstance(binding, RejectedBinding)
+        and isinstance(binding_map.get(name), AcceptedBinding)
+    }
+    if not downgraded_names:
+        return post_verifier
+
+    for idx, result in enumerate(panel_results):
+        widget = by_widget_id.get(result.widget_id)
+        if widget is None:
+            continue
+        if not (_datadog_widget_var_refs(widget) & downgraded_names):
+            continue
+        new_result = _translate_widget(
+            widget, field_map, args, binding_map=post_verifier
+        )
+        panel_results[idx] = new_result
+
+    return post_verifier
+
+
+def _populate_dashboard_variable_bindings(
+    *,
+    dashboard_result: DashboardResult,
+    dashboard: Any,
+    post_verifier: dict[str, Any],
+    panel_results: list[TranslationResult],
+) -> None:
+    """Populate ``DashboardResult`` variable-control reporting fields."""
+    import re as _re
+
+    from observability_migration.core.variable_classifier import AcceptedBinding
+
+    if not post_verifier:
+        return
+
+    title = dashboard.title
+    dashboard_result.variable_bindings = {title: dict(post_verifier)}
+
+    accepted_names = [
+        name for name, binding in post_verifier.items()
+        if isinstance(binding, AcceptedBinding)
+    ]
+    param_counts: dict[str, int] = {f"?{name}": 0 for name in accepted_names}
+    for result in panel_results:
+        query_text = str(result.esql_query or "")
+        if not query_text:
+            continue
+        for var_name in accepted_names:
+            token_re = _re.compile(rf"\?{_re.escape(var_name)}\b")
+            if token_re.search(query_text):
+                param_counts[f"?{var_name}"] += 1
+    dashboard_result.panel_parameterizations = {title: param_counts}
+
+    multi_names = [
+        name for name, binding in post_verifier.items()
+        if isinstance(binding, AcceptedBinding) and binding.multi
+    ]
+    if multi_names:
+        dashboard_result.version_floor_reason = f"multi_value_binding({multi_names[0]})"
 
 
 def _extract(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -661,6 +837,7 @@ def _rewrite_dashboard_yaml(
 ) -> None:
     if not result.yaml_path:
         return
+    binding_map = (result.variable_bindings or {}).get(result.dashboard_title)
     yaml_str = generate_dashboard_yaml(
         dashboard,
         result.panel_results,
@@ -669,6 +846,7 @@ def _rewrite_dashboard_yaml(
         logs_dataset_filter=field_map.logs_dataset_filter,
         logs_index=field_map.logs_index,
         field_map=field_map,
+        binding_map=binding_map,
     )
     Path(result.yaml_path).write_text(yaml_str, encoding="utf-8")
 

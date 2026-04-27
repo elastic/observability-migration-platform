@@ -305,12 +305,22 @@ def save_detailed_report(
     verification_payload: dict[str, Any] | None = None,
 ) -> None:
     """Save a detailed JSON report."""
+    from observability_migration.core.reporting.report import _serialize_variables_block
+
     report: dict[str, Any] = {
         "tool": "datadog-to-kibana-migration",
         "version": "0.1.0",
         "dashboards": [],
         "summary": {},
     }
+
+    aggregated_variable_bindings: dict[str, Any] = {}
+    aggregated_panel_parameterizations: dict[str, Any] = {}
+    for dr in results:
+        aggregated_variable_bindings.update(getattr(dr, "variable_bindings", {}) or {})
+        aggregated_panel_parameterizations.update(
+            getattr(dr, "panel_parameterizations", {}) or {}
+        )
     if validation_summary or validation_records:
         report["validation"] = {
             "summary": validation_summary or {},
@@ -424,6 +434,14 @@ def save_detailed_report(
             }
             dashboard_entry["panels"].append(panel_entry)
 
+        dashboard_entry.update(
+            _serialize_variables_block(
+                aggregated_variable_bindings,
+                aggregated_panel_parameterizations,
+                dr.dashboard_title,
+                version_floor_reason=getattr(dr, "version_floor_reason", "") or "",
+            )
+        )
         report["dashboards"].append(dashboard_entry)
 
     report["summary"] = {

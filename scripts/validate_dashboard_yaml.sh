@@ -47,7 +47,7 @@ if [[ ! -e "${INPUT_PATH}" ]]; then
 fi
 
 KB_DASHBOARD_LINT_SOURCE="${KB_DASHBOARD_LINT_SOURCE:-kb-dashboard-lint@latest}"
-DASHBOARD_LINT_WARNING_ALLOWLIST="${DASHBOARD_LINT_WARNING_ALLOWLIST:-esql-sql-syntax,dashboard-dataset-filter,panel-min-width,narrow-xy-chart-side-legend,esql-missing-sort-after-bucket,panel-height-for-content,gauge-goal-without-max,esql-field-escaping}"
+DASHBOARD_LINT_WARNING_ALLOWLIST="${DASHBOARD_LINT_WARNING_ALLOWLIST:-esql-sql-syntax,dashboard-dataset-filter,panel-min-width,narrow-xy-chart-side-legend,esql-missing-sort-after-bucket,panel-height-for-content,gauge-goal-without-max,esql-field-escaping,esql-ts-metrics-min-version}"
 
 shopt -s nullglob
 if [[ -d "${INPUT_PATH}" ]]; then

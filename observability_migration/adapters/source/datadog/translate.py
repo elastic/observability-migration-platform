@@ -139,6 +139,7 @@ class _TranslationExecutionContext:
     output: Any = None
     metric_queries: list[WidgetQuery] = field(default_factory=list)
     trace: list[dict[str, str]] = field(default_factory=list)
+    binding_map: Any = None
 
     def __post_init__(self):
         self.metric_queries = [q for q in self.widget.queries if q.metric_query]
@@ -149,8 +150,16 @@ def translate_widget(
     widget: NormalizedWidget,
     plan: PanelPlan,
     field_map: FieldMapProfile,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> TranslationResult:
-    """Translate a planned widget into an ES|QL query and panel config."""
+    """Translate a planned widget into an ES|QL query and panel config.
+
+    When ``binding_map`` is supplied, accepted bindings rewrite Datadog tag
+    filters that reference template variables (``host:$host``) into
+    parameterized ES|QL clauses (``host.name == ?host``) instead of broadening
+    them to a wildcard LIKE.
+    """
 
     query_language = (
         "datadog_mixed"
@@ -213,7 +222,9 @@ def translate_widget(
                 use_kql_bridge=(plan.backend == "esql_with_kql"),
             )
         elif widget.has_metric_queries:
-            esql = _translate_metric_widget(widget, plan, field_map, result)
+            esql = _translate_metric_widget(
+                widget, plan, field_map, result, binding_map=binding_map
+            )
         else:
             result.status = "not_feasible"
             result.warnings.append("no translatable queries")
@@ -244,6 +255,8 @@ def _translate_metric_widget(
     plan: PanelPlan,
     field_map: FieldMapProfile,
     result: TranslationResult,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> str:
     """Translate metric queries for a widget through the registry."""
     context = _TranslationExecutionContext(
@@ -251,6 +264,7 @@ def _translate_metric_widget(
         plan=plan,
         field_map=field_map,
         result=result,
+        binding_map=binding_map,
     )
     METRIC_TRANSLATORS.apply(
         context,
@@ -277,6 +291,7 @@ def metric_single_query_rule(context: _TranslationExecutionContext) -> str | Non
         context.plan,
         context.field_map,
         context.result,
+        binding_map=context.binding_map,
     )
     return "translated single metric query"
 
@@ -297,6 +312,7 @@ def metric_formula_rule(context: _TranslationExecutionContext) -> str | None:
         context.plan,
         context.field_map,
         context.result,
+        binding_map=context.binding_map,
     )
     return "translated metric formula pipeline"
 
@@ -307,11 +323,15 @@ def _translate_single_metric(
     plan: PanelPlan,
     field_map: FieldMapProfile,
     result: TranslationResult,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> str:
     if widget.widget_type == "change":
-        return _build_change_widget_esql(wq, widget, plan, field_map, result)
+        return _build_change_widget_esql(
+            wq, widget, plan, field_map, result, binding_map=binding_map
+        )
 
-    spec = _build_metric_query_spec(wq, field_map, result)
+    spec = _build_metric_query_spec(wq, field_map, result, binding_map=binding_map)
     top_config = _extract_top_function_config(wq.metric_query)
     is_timeseries = plan.kibana_type == "xy"
     is_heatmap = plan.kibana_type == "heatmap"
@@ -404,8 +424,10 @@ def _build_change_widget_esql(
     plan: PanelPlan,
     field_map: FieldMapProfile,
     result: TranslationResult,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> str:
-    spec = _build_metric_query_spec(wq, field_map, result)
+    spec = _build_metric_query_spec(wq, field_map, result, binding_map=binding_map)
     request = _extract_change_widget_request(widget)
     window_seconds = _change_widget_window_seconds(widget)
     if window_seconds <= 0:
@@ -428,7 +450,9 @@ def _build_change_widget_esql(
 
     where_clauses = []
     for scope_item in spec.mq.scope:
-        clause = _metric_scope_to_esql(scope_item, field_map, context="metric")
+        clause = _metric_scope_to_esql(
+            scope_item, field_map, context="metric", binding_map=binding_map
+        )
         if clause:
             where_clauses.append(clause)
     where_clauses.append(f"@timestamp >= NOW() - {total_span}")
@@ -474,8 +498,13 @@ def _translate_formula_metric_widget(
     plan: PanelPlan,
     field_map: FieldMapProfile,
     result: TranslationResult,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> str:
-    specs = [_build_metric_query_spec(q, field_map, result) for q in metric_queries]
+    specs = [
+        _build_metric_query_spec(q, field_map, result, binding_map=binding_map)
+        for q in metric_queries
+    ]
     spec_map = {spec.query_name: spec for spec in specs}
     formulas = _extract_formula_specs(widget, specs, plan)
     special_query = _try_translate_formula_reducer(formulas, spec_map, plan)
@@ -717,6 +746,8 @@ def _build_metric_query_spec(
     wq: WidgetQuery,
     field_map: FieldMapProfile,
     result: TranslationResult,
+    *,
+    binding_map: dict[str, Any] | None = None,
 ) -> _MetricQuerySpec:
     mq = wq.metric_query
     assert mq is not None
@@ -761,7 +792,9 @@ def _build_metric_query_spec(
 
     where_clauses = [TIME_FILTER]
     for filt in mq.scope:
-        clause = _metric_scope_to_esql(filt, field_map, context="metric")
+        clause = _metric_scope_to_esql(
+            filt, field_map, context="metric", binding_map=binding_map
+        )
         if clause:
             where_clauses.append(clause)
         if isinstance(filt, TagFilter):
@@ -1153,10 +1186,18 @@ def _formula_ast_to_esql(
     raise ValueError(f"unsupported formula node: {type(node).__name__}")
 
 
-def _metric_scope_to_esql(scope_item: Any, field_map: FieldMapProfile, context: str = "") -> str:
+def _metric_scope_to_esql(
+    scope_item: Any,
+    field_map: FieldMapProfile,
+    context: str = "",
+    *,
+    binding_map: dict[str, Any] | None = None,
+) -> str:
     if isinstance(scope_item, ScopeBoolOp):
         clauses = [
-            _metric_scope_to_esql(child, field_map, context=context)
+            _metric_scope_to_esql(
+                child, field_map, context=context, binding_map=binding_map
+            )
             for child in scope_item.children
         ]
         clauses = [clause for clause in clauses if clause]
@@ -1164,7 +1205,9 @@ def _metric_scope_to_esql(scope_item: Any, field_map: FieldMapProfile, context: 
             return ""
         joiner = f" {scope_item.op} "
         return "(" + joiner.join(clauses) + ")"
-    return _tag_filter_to_esql(scope_item, field_map, context=context)
+    return _tag_filter_to_esql(
+        scope_item, field_map, context=context, binding_map=binding_map
+    )
 
 
 def _append_unique_warning(result: TranslationResult, message: str) -> None:

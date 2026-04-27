@@ -1561,7 +1561,7 @@ def fallback_line_panel_rule(context):
 
 
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                    llm_endpoint="", llm_model="", llm_api_key=""):
+                    llm_endpoint="", llm_model="", llm_api_key="", *, binding_map=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
     rule_pack = rule_pack or RulePackConfig()
     panel_type = panel.get("type", "unknown")
@@ -1781,6 +1781,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 llm_endpoint=llm_endpoint,
                 llm_model=llm_model,
                 llm_api_key=llm_api_key,
+                binding_map=binding_map,
             )
         except Exception as exc:
             t = TranslationContext(
@@ -1791,6 +1792,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 resolver=target_resolver,
                 panel_type=panel_type,
                 clean_expr=expr,
+                binding_map=binding_map,
             )
             t.feasibility = "not_feasible"
             t.warnings.append(f"Translation crashed: {type(exc).__name__}: {exc}")
@@ -2057,6 +2059,7 @@ def _try_collapse_same_metric_targets(translations):
         summary_mode=_summary_mode_from_metadata(collapsed.metadata),
         preferred_group_labels=collapsed.metadata.get("preferred_group_labels"),
         preferred_group_labels_origin=collapsed.metadata.get("preferred_group_labels_origin"),
+        binding_map=getattr(collapsed, "binding_map", None),
     )
     if not plan or not plan.specs:
         return None
@@ -2173,6 +2176,7 @@ def _build_multi_target_series_query(translations):
             preferred_group_labels=translation.metadata.get("preferred_group_labels"),
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
+            binding_map=getattr(translation, "binding_map", None),
         )
         if pf is not None:
             translation.fragment.extra["post_filter"] = pf
@@ -4151,8 +4155,15 @@ def _translate_panel_group(
     llm_endpoint="",
     llm_model="",
     llm_api_key="",
+    binding_map=None,
+    panel_records=None,
 ):
-    """Translate a group of Grafana panels, returning (yaml_panels, panel_results)."""
+    """Translate a group of Grafana panels, returning (yaml_panels, panel_results).
+
+    When ``panel_records`` is provided, parallel ``(source_panel, yaml_panel,
+    panel_result)`` tuples are appended for each panel that produced a YAML
+    panel. The dashboard-level caller uses these to drive verifier walk-back.
+    """
     yaml_panels: list[dict] = []
     panel_results: list[PanelResult] = []
 
@@ -4171,6 +4182,7 @@ def _translate_panel_group(
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            binding_map=binding_map,
         )
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
@@ -4197,6 +4209,8 @@ def _translate_panel_group(
             _sync_visual_ir(panel_result, yaml_panel)
             yaml_panels.append(yaml_panel)
             panel_results.append(panel_result)
+            if panel_records is not None:
+                panel_records.append((panel, yaml_panel, panel_result))
 
     yaml_panels = _apply_kibana_native_layout(yaml_panels)
     for yp, pr in zip(yaml_panels, panel_results):
@@ -4207,10 +4221,15 @@ def _translate_panel_group(
 
 def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                         llm_endpoint="", llm_model="", llm_api_key="", *, binding_map=None):
-    from observability_migration.core.variable_classifier import compute_min_kibana_version
+    import re as _re
+
+    from observability_migration.core.variable_classifier import (
+        AcceptedBinding,
+        classify_grafana_variables,
+        compute_min_kibana_version,
+    )
 
     rule_pack = rule_pack or RulePackConfig()
-    minimum_kibana_version = compute_min_kibana_version(binding_map or {})
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
     description = dashboard.get("description", "") or f"Migrated from Grafana ({uid})"
@@ -4238,8 +4257,20 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)
+
+    if binding_map is None:
+        binding_map = classify_grafana_variables(
+            variables=variables or [],
+            panels=[p for p in all_panels if p.get("type") != "row"],
+            resolver=resolver,
+            repeat_variable_names=repeat_variable_names,
+            data_view=datasource_index,
+            panel_data_view=None,
+        )
+
     top_level_panels: list[dict] = []
     dashboard_y_cursor = 0
+    panel_records: list[tuple[dict, dict, PanelResult]] = []
 
     for panel in all_panels:
         if panel.get("type") == "row":
@@ -4277,6 +4308,8 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            binding_map=binding_map,
+            panel_records=panel_records,
         )
         result.yaml_panel_results.extend(panel_results)
 
@@ -4330,6 +4363,19 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             top_level_panels.extend(translated)
         dashboard_y_cursor += group_height
 
+    post_verifier = _verify_and_walk_back(
+        binding_map=binding_map,
+        panel_records=panel_records,
+        result=result,
+        datasource_index=datasource_index,
+        esql_index=esql_index,
+        rule_pack=rule_pack,
+        resolver=resolver,
+        llm_endpoint=llm_endpoint,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+    )
+
     flat_panels: list[dict] = []
     for panel in top_level_panels:
         if "section" in panel:
@@ -4348,8 +4394,40 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
-        binding_map=binding_map,
+        binding_map=post_verifier,
     )
+
+    minimum_kibana_version = compute_min_kibana_version(post_verifier or {})
+
+    if post_verifier:
+        result.variable_bindings = {title: dict(post_verifier)}
+        param_counts: dict[str, int] = {}
+        accepted_names = [
+            name for name, binding in post_verifier.items()
+            if isinstance(binding, AcceptedBinding)
+        ]
+        for _src, yaml_panel, _pr in panel_records:
+            esql_block = yaml_panel.get("esql") if isinstance(yaml_panel, dict) else None
+            query_text = ""
+            if isinstance(esql_block, dict):
+                query_text = str(esql_block.get("query") or "")
+            if not query_text:
+                continue
+            for var_name in accepted_names:
+                token_re = _re.compile(rf"\?{_re.escape(var_name)}\b")
+                token_key = f"?{var_name}"
+                if token_re.search(query_text):
+                    param_counts[token_key] = param_counts.get(token_key, 0) + 1
+        for var_name in accepted_names:
+            param_counts.setdefault(f"?{var_name}", 0)
+        result.panel_parameterizations = {title: param_counts}
+
+        multi_names = [
+            name for name, binding in post_verifier.items()
+            if isinstance(binding, AcceptedBinding) and binding.multi
+        ]
+        if multi_names:
+            result.version_floor_reason = f"multi_value_binding({multi_names[0]})"
 
     yaml_doc = {
         "dashboards": [
@@ -4390,6 +4468,114 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         yaml.dump(yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
 
     return result, output_path
+
+
+def _grafana_panel_var_refs(panel):
+    """Return the set of Grafana template variable names referenced by a panel."""
+    import re as _re
+
+    out: set[str] = set()
+    if not isinstance(panel, dict):
+        return out
+    pattern = _re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?|\[\[([A-Za-z_][A-Za-z0-9_]*)\]\]")
+    for target in panel.get("targets", []) or []:
+        expr = str(target.get("expr") or "")
+        if not expr:
+            continue
+        for match in pattern.finditer(expr):
+            name = match.group(1) or match.group(2)
+            if name:
+                out.add(name)
+    return out
+
+
+def _verify_and_walk_back(
+    *,
+    binding_map,
+    panel_records,
+    result,
+    datasource_index,
+    esql_index,
+    rule_pack,
+    resolver,
+    llm_endpoint,
+    llm_model,
+    llm_api_key,
+):
+    """Run the post-translation verifier and re-translate any walked-back panels.
+
+    Returns the (possibly downgraded) ``post_verifier`` binding map. When the
+    verifier downgrades a previously accepted variable, panels that referenced
+    that variable are re-translated with the downgraded map so their YAML no
+    longer carries an unresolved ``?varname`` token.
+    """
+    from observability_migration.core.variable_classifier import (
+        AcceptedBinding,
+        RejectedBinding,
+    )
+    from observability_migration.core.variable_control_verifier import (
+        PanelTranslationRecord,
+        verify_bindings,
+    )
+
+    if not binding_map:
+        return binding_map
+
+    records: list[PanelTranslationRecord] = []
+    for source_panel, yaml_panel, panel_result in panel_records:
+        compiled = panel_result.esql_query or ""
+        if not compiled and isinstance(yaml_panel, dict):
+            esql_block = yaml_panel.get("esql")
+            if isinstance(esql_block, dict):
+                compiled = str(esql_block.get("query") or "")
+        records.append(
+            PanelTranslationRecord(
+                panel_id=str(panel_result.title or panel_result.source_panel_id or "panel"),
+                compiled_esql=compiled,
+                source_var_refs=_grafana_panel_var_refs(source_panel),
+                data_view=str(datasource_index or ""),
+            )
+        )
+
+    post_verifier = verify_bindings(records, binding_map)
+    if post_verifier == binding_map:
+        return post_verifier
+
+    downgraded_names = {
+        name for name, binding in post_verifier.items()
+        if isinstance(binding, RejectedBinding)
+        and isinstance(binding_map.get(name), AcceptedBinding)
+    }
+    if not downgraded_names:
+        return post_verifier
+
+    for source_panel, yaml_panel, panel_result in panel_records:
+        if not _grafana_panel_var_refs(source_panel) & downgraded_names:
+            continue
+        new_yaml_panel, new_panel_result = translate_panel(
+            source_panel,
+            datasource_index=datasource_index,
+            esql_index=esql_index,
+            rule_pack=rule_pack,
+            resolver=resolver,
+            llm_endpoint=llm_endpoint,
+            llm_model=llm_model,
+            llm_api_key=llm_api_key,
+            binding_map=post_verifier,
+        )
+        if not new_yaml_panel:
+            continue
+        new_query = ""
+        if isinstance(new_yaml_panel.get("esql"), dict):
+            new_query = str(new_yaml_panel["esql"].get("query") or "")
+        if new_query and isinstance(yaml_panel.get("esql"), dict):
+            yaml_panel["esql"]["query"] = new_query
+        if new_panel_result.esql_query:
+            panel_result.esql_query = new_panel_result.esql_query
+        if new_panel_result.reasons:
+            panel_result.reasons = list(new_panel_result.reasons)
+
+    return post_verifier
 
 
 __all__ = [

@@ -213,8 +213,21 @@ class FormulaPlan:
     warnings: list = field(default_factory=list)
 
 
-def preprocess_grafana_macros(expr, rule_pack=None):
-    """Replace Grafana-specific macros with valid PromQL placeholders."""
+def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None):
+    """Replace Grafana-specific macros with valid PromQL placeholders.
+
+    When ``binding_map`` accepts a template variable, ``$var`` references inside
+    label matchers are preserved so the downstream matcher rewriter can emit a
+    parameterized clause (``field == ?var``) instead of broadening to ``.*``.
+    """
+    accepted_names: set[str] = set()
+    if binding_map:
+        from observability_migration.core.variable_classifier import AcceptedBinding
+
+        accepted_names = {
+            name for name, binding in binding_map.items()
+            if isinstance(binding, AcceptedBinding)
+        }
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
     replacements = [
         (r"\$__rate_interval", "5m"),
@@ -251,24 +264,35 @@ def preprocess_grafana_macros(expr, rule_pack=None):
         result,
     )
 
-    result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
-    result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
+    def _broaden_unless_accepted(match):
+        if match.group(3) in accepted_names:
+            return match.group(0)
+        return f'{{{match.group(1)}{match.group(2)}=~".*"{match.group(4)}}}'
+
+    result = re.sub(
+        r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
+    )
+    result = re.sub(
+        r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
+    )
     # ${var} and ${var:format} — Grafana advanced variable interpolation.
     # Must run before the bare $var substitution so the opening brace isn't
     # left as a dangling token that confuses the PromQL AST parser.
     result = re.sub(
         r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}",
-        lambda m: f"label_{m.group(1)}",
+        lambda m: f"label_{m.group(1)}" if m.group(1) not in accepted_names else m.group(0),
         result,
     )
-    # Skip substitution for pure-digit sequences ($1, $2, …) — those are
-    # PromQL/regex capture-group backreferences inside label_replace() strings,
-    # not Grafana template variables (which always start with a letter).
-    result = re.sub(
-        r"\$(\w+)",
-        lambda m: m.group(0) if (m.group(1).startswith("__") or m.group(1)[0].isdigit()) else f"label_{m.group(1)}",
-        result,
-    )
+
+    def _label_unless_accepted(match):
+        name = match.group(1)
+        if name.startswith("__") or name[0].isdigit():
+            return match.group(0)
+        if name in accepted_names:
+            return match.group(0)
+        return f"label_{name}"
+
+    result = re.sub(r"\$(\w+)", _label_unless_accepted, result)
     return result
 
 
@@ -1550,16 +1574,37 @@ def _build_esql(context):
     return "\n".join(parts)
 
 
-def _frag_filters(frag, resolver):
-    """Build ES|QL WHERE clauses from fragment matchers using the resolver."""
-    filters = _selector_filters(frag.matchers, resolver)
-    had_vars = any(
-        bool(re.search(r"\$\w", m.get("value", "")))
-        or (m.get("op") == "=~" and m.get("value", "").strip() == ".*")
-        or m.get("value", "").startswith("label_")
-        or m.get("value", "").startswith("^label_")
-        for m in frag.matchers
-    )
+def _frag_filters(frag, resolver, *, binding_map=None):
+    """Build ES|QL WHERE clauses from fragment matchers using the resolver.
+
+    When ``binding_map`` is provided, single-variable matchers whose variable is
+    accepted are rewritten into parameterized clauses (``field == ?var``) by
+    ``_matcher_to_esql``. Variable references that don't resolve to an accepted
+    binding still fall through to the legacy "drop the matcher" behavior, and
+    ``had_vars`` reflects only those legacy-path drops so the caller can warn.
+    """
+    filters = _selector_filters(frag.matchers, resolver, binding_map=binding_map)
+    had_vars = False
+    for matcher in frag.matchers:
+        value = matcher.get("value", "")
+        is_var = (
+            bool(re.search(r"\$\w", value))
+            or (matcher.get("op") == "=~" and value.strip() == ".*")
+            or value.startswith("label_")
+            or value.startswith("^label_")
+        )
+        if not is_var:
+            continue
+        if binding_map:
+            var_name = _extract_single_var_name(value)
+            if var_name and var_name in binding_map:
+                from observability_migration.core.variable_classifier import (
+                    AcceptedBinding,
+                )
+
+                if isinstance(binding_map[var_name], AcceptedBinding):
+                    continue
+        had_vars = True
     return filters, had_vars
 
 
@@ -1785,11 +1830,13 @@ def _build_measure_spec(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    *,
+    binding_map=None,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
 
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=binding_map)
     warnings = []
     if had_vars:
         warnings.append("Dropped variable-driven label filters during migration")
@@ -1961,7 +2008,7 @@ def _build_measure_spec(
                 start_matchers = frag.binary_rhs.matchers
         if not start_metric:
             return None
-        filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
+        filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver, binding_map=binding_map)
         warnings = []
         if had_vars:
             warnings.append("Dropped variable-driven label filters during migration")
@@ -2324,6 +2371,8 @@ def _build_formula_plan(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    *,
+    binding_map=None,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
@@ -2480,6 +2529,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            binding_map=binding_map,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -2491,6 +2541,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            binding_map=binding_map,
         )
         if not left_plan or not right_plan:
             return None
@@ -2535,6 +2586,7 @@ def _build_formula_plan(
         allow_direct_ts_gauge=allow_direct_ts_gauge,
         preferred_group_labels_origin=preferred_group_labels_origin,
         allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        binding_map=binding_map,
     )
     if not spec:
         return None

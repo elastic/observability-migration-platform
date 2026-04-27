@@ -461,6 +461,9 @@ class DashboardResult:
     verification_summary: dict[str, int] = field(default_factory=dict)
     alert_results: list = field(default_factory=list)
     alert_summary: dict = field(default_factory=dict)
+    variable_bindings: dict = field(default_factory=dict)  # {dashboard_title: {var_name: AcceptedBinding | RejectedBinding}}
+    panel_parameterizations: dict = field(default_factory=dict)  # {dashboard_title: {"?varname": count}}
+    version_floor_reason: str = ""
 
     def recompute_counts(self) -> None:
         self.migrated = 0

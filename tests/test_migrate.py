@@ -6353,10 +6353,14 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         controls = yaml_doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
         self.assertEqual(controls[0]["label"], "Instance")
-        self.assertTrue(
-            controls[0]["field"],
-            "Field should be resolved (may be mapped from 'instance' to ES equivalent)",
-        )
+        # Phase B activation: the classifier accepts `instance` and
+        # `translate_variables` now emits a typed ES|QL control (with a
+        # precomputed options query) instead of the legacy classic-options
+        # control. The structure changed but the variable still becomes a
+        # control; the field is captured implicitly inside `query`.
+        self.assertEqual(controls[0]["type"], "esql")
+        self.assertEqual(controls[0]["variable_name"], "instance")
+        self.assertIn("FROM metrics-*", controls[0]["query"])
 
     # ------------------------------------------------------------------
     # Inventory counts
@@ -6755,7 +6759,15 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                 yaml_doc = yaml.safe_load(f)
         dash = yaml_doc["dashboards"][0]
         controls = dash.get("controls", [])
-        control_fields = [c.get("field", "") for c in controls]
+        # Phase B activation: classifier-accepted variables now produce typed
+        # ES|QL controls (with the resolved field embedded in the options
+        # query) rather than legacy classic-options controls. Inspect either
+        # the ``field`` (legacy) or the ``query`` (esql) — the resolved field
+        # name should still surface in one of them.
+        def _control_field_text(control):
+            return control.get("field") or control.get("query") or ""
+
+        control_fields = [_control_field_text(c) for c in controls]
         has_namespace = any("namespace" in f for f in control_fields)
         has_pod = any("pod" in f for f in control_fields)
         self.assertTrue(has_namespace,

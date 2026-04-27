@@ -126,6 +126,7 @@ class TranslationContext:
     target_query_contract: Any = field(default_factory=dict)
     contract_evaluation: Any = field(default_factory=dict)
     fulfillment_plan: Any = field(default_factory=dict)
+    binding_map: Any = None
 
 
 def _artifact_to_dict(value):
@@ -380,7 +381,11 @@ def _resolve_logs_message_field(rule_pack, resolver):
 
 @QUERY_PREPROCESSORS.register("grafana_macros", priority=10)
 def grafana_macro_rule(context):
-    clean_expr = preprocess_grafana_macros(context.promql_expr, context.rule_pack)
+    clean_expr = preprocess_grafana_macros(
+        context.promql_expr,
+        context.rule_pack,
+        binding_map=context.binding_map,
+    )
     context.clean_expr = clean_expr
     if clean_expr != context.promql_expr:
         return "expanded Grafana macros"
@@ -521,7 +526,7 @@ def logql_stream_family_rule(context):
     raw_labels = [m["label"] for m in frag.matchers]
     selector_fields = resolver.resolve_labels(raw_labels) if resolver else list(raw_labels)
     selector_fields = _available_fields(resolver, selector_fields)
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     message_field = _resolve_logs_message_field(rp, resolver)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven LogQL label filters during migration")
@@ -574,7 +579,7 @@ def logql_count_family_rule(context):
         return None
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven LogQL label filters during migration")
     search_expr = _parse_logql_search(frag.raw_expr)
@@ -625,7 +630,7 @@ def uptime_family_rule(context):
     if not start_metric:
         return None
 
-    filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
+    filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
     group_fields = _frag_group_labels(
@@ -691,8 +696,8 @@ def join_family_rule(context):
         left_info = _try_agg_range_info(left_frag)
         right_info = _try_agg_range_info(right_frag)
         if left_info and right_info:
-            left_filters, left_had_vars = _frag_filters(left_frag, resolver)
-            right_filters, right_had_vars = _frag_filters(right_frag, resolver)
+            left_filters, left_had_vars = _frag_filters(left_frag, resolver, binding_map=context.binding_map)
+            right_filters, right_had_vars = _frag_filters(right_frag, resolver, binding_map=context.binding_map)
             if left_had_vars or right_had_vars:
                 _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
             common_filter_exprs = [f for f in left_filters if f in right_filters]
@@ -747,7 +752,7 @@ def join_family_rule(context):
             return "translated join ratio expression"
 
     if frag.binary_op == "*":
-        filters, had_vars = _frag_filters(left_frag, resolver)
+        filters, had_vars = _frag_filters(left_frag, resolver, binding_map=context.binding_map)
         if had_vars:
             _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
         metric_name = left_frag.metric or frag.metric
@@ -837,7 +842,7 @@ def join_family_rule(context):
         return "join with on() requires both sides — marked not_feasible"
 
     if left_frag.metric:
-        filters, had_vars = _frag_filters(left_frag, resolver)
+        filters, had_vars = _frag_filters(left_frag, resolver, binding_map=context.binding_map)
         if had_vars:
             _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
         metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", left_frag.metric)
@@ -947,6 +952,7 @@ def binary_expr_family_rule(context):
         summary_mode=_summary_mode_from_metadata(context.metadata),
         preferred_group_labels=context.metadata.get("preferred_group_labels"),
         preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
+        binding_map=context.binding_map,
     )
     if not plan:
         # ``or`` between distinct metrics: translate the left operand alone.
@@ -1059,7 +1065,7 @@ def topk_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
     group_fields = _frag_group_labels(
@@ -1229,7 +1235,7 @@ def scaled_agg_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
@@ -1298,7 +1304,7 @@ def nested_agg_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
@@ -1397,7 +1403,7 @@ def range_agg_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
@@ -1492,7 +1498,7 @@ def simple_agg_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
@@ -1662,7 +1668,7 @@ def simple_metric_family_rule(context):
 
     resolver = context.resolver
     rp = context.rule_pack
-    filters, had_vars = _frag_filters(frag, resolver)
+    filters, had_vars = _frag_filters(frag, resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
@@ -2131,12 +2137,18 @@ def translate_promql_to_esql(
     llm_endpoint="",
     llm_model="",
     llm_api_key="",
+    *,
+    binding_map=None,
 ):
     """Rule-based PromQL → ES|QL translation via fragment model + pipeline.
 
     When the rule engine marks a query ``not_feasible`` and LLM config is
     provided (``llm_endpoint`` + ``llm_model``), an LLM-assisted translation
     is attempted as a last resort.
+
+    ``binding_map`` (when supplied) drives variable-control parameterization:
+    accepted bindings rewrite ``label{name="$var"}`` matchers into ``field == ?var``
+    instead of dropping the matcher with a warning.
     """
     context = TranslationContext(
         promql_expr=expr,
@@ -2151,6 +2163,7 @@ def translate_promql_to_esql(
         datasource_uid=datasource_uid,
         datasource_name=datasource_name,
         query_language=query_language,
+        binding_map=binding_map,
     )
     QUERY_PREPROCESSORS.apply(context)
     QUERY_CLASSIFIERS.apply(context, stop_when=lambda ctx, _: ctx.feasibility == "not_feasible")
