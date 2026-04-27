@@ -1,0 +1,73 @@
+name: License & SBOM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  license-and-sbom:
+    name: Locked dependency gate and CycloneDX SBOM
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-licensing \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run license compliance gate
+        run: .venv-licensing/bin/python scripts/check_licenses.py
+
+      - name: Regenerate dependency inventory and check for drift
+        run: |
+          .venv-licensing/bin/python scripts/check_licenses.py --write-report
+          if ! git diff --quiet -- docs/licenses/dependencies.md; then
+            echo "::error::docs/licenses/dependencies.md is out of date."
+            echo "Run 'UV_PROJECT_ENVIRONMENT=.venv-licensing uv sync --locked --python 3.11 --all-extras' and then '.venv-licensing/bin/python scripts/check_licenses.py --write-report' locally."
+            git --no-pager diff -- docs/licenses/dependencies.md
+            exit 1
+          fi
+
+      - name: Regenerate CycloneDX SBOM and check for drift
+        run: |
+          .venv-licensing/bin/cyclonedx-py environment \
+            --output-reproducible \
+            --pyproject pyproject.toml \
+            -o docs/licenses/sbom.cdx.json
+          if ! git diff --quiet -- docs/licenses/sbom.cdx.json; then
+            echo "::error::docs/licenses/sbom.cdx.json is out of date."
+            echo "Run 'UV_PROJECT_ENVIRONMENT=.venv-licensing uv sync --locked --python 3.11 --all-extras' and then '.venv-licensing/bin/cyclonedx-py environment --output-reproducible --pyproject pyproject.toml -o docs/licenses/sbom.cdx.json' locally."
+            git --no-pager diff --stat -- docs/licenses/sbom.cdx.json
+            exit 1
+          fi
+
+      - name: Upload CycloneDX SBOM as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: docs/licenses/sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30

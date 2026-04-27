@@ -1,0 +1,13 @@
+title = "obs-migrate gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Allow explicit placeholder values used in tests"
+regexes = [
+  '''^secret-key$''',
+]

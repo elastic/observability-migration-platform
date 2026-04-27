@@ -1,0 +1,1473 @@
+"""Rule-based PromQL to ES|QL translation pipeline.
+
+Falls back to LLM-assisted translation when the rule engine cannot handle
+an expression (requires ``--local-ai-endpoint`` and ``--local-ai-model``).
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from observability_migration.core.assets.query import QueryIR, build_query_ir
+
+from .llm_translate import attempt_llm_translation
+from .promql import (
+    AGG_FUNCTION_MAP,
+    OUTER_AGG_MAP,
+    PromQLFragment,
+    _apply_fragment_to_context,
+    _build_esql,
+    _build_formula_plan,
+    _build_log_message_filter,
+    _build_shared_measure_pipeline,
+    _build_stats_call,
+    _build_where_lines,
+    _collapse_summary_ts_query,
+    _common_matchers,
+    _format_scalar_value,
+    _frag_eval_line,
+    _frag_filters,
+    _frag_group_labels,
+    _grouping_parts,
+    _is_counter_fallback,
+    _parse_fragment,
+    _parse_logql_search,
+    _summary_mode_from_metadata,
+    classify_promql_complexity,
+    preprocess_grafana_macros,
+)
+from .rules import (
+    QUERY_CLASSIFIERS,
+    QUERY_POSTPROCESSORS,
+    QUERY_PREPROCESSORS,
+    QUERY_TRANSLATORS,
+    QUERY_VALIDATORS,
+    RulePackConfig,
+    _append_unique,
+)
+
+
+def _default_instance_field(rp):
+    return "instance" if rp.native_promql else "service.instance.id"
+
+
+@dataclass
+class TranslationContext:
+    promql_expr: str
+    data_view: str
+    index: str
+    rule_pack: RulePackConfig
+    resolver: Any = None
+    fragment: PromQLFragment | None = None
+    panel_type: str = ""
+    clean_expr: str = ""
+    metric_name: str = ""
+    inner_func: str = ""
+    range_window: str = ""
+    outer_agg: str = ""
+    group_labels: list = field(default_factory=list)
+    label_filters: list = field(default_factory=list)
+    source_type: str = ""
+    time_filter: str = ""
+    bucket_expr: str = ""
+    stats_expr: str = ""
+    esql_query: str = ""
+    parser_backend: str = ""
+    feasibility: str = "feasible"
+    confidence: float = 0.0
+    output_metric_field: str = ""
+    output_group_fields: list = field(default_factory=list)
+    translation_complete: bool = False
+    metadata: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+    trace: list = field(default_factory=list)
+    datasource_type: str = ""
+    datasource_uid: str = ""
+    datasource_name: str = ""
+    query_language: str = ""
+    query_ir: QueryIR | None = None
+
+
+def _field_is_available(resolver, field_name):
+    if not resolver or not field_name:
+        return True
+    exists = resolver.field_exists(field_name)
+    return exists is not False
+
+
+def _available_fields(resolver, field_names):
+    available = []
+    for field_name in field_names or []:
+        if field_name and _field_is_available(resolver, field_name):
+            _append_unique(available, field_name)
+    return available
+
+
+def _resolve_logs_message_field(rule_pack, resolver):
+    candidates = [
+        rule_pack.logs_message_field,
+        "body.text",
+        "event.original",
+        "log.original",
+        "message",
+    ]
+    available = _available_fields(resolver, candidates)
+    if not available:
+        return rule_pack.logs_message_field
+    if not resolver:
+        return available[0]
+
+    preferred = [
+        field_name
+        for field_name in available
+        if resolver.is_text_like_field(field_name)
+        and resolver.is_searchable_field(field_name)
+        and not resolver.has_conflicting_types(field_name)
+    ]
+    if preferred:
+        return preferred[0]
+
+    searchable = [field_name for field_name in available if resolver.is_searchable_field(field_name)]
+    if searchable:
+        return searchable[0]
+
+    conflict_free = [field_name for field_name in available if not resolver.has_conflicting_types(field_name)]
+    if conflict_free:
+        return conflict_free[0]
+
+    return available[0]
+
+
+@QUERY_PREPROCESSORS.register("grafana_macros", priority=10)
+def grafana_macro_rule(context):
+    clean_expr = preprocess_grafana_macros(context.promql_expr, context.rule_pack)
+    context.clean_expr = clean_expr
+    if clean_expr != context.promql_expr:
+        return "expanded Grafana macros"
+    return None
+
+
+@QUERY_PREPROCESSORS.register("parse_fragment", priority=20)
+def parse_fragment_rule(context):
+    """Parse the cleaned expression into a PromQLFragment."""
+    context.fragment = _parse_fragment(context.clean_expr or context.promql_expr)
+    parse_error = context.fragment.extra.get("parse_error")
+    if parse_error:
+        _append_unique(context.warnings, f"AST parse failed ({parse_error}), using regex fragment parser")
+    backend = context.fragment.extra.get("parser_backend", "unknown")
+    return f"parsed fragment family={context.fragment.family} backend={backend}"
+
+
+@QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
+def fragment_guardrails_rule(context):
+    frag = context.fragment
+    if not frag:
+        return None
+    reasons = list(frag.extra.get("not_feasible_reasons", []) or [])
+    if not reasons:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    for reason in reasons:
+        _append_unique(context.warnings, reason)
+    return "; ".join(reasons)
+
+
+@QUERY_CLASSIFIERS.register("family_classifier", priority=5)
+def family_classifier_rule(context):
+    """Use the parsed fragment family to decide feasibility before pattern-matching."""
+    frag = context.fragment
+    if not frag:
+        return None
+    families_that_bypass_patterns = {
+        "logql_count",
+        "logql_stream",
+        "join",
+        "uptime",
+        "scalar",
+        "scaled_agg",
+        "nested_agg",
+        "binary_expr",
+        "topk",
+    }
+    if frag.family in families_that_bypass_patterns:
+        nf_reasons = frag.extra.get("not_feasible_reasons") or []
+        if nf_reasons:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            for r in nf_reasons:
+                _append_unique(context.warnings, r)
+            return f"fragment family {frag.family} has not-feasible reasons: {nf_reasons}"
+        context.metadata["fragment_family"] = frag.family
+        return f"fragment family {frag.family} bypasses unsupported-pattern check"
+    return None
+
+
+@QUERY_CLASSIFIERS.register("unsupported_patterns", priority=10)
+def unsupported_pattern_rule(context):
+    if context.metadata.get("fragment_family"):
+        return None
+    expr = context.clean_expr or context.promql_expr
+    complexity, reason = classify_promql_complexity(expr, context.rule_pack)
+    if complexity == "not_feasible":
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(context.warnings, reason)
+        return reason
+    return None
+
+
+@QUERY_CLASSIFIERS.register("warning_patterns", priority=20)
+def warning_pattern_rule(context):
+    expr = context.clean_expr or context.promql_expr
+    matches = []
+    for rule in context.rule_pack.warning_patterns:
+        if re.search(rule.pattern, expr, re.IGNORECASE):
+            _append_unique(context.warnings, rule.reason)
+            matches.append(rule.reason)
+    if matches:
+        return "; ".join(matches)
+    return None
+
+
+@QUERY_TRANSLATORS.register("scalar_family", priority=1)
+def scalar_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "scalar":
+        return None
+    if frag.is_scalar:
+        context.parser_backend = "fragment"
+        context.metric_name = "constant_value"
+        context.output_metric_field = "constant_value"
+        context.esql_query = f"ROW constant_value = {frag.scalar_value}"
+        context.translation_complete = True
+        return "translated scalar constant"
+    return None
+
+
+@QUERY_TRANSLATORS.register("logql_stream_family", priority=2)
+def logql_stream_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "logql_stream":
+        return None
+    resolver = context.resolver
+    rp = context.rule_pack
+    raw_labels = [m["label"] for m in frag.matchers]
+    selector_fields = resolver.resolve_labels(raw_labels) if resolver else list(raw_labels)
+    selector_fields = _available_fields(resolver, selector_fields)
+    filters, had_vars = _frag_filters(frag, resolver)
+    message_field = _resolve_logs_message_field(rp, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven LogQL label filters during migration")
+    search_expr = _parse_logql_search(frag.raw_expr)
+    log_rule_pack = rp
+    if message_field != rp.logs_message_field:
+        log_rule_pack = RulePackConfig()
+        log_rule_pack.__dict__.update(rp.__dict__)
+        log_rule_pack.logs_message_field = message_field
+        _append_unique(
+            context.warnings,
+            f"Remapped Loki log message field to `{message_field}` based on the discovered target schema",
+        )
+    msg_filter = _build_log_message_filter(search_expr, log_rule_pack)
+    if msg_filter:
+        filters.append(msg_filter)
+    elif search_expr:
+        _append_unique(context.warnings, "Dropped variable-driven LogQL text filter during migration")
+
+    keep_fields = [rp.logs_timestamp_field]
+    for fn in selector_fields:
+        _append_unique(keep_fields, fn)
+    _append_unique(keep_fields, message_field)
+
+    context.parser_backend = "fragment"
+    context.source_type = "FROM"
+    context.index = rp.logs_index
+    context.metric_name = message_field
+    context.output_metric_field = message_field
+    context.output_group_fields = [rp.logs_timestamp_field] + selector_fields
+    context.esql_query = "\n".join(
+        [
+            f"FROM {rp.logs_index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+            f"| KEEP {', '.join(keep_fields)}",
+            f"| SORT {rp.logs_timestamp_field} DESC",
+            f"| LIMIT {int(rp.logs_limit)}",
+        ]
+    )
+    context.translation_complete = True
+    _append_unique(context.warnings, "Approximated Loki logs panel as an ES|QL datatable")
+    return "translated LogQL logs query"
+
+
+@QUERY_TRANSLATORS.register("logql_count_family", priority=3)
+def logql_count_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "logql_count":
+        return None
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven LogQL label filters during migration")
+    search_expr = _parse_logql_search(frag.raw_expr)
+    msg_filter = _build_log_message_filter(search_expr, rp)
+    if msg_filter:
+        filters.append(msg_filter)
+    elif search_expr:
+        _append_unique(context.warnings, "Dropped variable-driven LogQL text filter during migration")
+
+    context.parser_backend = "fragment"
+    context.source_type = "FROM"
+    context.index = rp.logs_index
+    context.metric_name = "log_count"
+    context.output_metric_field = "log_count"
+    context.output_group_fields = ["time_bucket"]
+    context.esql_query = "\n".join(
+        [
+            f"FROM {rp.logs_index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+            f"| STATS log_count = COUNT(*) BY {rp.from_bucket}",
+            "| SORT time_bucket ASC",
+        ]
+    )
+    context.translation_complete = True
+    _append_unique(context.warnings, "Translated LogQL count_over_time using log document counts")
+    return "translated LogQL count_over_time"
+
+
+@QUERY_TRANSLATORS.register("uptime_family", priority=4)
+def uptime_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "uptime":
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    start_metric = frag.metric
+    start_matchers = frag.matchers
+    if not start_metric and frag.binary_rhs:
+        if isinstance(frag.binary_rhs, PromQLFragment):
+            if frag.binary_rhs.family == "join" and frag.extra.get("start_metric"):
+                start_metric = frag.extra["start_metric"]
+                start_matchers = frag.extra.get("start_matchers", [])
+            elif frag.binary_rhs.metric:
+                start_metric = frag.binary_rhs.metric
+                start_matchers = frag.binary_rhs.matchers
+    if not start_metric:
+        return None
+
+    filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{start_metric}_uptime_seconds")
+
+    context.parser_backend = "fragment"
+    context.source_type = "FROM"
+    context.metric_name = start_metric
+    context.output_metric_field = result_alias
+    context.output_group_fields = group_fields
+    stats_line = f"| STATS start_time_ms = MAX({start_metric} * 1000)"
+    if group_fields:
+        stats_line += f" BY {', '.join(group_fields)}"
+    context.esql_query = "\n".join(
+        [
+            f"FROM {context.index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {start_metric} IS NOT NULL",
+            stats_line,
+            f'| EVAL {result_alias} = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())',
+            f"| KEEP {', '.join(group_fields + [result_alias]) if group_fields else result_alias}",
+        ]
+    )
+    context.translation_complete = True
+    _append_unique(context.warnings, "Approximated time() - metric as uptime from metric timestamp")
+    return "translated uptime expression"
+
+
+def _try_agg_range_info(frag):
+    if not frag.range_func:
+        return None
+    return {
+        "outer_agg": frag.outer_agg or "avg",
+        "inner_func": frag.range_func,
+        "range_window": frag.range_window or "5m",
+    }
+
+
+@QUERY_TRANSLATORS.register("join_family", priority=5)
+def join_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "join":
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    left_frag = frag.extra.get("left_frag")
+    right_frag = frag.extra.get("right_frag")
+
+    if not left_frag or not right_frag:
+        return None
+
+    join_labels = resolver.resolve_labels(frag.extra.get("join_labels", [])) if resolver else list(frag.extra.get("join_labels", []))
+
+    if frag.binary_op == "/" and left_frag.range_func and right_frag.range_func:
+        left_info = _try_agg_range_info(left_frag)
+        right_info = _try_agg_range_info(right_frag)
+        if left_info and right_info:
+            common_filters = _build_where_lines(_frag_filters(PromQLFragment(matchers=_common_matchers(left_frag.matchers, right_frag.matchers)), resolver)[0])
+            if any("$" in m["value"] for m in left_frag.matchers + right_frag.matchers):
+                _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+            result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
+            output_group = ["time_bucket"] + join_labels
+            group_by_parts = [rp.ts_bucket] + join_labels
+
+            context.parser_backend = "fragment"
+            context.source_type = "TS"
+            context.metric_name = left_frag.metric
+            context.output_metric_field = result_alias
+            context.output_group_fields = output_group
+            context.esql_query = "\n".join(
+                [
+                    f"TS {context.index}",
+                    f"| WHERE {rp.ts_time_filter}",
+                    *common_filters,
+                    "| STATS "
+                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_frag.metric, left_info['range_window'])}, "
+                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_frag.metric, right_info['range_window'])} "
+                    f"BY {', '.join(group_by_parts)}",
+                    f"| EVAL {result_alias} = numerator / denominator",
+                    f"| KEEP {', '.join(output_group + [result_alias])}",
+                    "| SORT time_bucket ASC",
+                ]
+            )
+            context.translation_complete = True
+            _append_unique(context.warnings, "Approximated PromQL join ratio as same-bucket ES|QL ratio")
+            return "translated join ratio expression"
+
+    if frag.binary_op == "*":
+        filters, had_vars = _frag_filters(left_frag, resolver)
+        if had_vars:
+            _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+        metric_name = left_frag.metric or frag.metric
+        metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", metric_name)
+        preferred_group_labels = (
+            resolver.resolve_labels(context.metadata.get("preferred_group_labels", []))
+            if resolver
+            else list(context.metadata.get("preferred_group_labels", []))
+        )
+        group_fields = list(preferred_group_labels or join_labels)
+        output_group = ["time_bucket"] + group_fields if group_fields else ["time_bucket"]
+        default_agg = rp.default_gauge_agg.upper()
+        is_counter = resolver.is_counter(metric_name) if resolver else _is_counter_fallback(metric_name, rp)
+        source = "TS" if is_counter else "FROM"
+        time_filter = rp.ts_time_filter if is_counter else rp.from_time_filter
+        bucket = rp.ts_bucket if is_counter else rp.from_bucket
+
+        context.parser_backend = "fragment"
+        context.source_type = source
+        context.metric_name = metric_name
+        context.output_metric_field = metric_alias
+        context.output_group_fields = output_group
+        by_clause = bucket + (f", {', '.join(group_fields)}" if group_fields else "")
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {metric_name} IS NOT NULL",
+                f"| STATS {metric_alias} = {default_agg}({metric_name}) BY {by_clause}",
+                "| SORT time_bucket ASC",
+            ]
+        )
+        context.translation_complete = True
+        _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
+        return "translated label enrichment join"
+
+    matching = frag.extra.get("vector_matching") or {}
+    has_explicit_on = bool(matching.get("labels"))
+    is_additive_join = frag.binary_op in {"+", "-"}
+
+    if is_additive_join and has_explicit_on and right_frag.metric and left_frag.metric != right_frag.metric:
+        context.feasibility = "not_feasible"
+        _append_unique(
+            context.warnings,
+            f"Cross-metric {frag.binary_op} on({', '.join(matching['labels'])}) join cannot be accurately represented in ES|QL",
+        )
+        return "join with on() requires both sides — marked not_feasible"
+
+    if left_frag.metric:
+        filters, had_vars = _frag_filters(left_frag, resolver)
+        if had_vars:
+            _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+        metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", left_frag.metric)
+        output_group = ["time_bucket"] + join_labels if join_labels else ["time_bucket"]
+        is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
+        source = "TS" if (is_counter or left_frag.range_func in AGG_FUNCTION_MAP) else "FROM"
+        time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+        bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+
+        if left_frag.range_func and left_frag.range_func in AGG_FUNCTION_MAP:
+            esql_inner = AGG_FUNCTION_MAP[left_frag.range_func]
+            w = left_frag.range_window or rp.default_rate_window
+            inner_expr = f"{esql_inner}({left_frag.metric}, {w})"
+        elif is_counter:
+            inner_expr = f"RATE({left_frag.metric}, {rp.default_rate_window})"
+        else:
+            inner_expr = left_frag.metric
+
+        outer = OUTER_AGG_MAP.get(left_frag.outer_agg or "avg", "AVG")
+        stats_expr = f"{outer}({inner_expr})"
+        by_clause = bucket + (f", {', '.join(join_labels)}" if join_labels else "")
+
+        context.parser_backend = "fragment"
+        context.source_type = source
+        context.metric_name = left_frag.metric
+        context.output_metric_field = metric_alias
+        context.output_group_fields = output_group
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| STATS {metric_alias} = {stats_expr} BY {by_clause}",
+                "| SORT time_bucket ASC",
+            ]
+        )
+        context.translation_complete = True
+        _append_unique(context.warnings, "Approximated join expression using left side only")
+        return "translated join (left-side fallback)"
+
+    return None
+
+
+def _build_ts_rate_over_count_distinct_pipeline(index, plan):
+    specs = list(getattr(plan, "specs", []) or [])
+    if len(specs) != 2 or "/" not in str(getattr(plan, "expr", "")):
+        return None
+    numerator = next((spec for spec in specs if spec.source_type == "TS"), None)
+    denominator = next((spec for spec in specs if spec.source_type == "FROM" and spec.stats_expr.startswith("COUNT_DISTINCT(")), None)
+    if not numerator or not denominator:
+        return None
+    if numerator.metric_name != denominator.metric_name:
+        return None
+    if numerator.group_fields or denominator.group_fields:
+        return None
+    if not numerator.bucket_expr or not denominator.bucket_expr:
+        return None
+    count_field_match = re.fullmatch(r"COUNT_DISTINCT\(([^)]+)\)", denominator.stats_expr)
+    if not count_field_match:
+        return None
+    count_field = count_field_match.group(1).strip()
+
+    result_alias = "computed_value"
+    expr = str(plan.expr)
+    expr = expr.replace(numerator.alias, "numerator")
+    expr = expr.replace(denominator.alias, "denominator")
+    parts = [
+        f"TS {index}",
+        f"| WHERE {numerator.time_filter}",
+        *_build_where_lines(numerator.filters),
+        f"| WHERE {numerator.metric_name} IS NOT NULL",
+        f"| STATS _per_series_value = {numerator.stats_expr} BY {numerator.bucket_expr}, {count_field}",
+        "| STATS numerator = SUM(_per_series_value), denominator = COUNT(*) BY time_bucket",
+        f"| EVAL {result_alias} = {expr}",
+        f"| KEEP time_bucket, {result_alias}",
+        "| SORT time_bucket ASC",
+    ]
+    return parts, ["time_bucket"], result_alias
+
+
+@QUERY_TRANSLATORS.register("binary_expr_family", priority=6)
+def binary_expr_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "binary_expr":
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    plan = _build_formula_plan(
+        frag,
+        resolver,
+        rp,
+        summary_mode=_summary_mode_from_metadata(context.metadata),
+        preferred_group_labels=context.metadata.get("preferred_group_labels"),
+    )
+    if not plan:
+        return None
+
+    if plan.specs:
+        shared = _build_shared_measure_pipeline(context.index, plan.specs)
+        if not shared:
+            mixed = _build_ts_rate_over_count_distinct_pipeline(context.index, plan)
+            if not mixed:
+                context.feasibility = "not_feasible"
+                context.confidence = 0.0
+                context.translation_complete = True
+                _append_unique(
+                    context.warnings,
+                    "PromQL arithmetic with divergent filters/groupings cannot be translated safely yet",
+                )
+                return "binary expression requires unsafe measure merge; marked not_feasible"
+            parts, output_group_fields, result_alias = mixed
+            context.source_type = "TS"
+        else:
+            parts, output_group_fields, _ = shared
+            result_alias = "computed_value"
+            parts.append(f"| EVAL {result_alias} = {plan.expr}")
+            context.source_type = plan.specs[0].source_type
+            collapsed = None
+            if _summary_mode_from_metadata(context.metadata):
+                collapsed = _collapse_summary_ts_query(parts, output_group_fields, [result_alias])
+            if collapsed is None:
+                parts.append(f"| KEEP {', '.join(output_group_fields + [result_alias])}")
+                if "time_bucket" in output_group_fields:
+                    parts.append("| SORT time_bucket ASC")
+            else:
+                output_group_fields = collapsed
+        context.output_group_fields = output_group_fields
+        _append_unique(context.warnings, "Approximated PromQL arithmetic using same-bucket ES|QL math")
+    else:
+        result_alias = "computed_value"
+        parts = [f"ROW {result_alias} = {plan.expr}"]
+        context.source_type = "ROW"
+        context.output_group_fields = []
+
+    for warning in plan.warnings:
+        _append_unique(context.warnings, warning)
+
+    context.parser_backend = "fragment"
+    context.metric_name = result_alias
+    context.output_metric_field = result_alias
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    return "translated arithmetic expression"
+
+
+@QUERY_TRANSLATORS.register("topk_family", priority=6)
+def topk_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "topk":
+        return None
+    if not frag.metric or not frag.group_labels:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    if not group_fields:
+        return None
+
+    source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
+    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+    inner_func = frag.range_func or ("rate" if _is_counter_fallback(frag.metric, rp) else "")
+    if inner_func:
+        stats_expr = _build_stats_call(
+            frag.outer_agg or "avg",
+            inner_func,
+            frag.metric,
+            frag.range_window or rp.default_rate_window,
+        )
+    else:
+        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({frag.metric})"
+    limit = int(frag.extra.get("topk_limit") or 10)
+
+    context.parser_backend = "fragment"
+    context.source_type = source
+    context.metric_name = frag.metric
+    context.output_metric_field = "value"
+    context.output_group_fields = group_fields
+    context.esql_query = "\n".join(
+        [
+            f"{source} {context.index}",
+            f"| WHERE {time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {frag.metric} IS NOT NULL",
+            f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
+            "| SORT time_bucket ASC",
+            f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
+            f"| KEEP {', '.join(group_fields + ['value'])}",
+            "| SORT value DESC",
+            f"| LIMIT {limit}",
+        ]
+    )
+    context.translation_complete = True
+    _append_unique(context.warnings, "Translated grouped topk() as latest-bucket ES|QL top N")
+    return "translated grouped topk expression"
+
+
+@QUERY_TRANSLATORS.register("scaled_agg_family", priority=6)
+def scaled_agg_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "scaled_agg":
+        return None
+    if not frag.metric or not frag.range_func:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    bucket = rp.ts_bucket
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+
+    esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
+    esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
+    eval_line, final_alias = _frag_eval_line(alias, frag)
+
+    context.parser_backend = "fragment"
+    context.source_type = "TS"
+    context.metric_name = frag.metric
+    context.output_metric_field = final_alias
+    context.output_group_fields = output_group
+    parts = [
+        f"TS {context.index}",
+        f"| WHERE {rp.ts_time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {frag.metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({frag.metric}, {frag.range_window}))"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if eval_line:
+        parts.append(eval_line)
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(parts, context.output_group_fields, [final_alias])
+    if collapsed is None:
+        if eval_line:
+            parts.append(f"| KEEP {', '.join(context.output_group_fields + [final_alias])}")
+        if "time_bucket" in context.output_group_fields:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        context.output_group_fields = collapsed
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    return "translated scaled aggregation expression"
+
+
+@QUERY_TRANSLATORS.register("nested_agg_family", priority=7)
+def nested_agg_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "nested_agg":
+        return None
+    if not frag.metric:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    inner_group = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+    if not inner_group:
+        inner_group = resolver.resolve_labels(context.metadata.get("preferred_group_labels", [])) if resolver else list(context.metadata.get("preferred_group_labels", []))
+    result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
+    esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "COUNT")
+    inner_agg_name = frag.extra.get("inner_agg", "count")
+    esql_inner_agg = OUTER_AGG_MAP.get(inner_agg_name, "COUNT")
+    inner_alias = "inner_val"
+    count_presence_filter = f"| WHERE {frag.metric} IS NOT NULL" if inner_agg_name == "count" else ""
+    metric_like_panels = {"stat", "singlestat", "gauge", "bargauge"}
+
+    if frag.outer_agg == "count" and inner_agg_name == "count" and len(inner_group) == 1:
+        count_field = inner_group[0]
+        lines = [
+            f"FROM {context.index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+        ]
+        if count_presence_filter:
+            lines.append(count_presence_filter)
+        if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
+            context.output_group_fields = []
+            lines.append(f"| STATS {result_alias} = COUNT_DISTINCT({count_field})")
+        else:
+            context.output_group_fields = ["time_bucket"]
+            lines.append(f"| STATS {result_alias} = COUNT_DISTINCT({count_field}) BY {rp.from_bucket}")
+            lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(lines)
+        _append_unique(context.warnings, f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})")
+        context.parser_backend = "fragment"
+        context.source_type = "FROM"
+        context.metric_name = result_alias
+        context.output_metric_field = result_alias
+        context.translation_complete = True
+        return "translated nested count(count()) expression"
+
+    first_stats_expr = (
+        f"{inner_alias} = {esql_inner_agg}({frag.metric})"
+        if inner_agg_name != "count"
+        else f"{inner_alias} = COUNT(*)"
+    )
+    second_stats_arg = inner_alias
+    if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
+        context.output_group_fields = []
+        summary_lines = [
+            f"FROM {context.index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+        ]
+        if count_presence_filter:
+            summary_lines.append(count_presence_filter)
+        if inner_group:
+            summary_lines.append(f"| STATS {first_stats_expr} BY {', '.join(inner_group)}")
+        else:
+            summary_lines.append(f"| STATS {first_stats_expr}")
+        summary_lines.append(f"| STATS {result_alias} = {esql_outer}({second_stats_arg})")
+        context.esql_query = "\n".join(summary_lines)
+    else:
+        context.output_group_fields = ["time_bucket"]
+        first_stats_by = (
+            f"{rp.from_bucket}, {', '.join(inner_group)}"
+            if inner_group
+            else rp.from_bucket
+        )
+        context.esql_query = "\n".join(
+            [
+                f"FROM {context.index}",
+                f"| WHERE {rp.from_time_filter}",
+                *_build_where_lines(filters),
+                *( [count_presence_filter] if count_presence_filter else [] ),
+                f"| STATS {first_stats_expr} BY {first_stats_by}",
+                f"| STATS {result_alias} = {esql_outer}({second_stats_arg}) BY time_bucket",
+                "| SORT time_bucket ASC",
+            ]
+        )
+
+    context.parser_backend = "fragment"
+    context.source_type = "FROM"
+    context.metric_name = result_alias
+    context.output_metric_field = result_alias
+    context.translation_complete = True
+    return f"translated nested {frag.outer_agg} expression"
+
+
+@QUERY_TRANSLATORS.register("range_agg_family", priority=8)
+def range_agg_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "range_agg":
+        return None
+    if not frag.metric or not frag.range_func:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    esql_inner_name = AGG_FUNCTION_MAP.get(frag.range_func)
+    if not esql_inner_name:
+        return None
+
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
+    source = "TS" if needs_ts else "FROM"
+    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+
+    inner_expr = f"{esql_inner_name}({frag.metric}, {frag.range_window})"
+    outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
+    if not outer and source == "TS" and group_fields:
+        stats_expr = f"AVG({inner_expr})"
+        _append_unique(context.warnings, f"Wrapped {frag.range_func} in AVG() to support grouped TS queries")
+    else:
+        stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
+
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    eval_line, final_alias = _frag_eval_line(alias, frag)
+
+    context.parser_backend = "fragment"
+    context.source_type = source
+    context.metric_name = frag.metric
+    context.output_metric_field = final_alias
+    context.output_group_fields = output_group
+    parts = [
+        f"{source} {context.index}",
+        f"| WHERE {time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {frag.metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {stats_expr}"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if eval_line:
+        parts.append(eval_line)
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+    if collapsed is None:
+        if eval_line:
+            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    context.output_group_fields = output_group
+    return "translated range aggregation expression"
+
+
+@QUERY_TRANSLATORS.register("simple_agg_family", priority=9)
+def simple_agg_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "simple_agg":
+        return None
+    if not frag.metric:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
+
+    if pre_agg_filter:
+        alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
+        metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
+        filter_value = _format_scalar_value(pre_agg_filter["value"])
+        lines = [
+            f"FROM {context.index}",
+            f"| WHERE {rp.from_time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {frag.metric} {pre_agg_filter['op']} {filter_value}",
+        ]
+        if metric_like and not group_fields:
+            context.output_group_fields = []
+            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})")
+        else:
+            group_by_parts = list(group_fields)
+            context.output_group_fields = list(group_fields)
+            if not metric_like:
+                group_by_parts = [rp.from_bucket, *group_by_parts]
+                context.output_group_fields = ["time_bucket", *context.output_group_fields]
+            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})"
+            stats_line = f"| STATS {alias} = {stats_expr}"
+            if group_by_parts:
+                stats_line += f" BY {', '.join(group_by_parts)}"
+            lines.append(stats_line)
+            if "time_bucket" in context.output_group_fields:
+                lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(lines)
+        context.parser_backend = "fragment"
+        context.source_type = "FROM"
+        context.metric_name = alias
+        context.output_metric_field = alias
+        frag.extra.pop("post_filter", None)
+        context.translation_complete = True
+        return "translated aggregation with pre-aggregation comparison filter"
+
+    if frag.outer_agg == "count" and is_counter:
+        alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_count")
+        metric_like = context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
+        if metric_like:
+            context.output_group_fields = []
+            by_clause = ", ".join(group_fields) if group_fields else _default_instance_field(rp)
+            context.esql_query = "\n".join(
+                [
+                    f"FROM {context.index}",
+                    f"| WHERE {rp.from_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| STATS series_present = COUNT(*) BY {by_clause}",
+                    f"| STATS {alias} = COUNT(*)",
+                ]
+            )
+        else:
+            context.output_group_fields = ["time_bucket"]
+            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp))
+            context.esql_query = "\n".join(
+                [
+                    f"FROM {context.index}",
+                    f"| WHERE {rp.from_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| STATS series_present = COUNT(*) BY {by_clause}",
+                    f"| STATS {alias} = COUNT(*) BY time_bucket",
+                    "| SORT time_bucket ASC",
+                ]
+            )
+        context.parser_backend = "fragment"
+        context.source_type = "FROM"
+        context.metric_name = alias
+        context.output_metric_field = alias
+        context.translation_complete = True
+        return "translated count of counter metric"
+
+    source = "TS" if is_counter else "FROM"
+    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+
+    if is_counter and frag.outer_agg != "count":
+        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
+    else:
+        inner_expr = frag.metric
+
+    outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
+    stats_expr = f"{outer}({inner_expr})"
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    eval_line, final_alias = _frag_eval_line(alias, frag)
+
+    context.parser_backend = "fragment"
+    context.source_type = source
+    context.metric_name = frag.metric
+    context.output_metric_field = final_alias
+    context.output_group_fields = output_group
+    parts = [
+        f"{source} {context.index}",
+        f"| WHERE {time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {frag.metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {stats_expr}"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if eval_line:
+        parts.append(eval_line)
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+    if collapsed is None:
+        if eval_line:
+            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    context.output_group_fields = output_group
+    return "translated simple aggregation expression"
+
+
+@QUERY_TRANSLATORS.register("simple_metric_family", priority=10)
+def simple_metric_family_rule(context):
+    frag = context.fragment
+    if not frag or frag.family != "simple_metric":
+        return None
+    if not frag.metric:
+        return None
+
+    if frag.metric == "ALERTS":
+        _append_unique(
+            context.warnings,
+            "ALERTS{} is a Prometheus meta-metric exposing per-alert label sets; "
+            "ES|QL aggregation collapses individual alerts into a single value",
+        )
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    source = "TS" if is_counter else "FROM"
+    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+
+    if is_counter:
+        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
+        stats_expr = f"AVG({inner_expr})"
+    else:
+        default_agg = rp.default_gauge_agg.upper()
+        stats_expr = f"{default_agg}({frag.metric})"
+        if frag.extra.get("wrapped_scalar"):
+            _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
+        else:
+            _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    eval_line, final_alias = _frag_eval_line(alias, frag)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+
+    context.parser_backend = "fragment"
+    context.source_type = source
+    context.metric_name = frag.metric
+    context.output_metric_field = final_alias
+    context.output_group_fields = output_group
+    parts = [
+        f"{source} {context.index}",
+        f"| WHERE {time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {frag.metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {stats_expr}"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if eval_line:
+        parts.append(eval_line)
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+    if collapsed is None:
+        if eval_line:
+            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    context.output_group_fields = output_group
+    return "translated simple metric expression"
+
+
+@QUERY_TRANSLATORS.register("fragment_extract", priority=20)
+def fragment_extract_rule(context):
+    if context.translation_complete:
+        return None
+    if context.metric_name:
+        return None
+    frag = context.fragment
+    if not frag:
+        return None
+    before = (
+        context.metric_name,
+        context.inner_func,
+        context.range_window,
+        context.outer_agg,
+        tuple(context.group_labels),
+        context.parser_backend,
+    )
+    _apply_fragment_to_context(frag, context)
+    after = (
+        context.metric_name,
+        context.inner_func,
+        context.range_window,
+        context.outer_agg,
+        tuple(context.group_labels),
+        context.parser_backend,
+    )
+    if before == after:
+        return None
+    return f"extracted fragment fields via {context.parser_backend or 'fragment'}"
+
+
+@QUERY_TRANSLATORS.register("scalar_outer_agg", priority=40)
+def scalar_outer_agg_rule(context):
+    if context.translation_complete:
+        return None
+    if context.inner_func in OUTER_AGG_MAP and not context.outer_agg:
+        context.outer_agg = context.inner_func
+        context.inner_func = ""
+        return f"treated {context.outer_agg} as outer aggregation"
+    return None
+
+
+@QUERY_TRANSLATORS.register("resolve_labels", priority=45)
+def resolve_labels_rule(context):
+    if context.translation_complete:
+        return None
+    if not context.resolver:
+        return None
+    original = list(context.group_labels)
+    context.group_labels = context.resolver.resolve_labels(context.group_labels)
+    if context.output_group_fields:
+        context.output_group_fields = context.resolver.resolve_labels(context.output_group_fields)
+    if original != context.group_labels:
+        return f"resolved labels {original} -> {context.group_labels}"
+    return None
+
+
+@QUERY_TRANSLATORS.register("counter_detection", priority=50)
+def counter_detection_rule(context):
+    if context.translation_complete:
+        return None
+    if not context.metric_name or not context.resolver:
+        return None
+    if not context.resolver.is_counter(context.metric_name):
+        return None
+    if context.outer_agg == "count":
+        return "kept counter metric raw for COUNT aggregation"
+    context.source_type = "TS"
+    if not context.inner_func:
+        context.inner_func = "rate"
+        context.range_window = context.range_window or context.rule_pack.default_rate_window
+        _append_unique(
+            context.warnings,
+            f"Detected counter metric; defaulting to RATE over {context.range_window}",
+        )
+        return "auto-wrapped counter metric in RATE"
+    return "forced TS source for counter metric"
+
+
+@QUERY_TRANSLATORS.register("source_type", priority=60)
+def source_type_rule(context):
+    if context.translation_complete:
+        return None
+    if context.source_type:
+        return None
+    context.source_type = "TS" if context.inner_func in AGG_FUNCTION_MAP else "FROM"
+    return f"selected {context.source_type} source"
+
+
+@QUERY_TRANSLATORS.register("time_filter", priority=70)
+def time_filter_rule(context):
+    if context.translation_complete:
+        return None
+    if context.time_filter:
+        return None
+    if context.source_type == "TS":
+        context.time_filter = context.rule_pack.ts_time_filter
+    else:
+        context.time_filter = context.rule_pack.from_time_filter
+    return f"applied time filter {context.time_filter}"
+
+
+@QUERY_TRANSLATORS.register("bucket", priority=80)
+def bucket_rule(context):
+    if context.translation_complete:
+        return None
+    if context.bucket_expr:
+        return None
+    if context.source_type == "TS":
+        context.bucket_expr = context.rule_pack.ts_bucket
+    else:
+        context.bucket_expr = context.rule_pack.from_bucket
+    return f"applied bucket {context.bucket_expr}"
+
+
+@QUERY_TRANSLATORS.register("stats_expression", priority=90)
+def stats_expression_rule(context):
+    if context.translation_complete:
+        return None
+    if not context.metric_name:
+        return None
+
+    inner_expr = context.metric_name
+    if context.inner_func in AGG_FUNCTION_MAP:
+        esql_func = AGG_FUNCTION_MAP[context.inner_func]
+        window_arg = f", {context.range_window}" if context.range_window else ""
+        inner_expr = f"{esql_func}({context.metric_name}{window_arg})"
+
+    if context.outer_agg in OUTER_AGG_MAP:
+        context.stats_expr = f"{OUTER_AGG_MAP[context.outer_agg]}({inner_expr})"
+        return f"built stats expression {context.stats_expr}"
+
+    if context.inner_func in AGG_FUNCTION_MAP:
+        context.stats_expr = inner_expr
+        return f"built stats expression {context.stats_expr}"
+
+    default_agg = context.rule_pack.default_gauge_agg.upper()
+    context.stats_expr = f"{default_agg}({context.metric_name})"
+    if context.inner_func:
+        _append_unique(
+            context.warnings,
+            f"Unmapped function {context.inner_func}; approximating with {default_agg}",
+        )
+    else:
+        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+    return f"built stats expression {context.stats_expr}"
+
+
+@QUERY_POSTPROCESSORS.register("index_rewrite", priority=10)
+def index_rewrite_rule(context):
+    original = context.index
+    for rewrite in context.rule_pack.index_rewrites:
+        if fnmatch.fnmatch(context.index, rewrite.match):
+            context.index = rewrite.replace
+            break
+    if context.index != original:
+        if context.esql_query:
+            context.esql_query = re.sub(
+                rf"^((?:FROM|TS)\s+){re.escape(original)}",
+                rf"\1{context.index}",
+                context.esql_query,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        return f"rewrote index {original} -> {context.index}"
+    return None
+
+
+@QUERY_POSTPROCESSORS.register("render_esql", priority=90)
+def render_esql_rule(context):
+    if context.translation_complete and context.esql_query:
+        return None
+    if context.feasibility == "not_feasible" or not context.metric_name or not context.stats_expr:
+        return None
+    context.esql_query = _build_esql(context)
+    return "rendered ES|QL query"
+
+
+@QUERY_POSTPROCESSORS.register("post_filter", priority=95)
+def post_filter_rule(context):
+    frag = context.fragment
+    post_filter = frag.extra.get("post_filter") if frag else None
+    if not post_filter or not context.esql_query or not context.output_metric_field:
+        return None
+    value = _format_scalar_value(post_filter["value"])
+    clause = f"| WHERE {context.output_metric_field} {post_filter['op']} {value}"
+    lines = context.esql_query.splitlines()
+    sort_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("| SORT")), None)
+    if sort_idx is None:
+        lines.append(clause)
+    else:
+        lines.insert(sort_idx, clause)
+    context.esql_query = "\n".join(lines)
+    return f"applied post-aggregation filter {post_filter['op']} {value}"
+
+
+@QUERY_VALIDATORS.register("metric_name_required", priority=10)
+def metric_name_required_rule(context):
+    if context.feasibility == "not_feasible" or context.metric_name:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    _append_unique(context.warnings, "Could not extract metric name")
+    return "missing metric name"
+
+
+@QUERY_VALIDATORS.register("time_filter_source_alignment", priority=20)
+def time_filter_source_alignment_rule(context):
+    if context.feasibility == "not_feasible":
+        return None
+    if context.source_type == "FROM" and context.time_filter and "TRANGE(" in context.time_filter:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(context.warnings, "FROM queries cannot use TRANGE()")
+        return "invalid FROM + TRANGE combination"
+    return None
+
+
+@QUERY_VALIDATORS.register("rendered_query_required", priority=30)
+def rendered_query_required_rule(context):
+    if context.feasibility == "not_feasible" or context.esql_query:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    _append_unique(context.warnings, "No ES|QL query was produced")
+    return "missing ES|QL output"
+
+
+_logger = logging.getLogger(__name__)
+
+
+def translate_promql_to_esql(
+    expr,
+    datasource_index="metrics-*",
+    esql_index=None,
+    panel_type="",
+    rule_pack=None,
+    resolver=None,
+    translation_hints=None,
+    datasource_type="",
+    datasource_uid="",
+    datasource_name="",
+    query_language="",
+    llm_endpoint="",
+    llm_model="",
+    llm_api_key="",
+):
+    """Rule-based PromQL → ES|QL translation via fragment model + pipeline.
+
+    When the rule engine marks a query ``not_feasible`` and LLM config is
+    provided (``llm_endpoint`` + ``llm_model``), an LLM-assisted translation
+    is attempted as a last resort.
+    """
+    context = TranslationContext(
+        promql_expr=expr,
+        data_view=datasource_index,
+        index=esql_index or datasource_index,
+        rule_pack=rule_pack or RulePackConfig(),
+        resolver=resolver,
+        panel_type=panel_type,
+        clean_expr=expr,
+        metadata=dict(translation_hints or {}),
+        datasource_type=datasource_type,
+        datasource_uid=datasource_uid,
+        datasource_name=datasource_name,
+        query_language=query_language,
+    )
+    QUERY_PREPROCESSORS.apply(context)
+    QUERY_CLASSIFIERS.apply(context, stop_when=lambda ctx, _: ctx.feasibility == "not_feasible")
+    if context.feasibility != "not_feasible":
+        QUERY_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.translation_complete)
+        QUERY_POSTPROCESSORS.apply(context)
+        QUERY_VALIDATORS.apply(context, stop_when=lambda ctx, _: ctx.feasibility == "not_feasible")
+
+    if context.feasibility == "not_feasible" and llm_endpoint and llm_model:
+        llm_result = attempt_llm_translation(
+            promql_expr=context.clean_expr or context.promql_expr,
+            index=context.index,
+            panel_type=panel_type,
+            endpoint=llm_endpoint,
+            model=llm_model,
+            api_key=llm_api_key,
+            extra_context={"warnings": context.warnings},
+        )
+        if llm_result and llm_result.get("esql_query"):
+            _logger.info("LLM recovered not_feasible expression: %s", expr[:80])
+            context.esql_query = llm_result["esql_query"]
+            context.metric_name = llm_result.get("metric_name") or context.metric_name or "llm_value"
+            context.output_metric_field = context.metric_name
+            context.source_type = llm_result.get("source_type") or "TS"
+            context.feasibility = "feasible"
+            context.parser_backend = "llm"
+            context.translation_complete = True
+            for w in llm_result.get("warnings") or []:
+                _append_unique(context.warnings, w)
+
+    if context.feasibility == "not_feasible":
+        context.confidence = 0.0
+    else:
+        context.confidence = 0.85 if not context.warnings else 0.6
+    context.query_ir = build_query_ir(context)
+    return context
+
+
+__all__ = [
+    "TranslationContext",
+    "binary_expr_family_rule",
+    "counter_detection_rule",
+    "fragment_extract_rule",
+    "fragment_guardrails_rule",
+    "grafana_macro_rule",
+    "index_rewrite_rule",
+    "join_family_rule",
+    "parse_fragment_rule",
+    "post_filter_rule",
+    "range_agg_family_rule",
+    "render_esql_rule",
+    "resolve_labels_rule",
+    "scaled_agg_family_rule",
+    "simple_agg_family_rule",
+    "simple_metric_family_rule",
+    "translate_promql_to_esql",
+    "uptime_family_rule",
+]

@@ -1,0 +1,123 @@
+{
+  "uid": "legacy-alerts-1",
+  "title": "Legacy Alert Examples",
+  "panels": [
+    {
+      "id": 1,
+      "title": "CPU Usage",
+      "type": "graph",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus",
+        "name": "Prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
+        }
+      ],
+      "alert": {
+        "name": "High CPU",
+        "message": "CPU above threshold",
+        "frequency": "60s",
+        "for": "5m",
+        "noDataState": "no_data",
+        "executionErrorState": "alerting",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                80
+              ]
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "A",
+                "5m",
+                "now"
+              ]
+            },
+            "reducer": {
+              "type": "avg"
+            }
+          }
+        ],
+        "notifications": [
+          {
+            "uid": "uid-slack-1"
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "CPU Normal Operating Band",
+      "type": "graph",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus",
+        "name": "Prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
+        }
+      ],
+      "alert": {
+        "name": "CPU outside normal operating band",
+        "message": "CPU is outside the expected operating range",
+        "frequency": "60s",
+        "for": "5m",
+        "noDataState": "no_data",
+        "executionErrorState": "alerting",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "outside_range",
+              "params": [
+                20,
+                80
+              ]
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "A",
+                "5m",
+                "now"
+              ]
+            },
+            "reducer": {
+              "type": "avg"
+            }
+          }
+        ],
+        "notifications": [
+          {
+            "uid": "uid-slack-1"
+          }
+        ]
+      }
+    }
+  ]
+}

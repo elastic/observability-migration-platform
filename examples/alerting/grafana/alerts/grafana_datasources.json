@@ -1,0 +1,27 @@
+[
+  {
+    "uid": "prometheus",
+    "type": "prometheus",
+    "name": "Prometheus"
+  },
+  {
+    "uid": "loki",
+    "type": "loki",
+    "name": "Loki"
+  },
+  {
+    "uid": "mimir",
+    "type": "mimir",
+    "name": "Mimir"
+  },
+  {
+    "uid": "graphite",
+    "type": "graphite",
+    "name": "Graphite"
+  },
+  {
+    "uid": "__expr__",
+    "type": "__expr__",
+    "name": "Expression"
+  }
+]

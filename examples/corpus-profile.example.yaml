@@ -1,0 +1,28 @@
+fixed_dimensions:
+  cluster: synthetic-cluster
+  namespace: default
+
+metric_kinds:
+  alertmanager_cluster_members: gauge
+  alertmanager_cluster_health_score: gauge
+  alertmanager_cluster_peers_left_total: counter
+
+metric_labels:
+  alertmanager_notifications_total:
+    - integration
+  alertmanager_alerts:
+    - status
+
+label_values:
+  integration:
+    - slack
+    - pagerduty
+    - email
+  status:
+    - firing
+    - suppressed
+    - resolved
+  quantile:
+    - "0.5"
+    - "0.9"
+    - "0.99"

@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing / Coverage
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.tox/
+
+# Environment variables
+.env
+.env.local
+
+# Serena
+.serena/
+
+# Cursor
+.cursor/
+
+# Generated migration output
+migration_output*/
+datadog_migration_output*/
+audit_output/
+examples/alerting/generated/
+blog_research_migration/
+
+# Smoke / browser audit artifacts (written alongside *_smoke.json reports)
+*_browser_audit/
+*_smoke.json
+*_smoke_report.json
+dashboard_qa/
+browser_qa/
+
+# Excluded third-party dashboards
+infra/grafana/dashboards/otel-collector-dashboard.json
+infra/grafana/dashboards/kube-state-metrics-v2.json
+infra/grafana/dashboards/loki-dashboard.json
+infra/grafana/dashboards/node-exporter-old-schema.json
+
+# Validation run artifacts
+validation/
+
+# Credentials
+serverless_creds.env
+datadog_creds.env
+grafana_creds.env
+*.creds.env
+
+docs/superpowers/

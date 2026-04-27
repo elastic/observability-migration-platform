@@ -1,0 +1,208 @@
+services:
+  # ─── DATA SOURCES ───
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks: [monitoring]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    volumes:
+      - ./loki/loki.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+    networks: [monitoring]
+    restart: unless-stopped
+
+  # ─── DATA GENERATORS ───
+  node-exporter:
+    image: prom/node-exporter:v1.9.0
+    networks: [monitoring]
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.51.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [monitoring]
+    restart: unless-stopped
+
+  avalanche:
+    image: quay.io/prometheuscommunity/avalanche:main
+    command:
+      - --gauge-metric-count=50
+      - --series-count=10
+      - --value-interval=5
+      - --series-interval=300
+      - --metric-interval=600
+    networks: [monitoring]
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    volumes:
+      - /var/log:/var/log:ro
+      - ./promtail/promtail.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    depends_on: [loki]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  # ─── OPENTELEMETRY ───
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "${LOCAL_OTLP_GRPC_PORT:-24317}:4317"   # OTLP gRPC
+      - "${LOCAL_OTLP_HTTP_PORT:-24318}:4318"   # OTLP HTTP
+      - "${LOCAL_OTEL_HEALTH_PORT:-23133}:13133" # Collector health endpoint
+      - "${LOCAL_OTEL_METRICS_PORT:-28888}:8888"   # OTel metrics
+      - "${LOCAL_OTEL_PROM_PORT:-28889}:8889"   # Prometheus exporter
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    networks: [monitoring]
+    restart: unless-stopped
+
+  telemetrygen:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.120.0
+    command:
+      - traces
+      - --otlp-endpoint=${OTLP_FORWARD_TARGET:-otel-collector:4317}
+      - --otlp-insecure
+      - --traces=50
+      - --workers=2
+      - --rate=5
+      - --duration=0
+      - --service=checkout-service
+      - --span-duration=50ms
+    depends_on: [otel-collector]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  telemetrygen-metrics:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.120.0
+    command:
+      - metrics
+      - --otlp-endpoint=${OTLP_FORWARD_TARGET:-otel-collector:4317}
+      - --otlp-insecure
+      - --metrics=20
+      - --workers=1
+      - --rate=2
+      - --duration=0
+    depends_on: [otel-collector]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  telemetrygen-logs:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.120.0
+    command:
+      - logs
+      - --otlp-endpoint=${OTLP_FORWARD_TARGET:-otel-collector:4317}
+      - --otlp-insecure
+      - --logs=10
+      - --workers=1
+      - --rate=3
+      - --duration=0
+      - --body="Application log event from service"
+    depends_on: [otel-collector]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  # ─── OPTIONAL ALLOY FRONT END ───
+  alloy:
+    profiles: ["alloy"]
+    image: grafana/alloy:v1.14.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "${LOCAL_ALLOY_UI_PORT:-12345}:12345"
+      - "${LOCAL_ALLOY_GRPC_PORT:-14317}:14317"
+      - "${LOCAL_ALLOY_HTTP_PORT:-14318}:14318"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks: [monitoring]
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [monitoring]
+    restart: unless-stopped
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.4.1
+    command:
+      - --nginx.scrape-uri=http://nginx:8080/stub_status
+    depends_on: [nginx]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  # ─── GRAFANA (SOURCE) ───
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/home.json
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "${LOCAL_GRAFANA_PORT:-13000}:3000"
+    depends_on: [prometheus, loki]
+    networks: [monitoring]
+    restart: unless-stopped
+
+  # ─── ELASTICSEARCH + KIBANA (TARGET) ───
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "${LOCAL_ES_PORT:-19200}:9200"
+    networks: [monitoring]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.3.2
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "${LOCAL_KIBANA_PORT:-15601}:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks: [monitoring]
+    restart: unless-stopped
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  alloy-data:

@@ -1,0 +1,88 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "# Migration Test Lab\nThis Grafana instance has **8+ community dashboards** with 300+ panels for testing the Grafana → Elastic migration pipeline."
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Prometheus Targets Up",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "count(up == 1)", "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{"value": null, "color": "red"}, {"value": 3, "color": "green"}] } }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Scrape Duration by Job",
+      "gridPos": { "h": 10, "w": 16, "x": 8, "y": 4 },
+      "targets": [
+        { "expr": "scrape_duration_seconds", "legendFormat": "{{job}}", "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "type": "gauge",
+      "title": "Memory Usage %",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 10 },
+      "targets": [
+        { "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100", "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100, "unit": "percent",
+          "thresholds": { "steps": [{"value": null, "color": "green"}, {"value": 70, "color": "orange"}, {"value": 90, "color": "red"}] }
+        }
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Top Metrics by Series Count",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "topk(10, count by (__name__)({__name__=~\".+\"}))", "legendFormat": "{{__name__}}", "refId": "A", "instant": true }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "type": "table",
+      "title": "Target Health Status",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "up", "format": "table", "instant": true, "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["migration-test"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Home - Migration Test Lab",
+  "uid": "migration-home"
+}

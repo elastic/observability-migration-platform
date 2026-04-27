@@ -1,0 +1,109 @@
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ROOT_README = ROOT / "README.md"
+COMMAND_CONTRACT = ROOT / "docs" / "command-contract.md"
+KIBANA_TARGET_DOC = ROOT / "docs" / "targets" / "kibana.md"
+GRAFANA_SOURCE_DOC = ROOT / "docs" / "sources" / "grafana.md"
+DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
+ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
+
+
+class CommandContractDocTests(unittest.TestCase):
+    def test_command_contract_mentions_assets_flag(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("--assets {dashboards,alerts,all}", text)
+
+    def test_command_contract_does_not_advertise_dead_unified_flags(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertNotIn("--include", text)
+        self.assertNotIn("--alert-dry-run", text)
+        self.assertNotIn("obs-migrate migrate --list-dashboards", text)
+
+    def test_command_contract_describes_legacy_alias_warning_and_dashboard_upgrade(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("always emits a deprecation warning", text)
+        self.assertIn("including explicit `--assets dashboards`", text)
+        self.assertNotIn("when no explicit asset selector is supplied", text)
+
+    def test_kibana_target_doc_uses_assets_contract_for_alert_rule_creation(self):
+        text = KIBANA_TARGET_DOC.read_text(encoding="utf-8")
+        self.assertNotIn("Primary, production path.", text)
+        self.assertIn("--assets alerts", text)
+
+    def test_command_contract_uses_split_dashboard_upload_path_for_legacy_flow(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn(
+            "--yaml-dir examples/alerting/generated/grafana/dashboards/yaml",
+            text,
+        )
+        self.assertNotIn(
+            "--yaml-dir examples/alerting/generated/grafana/yaml",
+            text,
+        )
+
+    def test_command_contract_scopes_offline_output_claims_by_asset_selection(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("`--assets dashboards` or `--assets all`", text)
+        self.assertIn("`--assets alerts`", text)
+        self.assertIn("alert artifacts", text)
+
+    def test_command_contract_describes_run_summary_as_shared_root_artifact(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("Grafana and Datadog both write a root", text)
+        self.assertIn("`run_summary.json`", text)
+        self.assertNotIn("Datadog also writes a root", text)
+
+    def test_root_readme_uses_assets_examples_and_split_dashboard_paths(self):
+        text = ROOT_README.read_text(encoding="utf-8")
+        self.assertIn("--assets all", text)
+        self.assertIn("--yaml-dir migration_output/dashboards/yaml", text)
+        self.assertIn("--output-dir migration_output/dashboards/compiled", text)
+        self.assertNotIn("--yaml-dir migration_output/yaml", text)
+        self.assertNotIn("--output-dir migration_output/compiled", text)
+
+    def test_alerting_examples_readme_uses_split_alert_artifact_paths(self):
+        text = ALERTING_EXAMPLES_README.read_text(encoding="utf-8")
+        self.assertIn(
+            "examples/alerting/generated/grafana/alerts/alert_comparison_results.json",
+            text,
+        )
+        self.assertIn(
+            "examples/alerting/generated/datadog/alerts/monitor_migration_results.json",
+            text,
+        )
+        self.assertIn(
+            "examples/alerting/generated/datadog/alerts/monitor_comparison_results.json",
+            text,
+        )
+        self.assertNotIn(
+            "examples/alerting/generated/grafana/alert_comparison_results.json",
+            text,
+        )
+        self.assertNotIn(
+            "examples/alerting/generated/datadog/monitor_migration_results.json",
+            text,
+        )
+        self.assertNotIn(
+            "because the current CLI loads dashboards before monitor extraction",
+            text,
+        )
+
+    def test_grafana_source_doc_defers_command_examples_to_canonical_contract(self):
+        text = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8")
+        self.assertIn("docs/command-contract.md", text)
+        self.assertIn("## Command Coverage", text)
+        self.assertIn("--assets {dashboards,alerts,all}", text)
+        self.assertNotIn("Inventory (representative)", text)
+
+    def test_datadog_source_doc_defers_command_examples_to_canonical_contract(self):
+        text = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")
+        self.assertIn("docs/command-contract.md", text)
+        self.assertIn("## Command Coverage", text)
+        self.assertIn("--assets {dashboards,alerts,all}", text)
+        self.assertNotIn("Inventory (representative)", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

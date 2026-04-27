@@ -1,0 +1,355 @@
+"""Source-agnostic telemetry schema and synthetic data generation."""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime
+import itertools
+import json
+import math
+import random
+import re
+from collections.abc import Callable, Iterator
+from typing import Any
+
+RequestFn = Callable[[str, str, Any | None, str], dict[str, Any]]
+
+
+def concrete_stream_name(index_pattern: str) -> str:
+    """Return a concrete data stream name that is matched by an artifact index pattern."""
+    value = index_pattern.strip()
+    if value in {"metrics-*", "logs-*", "traces-*"}:
+        return f"{value[:-2]}-generic-default"
+    if value.endswith("-*"):
+        return f"{value[:-2]}-default"
+    if "*" in value or "?" in value:
+        prefix = value.split("*", 1)[0].rstrip("-")
+        if prefix in {"metrics", "logs", "traces"}:
+            return f"{prefix}-generic-default"
+        return f"{prefix or 'metrics'}-generic-default"
+    return value
+
+
+def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
+    """Build an index template for one stream contract."""
+    concrete_name = concrete_stream_name(index_pattern)
+    stream_type = concrete_name.split("-", 1)[0] if "-" in concrete_name else "metrics"
+    is_metrics = stream_type == "metrics"
+    dataset = _dataset_from_stream(concrete_name)
+    namespace = _namespace_from_stream(concrete_name)
+    props: dict[str, Any] = {
+        "@timestamp": {"type": "date"},
+        "data_stream.type": {"type": "constant_keyword", "value": stream_type},
+        "data_stream.dataset": {"type": "constant_keyword", "value": dataset},
+        "data_stream.namespace": {"type": "constant_keyword", "value": namespace},
+    }
+    if not is_metrics:
+        props["message"] = {"type": "text"}
+    routing_path: list[str] = []
+
+    for field_name, info in sorted((stream.get("fields") or {}).items()):
+        if field_name.startswith("data_stream.") or field_name in props:
+            continue
+        if info.get("role") == "metric":
+            props[field_name] = {"type": "double"}
+            if is_metrics and info.get("requires_native_promql"):
+                props[field_name]["time_series_metric"] = (
+                    "counter" if info.get("metric_kind") == "counter" else "gauge"
+                )
+        elif is_metrics:
+            props[field_name] = {"type": "keyword", "time_series_dimension": True}
+            routing_path.append(field_name)
+        else:
+            props[field_name] = {"type": "keyword"}
+
+    template: dict[str, Any] = {
+        "index_patterns": [concrete_name],
+        "data_stream": {},
+        "priority": 1000,
+        "template": {
+            "settings": {"index": {"codec": "best_compression"}},
+            "mappings": {"properties": props},
+        },
+    }
+    if is_metrics:
+        template["template"]["settings"]["index"]["mode"] = "time_series"
+        template["template"]["settings"]["index"]["look_back_time"] = "7d"
+        template["template"]["settings"]["index"]["routing_path"] = routing_path or ["data_stream.dataset"]
+    return template
+
+
+def generate_documents(
+    contract: dict[str, Any],
+    *,
+    now: datetime.datetime | None = None,
+    data_hours: float = 2,
+    interval_sec: int = 60,
+    max_combinations: int = 12,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(data_stream, document)`` pairs that satisfy a telemetry contract."""
+    now = now or datetime.datetime.now(datetime.UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.UTC)
+    total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
+    rng = random.Random(42)
+    counter_state: dict[tuple[str, str, int], float] = {}
+
+    for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
+        concrete_name = concrete_stream_name(index_pattern)
+        is_metrics = concrete_name.startswith("metrics-")
+        combinations = _dimension_combinations(stream, max_combinations=max_combinations)
+        metric_fields = {
+            field_name: info
+            for field_name, info in (stream.get("fields") or {}).items()
+            if info.get("role") == "metric"
+        }
+
+        for t_idx in range(total_points):
+            ts = now - datetime.timedelta(seconds=(total_points - t_idx - 1) * interval_sec)
+            hour = ts.hour + ts.minute / 60.0
+            for combo_idx, dimensions in enumerate(combinations):
+                doc = {
+                    "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    **dimensions,
+                }
+                if is_metrics:
+                    for field_name, info in metric_fields.items():
+                        if info.get("metric_kind") == "counter":
+                            key = (concrete_name, field_name, combo_idx)
+                            counter_state[key] = counter_state.get(key, float(10 + combo_idx))
+                            counter_state[key] += _counter_increment(field_name, interval_sec, hour, rng)
+                            doc[field_name] = round(counter_state[key], 4)
+                        else:
+                            doc[field_name] = round(_gauge_value(field_name, hour, combo_idx, rng), 4)
+                else:
+                    doc.setdefault("message", _log_message(doc, combo_idx))
+                yield concrete_name, doc
+
+
+def bulk_lines(documents: Iterator[tuple[str, dict[str, Any]]]) -> Iterator[str]:
+    for index_name, doc in documents:
+        yield json.dumps({"create": {"_index": index_name}})
+        yield json.dumps(doc)
+
+
+def setup_templates_and_streams(
+    contract: dict[str, Any],
+    request: RequestFn,
+    *,
+    recreate: bool = True,
+) -> None:
+    for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
+        concrete_name = concrete_stream_name(index_pattern)
+        template_name = f"telemetry-data-{concrete_name}"
+        if recreate:
+            request("DELETE", f"/_data_stream/{concrete_name}", None, "application/json")
+        request("DELETE", f"/_index_template/{template_name}", None, "application/json")
+        template_result = request(
+            "PUT",
+            f"/_index_template/{template_name}",
+            plan_index_template(index_pattern, stream),
+            "application/json",
+        )
+        _raise_on_error(template_result, f"create index template {template_name}")
+        stream_result = request("PUT", f"/_data_stream/{concrete_name}", None, "application/json")
+        _raise_on_error(stream_result, f"create data stream {concrete_name}")
+
+
+def ingest_documents(
+    documents: Iterator[tuple[str, dict[str, Any]]],
+    request: RequestFn,
+    *,
+    batch_docs: int = 5000,
+) -> IngestSummary:
+    summary = IngestSummary()
+    batch: list[str] = []
+    for index_name, doc in documents:
+        summary.docs_per_stream[index_name] = summary.docs_per_stream.get(index_name, 0) + 1
+        batch.append(json.dumps({"create": {"_index": index_name}}))
+        batch.append(json.dumps(doc))
+        if len(batch) >= batch_docs * 2:
+            _flush_into_summary(batch, request, summary)
+            batch = []
+    if batch:
+        _flush_into_summary(batch, request, summary)
+    return summary
+
+
+def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) -> list[dict[str, str]]:
+    fields = {
+        field_name: info
+        for field_name, info in (stream.get("fields") or {}).items()
+        if info.get("role") != "metric" and not field_name.startswith("data_stream.")
+    }
+    required_values = stream.get("required_values") or {}
+    required_patterns = stream.get("required_patterns") or {}
+    control_fields = stream.get("control_fields") or []
+    group_fields = stream.get("group_fields") or []
+    value_options: dict[str, list[str]] = {}
+    for field_name in sorted(set(fields) | set(required_values) | set(required_patterns) | set(control_fields) | set(group_fields)):
+        values = list(required_values.get(field_name) or [])
+        values.extend(_expand_patterns(field_name, required_patterns.get(field_name) or []))
+        if field_name in set(group_fields) | set(control_fields) and not values:
+            values.extend(_default_dimension_values(field_name, count=3))
+        if not values:
+            values = _default_dimension_values(field_name, count=1)
+        value_options[field_name] = _unique(values)
+
+    if not value_options:
+        return [{}]
+    names = sorted(value_options)
+    combos = []
+    for values in itertools.product(*(value_options[name] for name in names)):
+        combos.append(dict(zip(names, values, strict=True)))
+        if len(combos) >= max_combinations:
+            break
+    _ensure_control_value_coverage(combos, value_options, control_fields)
+    return combos or [{}]
+
+
+def _ensure_control_value_coverage(
+    combos: list[dict[str, str]],
+    value_options: dict[str, list[str]],
+    control_fields: list[str],
+) -> None:
+    if not combos:
+        return
+    base = dict(combos[0])
+    for field_name in control_fields:
+        existing = {combo.get(field_name, "") for combo in combos}
+        for value in value_options.get(field_name, []):
+            if value in existing:
+                continue
+            combo = dict(base)
+            combo[field_name] = value
+            combos.append(combo)
+            existing.add(value)
+
+
+def _expand_patterns(field_name: str, patterns: list[str]) -> list[str]:
+    values: list[str] = []
+    for pattern in patterns:
+        cleaned = pattern.strip()
+        if re.fullmatch(r"\d\.\.", cleaned) or re.fullmatch(r"\dxx", cleaned, re.IGNORECASE):
+            values.append(f"{cleaned[0]}00")
+        elif cleaned and set(cleaned) <= {".", "*"}:
+            values.append(_default_dimension_values(field_name, count=1)[0])
+        elif cleaned:
+            values.append(cleaned.strip("*").replace(".*", "sample"))
+    return values
+
+
+def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
+    lowered = field_name.lower()
+    if "level" in lowered or lowered.endswith("status"):
+        pool = ["error", "warn", "info"]
+    elif "environment" in lowered or lowered.endswith(".env") or lowered == "env":
+        pool = ["production", "staging", "development"]
+    elif "status_code" in lowered or "response.status" in lowered or lowered.endswith("status.code"):
+        pool = ["200", "500", "404"]
+    elif "method" in lowered:
+        pool = ["GET", "POST", "PUT"]
+    elif "route" in lowered or "url" in lowered or "path" in lowered:
+        pool = ["/api/v1/orders", "/api/v1/users", "/api/health"]
+    elif "service" in lowered:
+        pool = ["checkout", "frontend", "backend"]
+    elif "host" in lowered or "node" in lowered:
+        pool = ["host-1", "host-2", "host-3"]
+    elif "namespace" in lowered:
+        pool = ["default", "monitoring", "production"]
+    elif "reason" in lowered:
+        pool = ["timeout", "validation", "dependency"]
+    else:
+        base = field_name.replace(".", "_").replace("@", "").strip("_") or "value"
+        pool = [f"{base}_{idx}" for idx in range(1, 4)]
+    return pool[:count]
+
+
+def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: random.Random) -> float:
+    base_rate = 0.5 + (abs(hash(field_name)) % 40) / 10
+    return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
+
+
+def _gauge_value(field_name: str, hour: float, combo_idx: int, rng: random.Random) -> float:
+    base = 10 + abs(hash(field_name)) % 500
+    return base + combo_idx * 3 + 25 * _diurnal(hour) + rng.random()
+
+
+def _diurnal(hour: float) -> float:
+    return 0.5 + 0.5 * math.sin(math.pi * (hour - 4) / 12)
+
+
+def _log_message(doc: dict[str, Any], combo_idx: int) -> str:
+    level = doc.get("log.level", "info")
+    service = doc.get("service.name", "service")
+    return f"{level} synthetic telemetry event for {service} #{combo_idx}"
+
+
+def _dataset_from_stream(stream_name: str) -> str:
+    parts = stream_name.split("-")
+    return parts[1] if len(parts) >= 3 else "generic"
+
+
+def _namespace_from_stream(stream_name: str) -> str:
+    parts = stream_name.split("-")
+    return parts[2] if len(parts) >= 3 else "default"
+
+
+def _unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+@dataclasses.dataclass
+class IngestSummary:
+    """Outcome of ``ingest_documents``: aggregate counts and per-stream stats."""
+
+    ok: int = 0
+    errors: int = 0
+    docs_per_stream: dict[str, int] = dataclasses.field(default_factory=dict)
+    error_samples: list[str] = dataclasses.field(default_factory=list)
+
+
+def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSummary) -> None:
+    result = request(
+        "POST",
+        "/_bulk",
+        ("\n".join(lines) + "\n").encode(),
+        "application/x-ndjson",
+    )
+    items = result.get("items", []) if isinstance(result, dict) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        operation = item.get("create") or item.get("index") or {}
+        error = operation.get("error") if isinstance(operation, dict) else None
+        if error:
+            summary.errors += 1
+            if len(summary.error_samples) < 3:
+                if isinstance(error, dict):
+                    sample = str(error.get("reason") or error)
+                else:
+                    sample = str(error)
+                summary.error_samples.append(sample[:240])
+        else:
+            summary.ok += 1
+
+
+def _raise_on_error(result: dict[str, Any], action: str) -> None:
+    if isinstance(result, dict) and result.get("error"):
+        reason = result["error"].get("reason") if isinstance(result["error"], dict) else str(result["error"])
+        raise RuntimeError(f"Failed to {action}: {reason}")
+
+
+__all__ = [
+    "IngestSummary",
+    "bulk_lines",
+    "concrete_stream_name",
+    "generate_documents",
+    "ingest_documents",
+    "plan_index_template",
+    "setup_templates_and_streams",
+]

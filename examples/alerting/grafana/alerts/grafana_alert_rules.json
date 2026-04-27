@@ -1,0 +1,1605 @@
+[
+  {
+    "uid": "rule-uid-1",
+    "title": "Memory pressure alert",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Memory is above threshold",
+      "__dashboardUid__": "dash-123",
+      "__panelId__": "42"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "lt",
+                "params": [
+                  0.1
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-1",
+    "title": "High CPU usage",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "CPU is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  80
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-safe-1",
+    "title": "High CPU usage safe subset",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "OK",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {},
+    "annotations": {
+      "summary": "CPU is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  80
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-safe-labels-1",
+    "title": "High CPU usage safe labels subset",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "OK",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "CPU is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  80
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-mimir-1",
+    "title": "Mimir request saturation",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "10m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "platform"
+    },
+    "annotations": {
+      "summary": "Mimir request rate is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "mimir",
+        "relativeTimeRange": {
+          "from": 600,
+          "to": 0
+        },
+        "model": {
+          "expr": "sum by(job) (rate(http_requests_total[5m]))"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  100
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-topk-safe-1",
+    "title": "Top user CPU safe subset",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "OK",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {},
+    "annotations": {
+      "summary": "Top user CPU instances are above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "topk(5, avg by(instance) (rate(node_cpu_seconds_total{mode=\"user\"}[5m])))",
+          "instant": true,
+          "range": false
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0.02
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-unsupported-1",
+    "title": "Topk CPU usage",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Topk CPU is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "topk(5, node_cpu_seconds_total)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  80
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-bottomk-safe-1",
+    "title": "Lowest idle CPU safe subset",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "OK",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {},
+    "annotations": {
+      "summary": "Lowest idle CPU instances are below threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "bottomk(5, avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "instant": true,
+          "range": false
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "lt",
+                "params": [
+                  0.95
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-subquery-1",
+    "title": "Subquery request rate",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "10m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "platform"
+    },
+    "annotations": {
+      "summary": "Subquery request rate is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 1800,
+          "to": 0
+        },
+        "model": {
+          "expr": "sum_over_time(rate(http_requests_total[5m])[30m:5m])"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  500
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-log-1",
+    "title": "Error log spike",
+    "ruleGroup": "log-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "app"
+    },
+    "annotations": {
+      "summary": "Error logs are spiking"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "loki",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "count_over_time({job=~\".+\"} |= \"error\" [5m])"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  100
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-graphite-1",
+    "title": "Graphite queue depth",
+    "ruleGroup": "legacy-systems",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "legacy"
+    },
+    "annotations": {
+      "summary": "Graphite queue depth is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "graphite",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "aliasByNode(sumSeries(stats.gauges.queue.depth), 3)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  1000
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-bottomk-1",
+    "title": "Bottom CPU usage",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Bottom CPU usage is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "bottomk(5, node_cpu_seconds_total)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  80
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-at-1",
+    "title": "Pinned timestamp CPU",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Timestamp-pinned CPU query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "node_cpu_seconds_total @ 1700000000"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-changes-1",
+    "title": "Boot time changed",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Boot time changed recently"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "changes(node_boot_time_seconds[5m])"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-label-replace-1",
+    "title": "Label replace CPU",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Label replace CPU query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "label_replace(up, \"service\", \"$1\", \"job\", \"(.*)\")"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-label-join-1",
+    "title": "Label join CPU",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Label join CPU query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "label_join(up, \"service_instance\", \"-\", \"job\", \"instance\")"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-scalar-1",
+    "title": "Scalar node time",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Scalar node time is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "scalar(node_time_seconds)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-nested-comparison-1",
+    "title": "Nested comparison count",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Nested comparison count is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "count(up == 0)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-vector-comparison-1",
+    "title": "Vector comparison memory",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Vector comparison memory query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "node_memory_MemAvailable_bytes < node_memory_MemTotal_bytes"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-or-1",
+    "title": "CPU or vector fallback",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "OR-based CPU query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "up or vector(0)"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-unless-1",
+    "title": "CPU unless network down",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "UNLESS-based CPU query is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "up unless on(instance) node_network_up"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-known-bug-1",
+    "title": "Filesystem planner bug candidate",
+    "ruleGroup": "resource-alerts",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Filesystem planner bug candidate is above threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 300,
+          "to": 0
+        },
+        "model": {
+          "expr": "node_filesystem_avail_bytes{fstype!=\"rootfs\"} +(node_filesystem_free_bytes{fstype!=\"rootfs\"} / node_filesystem_size_bytes{fstype!=\"rootfs\"})"
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-target-down-1",
+    "title": "Prometheus Target Down",
+    "ruleGroup": "monitoring",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "3m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "critical",
+      "team": "platform"
+    },
+    "annotations": {
+      "summary": "Target {{ $labels.job }}/{{ $labels.instance }} is down"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 60,
+          "to": 0
+        },
+        "model": {
+          "expr": "up == 0",
+          "instant": true,
+          "range": false
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-prom-load5-1",
+    "title": "High Load 5m",
+    "ruleGroup": "infrastructure",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "infra"
+    },
+    "annotations": {
+      "summary": "Load average is high on {{ $labels.instance }}"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prometheus",
+        "relativeTimeRange": {
+          "from": 600,
+          "to": 0
+        },
+        "model": {
+          "expr": "avg by(instance) (node_load5)",
+          "instant": false,
+          "range": true
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  4
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "uid": "rule-loki-live-count-1",
+    "title": "High Error Rate in Logs",
+    "ruleGroup": "application",
+    "folderUID": "folder-1",
+    "condition": "C",
+    "for": "5m",
+    "noDataState": "NoData",
+    "execErrState": "Error",
+    "isPaused": false,
+    "labels": {
+      "severity": "warning",
+      "team": "app"
+    },
+    "annotations": {
+      "summary": "Error rate in logs exceeds threshold"
+    },
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "loki",
+        "relativeTimeRange": {
+          "from": 600,
+          "to": 0
+        },
+        "model": {
+          "expr": "count_over_time({job=~\".+\"} |= \"error\" [5m])",
+          "instant": false,
+          "range": true
+        }
+      },
+      {
+        "refId": "B",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "reduce",
+          "reducer": "last"
+        }
+      },
+      {
+        "refId": "C",
+        "datasourceUid": "__expr__",
+        "relativeTimeRange": {
+          "from": 0,
+          "to": 0
+        },
+        "model": {
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [
+                  100
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

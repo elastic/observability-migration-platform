@@ -1,0 +1,590 @@
+# Command Contract
+
+This is the canonical command inventory for the repo.
+
+Use this file as the source of truth for:
+- supported commands
+- required environment variables
+- safe example invocations
+
+## Environment Baseline
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `ELASTICSEARCH_ENDPOINT` or `ES_URL` | live validate, upload smoke, data scripts | Elasticsearch URL |
+| `KIBANA_ENDPOINT` or `KIBANA_URL` | upload, cluster commands, smoke | Kibana URL |
+| `KEY` or `ES_API_KEY` | authenticated ES/Kibana operations | API key |
+| `DD_API_KEY` / `DD_APP_KEY` | Datadog API extraction / verification | can also load via `--env-file` |
+
+Preferred variable names in this repo are `ELASTICSEARCH_ENDPOINT`,
+`KIBANA_ENDPOINT`, and `KEY`.
+
+Compatibility aliases such as `ES_URL`, `KIBANA_URL`, and `ES_API_KEY` remain
+documented where a command or script still accepts them.
+
+Example env files are available at the repo root: `serverless_creds.env.example`, `datadog_creds.env.example`, and `grafana_creds.env.example`.
+
+Before sourcing a repo-local env file from the examples below, copy the matching
+example file first and fill in its values. For example:
+
+```bash
+cp serverless_creds.env.example serverless_creds.env
+```
+
+## Install And Setup
+
+Use Python 3.11 or newer. If `python3` resolves to an older interpreter on your
+machine, create `.venv` with an explicit 3.11+ executable instead.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
+```
+
+For contributor workflows, install the dev extra and enable local git hooks:
+
+```bash
+.venv/bin/pip install -e ".[all,dev]"
+.venv/bin/pre-commit install
+.venv/bin/pre-commit run --all-files
+```
+
+Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` require `uvx` on
+`PATH`, including `obs-migrate compile`, `obs-migrate upload`, and
+`bash scripts/validate_dashboard_yaml.sh`.
+
+Datadog live API extraction (`--source api` on the dedicated CLI or Datadog
+`--input-mode api` through `obs-migrate migrate`) also requires the optional
+Datadog client extra:
+
+```bash
+.venv/bin/pip install -e ".[datadog]"
+```
+
+## Before Elastic / Kibana
+
+You can use the migration tooling productively before configuring a target cluster.
+
+- Translate exported dashboards into YAML.
+- Pull live dashboards from Grafana or Datadog APIs.
+- Pull Grafana alert artifacts or Datadog monitor artifacts.
+- Review `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, and `rollout_plan.json`.
+- Compile generated YAML to NDJSON locally.
+
+Add `--es-url` when you want live target field discovery or emitted-query validation. Add `--kibana-url` when you want upload, target dashboard listing/deletion, smoke validation, or alert-rule payload checks against a real Kibana target.
+
+## Asset Scope Contract
+
+Every migration command that moves source assets into target artifacts accepts
+`--assets {dashboards,alerts,all}`.
+
+- `--assets dashboards`: migrate dashboards only
+- `--assets alerts`: migrate alerts only
+- `--assets all`: run both isolated pipelines in one command
+
+Rules:
+- `dashboards` never writes alert artifacts
+- `alerts` never writes dashboard YAML or compiled output
+- `all` is the union of both isolated pipelines
+
+Dashboard artifacts are written under `<output-dir>/dashboards`. Alert artifacts
+are written under `<output-dir>/alerts`. Grafana and Datadog both write a root
+`run_summary.json` that records which asset families ran.
+
+### Audited Asset Flag Matrix
+
+Use explicit `--assets` in new scripts. Legacy fetch flags remain only as
+compatibility aliases.
+
+| Command | Flag | Applies To | Meaning | Notes |
+|---|---|---|---|---|
+| `obs-migrate migrate` | `--assets` | Grafana, Datadog | Select `dashboards`, `alerts`, or `all` | Canonical asset selector |
+| `obs-migrate migrate` | `--fetch-alerts` | Grafana, Datadog | Deprecated alias for alert-capable runs | Using the alias always emits a deprecation warning; if the requested asset selection is `dashboards`, including explicit `--assets dashboards`, runtime normalization upgrades the run to `--assets all` |
+| `grafana-migrate` | `--assets` | Grafana | Same as unified | Dedicated CLI parity |
+| `grafana-migrate` | `--fetch-alerts` | Grafana | Deprecated alias | Using the alias always emits a deprecation warning; if the requested asset selection is `dashboards`, including explicit `--assets dashboards`, runtime normalization upgrades the run to `--assets all` |
+| `datadog-migrate` | `--assets` | Datadog | Same as unified | Dedicated CLI parity |
+| `datadog-migrate` | `--fetch-monitors` | Datadog | Deprecated alias | Using the alias always emits a deprecation warning; if the requested asset selection is `dashboards`, including explicit `--assets dashboards`, runtime normalization upgrades the run to `--assets all` |
+
+## Unified CLI (`obs-migrate`)
+
+### Migrate
+
+`obs-migrate migrate` is the canonical unified migration surface for Grafana and
+Datadog.
+
+| Flag | Applies To | Meaning | Notes |
+|---|---|---|---|
+| `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
+| `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
+| `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana currently supports `otel` only; Datadog also supports source-specific built-ins and YAML profile files. ECS fallback is not implemented in this pass. |
+| `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
+| `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
+| `--monitor-ids`, `--monitor-query` | Datadog alert pipeline | Scope Datadog monitor extraction | Only affect Datadog alert runs |
+| `--smoke`, `--browser-audit`, `--capture-screenshots` | Grafana, Datadog | Run shared post-upload validation | Forwarded to source runtimes when smoke is enabled |
+
+Use `obs-migrate cluster ...` for shared target-management operations.
+
+Dedicated source CLIs still expose `--list-dashboards`, `--delete-dashboards`,
+and `--ensure-data-views` for source-local operator workflows, but unified
+`obs-migrate migrate` no longer multiplexes those flags.
+
+Examples below use the canonical environment names
+(`$ELASTICSEARCH_ENDPOINT`, `$KIBANA_ENDPOINT`, `$KEY`) that match
+`serverless_creds.env`. The compatibility aliases `$ES_URL`, `$KIBANA_URL`, and
+`$ES_API_KEY` are still accepted by every CLI and refer to the same values.
+
+```bash
+# Grafana dashboards only (files)
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets dashboards \
+  --field-profile otel \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
+  --native-promql
+
+# Datadog alerts only (API)
+.venv/bin/obs-migrate migrate \
+  --source datadog \
+  --input-mode api \
+  --env-file datadog_creds.env \
+  --output-dir datadog_migration_output \
+  --assets alerts \
+  --field-profile otel \
+  --data-view "metrics-*" \
+  --monitor-ids 12345678
+
+# Grafana dashboards + alerts from one run
+KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode api \
+  --output-dir migration_output \
+  --assets all \
+  --field-profile otel \
+  --native-promql \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*"
+```
+
+`obs-migrate migrate` compiles dashboard YAML to NDJSON during dashboard runs for
+both Grafana and Datadog. Alerts-only runs do not emit dashboard YAML or
+compiled output.
+
+### Field Profile Contract
+
+`--field-profile` defaults to `otel` for every source migration. Grafana
+currently accepts only `otel`; Datadog accepts `otel` plus its existing
+Datadog-specific built-ins and YAML profile files. ECS fallback is planned
+separately and is not part of this contract.
+
+For Grafana `--native-promql` validation, this repo is exercised against
+Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
+including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
+lab's `metrics-*` data view. If you point `--data-view` at a different
+Prometheus integration layout, verify the target schema first before treating
+empty panels as a migration bug.
+
+**Live extraction (`--input-mode api`)**
+
+Grafana API mode expects Grafana HTTP basic auth via environment variables:
+`GRAFANA_URL`, `GRAFANA_USER`, and `GRAFANA_PASS` (defaults exist for local
+labs). For the full environment-driven setup and entry points, see [Grafana
+source adapter](sources/grafana.md).
+
+Unified Datadog API mode exposes `--env-file`, `--monitor-ids`, and
+`--monitor-query`, but not `--dashboard-ids`. Datadog API mode still requires
+the optional `datadog-api-client` dependency:
+
+```bash
+.venv/bin/pip install -e ".[datadog]"
+```
+
+When unified Datadog API mode runs without a dashboard ID list, the extractor
+uses the dashboard list returned by the Datadog API. Use the dedicated
+`datadog-migrate` CLI when you need explicit dashboard scoping.
+
+**Source-only / offline evaluation**
+
+These runs intentionally omit target-aware flags such as `--es-url`,
+`--validate`, `--upload`, and `--smoke`. If your shell already exports
+Elastic/Kibana variables from another workflow, unset them first for a pure
+source-only run.
+
+Use `--assets alerts` for pure alert extraction and `--assets all` when you
+want one command to produce both dashboard and alert artifacts.
+
+#### Creating Kibana alert rules from a single command
+
+By default, alert-capable runs selected through `--assets alerts` or
+`--assets all` (or the deprecated legacy aliases) only extract, map, and
+validate rule payloads; they do not create rules in Kibana. Pass
+`--create-alert-rules` alongside an alert-capable asset selection together with
+`--kibana-url` and `--kibana-api-key` to have `obs-migrate` create the emitted
+rules immediately after the mapping step. Rules are created disabled by default
+and tagged `obs-migration`.
+
+- Grafana writes `<output-dir>/alerts/alert_rule_upload_results.json`
+- Datadog writes `<output-dir>/alerts/monitor_rule_upload_results.json`
+
+Use `scripts/audit_migrated_rules.py` or the Kibana UI to review the rules
+before enabling them. `scripts/verify_alert_rule_uploads.py` remains the
+destructive round-trip verifier (it creates rules with a temporary marker tag
+and cleans them up on exit unless `--keep-rules` is passed).
+
+```bash
+# Unified: migrate dashboards + alerts + create rules (disabled).
+set -a && source serverless_creds.env && set +a
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets all \
+  --native-promql \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY" \
+  --upload \
+  --create-alert-rules
+```
+
+#### Supported live source scope
+
+- **Grafana (`input-mode api`)** — Pulls dashboard documents from the Grafana
+  API. Links, annotations, transforms, and alert tasks are derived from that
+  dashboard JSON during migration; they are not fetched as separate first-class
+  API assets.
+- **Datadog (`input-mode api`)** — Pulls dashboard objects from the Datadog
+  API. Alert-capable runs can also pull monitors, emit/validate Kibana rule
+  payloads, and optionally create rules with `--create-alert-rules`. Unified
+  mode does not expose the dedicated Datadog `--dashboard-ids` selector.
+
+### Compile / Upload
+
+```bash
+# Compile dashboard YAML to NDJSON locally.
+.venv/bin/obs-migrate compile \
+  --yaml-dir migration_output/dashboards/yaml \
+  --output-dir migration_output/dashboards/compiled
+
+# Upload dashboards to Kibana. The upload step recompiles YAML internally via
+# kb-dashboard-cli and accepts either the YAML directory or the dashboard
+# artifacts directory that contains a sibling yaml/ subfolder.
+.venv/bin/obs-migrate upload \
+  --yaml-dir migration_output/dashboards \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY"
+```
+
+`obs-migrate compile` is a local step and does not require Elasticsearch or Kibana. It can still exit nonzero after writing NDJSON if the YAML lint or compiled-layout checks return nonzero, so inspect both the exit status and the generated output directory.
+
+`obs-migrate upload` takes a directory of YAML dashboards and recompiles them through `uvx kb-dashboard-cli compile --upload`. It does **not** consume the NDJSON produced by `obs-migrate compile`. The legacy alias `--compiled-dir` is still accepted for backward compatibility but prefer `--yaml-dir` in new scripts. Pointing `--yaml-dir` at `migration_output/dashboards` (which contains a `yaml/` subdirectory) also works.
+
+### Cluster
+
+```bash
+.venv/bin/obs-migrate cluster list-dashboards --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+.venv/bin/obs-migrate cluster ensure-data-views --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --data-view-patterns "metrics-*,logs-*"
+.venv/bin/obs-migrate cluster delete-dashboards --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --dashboard-ids "id1,id2"
+.venv/bin/obs-migrate cluster detect-serverless --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+```
+
+On Serverless, `delete-dashboards` clears saved objects into `[DELETED]` placeholders because direct saved-object DELETE is unavailable.
+
+### Extensions
+
+```bash
+.venv/bin/obs-migrate extensions --source grafana --format yaml
+.venv/bin/obs-migrate extensions --source datadog --format json
+.venv/bin/obs-migrate extensions --source grafana --format yaml --template-out custom-rule-pack.yaml
+.venv/bin/obs-migrate extensions --source datadog --format yaml --template-out custom-field-profile.yaml
+```
+
+## Dedicated Source CLIs
+
+Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers around `python -m observability_migration.adapters.source.grafana.cli` and `python -m observability_migration.adapters.source.datadog.cli`.
+
+### Grafana
+
+Use the shared asset contract above for `--assets` and the deprecated
+`--fetch-alerts` alias. For Grafana-specific runtime details, see [Grafana
+source adapter](sources/grafana.md).
+
+```bash
+# Files: dashboards only
+.venv/bin/grafana-migrate \
+  --source files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets dashboards \
+  --field-profile otel \
+  --native-promql \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*"
+
+# Live Grafana API: alerts only
+KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
+.venv/bin/grafana-migrate \
+  --source api \
+  --output-dir migration_output \
+  --assets alerts
+
+# Files: dashboards + alerts + integrated smoke
+.venv/bin/python -m observability_migration.adapters.source.grafana.cli \
+  --source files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets all \
+  --field-profile otel \
+  --native-promql \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --smoke \
+  --browser-audit \
+  --capture-screenshots \
+  --kibana-url "$KIBANA_ENDPOINT"
+```
+
+Without `--es-url`, Grafana skips schema discovery and emitted-query
+validation. Dashboard-capable runs (`--assets dashboards` or `--assets all`)
+still write dashboard YAML, compiled NDJSON, and the normal dashboard report
+artifacts. Alerts-only runs (`--assets alerts`) skip dashboard emission and
+write alert artifacts under `<output-dir>/alerts`. For pure source-side alert
+extraction, set `KIBANA_URL=` in the shell to suppress the default local Kibana
+alerting preflight.
+
+### Datadog
+
+Use the shared asset contract above for `--assets` and the deprecated
+`--fetch-monitors` alias. For Datadog-specific runtime details, see [Datadog
+source adapter](sources/datadog.md).
+
+```bash
+# Files: dashboards only
+.venv/bin/datadog-migrate \
+  --source files \
+  --input-dir infra/datadog/dashboards \
+  --output-dir datadog_migration_output \
+  --assets dashboards \
+  --field-profile otel \
+  --data-view "metrics-*"
+
+# Live Datadog API with explicit dashboard scoping
+.venv/bin/python -m observability_migration.adapters.source.datadog.cli \
+  --source api \
+  --env-file datadog_creds.env \
+  --dashboard-ids abc-def-123 \
+  --output-dir datadog_migration_output \
+  --assets dashboards \
+  --data-view "metrics-*"
+
+# Live Datadog API: alerts only
+.venv/bin/datadog-migrate \
+  --source api \
+  --env-file datadog_creds.env \
+  --output-dir datadog_migration_output \
+  --assets alerts \
+  --field-profile otel \
+  --data-view "metrics-*" \
+  --monitor-ids 12345678
+```
+
+Same scope as [Supported live source scope](#supported-live-source-scope) under
+unified migrate: Grafana dashboards via API (related artifacts from dashboard
+JSON only); Datadog dashboards via API, with monitor extraction available
+through alert-capable runs and rule payload emission/validation limited to
+validated monitor shapes.
+
+Without `--es-url`, Datadog stays in offline field-capabilities mode.
+Dashboard-capable runs (`--assets dashboards` or `--assets all`) still write
+dashboard YAML plus the standard dashboard run reports. Alerts-only runs
+(`--assets alerts`) skip dashboard YAML and compiled output, write monitor
+artifacts under `<output-dir>/alerts`, and still emit the root
+`run_summary.json`. Use the dedicated Datadog CLI when you need explicit
+dashboard scoping via `--dashboard-ids` before any Elastic target exists.
+
+## Validation / Verification CLIs
+
+```bash
+.venv/bin/grafana-validate-uploaded \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --output upload_smoke_report.json
+
+.venv/bin/grafana-generate-corpus --help
+```
+
+## Tested Alert Upload Flow
+
+This sequence was re-run against the Serverless target using the curated example corpus.
+Create `serverless_creds.env` from `serverless_creds.env.example` before
+running the commands below.
+
+### Preferred: one unified command
+
+```bash
+set -a && source serverless_creds.env && set +a
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir examples/alerting/grafana \
+  --output-dir alert_migration_output \
+  --assets all \
+  --native-promql \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY" \
+  --upload \
+  --create-alert-rules
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/python scripts/audit_migrated_rules.py
+```
+
+`obs-migrate migrate --assets all --upload --create-alert-rules` uploads the
+generated dashboards, extracts and validates the alert payloads, and creates
+the emitted Kibana rules disabled by default in a single run. The alert rule
+upload summary is written to
+`alert_migration_output/alerts/alert_rule_upload_results.json` (or
+`alert_migration_output/alerts/monitor_rule_upload_results.json` for
+`--source datadog`).
+
+### Legacy multi-step flow
+
+This flow remains supported when you want to regenerate the curated example artifacts without touching dashboards, or when you want the destructive round-trip `verify_alert_rule_uploads.py` path:
+
+```bash
+.venv/bin/python scripts/generate_alert_support_report.py
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/obs-migrate upload \
+  --yaml-dir examples/alerting/generated/grafana/dashboards/yaml \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY"
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/python scripts/verify_alert_rule_uploads.py \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --api-key "$KEY" \
+  --keep-rules
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/python scripts/audit_migrated_rules.py
+```
+
+This sequence regenerates the curated Grafana and Datadog alert comparison artifacts, uploads the generated `Legacy Alert Examples` dashboard, round-trips the emitted rules through Kibana, and then audits the migrated rules present in Kibana. `scripts/verify_alert_rule_uploads.py` deletes its verification rules unless `--keep-rules` is passed.
+
+## Script Commands
+
+### Local Lab Lifecycle
+
+```bash
+bash scripts/start_local_lab.sh
+bash scripts/start_local_lab.sh --with-alloy --recreate
+bash scripts/stop_local_lab.sh
+bash scripts/stop_local_lab.sh --volumes
+```
+
+These commands assume the selected local lab project owns the configured local ports. If another repo-owned lab is already using them, set `LOCAL_LAB_PROJECT`, `LOCAL_GRAFANA_PORT`, `LOCAL_ES_PORT`, `LOCAL_KIBANA_PORT`, and any colliding OTLP / Alloy ports before starting a second stack.
+
+### Local Validation Flows
+
+```bash
+bash scripts/full_local_demo.sh --sample-set bundled
+bash scripts/full_local_demo.sh --sample-set bundled --recreate-lab
+bash scripts/full_local_demo.sh
+```
+
+These wrappers write reports even when smoke validation or query validation finds issues, so inspect `migration_report.json` and `upload_smoke_report.json` instead of treating exit `0` as “all panels are perfect.”
+
+### Datadog Demo Flows
+
+Default mode uses the curated four-dashboard smoke subset. Browser extras are opt-in.
+
+```bash
+bash scripts/run_datadog_demo.sh
+bash scripts/run_datadog_demo.sh --browser-audit --capture-screenshots
+bash scripts/run_datadog_demo.sh --target serverless
+```
+
+For local-target Datadog demos, keep a single local lab stack active on the selected ports. If you just recreated the lab, wait for the chosen Elasticsearch container to report Docker health `healthy` before rerunning the wrapper.
+
+### Migration Helpers
+
+```bash
+bash scripts/run_migration.sh
+bash scripts/run_migration.sh --skip-data
+bash scripts/run_migration.sh --skip-upload
+```
+
+### Schema / Lint / Layout
+
+```bash
+bash scripts/generate_dashboard_schema.sh
+bash scripts/validate_dashboard_yaml.sh migration_output/dashboards/yaml
+.venv/bin/python scripts/validate_dashboard_layout.py migration_output/dashboards/compiled
+```
+
+`bash scripts/validate_dashboard_yaml.sh` requires `uvx` on `PATH` because it
+shells out to `kb-dashboard-lint`.
+
+### Data Setup
+
+```bash
+set -a && source serverless_creds.env && set +a
+DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
+  .venv/bin/python scripts/setup_telemetry_data.py migration_output/dashboards
+```
+
+Use the migrated dashboard artifact directory for any source. Pass multiple
+artifact roots to generate one combined target schema/data set:
+
+```bash
+DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
+  .venv/bin/python scripts/setup_telemetry_data.py \
+    grafana_output/dashboards datadog_output/dashboards
+```
+
+The common setup script discovers YAML and verification packets from each
+artifact root. Useful flags:
+
+| Flag | Meaning |
+|---|---|
+| `--data-hours` | Hours of synthetic data to generate. Defaults to 2. Falls back to `DATA_HOURS` env. |
+| `--interval-sec` | Seconds between samples. Defaults to 60. Falls back to `INTERVAL_SEC` env. |
+| `--batch-docs` | Documents per bulk request. Defaults to 5000. Falls back to `BATCH_DOC_LIMIT` env. |
+| `--max-combinations` | Maximum dimension combinations per stream per timestamp. Defaults to 12. Falls back to `MAX_COMBINATIONS` env. Lower this for very high-cardinality contracts. |
+| `--no-recreate` | Skip all index template and data stream operations. Use when the streams already exist with the desired mappings and you only want to ingest more synthetic documents. |
+
+To inspect schema changes from source queries to target fields:
+
+```bash
+.venv/bin/python scripts/generate_telemetry_contract.py \
+  grafana_output/dashboards datadog_output/dashboards \
+  --output telemetry_contract.json \
+  --schema-report schema_change_report.md
+```
+
+`--schema-report` writes a single Markdown document with a top-level summary
+plus one section per artifact directory, mapping every panel from its source
+fields/queries to the target stream/fields it produces.
+
+### Pipeline Trace Regeneration
+
+```bash
+.venv/bin/python scripts/audit_pipeline.py --update-docs
+```
+
+## Test Commands
+
+```bash
+.venv/bin/python -m pytest tests/ -x -q
+.venv/bin/python -m pytest tests/core/ -x -q
+.venv/bin/python -m pytest tests/test_migrate.py -x -q
+.venv/bin/python -m pytest tests/test_datadog_migrate.py -x -q
+.venv/bin/python -m pytest tests/e2e/ -x -q
+```

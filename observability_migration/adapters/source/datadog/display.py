@@ -1,0 +1,182 @@
+"""Display enrichment: Datadog units and visual config → kb-dashboard YAML format.
+
+Maps Datadog unit strings and formatting to the YAML format spec used by
+kb-dashboard-cli.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .models import NormalizedWidget, TranslationResult
+
+DATADOG_UNIT_MAP: dict[str, dict[str, Any]] = {
+    "byte": {"type": "bytes"},
+    "kibibyte": {"type": "bytes"},
+    "mebibyte": {"type": "bytes"},
+    "gibibyte": {"type": "bytes"},
+    "tebibyte": {"type": "bytes"},
+    "bit": {"type": "bits"},
+    "kilobit": {"type": "bits"},
+    "megabit": {"type": "bits"},
+    "gigabit": {"type": "bits"},
+    "percent": {"type": "number", "suffix": "%"},
+    "percent_nano": {"type": "number", "suffix": "%"},
+    "nanosecond": {"type": "number", "suffix": " ns", "decimals": 0},
+    "microsecond": {"type": "number", "suffix": " µs", "decimals": 0},
+    "millisecond": {"type": "number", "suffix": " ms", "decimals": 1},
+    "second": {"type": "duration"},
+    "minute": {"type": "number", "suffix": " min"},
+    "hour": {"type": "number", "suffix": " h"},
+    "day": {"type": "number", "suffix": " d"},
+    "hertz": {"type": "number", "suffix": " Hz"},
+    "operation": {"type": "number", "suffix": " ops"},
+    "request": {"type": "number", "suffix": " req"},
+    "packet": {"type": "number", "suffix": " pkt"},
+    "error": {"type": "number", "suffix": " err"},
+    "connection": {"type": "number", "suffix": " conn"},
+    "page": {"type": "number", "suffix": " pg"},
+    "query": {"type": "number", "suffix": " qry"},
+    "thread": {"type": "number", "suffix": " thr"},
+    "process": {"type": "number", "suffix": " proc"},
+    "core": {"type": "number", "suffix": " core"},
+    "dollar": {"type": "number", "suffix": " $"},
+    "euro": {"type": "number", "suffix": " €"},
+}
+
+
+def enrich_panel_display(
+    yaml_panel: dict[str, Any],
+    widget: NormalizedWidget,
+    result: TranslationResult,
+) -> dict[str, Any]:
+    """Enrich a generated YAML panel with display formatting."""
+
+    esql = yaml_panel.get("esql", {})
+    if not esql:
+        return yaml_panel
+
+    unit_format = _resolve_unit(widget)
+    if unit_format:
+        _apply_format(esql, unit_format, result.kibana_type)
+
+    _apply_legend(esql, widget, result.kibana_type)
+    _apply_axis(yaml_panel, widget)
+
+    if widget.title:
+        yaml_panel["title"] = _clean_template_vars(widget.title)
+
+    return yaml_panel
+
+
+def _resolve_unit(widget: NormalizedWidget) -> dict[str, Any] | None:
+    unit = widget.custom_unit
+    if not unit:
+        yaxis = widget.yaxis
+        if isinstance(yaxis, dict):
+            unit = yaxis.get("label", "")
+    if not unit:
+        return None
+    return DATADOG_UNIT_MAP.get(unit.lower())
+
+
+def _apply_format(
+    esql: dict[str, Any],
+    fmt: dict[str, Any],
+    kibana_type: str,
+) -> None:
+    if kibana_type == "metric":
+        primary = esql.get("primary")
+        if isinstance(primary, dict):
+            primary.setdefault("format", fmt)
+        secondary = esql.get("secondary")
+        if isinstance(secondary, dict):
+            secondary.setdefault("format", fmt)
+    elif kibana_type == "xy":
+        metrics = esql.get("metrics", [])
+        if metrics:
+            for metric in metrics:
+                if isinstance(metric, dict):
+                    metric.setdefault("format", fmt)
+    elif kibana_type in ("heatmap", "treemap"):
+        metric = esql.get("metric")
+        if isinstance(metric, dict):
+            metric.setdefault("format", fmt)
+    elif kibana_type in ("table", "partition"):
+        metrics = esql.get("metrics", [])
+        for metric in metrics:
+            if isinstance(metric, dict):
+                metric.setdefault("format", fmt)
+
+
+def _apply_legend(
+    esql: dict[str, Any],
+    widget: NormalizedWidget,
+    kibana_type: str,
+) -> None:
+    legend = widget.legend
+    shown = True
+    if isinstance(legend, dict):
+        visible = legend.get("visible", True)
+        shown = visible in (True, "true", "show")
+
+    if kibana_type in ("xy",):
+        esql.setdefault("legend", {
+            "visible": "show" if shown else "hide",
+            "position": "right",
+            "truncate_labels": 1,
+        })
+    elif kibana_type in ("partition", "treemap"):
+        esql.setdefault("legend", {
+            "visible": "auto" if shown else "hide",
+            "truncate_labels": 1,
+        })
+    elif kibana_type == "heatmap":
+        appearance = esql.setdefault("appearance", {})
+        appearance.setdefault("legend", {"visible": "show", "position": "right"})
+
+
+def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget) -> None:
+    """Map Datadog yaxis config into kb-dashboard appearance.y_left_axis."""
+    yaxis = widget.yaxis
+    if not isinstance(yaxis, dict):
+        return
+    esql = yaml_panel.get("esql")
+    if not isinstance(esql, dict):
+        return
+    y_cfg: dict[str, Any] = {}
+    label = yaxis.get("label")
+    if label and isinstance(label, str):
+        y_cfg["title"] = label
+    scale = yaxis.get("scale")
+    if scale == "log":
+        y_cfg["scale"] = "log"
+    elif scale == "sqrt":
+        y_cfg["scale"] = "sqrt"
+    y_min = yaxis.get("min")
+    y_max = yaxis.get("max")
+    if y_min is not None or y_max is not None:
+        extent: dict[str, Any] = {"mode": "custom"}
+        if y_min is not None:
+            try:
+                extent["min"] = float(y_min)
+            except (ValueError, TypeError):
+                pass
+        if y_max is not None:
+            try:
+                extent["max"] = float(y_max)
+            except (ValueError, TypeError):
+                pass
+        if len(extent) > 1:
+            y_cfg["extent"] = extent
+    if y_cfg:
+        appearance = esql.setdefault("appearance", {})
+        appearance.setdefault("y_left_axis", {}).update(y_cfg)
+
+
+def _clean_template_vars(title: str) -> str:
+    """Replace Datadog template variable placeholders for Kibana."""
+    import re
+    title = re.sub(r"\$(\w+)\.value", r"{\1}", title)
+    title = re.sub(r"\$(\w+)", r"{\1}", title)
+    return title

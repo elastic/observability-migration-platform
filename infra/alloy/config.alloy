@@ -1,0 +1,39 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+otelcol.receiver.otlp "incoming" {
+  grpc {
+    endpoint = "0.0.0.0:14317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:14318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.to_collector.input]
+    logs    = [otelcol.processor.batch.to_collector.input]
+    traces  = [otelcol.processor.batch.to_collector.input]
+  }
+}
+
+otelcol.processor.batch "to_collector" {
+  output {
+    metrics = [otelcol.exporter.otlp.to_collector.input]
+    logs    = [otelcol.exporter.otlp.to_collector.input]
+    traces  = [otelcol.exporter.otlp.to_collector.input]
+  }
+}
+
+otelcol.exporter.otlp "to_collector" {
+  client {
+    endpoint = "otel-collector:4317"
+
+    tls {
+      insecure             = true
+      insecure_skip_verify = true
+    }
+  }
+}

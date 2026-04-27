@@ -1,0 +1,119 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: Ruff
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-ruff \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run ruff
+        run: .venv-ruff/bin/python -m ruff check .
+
+  mypy:
+    name: Mypy (targeted)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-mypy \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run targeted mypy
+        run: .venv-mypy/bin/python -m mypy
+
+  cli-smoke:
+    name: CLI smoke
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-cli \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run CLI smoke commands
+        run: |
+          .venv-cli/bin/obs-migrate --help >/dev/null
+          .venv-cli/bin/obs-migrate migrate --help >/dev/null
+
+  pytest:
+    name: Locked pytest suite
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-tests \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run pytest
+        run: .venv-tests/bin/python -m pytest tests/ -x -q

@@ -1,0 +1,34 @@
+# Example declarative rule pack for the Grafana migration CLI
+
+query:
+  default_rate_window: 5m
+  default_gauge_agg: AVG
+  logs_index: logs-*
+
+  label_rewrites:
+    cluster: service.name
+
+  label_candidates:
+    instance:
+      - service.instance.id
+      - host.name
+    job:
+      - service.name
+    node:
+      - k8s.node.name
+      - host.name
+
+  ignored_labels:
+    - origin_prometheus
+
+panel:
+  type_map:
+    table-old: datatable
+
+  skip_types:
+    - canvas
+
+controls:
+  field_overrides:
+    job: service.name
+    instance: service.instance.id

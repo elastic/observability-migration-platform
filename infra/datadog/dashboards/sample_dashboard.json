@@ -1,0 +1,267 @@
+{
+  "id": "test-datadog-dashboard-001",
+  "title": "System Overview - Sample",
+  "description": "Sample Datadog dashboard for migration testing",
+  "layout_type": "ordered",
+  "tags": ["env:prod", "team:infra"],
+  "template_variables": [
+    {
+      "name": "host",
+      "tag": "host",
+      "prefix": "host",
+      "default": "*",
+      "defaults": ["*"],
+      "available_values": []
+    },
+    {
+      "name": "env",
+      "tag": "env",
+      "prefix": "env",
+      "default": "prod",
+      "defaults": ["prod"],
+      "available_values": ["prod", "staging", "dev"]
+    }
+  ],
+  "widgets": [
+    {
+      "id": 1,
+      "definition": {
+        "type": "timeseries",
+        "title": "CPU Usage by Host",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "legend_columns": ["avg", "min", "max", "value"],
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.cpu.user{$host} by {host}"
+              }
+            ],
+            "response_format": "timeseries",
+            "style": {"palette": "dog_classic", "type": "solid", "width": "normal"},
+            "display_type": "line"
+          }
+        ],
+        "yaxis": {"scale": "linear", "min": "auto", "max": "auto", "include_zero": true}
+      },
+      "layout": {"x": 0, "y": 0, "width": 6, "height": 3}
+    },
+    {
+      "id": 2,
+      "definition": {
+        "type": "timeseries",
+        "title": "Memory Usage with Rollup",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.mem.usable{env:$env} by {host}.rollup(avg, 60)"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {"x": 6, "y": 0, "width": 6, "height": 3}
+    },
+    {
+      "id": 3,
+      "definition": {
+        "type": "query_value",
+        "title": "Current CPU Average",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.cpu.user{*}"
+              }
+            ],
+            "response_format": "scalar"
+          }
+        ],
+        "precision": 2,
+        "custom_unit": "percent",
+        "autoscale": true
+      },
+      "layout": {"x": 0, "y": 3, "width": 3, "height": 2}
+    },
+    {
+      "id": 4,
+      "definition": {
+        "type": "toplist",
+        "title": "Top Hosts by CPU",
+        "requests": [
+          {
+            "formulas": [
+              {
+                "formula": "query1",
+                "limit": {"count": 10, "order": "desc"}
+              }
+            ],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.cpu.user{*} by {host}"
+              }
+            ],
+            "response_format": "scalar"
+          }
+        ]
+      },
+      "layout": {"x": 3, "y": 3, "width": 3, "height": 3}
+    },
+    {
+      "id": 5,
+      "definition": {
+        "type": "timeseries",
+        "title": "Disk I/O (Formula: Read + Write)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1 + query2", "alias": "Total I/O"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.disk.read_time{*} by {host}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "query2",
+                "query": "avg:system.disk.write_time{*} by {host}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {"x": 6, "y": 3, "width": 6, "height": 3}
+    },
+    {
+      "id": 6,
+      "definition": {
+        "type": "note",
+        "content": "## Infrastructure Metrics\n\nThis section shows key system metrics for all hosts.",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": true,
+        "tick_pos": "50%",
+        "tick_edge": "left"
+      },
+      "layout": {"x": 0, "y": 6, "width": 12, "height": 1}
+    },
+    {
+      "id": 7,
+      "definition": {
+        "type": "timeseries",
+        "title": "Log Error Rate",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "logs",
+                "name": "query1",
+                "query": "service:web status:error"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {"x": 0, "y": 7, "width": 6, "height": 3}
+    },
+    {
+      "id": 8,
+      "definition": {
+        "type": "table",
+        "title": "Log Entries by Service",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "logs",
+                "name": "query1",
+                "query": "status:error @http.url:/api/*"
+              }
+            ],
+            "response_format": "scalar",
+            "group_by": [
+              {"facet": "service", "limit": 20, "sort": {"aggregation": "count", "order": "desc"}}
+            ]
+          }
+        ]
+      },
+      "layout": {"x": 6, "y": 7, "width": 6, "height": 3}
+    },
+    {
+      "id": 9,
+      "definition": {
+        "type": "heatmap",
+        "title": "Request Latency Distribution",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:trace.flask.request.duration{service:web} by {resource_name}"
+              }
+            ],
+            "response_format": "timeseries"
+          }
+        ]
+      },
+      "layout": {"x": 0, "y": 10, "width": 6, "height": 3}
+    },
+    {
+      "id": 10,
+      "definition": {
+        "type": "manage_status",
+        "title": "Monitor Summary",
+        "summary_type": "monitors",
+        "display_format": "countsAndList"
+      },
+      "layout": {"x": 6, "y": 10, "width": 6, "height": 3}
+    },
+    {
+      "id": 11,
+      "definition": {
+        "type": "query_value",
+        "title": "Network Bytes In",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "sum:system.net.bytes_rcvd{host:web01,!env:staging}"
+              }
+            ],
+            "response_format": "scalar"
+          }
+        ],
+        "custom_unit": "byte"
+      },
+      "layout": {"x": 0, "y": 13, "width": 3, "height": 2}
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obs-migrate"
+version = "0.1.0"
+description = "Source-agnostic observability migration platform (Grafana, Datadog → Kibana)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+  { name = "Elastic" },
+]
+dependencies = [
+  "grafana-client>=5.0.0",
+  "lark>=1.2.2",
+  "pydantic>=2.11.0",
+  "promql-parser>=0.7.0",
+  "pyyaml>=6.0",
+  "requests>=2.31.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/elastic/mig-to-kbn"
+Repository = "https://github.com/elastic/mig-to-kbn"
+Issues = "https://github.com/elastic/mig-to-kbn/issues"
+
+[project.optional-dependencies]
+grafana = [
+  "grafana-client>=5.0.0",
+  "promql-parser>=0.7.0",
+]
+datadog = ["datadog-api-client"]
+dev = [
+  "hypothesis>=6.130.0",
+  "pip-licenses>=5.0.0",
+  "cyclonedx-bom>=5.0.0",
+  "pytest>=9.0.3",
+  "ruff>=0.15.11",
+  "mypy>=1.20.1",
+  "types-requests>=2.33.0.20260408",
+  "types-pyyaml>=6.0.12.20260408",
+  "pre-commit>=4.5.1",
+]
+all = [
+  "obs-migrate[grafana]",
+  "obs-migrate[datadog]",
+  "obs-migrate[dev]",
+]
+
+[project.scripts]
+obs-migrate = "observability_migration.app.cli:main"
+grafana-migrate = "observability_migration.adapters.source.grafana.cli:main"
+grafana-generate-corpus = "observability_migration.adapters.source.grafana.corpus:main"
+grafana-validate-uploaded = "observability_migration.adapters.source.grafana.smoke:main"
+datadog-migrate = "observability_migration.adapters.source.datadog.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["observability_migration*"]
+
+# ---------- Linting (ruff) ----------
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",     # pycodestyle errors
+  "W",     # pycodestyle warnings
+  "F",     # pyflakes
+  "I",     # isort
+  "UP",    # pyupgrade
+  "B",     # flake8-bugbear
+  "SIM",   # flake8-simplify
+  "RUF",   # ruff-specific
+]
+ignore = [
+  "E501",   # line length handled by formatter
+  "B010",   # do not call setattr with constant attr
+  "B905",   # zip strict= not needed for parallel iteration with unequal lengths
+  "SIM101", # merged isinstance checks can be less readable
+  "SIM102", # nested if flattening is a readability tradeoff
+  "SIM103", # direct boolean returns are a readability tradeoff
+  "SIM105", # contextlib.suppress can hide intent compared to try/except
+  "SIM108", # ternary operator (readability choice)
+  "SIM110", # all()/any() rewrites are not always clearer
+  "SIM117", # collapsing nested with blocks can hurt test readability
+  "RUF001", # ambiguous unicode in string literals (unit symbols like °, µ, –)
+  "RUF005", # collection literal concatenation (readability choice)
+  "RUF012", # mutable class variable annotations
+  "UP042",  # StrEnum only in 3.11+, keep str,Enum for clarity
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["observability_migration"]
+
+# ---------- Type checking (mypy) ----------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+# Keep the CI signal focused on typed interfaces and orchestrators that are
+# already stable enough to enforce.
+files = [
+  "observability_migration/core/interfaces",
+  "observability_migration/adapters/source/grafana/execution",
+  "observability_migration/adapters/source/grafana/adapter.py",
+  "observability_migration/adapters/source/datadog/cli.py",
+]
+explicit_package_bases = true
+follow_imports = "silent"
+exclude = ["build/", "dist/", ".venv/"]
+
+# ---------- Testing (pytest) ----------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-x -q"

@@ -1,0 +1,508 @@
+[
+  {
+    "id": 221632609,
+    "name": "{{component_type.name}} component is producing errors",
+    "type": "query alert",
+    "query": "sum(last_15m):sum:pipelines.component_errors_total{!component_id:_*,pipeline_id:46a24f86-9fd2-11f0-9e3d-da7ad0900002} by {component_type,component_id,host,worker_uuid} > 0",
+    "message": "Component errors detected",
+    "options": {
+      "include_tags": true,
+      "new_group_delay": 60,
+      "notify_no_data": false,
+      "thresholds": {
+        "critical": 0.0
+      },
+      "timeout_h": 1
+    },
+    "multi": true
+  },
+  {
+    "id": 12345,
+    "name": "High CPU on web hosts",
+    "type": "metric alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production} by {host} > 90",
+    "message": "CPU is above 90%! @slack-infra-alerts @pagerduty-oncall",
+    "tags": [
+      "env:production",
+      "team:infra"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 90,
+        "warning": 80
+      },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "renotify_interval": 60,
+      "evaluation_delay": 300,
+      "require_full_window": true,
+      "notify_by": [
+        "host"
+      ]
+    },
+    "multi": true
+  },
+  {
+    "id": 12346,
+    "name": "CPU changed sharply",
+    "type": "query alert",
+    "query": "pct_change(avg(last_5m),30m_ago):avg:system.cpu.user{env:production} by {host} > 10",
+    "message": "CPU changed sharply",
+    "tags": [
+      "env:production",
+      "team:infra"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 10
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 45678,
+    "name": "Checkout request rate is high",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:http.requests{env:prod,service:checkout} by {service}.as_rate() > 5",
+    "message": "Checkout request rate is high",
+    "options": {
+      "thresholds": {
+        "critical": 5
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 45679,
+    "name": "CPU rollup is high",
+    "type": "query alert",
+    "query": "avg(last_15m):avg:system.cpu.user{env:production} by {host}.rollup(avg, 60) > 80",
+    "message": "CPU rollup is high",
+    "options": {
+      "thresholds": {
+        "critical": 80
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 45680,
+    "name": "[Kubernetes] Pod {{pod_name.name}} is CrashloopBackOff on namespace {{kube_namespace.name}}",
+    "type": "query alert",
+    "query": "max(last_10m):default_zero(max:kubernetes_state.container.status_report.count.waiting{reason:crashloopbackoff} by {kube_cluster_name,kube_namespace,pod_name}) >= 1",
+    "message": "Pod is crashlooping",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      },
+      "notify_no_data": false,
+      "require_full_window": false
+    },
+    "multi": true
+  },
+  {
+    "id": 67890,
+    "name": "Error log spike",
+    "type": "log alert",
+    "query": "logs(\"status:error\").index(\"main\").rollup(\"count\").last(\"5m\") > 100",
+    "message": "Error logs spiking!",
+    "tags": [
+      "team:backend"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 100
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 67891,
+    "name": "Checkout latency p99 is high",
+    "type": "log alert",
+    "query": "logs(\"service:checkout status:error\").index(\"*\").rollup(\"pc99\", \"@duration\").last(\"10m\") > 250",
+    "message": "Checkout latency p99 is high",
+    "tags": [
+      "team:backend"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 250
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 67892,
+    "name": "Checkout latency avg is high",
+    "type": "log alert",
+    "query": "logs(\"service:checkout status:error\").index(\"*\").rollup(\"avg\", \"@duration\").last(\"10m\") > 150",
+    "message": "Checkout latency avg is high",
+    "tags": [
+      "team:backend"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 150
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 67893,
+    "name": "Checkout error count is high",
+    "type": "log alert",
+    "query": "logs(\"service:checkout status:error\").index(\"*\").rollup(\"count\").last(\"10m\") > 100",
+    "message": "Checkout error count is high",
+    "tags": [
+      "team:backend"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 100
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 45681,
+    "name": "[Redis] High memory consumption",
+    "type": "query alert",
+    "query": "avg(last_5m):100 * avg:redis.mem.used{*} / avg:redis.mem.maxmemory{*} > 90",
+    "message": "Redis memory usage is high",
+    "options": {
+      "thresholds": {
+        "critical": 90,
+        "warning": 70
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 456811,
+    "name": "Error Rate",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:shopist.checkouts.failed{env:prod} by {region}.as_count() / (sum:shopist.checkouts.failed{env:prod} by {region}.as_count() + sum:shopist.checkouts.success{env:prod} by {region}.as_count()) > 0.5",
+    "message": "The error rate is currently {{value}} ! Be careful !",
+    "tags": [],
+    "options": {
+      "thresholds": {
+        "critical": 0.5
+      },
+      "notify_audit": false,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "include_tags": true,
+      "new_group_delay": 60
+    },
+    "multi": true
+  },
+  {
+    "id": 456812,
+    "name": "[Seasonal threshold] Amount of connection",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:nginx.requests.total_count{env:prod} by {datacenter} / week_before(sum:nginx.requests.total_count{env:prod} by {datacenter}) <= 0.9",
+    "message": "The amount of connection is lower than yesterday by {{value}} !",
+    "tags": [],
+    "options": {
+      "thresholds": {
+        "critical": 0.9
+      },
+      "notify_audit": false,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "include_tags": true,
+      "new_group_delay": 60
+    },
+    "multi": true
+  },
+  {
+    "id": 45682,
+    "name": "[Postgres] Replication delay is abnormally high on {{host.name}}",
+    "type": "query alert",
+    "query": "avg(last_1h):anomalies(avg:postgresql.replication_delay{*}, 'basic', 2, direction='above', alert_window='last_15m', interval=20, count_default_zero='true') >= 1",
+    "message": "Replication delay anomaly detected",
+    "options": {
+      "thresholds": {
+        "critical": 1,
+        "critical_recovery": 0
+      },
+      "threshold_windows": {
+        "recovery_window": "last_15m",
+        "trigger_window": "last_15m"
+      },
+      "notify_no_data": false,
+      "require_full_window": true
+    }
+  },
+  {
+    "id": 45684,
+    "name": "Forecasted CPU saturation",
+    "type": "query alert",
+    "query": "avg(last_1h):forecast(avg:system.cpu.user{env:production} by {host}, 'linear', 1, interval=60) > 80",
+    "message": "Forecasted CPU saturation is high",
+    "options": {
+      "thresholds": {
+        "critical": 80
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 45685,
+    "name": "Outlier CPU host",
+    "type": "query alert",
+    "query": "avg(last_30m):outliers(avg:system.cpu.user{env:production} by {host}, 'dbscan', 7) > 0",
+    "message": "CPU outlier detected",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 45683,
+    "name": "CPU exclude_null wrapper",
+    "type": "query alert",
+    "query": "avg(last_5m):exclude_null(avg:system.cpu.user{env:production,service:exclude-null-demo} by {host}) > 80",
+    "message": "CPU is high",
+    "options": {
+      "thresholds": {
+        "critical": 80
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 456814,
+    "name": "CPU calendar_shift ratio",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host} / calendar_shift(avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host}, \"-1d\", \"UTC\") > 1.2",
+    "message": "CPU is higher than previous UTC day",
+    "options": {
+      "thresholds": {
+        "critical": 1.2
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 456816,
+    "name": "CPU calendar_shift month ratio",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production,service:calendar-shift-month-demo} by {host} / calendar_shift(avg:system.cpu.user{env:production,service:calendar-shift-month-demo} by {host}, \"-1mo\", \"UTC\") > 1.1",
+    "message": "CPU is higher than previous UTC month",
+    "options": {
+      "thresholds": {
+        "critical": 1.1
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 456818,
+    "name": "CPU calendar_shift stable-offset timezone",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host} / calendar_shift(avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host}, \"-1d\", \"Asia/Kolkata\") > 1.2",
+    "message": "CPU is higher than previous Kolkata local day",
+    "options": {
+      "thresholds": {
+        "critical": 1.2
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 456819,
+    "name": "CPU calendar_shift month stable-offset timezone",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production,service:calendar-shift-month-demo} by {host} / calendar_shift(avg:system.cpu.user{env:production,service:calendar-shift-month-demo} by {host}, \"-1mo\", \"Asia/Tokyo\") > 1.1",
+    "message": "CPU is higher than previous Tokyo local month",
+    "options": {
+      "thresholds": {
+        "critical": 1.1
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 456815,
+    "name": "CPU calendar_shift timezone-sensitive",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host} / calendar_shift(avg:system.cpu.user{env:production,service:calendar-shift-demo} by {host}, \"-1d\", \"America/New_York\") > 1.2",
+    "message": "CPU is higher than previous local day",
+    "options": {
+      "thresholds": {
+        "critical": 1.2
+      },
+      "notify_no_data": false
+    },
+    "multi": true
+  },
+  {
+    "id": 456817,
+    "name": "CPU exclude_null rollup wrapper",
+    "type": "query alert",
+    "query": "avg(last_5m):exclude_null(avg:system.cpu.user{env:production,service:exclude-null-demo} by {host}.rollup(avg, 60)) > 80",
+    "message": "CPU is high with rollup",
+    "options": {
+      "thresholds": {
+        "critical": 80
+      },
+      "notify_no_data": false
+    }
+  },
+  {
+    "id": 99999,
+    "name": "Composite: CPU and Memory",
+    "type": "composite",
+    "query": "12345 && 67890",
+    "message": "Both monitors triggered",
+    "options": {}
+  },
+  {
+    "id": 24680,
+    "name": "Checkout error event burst",
+    "type": "event alert",
+    "query": "events(\"tags:(service:checkout status:error)\").rollup(\"count\").last(\"10m\") > 50",
+    "message": "Checkout error events are spiking",
+    "options": {
+      "thresholds": {
+        "critical": 50
+      }
+    }
+  },
+  {
+    "id": 24681,
+    "name": "Checkout latency APM regression",
+    "type": "apm alert",
+    "query": "apm(\"service:checkout env:prod\").rollup(\"count\").last(\"10m\") > 100",
+    "message": "APM latency regression detected",
+    "options": {
+      "thresholds": {
+        "critical": 100
+      }
+    }
+  },
+  {
+    "id": 24682,
+    "name": "Checkout browser error burst",
+    "type": "rum alert",
+    "query": "rum(\"service:checkout @type:error\").rollup(\"count\").last(\"10m\") > 50",
+    "message": "RUM browser errors are spiking",
+    "options": {
+      "thresholds": {
+        "critical": 50
+      }
+    }
+  },
+  {
+    "id": 24683,
+    "name": "Checkout synthetic test failures",
+    "type": "synthetics alert",
+    "query": "synthetics(\"test:checkout\").last(\"10m\") > 0",
+    "message": "Synthetic tests are failing",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "id": 24684,
+    "name": "Checkout CI pipeline failures",
+    "type": "ci alert",
+    "query": "ci(\"pipeline:checkout status:error\").rollup(\"count\").last(\"15m\") > 5",
+    "message": "CI failures are spiking",
+    "options": {
+      "thresholds": {
+        "critical": 5
+      }
+    }
+  },
+  {
+    "id": 24685,
+    "name": "Checkout availability SLO burn",
+    "type": "slo alert",
+    "query": "slo(\"checkout-availability\").last(\"30m\") < 99.0",
+    "message": "Availability SLO is burning down",
+    "options": {
+      "thresholds": {
+        "critical": 99.0
+      }
+    }
+  },
+  {
+    "id": 24686,
+    "name": "IAM privileged role deletion",
+    "type": "audit alert",
+    "query": "audit(\"service:iam action:role.delete\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "Privileged role deletion detected",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "id": 24687,
+    "name": "AWS spend spike",
+    "type": "cost alert",
+    "query": "cost(\"service:aws env:prod\").rollup(\"sum\").last(\"1d\") > 1000",
+    "message": "Cloud spend spike detected",
+    "options": {
+      "thresholds": {
+        "critical": 1000
+      }
+    }
+  },
+  {
+    "id": 24688,
+    "name": "Network flow anomaly",
+    "type": "network alert",
+    "query": "network(\"service:checkout\").rollup(\"count\").last(\"10m\") > 0",
+    "message": "Network flow anomaly detected",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "id": 24689,
+    "name": "Checkout watchdog investigation",
+    "type": "watchdog alert",
+    "query": "watchdog(\"service:checkout\").last(\"10m\") > 0",
+    "message": "Watchdog surfaced a checkout anomaly",
+    "options": {
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "id": 35767150,
+    "name": "[Auto] Clock in sync with NTP",
+    "type": "service check",
+    "query": "\"ntp.in_sync\".over(\"*\").last(2).count_by_status()",
+    "message": "Clock drift detected",
+    "options": {
+      "thresholds": {
+        "critical": 1.0,
+        "ok": 1.0,
+        "warning": 1.0
+      }
+    },
+    "multi": true
+  }
+]
