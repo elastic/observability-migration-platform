@@ -158,6 +158,39 @@ obs-migrate cluster delete-dashboards  --kibana-url "$KIBANA_ENDPOINT" --kibana-
 obs-migrate cluster detect-serverless  --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 ```
 
+## Operations
+
+### Emergency Disable For ES|QL Variable Controls
+
+Phase B emits ES|QL variable controls (`ESQLQuerySingleSelectControl` /
+`ESQLQueryMultiSelectControl`) for Grafana and Datadog dashboard variables
+that pass the feasibility classifier. If a target Kibana cluster mis-renders
+these shapes (or any incident occurs), set the environment variable below
+before running migration:
+
+```bash
+export OBS_MIGRATION_DISABLE_VARIABLE_CONTROLS=1
+```
+
+The classifier short-circuits to "all variables rejected", restoring today's
+classic options-control behavior for every variable. No code change is
+required.
+
+### Per-Dashboard Minimum Kibana Version
+
+Each emitted dashboard YAML carries `minimum_kibana_version`. Default is
+`9.1.0`. The floor lifts to `9.3.0` automatically for any dashboard that
+includes at least one accepted multi-value variable (multi-select uses
+`MV_CONTAINS`, which requires Kibana 9.3+). The pre-upload guard
+`assert_min_kibana_version` in
+`observability_migration/targets/kibana/serverless.py` GETs `/api/status` and
+refuses to upload when the cluster is below the dashboard's required floor.
+
+See [`docs/roadmap/2026-04-27-kibana-variable-controls-design.md`](../roadmap/2026-04-27-kibana-variable-controls-design.md)
+for the full design and
+[`docs/roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md`](../roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md)
+for the implementation plan.
+
 ## Location
 
 Shared target package: `observability_migration/targets/kibana/`

@@ -191,6 +191,23 @@ To emit a validated starter rule-pack template:
 | Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 
+## Query Variables and ES|QL Parameters (Phase B)
+
+Grafana query variables that resolve to a single ES|QL field, use `=` / `=~`
+matchers without regex metacharacters, and don't drive panel `repeat` are
+bound to ES|QL parameters: `WHERE field == ?varname` for single-select,
+`WHERE MV_CONTAINS(?varname, field)` for multi-select. The corresponding
+`ESQLQuery*SelectControl` populates the dropdown via a deterministic
+`FROM <data_view> | WHERE <field> IS NOT NULL | STATS BY <field> | KEEP <field> | LIMIT 1000`
+query. Variables that fail the classifier (e.g. `includeAll: true` with
+single-select, regex template, datasource references) keep today's classic
+options-control fallback.
+
+See [`docs/roadmap/2026-04-27-kibana-variable-controls-design.md`](../roadmap/2026-04-27-kibana-variable-controls-design.md)
+for the full design and
+[`docs/roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md`](../roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md)
+for the implementation plan.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are

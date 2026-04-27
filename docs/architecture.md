@@ -101,6 +101,27 @@ Generated artifacts typically include:
 - `preflight_report.json` and `required_target_contract.json` in Grafana preflight mode
 - `upload_smoke_report.json` or `uploaded_dashboard_smoke_report.json` from smoke validation
 
+## Kibana Variable Controls (Phase B)
+
+Grafana query-variables and Datadog template-variables that bind to a single
+ES|QL field are emitted as `ESQLQuerySingleSelectControl` /
+`ESQLQueryMultiSelectControl` shapes. The corresponding panel ES|QL is
+rewritten to `WHERE field == ?varname` (or `MV_CONTAINS(?varname, field)` for
+multi-value). Variables that fail the feasibility classifier (regex templates,
+"All" pseudo-values, datasource references, etc.) keep today's classic
+options-control behavior.
+
+The classifier and post-translation verifier live in
+`observability_migration/core/variable_classifier.py` and
+`observability_migration/core/variable_control_verifier.py`. Per-dashboard
+`minimum_kibana_version` lifts to `9.3.0` whenever an accepted multi-value
+variable is present (multi-select needs `MV_CONTAINS`, which is 9.3+).
+
+See [`docs/roadmap/2026-04-27-kibana-variable-controls-design.md`](roadmap/2026-04-27-kibana-variable-controls-design.md)
+for the full design and
+[`docs/roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md`](roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md)
+for the implementation plan.
+
 ## Package Map
 
 | Path | Responsibility |

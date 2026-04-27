@@ -24,11 +24,20 @@ more honest, or more maintainable target.
 |---|---|
 | Grafana metrics | Mature rule-engine ES|QL path plus a strong native `PROMQL` path |
 | Grafana logs | ES|QL translation exists, but richer search/parsing bridges are limited |
-| Grafana controls | Dashboard controls are emitted, but query translation often expands template variables to wildcards or literal `1` rather than preserving parameters |
+| Grafana controls | Phase B: classifier-eligible query variables are bound to ES|QL `?param` substitutions in `WHERE` clauses (`?varname` for single-select, `MV_CONTAINS(?varname, field)` for multi-select); non-eligible variables (regex templates, `includeAll`, datasource references) still degrade to the classic options-control fallback |
 | Datadog metrics | Clean AST-to-ES|QL pipeline for many widgets and formulas |
 | Datadog logs | Already uses `KQL()` as a bridge when free-text terms are present |
-| Datadog controls | Kibana dashboard controls are emitted from template variables, but some query-level semantics still degrade to broader matches or warnings where Datadog behavior has no exact target equivalent |
+| Datadog controls | Phase B: classifier-eligible template variables are bound to ES|QL `?param` (`WHERE field == ?varname` for single-value, `MV_CONTAINS(?varname, field)` for multi-value); `LIKE`-pattern values and mixed OR branches still fall back to the classic options-control + warning |
 | Enrichment / lookup | Not yet a first-class translation target in either adapter |
+
+The phase-B variable-control work that lifted the Grafana and Datadog
+controls rows is documented in
+[`docs/roadmap/2026-04-27-kibana-variable-controls-design.md`](../roadmap/2026-04-27-kibana-variable-controls-design.md)
+(design) and
+[`docs/roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md`](../roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md)
+(implementation plan). Phase 2 (`??field`, `??function`, `TBUCKET`) remains
+out of scope and continues to track under the P0 row of the upgrade matrix
+below.
 
 ## Type Constraints And Function Safety
 

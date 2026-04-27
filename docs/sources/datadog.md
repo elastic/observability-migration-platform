@@ -270,6 +270,19 @@ Elasticsearch. This enables type-aware translation decisions and preflight
 checks — the translator can verify whether a mapped field actually exists,
 is numeric and aggregatable, or has conflicting types across indices.
 
+## Template Variables and ES|QL Parameters (Phase B)
+
+Datadog template variables with a single tag, no `*` wildcard default, and a
+tag that resolves to a single ES|QL field are bound to ES|QL parameters:
+`WHERE field == ?varname` for single-value, `WHERE MV_CONTAINS(?varname, field)`
+for multi-value. Variables that don't pass the classifier (e.g. `LIKE`-pattern
+values, mixed OR branches) keep today's classic options-control fallback.
+
+See [`docs/roadmap/2026-04-27-kibana-variable-controls-design.md`](../roadmap/2026-04-27-kibana-variable-controls-design.md)
+for the full design and
+[`docs/roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md`](../roadmap/2026-04-27-kibana-variable-controls-implementation-plan.md)
+for the implementation plan.
+
 ## Command Coverage
 
 Datadog command examples and the canonical shared migration contract are
