@@ -1,5 +1,8 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +10,15 @@ name = "obs-migrate"
 version = "0.1.0"
 description = "Source-agnostic observability migration platform (Grafana, Datadog → Kibana)."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "Elastic-2.0"
+license-files = [
+  "LICENSE",
+  "NOTICE.txt",
+  "THIRD_PARTY_NOTICES.md",
+  "docs/licenses/dependencies.md",
+  "docs/licenses/sbom.cdx.json",
+  "licenses/*.txt",
+]
 requires-python = ">=3.11"
 authors = [
   { name = "Elastic" },
@@ -33,6 +44,7 @@ grafana = [
 ]
 datadog = ["datadog-api-client"]
 dev = [
+  "build>=1.3.0",
   "hypothesis>=6.130.0",
   "pip-licenses>=5.0.0",
   "cyclonedx-bom>=5.0.0",
@@ -42,6 +54,8 @@ dev = [
   "types-requests>=2.33.0.20260408",
   "types-pyyaml>=6.0.12.20260408",
   "pre-commit>=4.5.1",
+  "setuptools>=77",
+  "wheel",
 ]
 all = [
   "obs-migrate[grafana]",

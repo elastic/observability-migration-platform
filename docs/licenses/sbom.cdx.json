@@ -229,6 +229,50 @@
       "version": "5.0"
     },
     {
+      "bom-ref": "build==1.4.4",
+      "description": "A simple, correct Python build frontend",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: issues",
+          "type": "issue-tracker",
+          "url": "https://github.com/pypa/build/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: source",
+          "type": "other",
+          "url": "https://github.com/pypa/build"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: changelog",
+          "type": "release-notes",
+          "url": "https://build.pypa.io/en/stable/changelog.html"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: homepage",
+          "type": "website",
+          "url": "https://build.pypa.io"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "build",
+      "properties": [
+        {
+          "name": "cdx:python:package:required-extra",
+          "value": "virtualenv"
+        }
+      ],
+      "purl": "pkg:pypi/build@1.4.4",
+      "type": "library",
+      "version": "1.4.4"
+    },
+    {
       "bom-ref": "certifi==2026.2.25",
       "description": "Python package for providing Mozilla's CA Bundle.",
       "externalReferences": [
@@ -1701,6 +1745,39 @@
       "version": "3.3.2"
     },
     {
+      "bom-ref": "pyproject_hooks==1.2.0",
+      "description": "Wrappers to call pyproject.toml-based build backend hooks.",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://pyproject-hooks.readthedocs.io/"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Source",
+          "type": "other",
+          "url": "https://github.com/pypa/pyproject-hooks"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://pyproject-hooks.readthedocs.io/en/latest/changelog.html"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pyproject_hooks",
+      "purl": "pkg:pypi/pyproject-hooks@1.2.0",
+      "type": "library",
+      "version": "1.2.0"
+    },
+    {
       "bom-ref": "pytest==9.0.3",
       "description": "pytest: simple powerful testing with Python",
       "externalReferences": [
@@ -2124,6 +2201,39 @@
       "purl": "pkg:pypi/ruff@0.15.11",
       "type": "library",
       "version": "0.15.11"
+    },
+    {
+      "bom-ref": "setuptools==82.0.1",
+      "description": "Most extensible Python build backend with support for C/C++ extension modules",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://setuptools.pypa.io/"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Source",
+          "type": "other",
+          "url": "https://github.com/pypa/setuptools"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://setuptools.pypa.io/en/stable/history.html"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "setuptools",
+      "purl": "pkg:pypi/setuptools@82.0.1",
+      "type": "library",
+      "version": "82.0.1"
     },
     {
       "bom-ref": "six==1.17.0",
@@ -2653,6 +2763,44 @@
       "purl": "pkg:pypi/webcolors@25.10.0",
       "type": "library",
       "version": "25.10.0"
+    },
+    {
+      "bom-ref": "wheel==0.47.0",
+      "description": "Command line tool for manipulating wheel files",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://wheel.readthedocs.io/"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Issue Tracker",
+          "type": "issue-tracker",
+          "url": "https://github.com/pypa/wheel/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Source",
+          "type": "other",
+          "url": "https://github.com/pypa/wheel"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://wheel.readthedocs.io/en/stable/news.html"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "wheel",
+      "purl": "pkg:pypi/wheel@0.47.0",
+      "type": "library",
+      "version": "0.47.0"
     }
   ],
   "dependencies": [
@@ -2682,9 +2830,18 @@
     },
     {
       "dependsOn": [
+        "build==1.4.4",
         "pytest==9.0.3"
       ],
       "ref": "boolean.py==5.0"
+    },
+    {
+      "dependsOn": [
+        "packaging==26.1",
+        "pyproject_hooks==1.2.0",
+        "virtualenv==21.2.4"
+      ],
+      "ref": "build==1.4.4"
     },
     {
       "ref": "certifi==2026.2.25"
@@ -2746,6 +2903,7 @@
     },
     {
       "dependsOn": [
+        "build==1.4.4",
         "niquests==3.18.6",
         "ruff==0.15.11",
         "verlib2==0.3.2"
@@ -2838,6 +2996,7 @@
         "lxml==6.0.4",
         "mypy_extensions==1.1.0",
         "pathspec==1.0.4",
+        "setuptools==82.0.1",
         "typing_extensions==4.15.0"
       ],
       "ref": "mypy==1.20.1"
@@ -2859,7 +3018,9 @@
     {
       "dependsOn": [
         "mypy==1.20.1",
-        "pytest==9.0.3"
+        "pytest==9.0.3",
+        "setuptools==82.0.1",
+        "wheel==0.47.0"
       ],
       "ref": "packageurl-python==0.17.6"
     },
@@ -2878,7 +3039,8 @@
         "mypy==1.20.1",
         "prettytable==3.17.0",
         "ruff==0.15.11",
-        "virtualenv==21.2.4"
+        "virtualenv==21.2.4",
+        "wheel==0.47.0"
       ],
       "ref": "pip-licenses==5.5.5"
     },
@@ -2946,6 +3108,9 @@
       "ref": "pyparsing==3.3.2"
     },
     {
+      "ref": "pyproject_hooks==1.2.0"
+    },
+    {
       "dependsOn": [
         "Pygments==2.20.0",
         "attrs==26.1.0",
@@ -2953,7 +3118,8 @@
         "iniconfig==2.3.0",
         "packaging==26.1",
         "pluggy==1.6.0",
-        "requests==2.33.1"
+        "requests==2.33.1",
+        "setuptools==82.0.1"
       ],
       "ref": "pytest==9.0.3"
     },
@@ -2967,7 +3133,8 @@
       "dependsOn": [
         "filelock==3.29.0",
         "platformdirs==4.9.6",
-        "pytest==9.0.3"
+        "pytest==9.0.3",
+        "setuptools==82.0.1"
       ],
       "ref": "python-discovery==1.2.2"
     },
@@ -3011,6 +3178,7 @@
     {
       "dependsOn": [
         "PyYAML==6.0.3",
+        "build==1.4.4",
         "cyclonedx-bom==7.3.0",
         "datadog-api-client==2.53.0",
         "grafana-client==5.0.2",
@@ -3024,8 +3192,10 @@
         "pytest==9.0.3",
         "requests==2.33.1",
         "ruff==0.15.11",
+        "setuptools==82.0.1",
         "types-PyYAML==6.0.12.20260408",
-        "types-requests==2.33.0.20260408"
+        "types-requests==2.33.0.20260408",
+        "wheel==0.47.0"
       ],
       "ref": "root-component"
     },
@@ -3034,6 +3204,20 @@
     },
     {
       "ref": "ruff==0.15.11"
+    },
+    {
+      "dependsOn": [
+        "build==1.4.4",
+        "filelock==3.29.0",
+        "mypy==1.20.1",
+        "packaging==26.1",
+        "pyproject_hooks==1.2.0",
+        "pytest==9.0.3",
+        "ruff==0.15.11",
+        "virtualenv==21.2.4",
+        "wheel==0.47.0"
+      ],
+      "ref": "setuptools==82.0.1"
     },
     {
       "ref": "six==1.17.0"
@@ -3082,6 +3266,7 @@
     },
     {
       "dependsOn": [
+        "build==1.4.4",
         "pytest==9.0.3",
         "ruff==0.15.11"
       ],
@@ -3105,6 +3290,12 @@
     },
     {
       "ref": "webcolors==25.10.0"
+    },
+    {
+      "dependsOn": [
+        "packaging==26.1"
+      ],
+      "ref": "wheel==0.47.0"
     }
   ],
   "metadata": {
@@ -3126,6 +3317,14 @@
           "comment": "from pyproject urls: Homepage",
           "type": "website",
           "url": "https://github.com/elastic/mig-to-kbn"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "Elastic-2.0"
+          }
         }
       ],
       "name": "obs-migrate",

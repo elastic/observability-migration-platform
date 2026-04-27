@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 #
 # End-to-end migration pipeline:
 #   1. Migrate Grafana dashboards → Kibana YAML  (with --native-promql)

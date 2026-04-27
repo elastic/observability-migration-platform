@@ -11,6 +11,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `arrow` | 1.4.0 | Apache Software License | <https://github.com/arrow-py/arrow> |
 | `attrs` | 26.1.0 | MIT | <https://www.attrs.org/en/stable/changelog.html> |
 | `boolean.py` | 5.0 | BSD-2-Clause | <https://github.com/bastikr/boolean.py> |
+| `build` | 1.4.4 | MIT | <https://build.pypa.io> |
 | `certifi` | 2026.2.25 | Mozilla Public License 2.0 (MPL 2.0) | <https://github.com/certifi/python-certifi> |
 | `cfgv` | 3.5.0 | MIT | <https://github.com/asottile/cfgv> |
 | `chardet` | 5.2.0 | GNU Lesser General Public License v2 or later (LGPLv2+) | <https://github.com/chardet/chardet> |
@@ -44,16 +45,19 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `packageurl-python` | 0.17.6 | MIT License | <https://github.com/package-url/packageurl-python> |
 | `packaging` | 26.1 | Apache-2.0 OR BSD-2-Clause | <https://github.com/pypa/packaging> |
 | `pathspec` | 1.0.4 | Mozilla Public License 2.0 (MPL 2.0) | <https://python-path-specification.readthedocs.io/en/latest/index.html> |
+| `pip-licenses` | 5.5.5 | MIT | <https://github.com/raimon49/pip-licenses> |
 | `pip-requirements-parser` | 32.0.1 | MIT | <https://github.com/nexB/pip-requirements-parser> |
 | `platformdirs` | 4.9.6 | MIT | <https://github.com/tox-dev/platformdirs> |
 | `pluggy` | 1.6.0 | MIT License |  |
 | `pre_commit` | 4.5.1 | MIT | <https://github.com/pre-commit/pre-commit> |
+| `prettytable` | 3.17.0 | BSD-3-Clause | <https://github.com/prettytable/prettytable> |
 | `promql-parser` | 0.8.0 | MIT (manual override — see https://github.com/messense/py-promql-parser/blob/main/LICENSE) | <https://github.com/messense/py-promql-parser/blob/main/LICENSE> |
 | `py-serializable` | 2.1.0 | Apache Software License | <https://github.com/madpah/serializable#readme> |
 | `pydantic` | 2.13.2 | MIT | <https://github.com/pydantic/pydantic> |
 | `pydantic_core` | 2.46.2 | MIT | <https://github.com/pydantic> |
 | `Pygments` | 2.20.0 | BSD-2-Clause | <https://pygments.org> |
 | `pyparsing` | 3.3.2 | MIT | <https://github.com/pyparsing/pyparsing/> |
+| `pyproject_hooks` | 1.2.0 | MIT License | <https://github.com/pypa/pyproject-hooks> |
 | `pytest` | 9.0.3 | MIT | <https://docs.pytest.org/en/latest/> |
 | `python-dateutil` | 2.9.0.post0 | Apache Software License; BSD License | <https://github.com/dateutil/dateutil> |
 | `python-discovery` | 1.2.2 | MIT License | <https://github.com/tox-dev/python-discovery> |
@@ -66,6 +70,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `rfc3987-syntax` | 1.1.0 | MIT | <https://github.com/willynilly/rfc3987-syntax> |
 | `rpds-py` | 0.30.0 | MIT | <https://github.com/crate-py/rpds> |
 | `ruff` | 0.15.11 | MIT | <https://docs.astral.sh/ruff> |
+| `setuptools` | 82.0.1 | MIT | <https://github.com/pypa/setuptools> |
 | `six` | 1.17.0 | MIT License | <https://github.com/benjaminp/six> |
 | `sortedcontainers` | 2.4.0 | Apache Software License | <http://www.grantjenks.com/docs/sortedcontainers/> |
 | `types-PyYAML` | 6.0.12.20260408 | Apache-2.0 | <https://github.com/python/typeshed> |
@@ -79,4 +84,6 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `verlib2` | 0.3.2 | BSD-2-Clause (manual override — see https://github.com/pyveci/verlib2/blob/main/LICENSE) | <https://github.com/pyveci/verlib2> |
 | `virtualenv` | 21.2.4 | MIT | <https://github.com/pypa/virtualenv> |
 | `wassima` | 2.0.6 | MIT | <https://github.com/jawah/wassima/blob/main/CHANGELOG.md> |
+| `wcwidth` | 0.6.0 | MIT | <https://github.com/jquast/wcwidth> |
 | `webcolors` | 25.10.0 | BSD License | <https://webcolors.readthedocs.io> |
+| `wheel` | 0.47.0 | MIT | <https://github.com/pypa/wheel> |

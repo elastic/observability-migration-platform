@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Tests for translator-side alias readability (Workstream B).
 
 These tests pin down the public contract of the alias generators and the

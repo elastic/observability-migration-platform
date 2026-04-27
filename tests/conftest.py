@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Shared test fixtures for the migration test suite.
 
 Provides reusable panel builders, mock resolvers, and context factories

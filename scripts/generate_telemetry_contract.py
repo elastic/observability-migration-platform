@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Generate a telemetry producer contract from migrated dashboard artifacts."""
 
 from __future__ import annotations

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """License compliance gate for obs-migrate.
 
 Runs `pip-licenses` against the checked Python dependency environment and
@@ -130,6 +133,7 @@ def _run_pip_licenses() -> list[dict[str, str]]:
                 "-m",
                 "piplicenses",
                 "--format=json",
+                "--with-system",
                 "--with-urls",
             ],
             check=True,

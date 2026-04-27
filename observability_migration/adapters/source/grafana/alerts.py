@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Extract Grafana legacy alert rules and model them as migration tasks.
 
 Grafana alerting and Kibana alerting have fundamentally different models:

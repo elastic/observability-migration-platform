@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Grafana display metadata to kb-dashboard YAML schema mapping.
 
 Handles: units/format, legend, axis config, metric labels, title cleanup.

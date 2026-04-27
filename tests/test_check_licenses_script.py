@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 import importlib.util
 import pathlib
 import tempfile
@@ -17,7 +20,7 @@ def _load_script_module():
 
 
 class CheckLicensesScriptTests(unittest.TestCase):
-    def test_run_pip_licenses_omits_with_system_packages(self):
+    def test_run_pip_licenses_includes_system_packages(self):
         module = _load_script_module()
 
         with patch.object(
@@ -28,7 +31,7 @@ class CheckLicensesScriptTests(unittest.TestCase):
             module._run_pip_licenses()
 
         command = mock_run.call_args.args[0]
-        self.assertNotIn("--with-system", command)
+        self.assertIn("--with-system", command)
         self.assertIn("--with-urls", command)
 
     def test_main_is_strict_by_default_for_unknown_licenses(self):

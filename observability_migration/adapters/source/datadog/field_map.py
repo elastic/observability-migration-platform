@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Configurable field name mapping from Datadog metric/tag names to Elasticsearch fields.
 
 Datadog uses dotted metric names (system.cpu.user) and tag keys (host, env, service).

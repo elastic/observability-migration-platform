@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Comprehensive test suites aligned with the Datadog migration test plan.
 
 Covers sections 10.1 through 10.15 as described in TEST_PLAN.md.

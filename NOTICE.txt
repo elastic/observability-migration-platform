@@ -1,0 +1,14 @@
+Observability Migration Platform
+Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+
+This product includes software developed by Elasticsearch B.V.
+
+First-party repository content is licensed under the Elastic License 2.0; see
+LICENSE for the full license text.
+
+Third-party material redistributed in this repository is listed in
+THIRD_PARTY_NOTICES.md and remains governed by its upstream license terms.
+Bundled third-party license texts are provided under licenses/.
+
+The checked Python dependency environment is inventoried in
+docs/licenses/dependencies.md and docs/licenses/sbom.cdx.json.

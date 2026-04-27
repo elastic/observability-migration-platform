@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Display enrichment: Datadog units and visual config → kb-dashboard YAML format.
 
 Maps Datadog unit strings and formatting to the YAML format spec used by

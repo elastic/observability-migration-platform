@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 """Rollout safety: artifact lineage, rollout states, and shadow-space workflow.
 
 This module provides the infrastructure for safe, traceable migration deployments.

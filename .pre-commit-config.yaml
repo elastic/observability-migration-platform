@@ -1,3 +1,6 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
@@ -8,6 +11,11 @@ repos:
           - --no-banner
   - repo: local
     hooks:
+      - id: source-headers
+        name: Source license headers
+        entry: python3 scripts/check_source_headers.py
+        language: system
+        pass_filenames: false
       - id: ruff
         name: Ruff
         entry: .venv/bin/python -m ruff check
