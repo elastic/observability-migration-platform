@@ -4206,8 +4206,11 @@ def _translate_panel_group(
 
 
 def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                        llm_endpoint="", llm_model="", llm_api_key=""):
+                        llm_endpoint="", llm_model="", llm_api_key="", *, binding_map=None):
+    from observability_migration.core.variable_classifier import compute_min_kibana_version
+
     rule_pack = rule_pack or RulePackConfig()
+    minimum_kibana_version = compute_min_kibana_version(binding_map or {})
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
     description = dashboard.get("description", "") or f"Migrated from Grafana ({uid})"
@@ -4345,6 +4348,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+        binding_map=binding_map,
     )
 
     yaml_doc = {
@@ -4352,7 +4356,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             {
                 "name": title,
                 "description": description,
-                "minimum_kibana_version": MINIMUM_KIBANA_VERSION,
+                "minimum_kibana_version": minimum_kibana_version,
                 "settings": {"sync": {"cursor": True}},
                 "panels": top_level_panels,
             }

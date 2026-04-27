@@ -72,8 +72,13 @@ def generate_dashboard_yaml(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
+    binding_map: dict[str, Any] | None = None,
 ) -> str:
     """Generate a complete kb-dashboard YAML string for a dashboard."""
+    from observability_migration.core.variable_classifier import compute_min_kibana_version
+
+    minimum_kibana_version = compute_min_kibana_version(binding_map or {})
+
     panels = []
     result_map = {r.widget_id: r for r in results}
 
@@ -112,7 +117,7 @@ def generate_dashboard_yaml(
             {
                 "name": dashboard.title,
                 "description": dashboard.description or f"Migrated from Datadog: {dashboard.title}",
-                "minimum_kibana_version": KIBANA_MIN_VERSION,
+                "minimum_kibana_version": minimum_kibana_version,
                 "settings": {"sync": {"cursor": True}},
                 "panels": panels,
             }
@@ -131,6 +136,7 @@ def generate_dashboard_yaml(
 
     controls = _build_controls_from_template_vars(
         dashboard.template_variables, data_view, field_map,
+        binding_map=binding_map,
     )
     if controls:
         doc["dashboards"][0]["controls"] = controls
