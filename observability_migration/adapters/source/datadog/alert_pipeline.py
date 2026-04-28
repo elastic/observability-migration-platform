@@ -125,6 +125,8 @@ def build_payload_validation_lookup(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     payload_validation_by_alert_id: dict[str, Any] = {}
     payload_preflight: dict[str, Any] | None = None
+    if not getattr(args, "preflight", False):
+        return payload_validation_by_alert_id, payload_preflight
     if not getattr(args, "kibana_url", ""):
         return payload_validation_by_alert_id, payload_preflight
 

@@ -157,6 +157,43 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("http_requests_total", metrics["fields"])
         self.assertTrue(metrics["requires_native_promql"])
 
+    def test_contract_extracts_required_values_from_kql_function_filters(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "logs.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Logs",
+                                "panels": [
+                                    {
+                                        "title": "Redis errors",
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-generic-default\n"
+                                                "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend "
+                                                'AND KQL("(service.name: redis) AND (log.level: error)")\n'
+                                                "| KEEP @timestamp, message, log.level, service.name"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        logs = contract["streams"]["logs-generic-default"]
+        self.assertEqual(logs["required_values"]["service.name"], ["redis"])
+        self.assertEqual(logs["required_values"]["log.level"], ["error"])
+
     def test_contract_finds_parent_verification_packets_when_given_yaml_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_dir = Path(tmpdir) / "dashboards" / "yaml"
@@ -182,6 +219,93 @@ class TelemetryContractTests(unittest.TestCase):
         stream = contract["streams"]["metrics-*"]
         self.assertIn("packet_only_metric", stream["fields"])
         self.assertIn("packet_only_dimension", stream["fields"])
+
+    def test_contract_preserves_source_promql_requirements_from_manualized_packets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "node.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Node",
+                                "panels": [
+                                    {
+                                        "title": "CPU Busy",
+                                        "markdown": {"content": "Manual review required"},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Node",
+                                "panel": "CPU Busy",
+                                "source_query": (
+                                    '100 * (1 - avg(rate(node_cpu_seconds_total{'
+                                    'mode="idle", instance="$node"}[5m])))'
+                                ),
+                                "query_ir": {
+                                    "source_language": "promql",
+                                    "target_index": "metrics-prometheus-default",
+                                    "target_query": "ROW manual = \"placeholder\"",
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-prometheus-default"]
+        self.assertEqual(stream["fields"]["node_cpu_seconds_total"]["role"], "metric")
+        self.assertEqual(stream["fields"]["mode"]["role"], "dimension")
+        self.assertEqual(stream["required_values"]["mode"], ["idle"])
+
+    def test_contract_does_not_treat_datadog_source_queries_as_promql(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Redis",
+                                "panel": "Logs",
+                                "source_query": "service:redis status:error",
+                                "query_ir": {
+                                    "source_language": "datadog",
+                                    "target_index": "logs-generic-default",
+                                    "target_query": (
+                                        "FROM logs-generic-default\n"
+                                        "| WHERE KQL(\"service.name: redis\")"
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["logs-generic-default"]["fields"]
+        self.assertIn("service.name", fields)
+        self.assertNotIn("service:redis", fields)
+        self.assertNotIn("status:error", fields)
 
     def test_promql_discovery_handles_bare_metrics_ranges_and_negative_matchers(self):
         with tempfile.TemporaryDirectory() as tmpdir:

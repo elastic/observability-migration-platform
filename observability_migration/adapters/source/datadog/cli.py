@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -158,6 +159,22 @@ def main(argv: list[str] | None = None) -> None:
     )
 
 
+def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+    removed = 0
+    if yaml_dir.exists():
+        for yaml_file in yaml_dir.glob("*.yaml"):
+            yaml_file.unlink()
+            removed += 1
+    if compiled_dir.exists():
+        for child in compiled_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+            removed += 1
+    return removed
+
+
 def _run_dashboard_pipeline(
     *,
     args: argparse.Namespace,
@@ -177,6 +194,9 @@ def _run_dashboard_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
     yaml_dir = output_dir / "yaml"
     yaml_dir.mkdir(parents=True, exist_ok=True)
+    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, output_dir / "compiled")
+    if removed_stale_artifacts:
+        print(f"  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {output_dir}")
 
     all_results: list[DashboardResult] = []
     dashboard_outputs: list[tuple[DashboardResult, Any]] = []
@@ -413,13 +433,13 @@ def _run_dashboard_preflight(
     field_map: Any,
     args: argparse.Namespace,
 ) -> PreflightResult | None:
-    """Run Datadog preflight when capability data is available or explicitly requested."""
+    """Run Datadog preflight only when explicitly requested."""
     has_capabilities = bool(
         getattr(field_map, "field_caps", {})
         or getattr(field_map, "metric_field_caps", {})
         or getattr(field_map, "log_field_caps", {})
     )
-    if not (args.preflight or has_capabilities):
+    if not args.preflight:
         return None
     result = run_preflight(dashboard, field_map=field_map)
     if args.preflight and not has_capabilities and not result.issues:

@@ -18,9 +18,14 @@ from typing import Any
 RequestFn = Callable[[str, str, Any | None, str], dict[str, Any]]
 
 
-def concrete_stream_name(index_pattern: str) -> str:
+def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = None) -> str:
     """Return a concrete data stream name that is matched by an artifact index pattern."""
     value = index_pattern.strip()
+    required_dataset = _single_required_value(stream, "data_stream.dataset")
+    if required_dataset:
+        stream_type = _stream_type_from_pattern(value)
+        namespace = _single_required_value(stream, "data_stream.namespace") or "default"
+        return f"{stream_type}-{_data_stream_part(required_dataset)}-{_data_stream_part(namespace)}"
     if value in {"metrics-*", "logs-*", "traces-*"}:
         return f"{value[:-2]}-generic-default"
     if value.endswith("-*"):
@@ -35,7 +40,7 @@ def concrete_stream_name(index_pattern: str) -> str:
 
 def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
     """Build an index template for one stream contract."""
-    concrete_name = concrete_stream_name(index_pattern)
+    concrete_name = concrete_stream_name(index_pattern, stream)
     stream_type = concrete_name.split("-", 1)[0] if "-" in concrete_name else "metrics"
     is_metrics = stream_type == "metrics"
     dataset = _dataset_from_stream(concrete_name)
@@ -50,7 +55,8 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
         props["message"] = {"type": "text"}
     routing_path: list[str] = []
 
-    for field_name, info in sorted((stream.get("fields") or {}).items()):
+    fields = stream.get("fields") or {}
+    for field_name, info in sorted(fields.items()):
         if field_name.startswith("data_stream.") or field_name in props:
             continue
         if info.get("role") == "metric":
@@ -60,6 +66,15 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
                     "counter" if info.get("metric_kind") == "counter" else "gauge"
                 )
         elif is_metrics:
+            props[field_name] = {"type": "keyword", "time_series_dimension": True}
+            routing_path.append(field_name)
+        else:
+            props[field_name] = {"type": "keyword"}
+
+    for field_name in _generated_dimension_fields(stream):
+        if field_name.startswith("data_stream.") or field_name in props:
+            continue
+        if is_metrics:
             props[field_name] = {"type": "keyword", "time_series_dimension": True}
             routing_path.append(field_name)
         else:
@@ -76,7 +91,7 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     }
     if is_metrics:
         template["template"]["settings"]["index"]["mode"] = "time_series"
-        template["template"]["settings"]["index"]["look_back_time"] = "7d"
+        template["template"]["settings"]["index"]["look_back_time"] = _look_back_time(stream)
         template["template"]["settings"]["index"]["routing_path"] = routing_path or ["data_stream.dataset"]
     return template
 
@@ -93,12 +108,12 @@ def generate_documents(
     now = now or datetime.datetime.now(datetime.UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.UTC)
-    total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
+    timestamps = _document_timestamps(now, data_hours=data_hours, interval_sec=interval_sec)
     rng = random.Random(42)
     counter_state: dict[tuple[str, str, int], float] = {}
 
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
-        concrete_name = concrete_stream_name(index_pattern)
+        concrete_name = concrete_stream_name(index_pattern, stream)
         is_metrics = concrete_name.startswith("metrics-")
         combinations = _dimension_combinations(stream, max_combinations=max_combinations)
         metric_fields = {
@@ -107,11 +122,16 @@ def generate_documents(
             if info.get("role") == "metric"
         }
 
-        for t_idx in range(total_points):
-            ts = now - datetime.timedelta(seconds=(total_points - t_idx - 1) * interval_sec)
+        previous_ts: datetime.datetime | None = None
+        for ts in timestamps:
             hour = ts.hour + ts.minute / 60.0
+            effective_interval = (
+                int((ts - previous_ts).total_seconds())
+                if previous_ts is not None
+                else min(interval_sec, 60)
+            )
             for combo_idx, dimensions in enumerate(combinations):
-                doc = {
+                doc: dict[str, Any] = {
                     "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                     **dimensions,
                 }
@@ -120,13 +140,14 @@ def generate_documents(
                         if info.get("metric_kind") == "counter":
                             key = (concrete_name, field_name, combo_idx)
                             counter_state[key] = counter_state.get(key, float(10 + combo_idx))
-                            counter_state[key] += _counter_increment(field_name, interval_sec, hour, rng)
+                            counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
                             doc[field_name] = round(counter_state[key], 4)
                         else:
                             doc[field_name] = round(_gauge_value(field_name, hour, combo_idx, rng), 4)
                 else:
                     doc.setdefault("message", _log_message(doc, combo_idx))
                 yield concrete_name, doc
+            previous_ts = ts
 
 
 def bulk_lines(documents: Iterator[tuple[str, dict[str, Any]]]) -> Iterator[str]:
@@ -142,7 +163,7 @@ def setup_templates_and_streams(
     recreate: bool = True,
 ) -> None:
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
-        concrete_name = concrete_stream_name(index_pattern)
+        concrete_name = concrete_stream_name(index_pattern, stream)
         template_name = f"telemetry-data-{concrete_name}"
         if recreate:
             request("DELETE", f"/_data_stream/{concrete_name}", None, "application/json")
@@ -184,12 +205,24 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
         for field_name, info in (stream.get("fields") or {}).items()
         if info.get("role") != "metric" and not field_name.startswith("data_stream.")
     }
+    metric_fields = {
+        field_name
+        for field_name, info in (stream.get("fields") or {}).items()
+        if info.get("role") == "metric"
+    }
     required_values = stream.get("required_values") or {}
     required_patterns = stream.get("required_patterns") or {}
     control_fields = stream.get("control_fields") or []
     group_fields = stream.get("group_fields") or []
     value_options: dict[str, list[str]] = {}
-    for field_name in sorted(set(fields) | set(required_values) | set(required_patterns) | set(control_fields) | set(group_fields)):
+    dimension_names = (
+        set(fields)
+        | set(required_values)
+        | set(required_patterns)
+        | set(control_fields)
+        | set(group_fields)
+    ) - metric_fields
+    for field_name in sorted(dimension_names):
         values = list(required_values.get(field_name) or [])
         values.extend(_expand_patterns(field_name, required_patterns.get(field_name) or []))
         if field_name in set(group_fields) | set(control_fields) and not values:
@@ -206,26 +239,57 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
         combos.append(dict(zip(names, values, strict=True)))
         if len(combos) >= max_combinations:
             break
-    _ensure_control_value_coverage(combos, value_options, control_fields)
+    _ensure_dimension_value_coverage(
+        combos,
+        value_options,
+        sorted(set(control_fields) | set(required_values) | set(required_patterns)),
+    )
     return combos or [{}]
 
 
-def _ensure_control_value_coverage(
+def _document_timestamps(
+    now: datetime.datetime,
+    *,
+    data_hours: float,
+    interval_sec: int,
+) -> list[datetime.datetime]:
+    total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
+    timestamps = {
+        now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
+        for idx in range(total_points)
+    }
+    if interval_sec > 60 and data_hours > 0:
+        dense_start = now - datetime.timedelta(hours=min(data_hours, 1))
+        dense_points = int((now - dense_start).total_seconds() // 60) + 1
+        timestamps.update(
+            dense_start + datetime.timedelta(seconds=idx * 60)
+            for idx in range(dense_points)
+        )
+    return sorted(timestamps)
+
+
+def _ensure_dimension_value_coverage(
     combos: list[dict[str, str]],
     value_options: dict[str, list[str]],
-    control_fields: list[str],
+    required_fields: list[str],
 ) -> None:
     if not combos:
         return
     base = dict(combos[0])
-    for field_name in control_fields:
+    seen_combos = {tuple(sorted(combo.items())) for combo in combos}
+    for field_name in required_fields:
         existing = {combo.get(field_name, "") for combo in combos}
         for value in value_options.get(field_name, []):
             if value in existing:
                 continue
             combo = dict(base)
             combo[field_name] = value
+            key = tuple(sorted(combo.items()))
+            if key in seen_combos:
+                existing.add(value)
+                continue
             combos.append(combo)
+            seen_combos.add(key)
             existing.add(value)
 
 
@@ -291,6 +355,69 @@ def _log_message(doc: dict[str, Any], combo_idx: int) -> str:
 def _dataset_from_stream(stream_name: str) -> str:
     parts = stream_name.split("-")
     return parts[1] if len(parts) >= 3 else "generic"
+
+
+def _generated_dimension_fields(stream: dict[str, Any]) -> list[str]:
+    fields = stream.get("fields") or {}
+    metric_fields = {
+        field_name
+        for field_name, info in fields.items()
+        if info.get("role") == "metric"
+    }
+    names = set(stream.get("required_values") or {})
+    names.update(stream.get("required_patterns") or {})
+    names.update(stream.get("control_fields") or [])
+    names.update(stream.get("group_fields") or [])
+    names -= metric_fields
+    for field_name, info in fields.items():
+        if info.get("role") != "metric":
+            names.add(field_name)
+    return sorted(str(name) for name in names if str(name))
+
+
+def _single_required_value(stream: dict[str, Any] | None, field_name: str) -> str:
+    if not stream:
+        return ""
+    values = (stream.get("required_values") or {}).get(field_name) or []
+    unique_values = _unique([str(value).strip() for value in values if str(value).strip()])
+    return unique_values[0] if len(unique_values) == 1 else ""
+
+
+def _stream_type_from_pattern(index_pattern: str) -> str:
+    prefix = index_pattern.split("-", 1)[0].strip()
+    return prefix if prefix in {"metrics", "logs", "traces"} else "metrics"
+
+
+def _data_stream_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_") or "generic"
+
+
+def _look_back_time(stream: dict[str, Any]) -> str:
+    seconds = max(
+        7 * 24 * 60 * 60,
+        int(stream.get("_lookback_seconds") or 0),
+        _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
+    )
+    seconds = min(seconds, 7 * 24 * 60 * 60)
+    days = max(1, math.ceil(seconds / (24 * 60 * 60)))
+    return f"{days}d"
+
+
+def _lookback_seconds_from_text(value: str) -> int:
+    match = re.fullmatch(r"\s*(\d+)\s*(s|m|h|d|day|days|w|week|weeks)\s*", value, re.IGNORECASE)
+    if not match:
+        return 0
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    if unit == "s":
+        return amount
+    if unit == "m":
+        return amount * 60
+    if unit == "h":
+        return amount * 3600
+    if unit in {"d", "day", "days"}:
+        return amount * 24 * 3600
+    return amount * 7 * 24 * 3600
 
 
 def _namespace_from_stream(stream_name: str) -> str:

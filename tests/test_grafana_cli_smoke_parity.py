@@ -189,6 +189,7 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
 class GrafanaAlertSpaceSelectionTests(unittest.TestCase):
     def test_alert_payload_preflight_uses_shadow_space(self):
         args = SimpleNamespace(
+            preflight=True,
             kibana_url="https://kibana.example",
             kibana_api_key="secret-kb",
             shadow_space="shadow",
@@ -225,6 +226,44 @@ class GrafanaAlertSpaceSelectionTests(unittest.TestCase):
         self.assertEqual(lookup, {"alert-1": {"ok": True}})
         self.assertEqual(mock_preflight.call_args.kwargs["space_id"], "shadow")
 
+    def test_alert_payload_preflight_skipped_without_preflight_flag(self):
+        args = SimpleNamespace(
+            preflight=False,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret-kb",
+            shadow_space="shadow",
+        )
+        mapping_batch = {
+            "results": [
+                {
+                    "alert_id": "alert-1",
+                    "mapping": {
+                        "rule_payload": {
+                            "rule_type_id": ".index-threshold",
+                            "params": {"aggType": "count"},
+                        }
+                    },
+                }
+            ]
+        }
+
+        with mock.patch.object(
+            grafana_alert_pipeline,
+            "run_alerting_preflight",
+            side_effect=AssertionError("preflight should not run"),
+        ), mock.patch.object(
+            grafana_alert_pipeline,
+            "validate_rule_payload",
+            side_effect=AssertionError("payload validation requires preflight"),
+        ):
+            lookup, preflight = grafana_alert_pipeline.build_payload_validation_lookup(
+                args,
+                mapping_batch,
+            )
+
+        self.assertEqual(preflight, None)
+        self.assertEqual(lookup, {})
+
     def test_alert_rule_creation_uses_shadow_space(self):
         args = SimpleNamespace(
             create_alert_rules=True,
@@ -253,6 +292,131 @@ class GrafanaAlertSpaceSelectionTests(unittest.TestCase):
 
 
 class GrafanaAssetIsolationTests(unittest.TestCase):
+    def test_dashboards_only_clears_stale_dashboard_yaml_before_compile(self):
+        rule_pack = SimpleNamespace(
+            logs_index="",
+            native_promql=False,
+            metrics_dataset_filter="",
+            logs_dataset_filter="",
+        )
+        resolver = mock.Mock()
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+
+        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
+            yaml_path = yaml_dir / "current-dashboard.yaml"
+            yaml_path.write_text("dashboard: current\n", encoding="utf-8")
+            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+
+        compiled_yaml_names = []
+
+        def _fake_compile_all(yaml_dir, _compiled_dir):
+            compiled_yaml_names[:] = [yaml_file.name for yaml_file in sorted(yaml_dir.glob("*.yaml"))]
+            return [(name, True, "") for name in compiled_yaml_names]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_yaml_dir = Path(tmpdir) / "dashboards" / "yaml"
+            stale_yaml_dir.mkdir(parents=True)
+            (stale_yaml_dir / "stale-from-other-grafana.yaml").write_text(
+                "dashboard: stale\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                grafana_cli,
+                "_load_configured_rule_pack",
+                return_value=rule_pack,
+            ), mock.patch.object(
+                grafana_cli,
+                "SchemaResolver",
+                return_value=resolver,
+            ), mock.patch.object(
+                grafana_cli,
+                "extract_dashboards_from_grafana",
+                return_value=[{"title": "Current Dashboard", "uid": "current-uid"}],
+            ), mock.patch.object(
+                grafana_cli,
+                "translate_dashboard",
+                side_effect=_fake_translate_dashboard,
+            ), mock.patch.object(
+                grafana_cli,
+                "_collect_feature_gap_artifacts",
+                return_value={
+                    "dashboard_links": [],
+                    "panel_links": [],
+                    "annotations": [],
+                    "transform_tasks": [],
+                    "alert_tasks": [],
+                    "links_summary": {
+                        "dashboard_links": 0,
+                        "panel_links": 0,
+                        "manual_wiring_needed": 0,
+                    },
+                    "annotations_summary": {
+                        "total": 0,
+                        "candidate_event_annotations": 0,
+                        "manual_needed": 0,
+                    },
+                    "transform_summary": {"total": 0, "by_complexity": {}},
+                    "alert_summary": {"total": 0, "by_kibana_type": {}},
+                },
+            ), mock.patch.object(
+                grafana_cli,
+                "lint_dashboard_yaml",
+                return_value=(True, ""),
+            ), mock.patch.object(
+                grafana_cli,
+                "compile_all",
+                side_effect=_fake_compile_all,
+            ), mock.patch.object(
+                grafana_cli,
+                "validate_compiled_layout",
+                return_value=(True, ""),
+            ), mock.patch.object(
+                grafana_cli,
+                "detect_space_id_from_kibana_url",
+                return_value="",
+            ), mock.patch.object(
+                grafana_cli,
+                "annotate_results_with_verification",
+                return_value={},
+            ), mock.patch.object(
+                grafana_cli,
+                "save_detailed_report",
+            ), mock.patch.object(
+                grafana_cli,
+                "save_migration_manifest",
+            ), mock.patch.object(
+                grafana_cli,
+                "save_verification_packets",
+            ), mock.patch.object(
+                grafana_cli,
+                "build_rollout_plan",
+                return_value={},
+            ), mock.patch.object(
+                grafana_cli,
+                "save_rollout_plan",
+            ), mock.patch.object(
+                grafana_cli,
+                "generate_review_queue",
+                return_value=[],
+            ), mock.patch.object(
+                grafana_cli,
+                "print_report",
+            ):
+                grafana_cli.main(
+                    [
+                        "--assets",
+                        "dashboards",
+                        "--source",
+                        "api",
+                        "--output-dir",
+                        tmpdir,
+                    ]
+                )
+
+        self.assertEqual(compiled_yaml_names, ["current-dashboard.yaml"])
+
     def test_alerts_only_api_forwards_grafana_token_for_legacy_dashboard_reads(self):
         alert_pipeline = ModuleType(
             "observability_migration.adapters.source.grafana.alert_pipeline"

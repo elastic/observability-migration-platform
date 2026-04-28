@@ -17,6 +17,162 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertEqual(concrete_stream_name("metrics-*"), "metrics-generic-default")
         self.assertEqual(concrete_stream_name("logs-*"), "logs-generic-default")
 
+    def test_required_data_stream_dataset_selects_matching_concrete_stream(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "required_values": {"data_stream.dataset": ["prometheus"]},
+                    "fields": {
+                        "http_requests_total": {"role": "metric", "metric_kind": "counter"},
+                        "data_stream.dataset": {"role": "dimension"},
+                    },
+                }
+            }
+        }
+
+        template = plan_index_template("metrics-*", contract["streams"]["metrics-*"])
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        )
+
+        self.assertEqual(template["index_patterns"], ["metrics-prometheus-default"])
+        self.assertEqual(
+            template["template"]["mappings"]["properties"]["data_stream.dataset"]["value"],
+            "prometheus",
+        )
+        self.assertTrue(docs)
+        self.assertTrue(all(index == "metrics-prometheus-default" for index, _doc in docs))
+        self.assertTrue(all(doc["data_stream.dataset"] == "prometheus" for _index, doc in docs))
+
+    def test_plan_index_template_maps_generated_control_dimensions(self):
+        stream = {
+            "fields": {
+                "http_requests_total": {"role": "metric", "metric_kind": "counter"},
+            },
+            "control_fields": ["service.name"],
+            "required_values": {"deployment.environment": ["production"]},
+            "group_fields": ["http.route"],
+        }
+
+        template = plan_index_template("metrics-*", stream)
+        props = template["template"]["mappings"]["properties"]
+
+        self.assertTrue(props["service.name"]["time_series_dimension"])
+        self.assertTrue(props["deployment.environment"]["time_series_dimension"])
+        self.assertTrue(props["http.route"]["time_series_dimension"])
+
+    def test_plan_index_template_caps_tsdb_lookback_at_serverless_limit(self):
+        stream = {
+            "minimum_lookback": "14 days",
+            "fields": {
+                "http_requests_total": {"role": "metric", "metric_kind": "counter"},
+                "service.name": {"role": "dimension"},
+            },
+        }
+
+        template = plan_index_template("metrics-*", stream)
+
+        self.assertEqual(
+            template["template"]["settings"]["index"]["look_back_time"],
+            "7d",
+        )
+
+    def test_generate_documents_does_not_treat_metric_names_as_dimensions(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "cpu": {"role": "metric", "metric_kind": "gauge"},
+                        "host.name": {"role": "dimension"},
+                    },
+                    "group_fields": ["cpu", "host.name"],
+                }
+            }
+        }
+
+        template = plan_index_template("metrics-*", contract["streams"]["metrics-*"])
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        )
+
+        props = template["template"]["mappings"]["properties"]
+        self.assertNotIn("time_series_dimension", props["cpu"])
+        self.assertIsInstance(docs[0][1]["cpu"], float)
+        self.assertGreaterEqual(len(docs), 6)
+
+    def test_generate_documents_covers_required_values_beyond_max_combinations(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                        "mode": {"role": "dimension"},
+                        "http.response.status_code": {"role": "dimension"},
+                    },
+                    "required_values": {"mode": ["idle", "system"]},
+                    "required_patterns": {"http.response.status_code": ["2.."]},
+                }
+            }
+        }
+
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+                max_combinations=1,
+            )
+        )
+        metric_docs = [doc for index, doc in docs if index == "metrics-generic-default"]
+
+        self.assertTrue(any(doc["mode"] == "system" for doc in metric_docs))
+        self.assertTrue(any(doc["http.response.status_code"] == "200" for doc in metric_docs))
+
+    def test_generate_documents_adds_dense_recent_points_for_short_rate_windows(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_disk_reads_completed_total": {
+                            "role": "metric",
+                            "metric_kind": "counter",
+                        },
+                        "device": {"role": "dimension"},
+                    },
+                }
+            }
+        }
+
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=2,
+                interval_sec=3600,
+                max_combinations=1,
+            )
+        )
+        timestamps = sorted({doc["@timestamp"] for _index, doc in docs})
+        recent_timestamps = [
+            timestamp
+            for timestamp in timestamps
+            if timestamp >= "2026-04-15T05:00:00.000Z"
+        ]
+
+        self.assertGreaterEqual(len(recent_timestamps), 60)
+        self.assertIn("2026-04-15T05:59:00.000Z", recent_timestamps)
+
     def test_plan_index_template_maps_metrics_and_dimensions_without_source_families(self):
         stream = {
             "requires_native_promql": True,

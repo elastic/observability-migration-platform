@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -673,6 +674,22 @@ def _validate_field_profile(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+    removed = 0
+    if yaml_dir.exists():
+        for yaml_file in yaml_dir.glob("*.yaml"):
+            yaml_file.unlink()
+            removed += 1
+    if compiled_dir.exists():
+        for child in compiled_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+            removed += 1
+    return removed
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     _validate_field_profile(args)
@@ -749,6 +766,9 @@ def main(argv: list[str] | None = None):
     compiled_dir = base_dir / "compiled"
     yaml_dir.mkdir(parents=True, exist_ok=True)
     compiled_dir.mkdir(parents=True, exist_ok=True)
+    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, compiled_dir)
+    if removed_stale_artifacts:
+        print(f"\n  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {base_dir}")
 
     default_ai_model = args.local_ai_model
     polish_ai_model = args.local_ai_polish_model or resolve_task_model("polish", args.local_ai_endpoint, default_ai_model)

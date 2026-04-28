@@ -288,10 +288,15 @@ def _split_top_level_csv(expr):
     current = []
     depth = 0
     in_quote = None
+    escaped = False
     for char in expr:
         if in_quote:
             current.append(char)
-            if char == in_quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_quote:
                 in_quote = None
             continue
         if char in ('"', "'"):
@@ -327,6 +332,130 @@ def _parse_selector_matchers(selector_text):
             }
         )
     return matchers
+
+
+_PROMQL_VALID_LABEL_RE = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]*$")
+_PROMQL_LABEL_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\.:-]*$")
+
+
+def _sanitize_promql_labels_for_ast(expr):
+    replacements = {}
+
+    def safe_label(label):
+        if _PROMQL_VALID_LABEL_RE.match(label):
+            return label
+        if label not in replacements:
+            counter = len(replacements)
+            candidate = f"__obs_migration_sanitized_label_{counter}"
+            while candidate in expr or candidate in replacements.values():
+                counter += 1
+                candidate = f"__obs_migration_sanitized_label_{counter}"
+            replacements[label] = candidate
+        return replacements[label]
+
+    def sanitize_selector(selector_text):
+        parts = []
+        changed = False
+        for matcher_text in _split_top_level_csv(selector_text):
+            match = re.match(
+                r"(?P<prefix>\s*)(?P<label>[A-Za-z_][A-Za-z0-9_\.:-]*)(?P<space>\s*)(?P<op>=~|!~|=|!=)(?P<rest>.*)\s*$",
+                matcher_text,
+                flags=re.DOTALL,
+            )
+            if not match:
+                parts.append(matcher_text)
+                continue
+            replacement = safe_label(match.group("label"))
+            changed = changed or replacement != match.group("label")
+            parts.append(
+                f"{match.group('prefix')}{replacement}{match.group('space')}{match.group('op')}{match.group('rest')}"
+            )
+        return ", ".join(parts), changed
+
+    pieces = []
+    idx = 0
+    changed_selectors = False
+    while idx < len(expr):
+        if expr[idx] != "{":
+            pieces.append(expr[idx])
+            idx += 1
+            continue
+        end = idx + 1
+        quote = ""
+        escaped = False
+        while end < len(expr):
+            char = expr[end]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in ('"', "'"):
+                quote = char
+            elif char == "}":
+                break
+            end += 1
+        if end >= len(expr) or expr[end] != "}":
+            pieces.append(expr[idx:])
+            idx = len(expr)
+            break
+        selector_text, selector_changed = sanitize_selector(expr[idx + 1 : end])
+        changed_selectors = changed_selectors or selector_changed
+        pieces.append("{" + selector_text + "}")
+        idx = end + 1
+    sanitized = "".join(pieces) if changed_selectors else expr
+
+    def grouping_repl(match):
+        labels = []
+        changed = False
+        for label in _split_top_level_csv(match.group("labels")):
+            stripped = label.strip()
+            if _PROMQL_LABEL_TOKEN_RE.match(stripped):
+                replacement = safe_label(stripped)
+                changed = changed or replacement != stripped
+                labels.append(replacement)
+            else:
+                labels.append(stripped)
+        if not changed:
+            return match.group(0)
+        return f"{match.group('kw')}({', '.join(labels)})"
+
+    grouping_pattern = re.compile(
+        r"\b(?P<kw>by|without|on|ignoring)\s*\((?P<labels>[^)]*)\)",
+        flags=re.IGNORECASE,
+    )
+
+    pieces = []
+    start = 0
+    idx = 0
+    quote = ""
+    escaped = False
+    while idx < len(sanitized):
+        char = sanitized[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+                pieces.append(sanitized[start : idx + 1])
+                start = idx + 1
+        elif char in ('"', "'"):
+            if start < idx:
+                pieces.append(grouping_pattern.sub(grouping_repl, sanitized[start:idx]))
+            start = idx
+            quote = char
+        idx += 1
+    if start < len(sanitized):
+        if quote:
+            pieces.append(sanitized[start:])
+        else:
+            pieces.append(grouping_pattern.sub(grouping_repl, sanitized[start:]))
+    sanitized = "".join(pieces) if pieces else sanitized
+    return sanitized, {safe: original for original, safe in replacements.items()}
 
 
 def _matcher_to_esql(matcher, resolver):
@@ -879,6 +1008,26 @@ def _parse_logql_fragment(expr):
     return None
 
 
+def _restore_sanitized_labels(frag, label_map):
+    if not frag or not label_map:
+        return frag
+    for matcher in frag.matchers:
+        label = matcher.get("label")
+        if label in label_map:
+            matcher["label"] = label_map[label]
+    frag.group_labels = [label_map.get(label, label) for label in frag.group_labels]
+    for key in ("inner_group", "join_labels"):
+        labels = frag.extra.get(key)
+        if isinstance(labels, list):
+            frag.extra[key] = [label_map.get(label, label) for label in labels]
+    matching = frag.extra.get("vector_matching")
+    if isinstance(matching, dict) and isinstance(matching.get("labels"), list):
+        matching["labels"] = [label_map.get(label, label) for label in matching["labels"]]
+    for child in _iter_fragment_children(frag):
+        _restore_sanitized_labels(child, label_map)
+    return frag
+
+
 def _make_binary_fragment(expr, left_frag, op, right_frag):
     reasons = []
     for child in (left_frag, right_frag):
@@ -922,6 +1071,17 @@ def _parse_fragment(expr, depth=0):
     try:
         ast = promql_parser.parse(expr)
     except (ValueError, TypeError, Exception) as exc:
+        sanitized_expr, label_map = _sanitize_promql_labels_for_ast(expr)
+        if label_map and sanitized_expr != expr:
+            try:
+                ast = promql_parser.parse(sanitized_expr)
+            except (ValueError, TypeError, Exception):
+                pass
+            else:
+                frag = _ast_from_node(ast, expr)
+                _restore_sanitized_labels(frag, label_map)
+                frag.extra.setdefault("parser_backend", "ast_sanitized")
+                return frag
         frag = _new_fragment(expr, backend="regex")
         frag.extra["parse_error"] = str(exc)
         return frag

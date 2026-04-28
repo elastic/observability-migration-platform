@@ -2266,6 +2266,134 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
 
         self.assertFalse(mock_run_dashboard_pipeline.call_args.kwargs["args"].validate)
 
+    def test_dashboard_preflight_only_runs_when_explicitly_requested(self):
+        field_map = datadog_cli.load_profile("otel")
+        field_map.metric_field_caps = {"system_cpu_user": FieldCapability(name="system_cpu_user", type="double")}
+        dashboard = NormalizedDashboard(id="d1", title="Dash", widgets=[])
+
+        with patch.object(datadog_cli, "run_preflight", side_effect=AssertionError("preflight should not run")):
+            result = datadog_cli._run_dashboard_preflight(
+                dashboard,
+                field_map,
+                argparse.Namespace(preflight=False),
+            )
+
+        self.assertIsNone(result)
+
+    def test_monitor_payload_preflight_skipped_without_preflight_flag(self):
+        args = argparse.Namespace(
+            preflight=False,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="shadow",
+        )
+        mapping_batch = {
+            "results": [
+                {
+                    "alert_id": "monitor-1",
+                    "mapping": {
+                        "rule_payload": {
+                            "rule_type_id": ".es-query",
+                            "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                        }
+                    },
+                }
+            ]
+        }
+
+        with patch.object(
+            datadog_alert_pipeline,
+            "run_alerting_preflight",
+            side_effect=AssertionError("preflight should not run"),
+        ), patch.object(
+            datadog_alert_pipeline,
+            "validate_rule_payload",
+            side_effect=AssertionError("payload validation requires preflight"),
+        ):
+            lookup, preflight = datadog_alert_pipeline.build_payload_validation_lookup(
+                args,
+                mapping_batch,
+            )
+
+        self.assertIsNone(preflight)
+        self.assertEqual(lookup, {})
+
+    def test_dashboard_pipeline_clears_stale_yaml_before_writing_current_run(self):
+        field_map = datadog_cli.load_profile("otel")
+        dashboard = NormalizedDashboard(id="current-id", title="Current Dashboard", widgets=[])
+        args = argparse.Namespace(
+            validate=False,
+            es_url="",
+            upload=False,
+            ensure_data_views=False,
+            smoke=False,
+            space_id="",
+            smoke_output="",
+            preflight=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_dir = output_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "stale-from-other-run.yaml").write_text(
+                "dashboard: stale\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                datadog_cli,
+                "_extract",
+                return_value=[{"id": "current-id", "title": "Current Dashboard"}],
+            ), patch.object(
+                datadog_cli,
+                "normalize_dashboard",
+                return_value=dashboard,
+            ), patch.object(
+                datadog_cli,
+                "generate_dashboard_yaml",
+                return_value="dashboard: current\n",
+            ), patch.object(
+                datadog_cli,
+                "annotate_results_with_verification",
+                return_value={},
+            ), patch.object(
+                datadog_cli,
+                "print_report",
+            ), patch.object(
+                datadog_cli,
+                "save_detailed_report",
+            ), patch.object(
+                datadog_cli,
+                "save_migration_manifest",
+            ), patch.object(
+                datadog_cli,
+                "save_verification_packets",
+            ), patch.object(
+                datadog_cli,
+                "build_rollout_plan",
+                return_value={},
+            ), patch.object(
+                datadog_cli,
+                "save_rollout_plan",
+            ), patch.object(
+                datadog_cli,
+                "generate_review_queue",
+                return_value=[],
+            ):
+                datadog_cli._run_dashboard_pipeline(
+                    args=args,
+                    field_map=field_map,
+                    output_dir=output_dir,
+                    dd_creds={},
+                    target_adapter=mock.Mock(),
+                    compile_requested=False,
+                )
+
+            yaml_names = sorted(path.name for path in yaml_dir.glob("*.yaml"))
+
+        self.assertEqual(yaml_names, ["current_dashboard.yaml"])
+
     def test_allocate_yaml_stem_avoids_case_collision(self):
         used_stems: set[str] = set()
         first = datadog_cli._allocate_yaml_stem("Test", "dash-001", used_stems)

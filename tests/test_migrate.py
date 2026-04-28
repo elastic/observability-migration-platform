@@ -169,6 +169,71 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("http_requests_total", translated.esql_query)
 
+    def test_otel_dotted_promql_labels_parse_and_translate(self):
+        expr = (
+            'sum by (service.name) (rate(http_requests_total{'
+            'http.response.status_code=~"5..",http.request.method="POST"}[5m]))'
+        )
+
+        frag = migrate._parse_fragment(migrate.preprocess_grafana_macros(expr, self.rule_pack))
+        self.assertEqual(frag.family, "range_agg")
+        self.assertEqual(frag.group_labels, ["service.name"])
+        self.assertEqual(
+            [matcher["label"] for matcher in frag.matchers],
+            ["http.response.status_code", "http.request.method"],
+        )
+
+        translated = self.translate(expr)
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("http_requests_total", translated.esql_query)
+        self.assertIn('http.response.status_code RLIKE "5.."', translated.esql_query)
+        self.assertIn('http.request.method == "POST"', translated.esql_query)
+        self.assertIn("service.name", translated.esql_query)
+
+    def test_otel_label_sanitizer_does_not_collide_with_existing_labels(self):
+        expr = (
+            'sum by (__obs_migration_label_0) (rate(http_requests_total{'
+            'service.name="checkout",__obs_migration_label_0="real"}[5m]))'
+        )
+
+        frag = migrate._parse_fragment(migrate.preprocess_grafana_macros(expr, self.rule_pack))
+
+        self.assertEqual(frag.group_labels, ["__obs_migration_label_0"])
+        self.assertEqual(
+            [matcher["label"] for matcher in frag.matchers],
+            ["service.name", "__obs_migration_label_0"],
+        )
+
+    def test_otel_label_sanitizer_preserves_quoted_matcher_values(self):
+        expr = (
+            'sum(rate(http_requests_total{service.name="checkout",'
+            'job=~"foo by (http.response.status_code)"}[5m]))'
+        )
+
+        frag = migrate._parse_fragment(migrate.preprocess_grafana_macros(expr, self.rule_pack))
+
+        self.assertEqual(
+            [(matcher["label"], matcher["value"]) for matcher in frag.matchers],
+            [
+                ("service.name", "checkout"),
+                ("job", "foo by (http.response.status_code)"),
+            ],
+        )
+
+    def test_otel_label_sanitizer_preserves_escaped_quote_commas(self):
+        expr = 'sum(rate(http_requests_total{service.name="checkout",job="a\\",b"}[5m]))'
+
+        frag = migrate._parse_fragment(migrate.preprocess_grafana_macros(expr, self.rule_pack))
+
+        self.assertEqual(
+            [(matcher["label"], matcher["value"]) for matcher in frag.matchers],
+            [
+                ("service.name", "checkout"),
+                ("job", 'a",b'),
+            ],
+        )
+
     def test_topk_is_marked_not_feasible(self):
         translated = self.translate("topk(5, rate(foo_total[5m]))")
         self.assertEqual(translated.feasibility, "not_feasible")

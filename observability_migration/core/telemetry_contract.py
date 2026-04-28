@@ -422,6 +422,43 @@ def _iter_artifact_queries(artifact_path: Path):
             ):
                 if isinstance(query, str) and query.strip():
                     yield query, source
+            yield from _iter_packet_source_promql_queries(packet, source)
+
+
+def _iter_packet_source_promql_queries(packet: dict[str, Any], source: str):
+    query_ir = packet.get("query_ir") or {}
+    source_language = str(query_ir.get("source_language") or packet.get("source_language") or "").lower()
+    if source_language and source_language != "promql":
+        return
+    target_index = query_ir.get("target_index") if isinstance(query_ir, dict) else ""
+    if not target_index:
+        target_query = (
+            packet.get("translated_query")
+            or (packet.get("target_execution") or {}).get("query")
+            or (query_ir or {}).get("target_query")
+            or ""
+        )
+        target_index = _query_index(target_query) if isinstance(target_query, str) else ""
+    if not target_index:
+        return
+
+    source_expressions = list(packet.get("source_queries") or [])
+    if isinstance(packet.get("source_query"), str):
+        source_expressions.append(packet["source_query"])
+    if isinstance(query_ir, dict) and isinstance(query_ir.get("clean_expression"), str):
+        source_expressions.append(query_ir["clean_expression"])
+    elif isinstance(query_ir, dict) and isinstance(query_ir.get("source_expression"), str):
+        source_expressions.append(query_ir["source_expression"])
+
+    seen: set[str] = set()
+    for expression in source_expressions:
+        if not isinstance(expression, str):
+            continue
+        cleaned = expression.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        yield f"PROMQL index={target_index} step=1m value=({cleaned})", source
 
 
 def _iter_yaml_queries(node: Any, source: str):
@@ -581,6 +618,12 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
             _append_required(patterns, field_name, value.strip("*"))
         else:
             _append_required(values, field_name, value)
+    for kql in re.findall(r'KQL\("([^"]*)"\)', query):
+        for field_name, value in re.findall(r"([A-Za-z_@][\w.@-]*)\s*:\s*([A-Za-z0-9_./-]+)", kql):
+            normalized = _normalize_field(field_name)
+            if not normalized or _should_skip_field(normalized):
+                continue
+            _append_required(values, normalized, value)
     return values, patterns
 
 
