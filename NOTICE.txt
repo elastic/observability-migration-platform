@@ -12,3 +12,11 @@ Bundled third-party license texts are provided under licenses/.
 
 The checked Python dependency environment is inventoried in
 docs/licenses/dependencies.md and docs/licenses/sbom.cdx.json.
+
+The checked Python dependency environment includes MPL-2.0 dependencies.
+Source code for each is available from its upstream project:
+
+- certifi: https://github.com/certifi/python-certifi
+- fqdn: https://github.com/ypcrts/fqdn
+- hypothesis: https://github.com/HypothesisWorks/hypothesis
+- pathspec: https://github.com/cpburnz/python-pathspec

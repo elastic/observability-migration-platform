@@ -23,8 +23,22 @@ REQUIRED_ARTIFACT_SUFFIXES = (
     "licenses/MIT-strawgate-kb-yaml-to-lens.txt",
 )
 
+MPL_DEPENDENCY_SOURCE_LINKS = (
+    "certifi: https://github.com/certifi/python-certifi",
+    "fqdn: https://github.com/ypcrts/fqdn",
+    "hypothesis: https://github.com/HypothesisWorks/hypothesis",
+    "pathspec: https://github.com/cpburnz/python-pathspec",
+)
+
 
 class PackagingLicenseArtifactsTests(unittest.TestCase):
+    def test_notice_lists_mpl_dependency_source_links(self):
+        notice = (ROOT / "NOTICE.txt").read_text(encoding="utf-8")
+
+        for source_link in MPL_DEPENDENCY_SOURCE_LINKS:
+            with self.subTest(source_link=source_link):
+                self.assertIn(source_link, notice)
+
     def test_wheel_and_sdist_include_legal_and_dependency_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
