@@ -49,6 +49,31 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertTrue(all(index == "metrics-prometheus-default" for index, _doc in docs))
         self.assertTrue(all(doc["data_stream.dataset"] == "prometheus" for _index, doc in docs))
 
+    def test_generate_documents_uses_concrete_stream_dataset_for_ambiguous_filters(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "required_values": {"data_stream.dataset": ["prometheus", "datadog"]},
+                    "fields": {
+                        "data_stream.dataset": {"role": "dimension"},
+                    },
+                }
+            }
+        }
+
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        )
+
+        self.assertTrue(docs)
+        self.assertTrue(all(index == "metrics-generic-default" for index, _doc in docs))
+        self.assertTrue(all(doc["data_stream.dataset"] == "generic" for _index, doc in docs))
+
     def test_plan_index_template_maps_generated_control_dimensions(self):
         stream = {
             "fields": {
@@ -138,6 +163,40 @@ class TelemetryDataTests(unittest.TestCase):
 
         self.assertTrue(any(doc["mode"] == "system" for doc in metric_docs))
         self.assertTrue(any(doc["http.response.status_code"] == "200" for doc in metric_docs))
+
+    def test_generate_documents_covers_required_filter_combinations(self):
+        contract = {
+            "streams": {
+                "logs-generic-default": {
+                    "fields": {
+                        "service.name": {"role": "dimension"},
+                        "http.status_code": {"role": "dimension"},
+                    },
+                    "required_values": {
+                        "service.name": ["app", "nginx"],
+                        "http.status_code": ["404", "500"],
+                    },
+                }
+            }
+        }
+
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+                max_combinations=1,
+            )
+        )
+        log_docs = [doc for index, doc in docs if index == "logs-generic-default"]
+
+        self.assertTrue(
+            any(
+                doc["service.name"] == "nginx" and doc["http.status_code"] == "404"
+                for doc in log_docs
+            )
+        )
 
     def test_generate_documents_adds_dense_recent_points_for_short_rate_windows(self):
         contract = {

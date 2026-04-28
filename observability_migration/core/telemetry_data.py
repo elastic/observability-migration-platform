@@ -115,6 +115,9 @@ def generate_documents(
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
         concrete_name = concrete_stream_name(index_pattern, stream)
         is_metrics = concrete_name.startswith("metrics-")
+        stream_type = concrete_name.split("-", 1)[0] if "-" in concrete_name else "metrics"
+        dataset = _dataset_from_stream(concrete_name)
+        namespace = _namespace_from_stream(concrete_name)
         combinations = _dimension_combinations(stream, max_combinations=max_combinations)
         metric_fields = {
             field_name: info
@@ -133,6 +136,9 @@ def generate_documents(
             for combo_idx, dimensions in enumerate(combinations):
                 doc: dict[str, Any] = {
                     "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "data_stream.type": stream_type,
+                    "data_stream.dataset": dataset,
+                    "data_stream.namespace": namespace,
                     **dimensions,
                 }
                 if is_metrics:
@@ -222,6 +228,7 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
         | set(control_fields)
         | set(group_fields)
     ) - metric_fields
+    dimension_names = {field_name for field_name in dimension_names if not field_name.startswith("data_stream.")}
     for field_name in sorted(dimension_names):
         values = list(required_values.get(field_name) or [])
         values.extend(_expand_patterns(field_name, required_patterns.get(field_name) or []))
