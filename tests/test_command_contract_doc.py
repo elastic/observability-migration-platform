@@ -58,6 +58,13 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("`run_summary.json`", text)
         self.assertNotIn("Datadog also writes a root", text)
 
+    def test_command_contract_documents_source_specific_validation_streams(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("metrics-prometheus-default", text)
+        self.assertIn("metrics-datadog-default", text)
+        self.assertIn("logs-generic-default", text)
+        self.assertIn("avoid mapping conflicts", text)
+
     def test_root_readme_does_not_drift_to_legacy_dashboard_paths(self):
         # The root README is intentionally short and routes readers to
         # `docs/command-contract.md` for command snippets (see AGENTS.md).

@@ -549,6 +549,46 @@ DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
     grafana_output/dashboards datadog_output/dashboards
 ```
 
+When validating multiple source families together, keep their metric streams
+source-specific to avoid mapping conflicts between Prometheus-style labels and
+Datadog/ECS field objects. A typical shared validation target uses:
+
+- Grafana Prometheus-style dashboards: `metrics-prometheus-default`
+- Datadog dashboards: `metrics-datadog-default`
+- Shared logs: `logs-generic-default`
+
+```bash
+set -a && source serverless_creds.env && set +a
+
+.venv/bin/obs-migrate cluster ensure-data-views \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY" \
+  --data-view-patterns "metrics-prometheus-default,metrics-datadog-default,logs-generic-default"
+
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir grafana_assets \
+  --output-dir grafana_output \
+  --assets dashboards \
+  --data-view metrics-prometheus-default \
+  --esql-index metrics-prometheus-default \
+  --logs-index logs-generic-default
+
+.venv/bin/obs-migrate migrate \
+  --source datadog \
+  --input-mode files \
+  --input-dir datadog_assets/dashboards \
+  --output-dir datadog_output \
+  --assets dashboards \
+  --data-view metrics-datadog-default \
+  --logs-index logs-generic-default
+
+DATA_HOURS=168 INTERVAL_SEC=3600 BATCH_DOC_LIMIT=8000 \
+  .venv/bin/python scripts/setup_telemetry_data.py \
+    grafana_output/dashboards datadog_output/dashboards
+```
+
 The common setup script discovers YAML and verification packets from each
 artifact root. Useful flags:
 
