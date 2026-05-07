@@ -293,11 +293,12 @@ def ensure_data_view(
             logger.info("Data view '%s' already exists (id=%s)", title, dv.get("id"))
             return dv
     logger.info("Creating data view '%s'", title)
+    view_id = "" if any(token in title for token in ("*", "?")) else title
     return create_data_view(
         kibana_url,
         title=title,
         name=name or title,
-        view_id=title,
+        view_id=view_id,
         time_field=time_field,
         api_key=api_key,
         space_id=space_id,
