@@ -41,7 +41,7 @@ def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = Non
 def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
     """Build an index template for one stream contract."""
     concrete_name = concrete_stream_name(index_pattern, stream)
-    stream_type = concrete_name.split("-", 1)[0] if "-" in concrete_name else "metrics"
+    stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
     is_metrics = stream_type == "metrics"
     dataset = _dataset_from_stream(concrete_name)
     namespace = _namespace_from_stream(concrete_name)
@@ -114,8 +114,8 @@ def generate_documents(
 
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
         concrete_name = concrete_stream_name(index_pattern, stream)
-        is_metrics = concrete_name.startswith("metrics-")
-        stream_type = concrete_name.split("-", 1)[0] if "-" in concrete_name else "metrics"
+        stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
+        is_metrics = stream_type == "metrics"
         dataset = _dataset_from_stream(concrete_name)
         namespace = _namespace_from_stream(concrete_name)
         combinations = _dimension_combinations(stream, max_combinations=max_combinations)
@@ -388,6 +388,26 @@ def _single_required_value(stream: dict[str, Any] | None, field_name: str) -> st
     values = (stream.get("required_values") or {}).get(field_name) or []
     unique_values = _unique([str(value).strip() for value in values if str(value).strip()])
     return unique_values[0] if len(unique_values) == 1 else ""
+
+
+def _stream_type_for_contract(index_pattern: str, concrete_name: str, stream: dict[str, Any] | None) -> str:
+    prefix = concrete_name.split("-", 1)[0].strip()
+    if prefix in {"metrics", "logs", "traces"}:
+        return prefix
+    if _has_metric_fields(stream):
+        return "metrics"
+    name_tokens = set(re.split(r"[^a-z0-9]+", f"{index_pattern} {concrete_name}".lower()))
+    if "logs" in name_tokens or "log" in name_tokens:
+        return "logs"
+    if "traces" in name_tokens or "trace" in name_tokens:
+        return "traces"
+    if "metrics" in name_tokens or "metric" in name_tokens:
+        return "metrics"
+    return _stream_type_from_pattern(index_pattern)
+
+
+def _has_metric_fields(stream: dict[str, Any] | None) -> bool:
+    return any(info.get("role") == "metric" for info in (stream or {}).get("fields", {}).values())
 
 
 def _stream_type_from_pattern(index_pattern: str) -> str:

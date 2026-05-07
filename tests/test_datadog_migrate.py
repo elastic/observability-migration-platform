@@ -2442,6 +2442,78 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             self.assertIn("compile failed", dr.upload_error)
             mock_upload_dashboard.assert_not_called()
 
+    def test_compile_all_dashboards_layout_validates_each_successful_dashboard(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_dir = output_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            bad_yaml = yaml_dir / "bad.yaml"
+            good_yaml = yaml_dir / "good.yaml"
+            bad_yaml.write_text("dashboards: []", encoding="utf-8")
+            good_yaml.write_text("dashboards: []", encoding="utf-8")
+            bad = DashboardResult(dashboard_title="Bad", yaml_path=str(bad_yaml))
+            good = DashboardResult(dashboard_title="Good", yaml_path=str(good_yaml))
+            target_adapter = mock.Mock()
+            target_adapter.compile_dashboard.side_effect = [
+                (False, "bad compile failed"),
+                (True, "good compiled"),
+            ]
+
+            with patch.object(
+                datadog_cli,
+                "validate_compiled_layout",
+                return_value=(True, "layout ok"),
+            ) as mock_layout:
+                datadog_cli._compile_all_dashboards(
+                    [bad, good],
+                    output_dir,
+                    target_adapter,
+                )
+
+            self.assertFalse(bad.compiled)
+            self.assertEqual(bad.compile_error, "bad compile failed")
+            self.assertFalse(bad.layout_checked)
+            self.assertTrue(good.compiled)
+            self.assertTrue(good.layout_checked)
+            self.assertEqual(good.layout_error, "")
+            mock_layout.assert_called_once_with(output_dir / "compiled" / "good")
+
+    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
+    def test_upload_all_dashboards_skips_layout_failures(self, mock_upload_dashboard):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_path = output_dir / "yaml" / "dash.yaml"
+            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml_path.write_text("dashboards: []", encoding="utf-8")
+
+            dr = DashboardResult(
+                dashboard_title="Dash",
+                yaml_path=str(yaml_path),
+                compiled=True,
+                layout_checked=True,
+                layout_error="1 overlap(s), 0 invalid size(s), 0 out-of-bounds panel(s)",
+            )
+
+            datadog_cli._upload_all_dashboards(
+                [dr],
+                output_dir,
+                type(
+                    "Args",
+                    (),
+                    {
+                        "kibana_url": "https://kibana.example",
+                        "kibana_api_key": "secret",
+                        "space_id": "shadow",
+                    },
+                )(),
+                KibanaTargetAdapter(),
+            )
+
+            self.assertTrue(dr.upload_attempted)
+            self.assertFalse(dr.uploaded)
+            self.assertIn("layout validation failed", dr.upload_error)
+            mock_upload_dashboard.assert_not_called()
+
     def test_smoke_uploaded_dashboards_updates_dashboard_and_panel_runtime_state(self):
         panel_fail = TranslationResult(
             widget_id="w1",
