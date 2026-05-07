@@ -27,6 +27,7 @@ from observability_migration.core.reporting.report import (
     recompute_result_counts,
     save_detailed_report,
 )
+from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
 from observability_migration.targets.kibana.compile import (
     compile_all,
     compile_yaml,
@@ -34,7 +35,6 @@ from observability_migration.targets.kibana.compile import (
     kibana_url_for_space,
     lint_dashboard_yaml,
     sync_result_queries_to_yaml,
-    upload_yaml,
     validate_compiled_layout,
 )
 from observability_migration.targets.kibana.serverless import (
@@ -1111,6 +1111,7 @@ def main(argv: list[str] | None = None):
         print(f"\nUploading to Kibana at {args.kibana_url}...")
         upload_space = args.shadow_space or ""
         upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
+        target_adapter = KibanaTargetAdapter()
         upload_blocker = ""
         if any(getattr(result, "layout_validated", None) and result.layout_error for result in results):
             upload_blocker = "Upload skipped because compiled dashboard layout validation failed."
@@ -1130,17 +1131,19 @@ def main(argv: list[str] | None = None):
                     result.upload_error = "Upload skipped because this dashboard did not compile."
                     print(f"  - {yaml_path.name} skipped (dashboard did not compile)")
                     continue
-                ok, output = upload_yaml(
+                upload_result = target_adapter.upload_dashboard(
                     yaml_path,
                     compiled_dir / yaml_path.stem,
-                    args.kibana_url,
+                    kibana_url=args.kibana_url,
                     space_id=upload_space,
                     kibana_api_key=args.kibana_api_key,
                 )
+                ok = upload_result["success"]
+                output = upload_result["output"]
                 result.uploaded = ok
                 result.upload_error = "" if ok else output
                 result.uploaded_space = upload_space or target_space
-                result.uploaded_kibana_url = upload_kibana_url
+                result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
                 print(f"  {icon} {yaml_path.name}")
                 if not ok:

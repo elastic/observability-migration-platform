@@ -62,9 +62,70 @@ def _iter_leaf_panels(panels: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return leaf_panels
 
 
+def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for data_view in data_views:
+        title = str(data_view.get("title") or "")
+        view_id = str(data_view.get("id") or "")
+        if title and view_id and title != view_id:
+            lookup[title] = view_id
+    return lookup
+
+
+def _rewrite_data_view_refs(value: Any, data_view_ids: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        rewritten: dict[str, Any] = {}
+        for key, child in value.items():
+            if key == "data_view" and isinstance(child, str):
+                rewritten[key] = data_view_ids.get(child, child)
+            else:
+                rewritten[key] = _rewrite_data_view_refs(child, data_view_ids)
+        return rewritten
+    if isinstance(value, list):
+        return [_rewrite_data_view_refs(item, data_view_ids) for item in value]
+    return value
+
+
 @target_registry.register
 class KibanaTargetAdapter(TargetAdapter):
     name = "kibana"
+
+    def _ensure_default_data_views(
+        self,
+        kibana_url: str,
+        *,
+        api_key: str = "",
+        space_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Create the default migration data views before importing dashboards."""
+        return ensure_migration_data_views(
+            kibana_url,
+            data_view_patterns=None,
+            api_key=api_key,
+            space_id=space_id,
+        )
+
+    def _prepare_upload_yaml(
+        self,
+        yaml_path: Path,
+        output_dir: Path,
+        data_views: list[dict[str, Any]],
+    ) -> Path:
+        data_view_ids = _data_view_id_lookup(data_views)
+        if not data_view_ids:
+            return yaml_path
+        doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        rewritten = _rewrite_data_view_refs(doc, data_view_ids)
+        if rewritten == doc:
+            return yaml_path
+        upload_input_dir = output_dir / "_upload_input"
+        upload_input_dir.mkdir(parents=True, exist_ok=True)
+        upload_path = upload_input_dir / yaml_path.name
+        upload_path.write_text(
+            yaml.safe_dump(rewritten, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return upload_path
 
     def emit_dashboard(self, dashboard_ir: Any, output_dir: Path, **kwargs: Any) -> Path:
         output_dir = Path(output_dir)
@@ -176,11 +237,20 @@ class KibanaTargetAdapter(TargetAdapter):
         records: list[dict[str, Any]] = []
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
-        for yaml_file in _resolve_yaml_files(compiled_dir):
+        yaml_files = _resolve_yaml_files(compiled_dir)
+        data_views: list[dict[str, Any]] = []
+        if yaml_files:
+            data_views = self._ensure_default_data_views(
+                kibana_url,
+                api_key=kibana_api_key,
+                space_id=space_id,
+            )
+        for yaml_file in yaml_files:
             out_dir = compiled_dir / yaml_file.stem
             out_dir.mkdir(parents=True, exist_ok=True)
+            upload_yaml_path = self._prepare_upload_yaml(yaml_file, out_dir, data_views)
             success, output = upload_yaml(
-                str(yaml_file),
+                str(upload_yaml_path),
                 str(out_dir),
                 kibana_url,
                 space_id=space_id,
@@ -214,8 +284,18 @@ class KibanaTargetAdapter(TargetAdapter):
         space_id: str = "",
         kibana_api_key: str = "",
     ) -> dict[str, Any]:
+        data_views = self._ensure_default_data_views(
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+        )
+        upload_yaml_path = self._prepare_upload_yaml(
+            Path(yaml_path),
+            Path(output_dir),
+            data_views,
+        )
         success, output = upload_yaml(
-            str(yaml_path),
+            str(upload_yaml_path),
             str(output_dir),
             kibana_url,
             space_id=space_id,

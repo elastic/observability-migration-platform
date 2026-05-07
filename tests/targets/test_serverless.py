@@ -154,6 +154,26 @@ class TestEnsureDataView(unittest.TestCase):
         self.assertEqual(result["id"], "new")
         mock_create.assert_called_once()
 
+    @patch("observability_migration.targets.kibana.serverless.create_data_view")
+    @patch("observability_migration.targets.kibana.serverless.list_data_views")
+    def test_wildcard_title_lets_kibana_generate_data_view_id(self, mock_list, mock_create):
+        mock_list.return_value = []
+        mock_create.return_value = {"id": "generated-id", "title": "metrics-*"}
+
+        result = ensure_data_view("https://kb.test", title="metrics-*")
+
+        self.assertEqual(result["id"], "generated-id")
+        mock_create.assert_called_once_with(
+            "https://kb.test",
+            title="metrics-*",
+            name="metrics-*",
+            view_id="",
+            time_field="@timestamp",
+            api_key="",
+            space_id="",
+            timeout=30,
+        )
+
 
 class TestDetectServerless(unittest.TestCase):
     @patch("observability_migration.targets.kibana.serverless._session")
