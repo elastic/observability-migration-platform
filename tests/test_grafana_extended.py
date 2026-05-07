@@ -192,6 +192,26 @@ class TestGrafanaPackaging(unittest.TestCase):
                 f"time placeholder missing in: {esql[:200]}",
             )
 
+    def test_dashboard_esql_omits_redundant_timestamp_range_where(self):
+        yaml_panel, pr = self._translate_panel("avg(node_load1)")
+        esql = yaml_panel["esql"]["query"]
+
+        self.assertIn("BUCKET(@timestamp, 50, ?_tstart, ?_tend)", esql)
+        self.assertNotIn("| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend", esql)
+        self.assertEqual(esql, pr.esql_query)
+        self.assertEqual(esql, pr.query_ir["target_query"])
+
+    def test_dashboard_esql_omits_rule_pack_timestamp_range_where(self):
+        rp = rules.RulePackConfig()
+        rp.from_time_filter = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
+        yaml_panel, pr = _translate_panel(_make_panel(1, "avg(node_load1)"), rule_pack=rp)
+        esql = yaml_panel["esql"]["query"]
+
+        self.assertIn("BUCKET(@timestamp, 50, ?_tstart, ?_tend)", esql)
+        self.assertNotIn("| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend", esql)
+        self.assertEqual(esql, pr.esql_query)
+        self.assertEqual(esql, pr.query_ir["target_query"])
+
     def test_yaml_panel_has_position_and_size(self):
         yaml_panel, _ = self._translate_panel("rate(http_requests_total[5m])")
         if yaml_panel is not None:
