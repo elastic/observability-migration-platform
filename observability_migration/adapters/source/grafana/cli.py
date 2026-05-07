@@ -29,6 +29,7 @@ from observability_migration.core.reporting.report import (
 )
 from observability_migration.targets.kibana.compile import (
     compile_all,
+    compile_yaml,
     detect_space_id_from_kibana_url,
     kibana_url_for_space,
     lint_dashboard_yaml,
@@ -690,6 +691,61 @@ def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
     return removed
 
 
+def _lint_generated_yaml_files(yaml_files: list[Path]) -> tuple[bool, dict[str, tuple[bool, str]], str]:
+    lint_results: dict[str, tuple[bool, str]] = {}
+    failed_outputs = []
+    all_ok = True
+    for yaml_file in yaml_files:
+        ok, output = lint_dashboard_yaml(yaml_file)
+        lint_results[yaml_file.name] = (ok, output)
+        if not ok:
+            all_ok = False
+            if output.strip():
+                failed_outputs.append(output.strip())
+    return all_ok, lint_results, "\n".join(failed_outputs)
+
+
+def _compile_linted_yaml_files(
+    yaml_files: list[Path],
+    lint_results: dict[str, tuple[bool, str]],
+    compiled_dir: Path,
+) -> list[tuple[str, bool, str]]:
+    compile_results = []
+    for yaml_file in yaml_files:
+        lint_ok, lint_output = lint_results.get(
+            yaml_file.name,
+            (False, "Dashboard YAML lint result missing."),
+        )
+        if not lint_ok:
+            compile_results.append(
+                (
+                    yaml_file.name,
+                    False,
+                    "Dashboard YAML lint failed before compile.\n" + lint_output,
+                )
+            )
+            continue
+        out_dir = compiled_dir / yaml_file.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        success, output = compile_yaml(yaml_file, out_dir)
+        compile_results.append((yaml_file.name, success, output))
+    return compile_results
+
+
+def _validate_compiled_layout_after_compile(
+    results: list[MigrationResult],
+    compile_results: list[tuple[str, bool, str]],
+    compiled_dir: Path,
+) -> tuple[bool, str]:
+    if not any(ok for _name, ok, _output in compile_results):
+        return False, ""
+    layout_ok, layout_output = validate_compiled_layout(compiled_dir)
+    for result in results:
+        result.layout_validated = True
+        result.layout_error = "" if layout_ok else layout_output
+    return layout_ok, layout_output
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     _validate_field_profile(args)
@@ -990,10 +1046,14 @@ def main(argv: list[str] | None = None):
 
     yaml_files = sorted(yaml_dir.glob("*.yaml"))
     print("\n[4/7] Linting generated dashboard YAML...")
-    yaml_lint_ok, yaml_lint_output = lint_dashboard_yaml(yaml_dir)
-    for result in results:
+    yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
+    for result, yaml_path, _dashboard in dashboard_outputs:
         result.yaml_linted = True
-        result.yaml_lint_error = "" if yaml_lint_ok else yaml_lint_output
+        lint_ok, lint_output = yaml_lint_results.get(
+            Path(yaml_path).name,
+            (False, "Dashboard YAML lint result missing."),
+        )
+        result.yaml_lint_error = "" if lint_ok else lint_output
     if yaml_lint_ok:
         print("  ✓ Dashboard YAML validation passed")
     else:
@@ -1008,14 +1068,16 @@ def main(argv: list[str] | None = None):
         print("\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli...")
         compile_results = compile_all(yaml_dir, compiled_dir)
     else:
-        compile_results = [
-            (
-                yaml_file.name,
-                False,
-                "Dashboard YAML lint failed before compile.\n" + yaml_lint_output,
+        passing_lint = sum(1 for ok, _output in yaml_lint_results.values() if ok)
+        if passing_lint:
+            skipped_lint = len(yaml_files) - passing_lint
+            print(
+                "\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli "
+                f"(skipping {skipped_lint} lint-failed dashboard(s))..."
             )
-            for yaml_file in yaml_files
-        ]
+        else:
+            print("\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli: skipped (no lint-passing dashboards)")
+        compile_results = _compile_linted_yaml_files(yaml_files, yaml_lint_results, compiled_dir)
 
     compile_map = {Path(name).stem: (ok, output) for name, ok, output in compile_results}
     for result in results:
@@ -1029,11 +1091,12 @@ def main(argv: list[str] | None = None):
         icon = "✓" if ok else "✗"
         print(f"  {icon} {name}")
 
-    if yaml_lint_ok and any(ok for _, ok, _ in compile_results):
-        layout_ok, layout_output = validate_compiled_layout(compiled_dir)
-        for result in results:
-            result.layout_validated = True
-            result.layout_error = "" if layout_ok else layout_output
+    if any(ok for _, ok, _ in compile_results):
+        layout_ok, layout_output = _validate_compiled_layout_after_compile(
+            results,
+            compile_results,
+            compiled_dir,
+        )
         if layout_ok:
             print("  ✓ Compiled dashboard layout validation passed")
         else:
@@ -1049,11 +1112,7 @@ def main(argv: list[str] | None = None):
         upload_space = args.shadow_space or ""
         upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
         upload_blocker = ""
-        if not yaml_lint_ok:
-            upload_blocker = "Upload skipped because dashboard YAML lint failed."
-        elif any(not ok for _, ok, _ in compile_results):
-            upload_blocker = "Upload skipped because one or more dashboards failed to compile."
-        elif any(getattr(result, "layout_validated", None) and result.layout_error for result in results):
+        if any(getattr(result, "layout_validated", None) and result.layout_error for result in results):
             upload_blocker = "Upload skipped because compiled dashboard layout validation failed."
 
         if upload_blocker:
@@ -1063,8 +1122,14 @@ def main(argv: list[str] | None = None):
                 result.uploaded = False
                 result.upload_error = upload_blocker
         else:
+            compiled_ok_stems = {Path(name).stem for name, ok, _output in compile_results if ok}
             for result, yaml_path, _dashboard in dashboard_outputs:
                 result.upload_attempted = True
+                if yaml_path.stem not in compiled_ok_stems:
+                    result.uploaded = False
+                    result.upload_error = "Upload skipped because this dashboard did not compile."
+                    print(f"  - {yaml_path.name} skipped (dashboard did not compile)")
+                    continue
                 ok, output = upload_yaml(
                     yaml_path,
                     compiled_dir / yaml_path.stem,
@@ -1216,11 +1281,18 @@ def main(argv: list[str] | None = None):
                 v.get("found", 0)
                 for v in target_readiness.get("data_streams", {}).values()
             )
-            print(
-                f"    Target readiness: cluster {health.get('status', '?').upper()}, "
-                f"{health.get('number_of_data_nodes', '?')} data nodes, "
-                f"{tpl_count} index templates, {ds_count} data streams"
-            )
+            if health.get("unsupported"):
+                print(
+                    f"    Target readiness: cluster {health.get('status', '?').upper()} "
+                    f"(cluster health API unavailable), {tpl_count} index templates, "
+                    f"{ds_count} data streams"
+                )
+            else:
+                print(
+                    f"    Target readiness: cluster {health.get('status', '?').upper()}, "
+                    f"{health.get('number_of_data_nodes', '?')} data nodes, "
+                    f"{tpl_count} index templates, {ds_count} data streams"
+                )
         elif target_readiness.get("status") != "not_configured":
             print(f"    Target readiness: errors ({target_readiness.get('errors', [])})")
         else:
@@ -1330,6 +1402,9 @@ def main(argv: list[str] | None = None):
             print(f"\nVALIDATION FAILURES ({len(failed_validations)}):")
             for title, err in failed_validations[:20]:
                 print(f"  {title}: {err[:120]}")
+
+    if any(not ok for _, ok, _output in compile_results):
+        raise SystemExit(1)
 
 
 __all__ = ["main", "parse_args"]

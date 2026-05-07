@@ -3493,6 +3493,39 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             self.assertIn("thresholds", color)
             self.assertGreater(len(color["thresholds"]), 0)
 
+    def test_gauge_thresholds_above_max_are_clamped_to_sorted_range(self):
+        panel = {
+            "id": 31,
+            "type": "gauge",
+            "title": "CPU Time",
+            "gridPos": {"x": 0, "y": 0, "w": 6, "h": 6},
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": 'sum(rate(process_cpu_seconds_total{instance=~"$instance"}[5m]))', "refId": "A", "instant": True}],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s",
+                    "min": 0,
+                    "max": 0.03,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": None},
+                            {"color": "yellow", "value": 60},
+                            {"color": "red", "value": 85},
+                        ],
+                    },
+                }
+            },
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+
+        color = yaml_panel["esql"].get("color", {})
+        thresholds = color.get("thresholds", [])
+        threshold_values = [item["up_to"] for item in thresholds]
+
+        self.assertEqual(threshold_values, sorted(threshold_values))
+        self.assertEqual(thresholds, [{"up_to": 0.03, "color": "#54B399"}])
+
     # ------------------------------------------------------------------
     # Pie chart display enrichment
     # ------------------------------------------------------------------
@@ -4658,9 +4691,9 @@ class NativePromqlTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertFalse(can_use_native_promql("topk(5, http_requests_total)"))
 
-    def test_accepts_group_left(self):
+    def test_rejects_group_left(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
-        self.assertTrue(can_use_native_promql("foo / on(method) group_left bar"))
+        self.assertFalse(can_use_native_promql("foo / on(method) group_left bar"))
 
     def test_rejects_unless(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql

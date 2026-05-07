@@ -174,7 +174,16 @@ def classify_panel_readiness(panel_result: Any) -> str:
     notes = [str(note).lower() for note in (getattr(panel_result, "notes", []) or [])]
     if any("mixes datasource" in note for note in notes):
         return "manual_only"
+    query_ir = getattr(panel_result, "query_ir", {}) or {}
+    query_family = ""
+    if isinstance(query_ir, dict):
+        query_family = str(query_ir.get("family", "") or "").lower()
     if query_language == "esql":
+        return "elastic_ready"
+    if query_language == "promql" and (
+        query_family == "native_promql"
+        or any("native promql" in note for note in notes)
+    ):
         return "elastic_ready"
     if datasource_type == "elasticsearch":
         return "elastic_native_review"

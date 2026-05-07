@@ -3,6 +3,8 @@
 
 """Tests for shared Kibana target compile path."""
 
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -55,6 +57,41 @@ class TestSharedCompileBehavior(unittest.TestCase):
         self.assertEqual(cmd[0], "bash")
         self.assertTrue(cmd[1].endswith("scripts/validate_dashboard_yaml.sh"))
         self.assertEqual(cmd[2], "/tmp/generated-yaml")
+
+    def test_validate_dashboard_yaml_reports_non_json_linter_output_without_traceback(self):
+        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir) / "yaml"
+            yaml_dir.mkdir()
+            (yaml_dir / "bad.yaml").write_text("dashboards: []\n", encoding="utf-8")
+            bin_dir = Path(tmpdir) / "bin"
+            bin_dir.mkdir()
+            fake_uvx = bin_dir / "uvx"
+            fake_uvx.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'not json from package manager'\n"
+                "echo 'Error loading dashboards: invalid gauge thresholds' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_uvx.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+            proc = subprocess.run(
+                ["bash", str(script), str(yaml_dir)],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+
+        combined_output = proc.stdout + proc.stderr
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Error loading dashboards: invalid gauge thresholds", combined_output)
+        self.assertIn("Linter did not produce JSON for bad.yaml", combined_output)
+        self.assertNotIn("Traceback", combined_output)
+        self.assertNotIn("JSONDecodeError", combined_output)
 
     def test_validate_compiled_layout_uses_repo_script(self):
         with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:

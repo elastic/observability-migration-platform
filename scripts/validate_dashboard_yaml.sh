@@ -6,12 +6,12 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/validate_dashboard_yaml.sh [input_dir]
+Usage: bash scripts/validate_dashboard_yaml.sh [input_path]
 
 Validate generated dashboard YAML with kb-dashboard-lint.
 
 Arguments:
-  input_dir   Directory containing dashboard YAML files
+  input_path  Dashboard YAML file or directory containing dashboard YAML files
               (default: migration_output/dashboards/yaml)
 
 Environment variables:
@@ -40,9 +40,9 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-INPUT_DIR="${1:-migration_output/dashboards/yaml}"
-if [[ ! -d "${INPUT_DIR}" ]]; then
-  echo "ERROR: YAML input directory not found: ${INPUT_DIR}" >&2
+INPUT_PATH="${1:-migration_output/dashboards/yaml}"
+if [[ ! -e "${INPUT_PATH}" ]]; then
+  echo "ERROR: YAML input path not found: ${INPUT_PATH}" >&2
   exit 1
 fi
 
@@ -50,11 +50,15 @@ KB_DASHBOARD_LINT_SOURCE="${KB_DASHBOARD_LINT_SOURCE:-kb-dashboard-lint@latest}"
 DASHBOARD_LINT_WARNING_ALLOWLIST="${DASHBOARD_LINT_WARNING_ALLOWLIST:-esql-sql-syntax,dashboard-dataset-filter,panel-min-width,narrow-xy-chart-side-legend,esql-missing-sort-after-bucket}"
 
 shopt -s nullglob
-yaml_files=( "${INPUT_DIR}"/*.yaml "${INPUT_DIR}"/*.yml )
+if [[ -d "${INPUT_PATH}" ]]; then
+  yaml_files=( "${INPUT_PATH}"/*.yaml "${INPUT_PATH}"/*.yml )
+else
+  yaml_files=( "${INPUT_PATH}" )
+fi
 shopt -u nullglob
 
 if [[ "${#yaml_files[@]}" -eq 0 ]]; then
-  echo "ERROR: No YAML files found in ${INPUT_DIR}" >&2
+  echo "ERROR: No YAML files found in ${INPUT_PATH}" >&2
   exit 1
 fi
 
@@ -92,14 +96,30 @@ allowlisted = {
 }
 
 entries = []
+parse_errors = 0
 for raw_path in sys.argv[2:]:
     path = Path(raw_path)
     if not path.exists() or path.stat().st_size == 0:
         continue
     with path.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
+        try:
+            payload = json.load(handle)
+        except json.JSONDecodeError:
+            parse_errors += 1
+            dashboard_file = path.name.removesuffix(".lint.json")
+            raw_output = path.read_text(encoding="utf-8", errors="replace").strip()
+            print(
+                f"ERROR: Linter did not produce JSON for {dashboard_file}.",
+                file=sys.stderr,
+            )
+            if raw_output:
+                print(raw_output[:1000], file=sys.stderr)
+            continue
     if isinstance(payload, list):
         entries.extend(payload)
+
+if parse_errors:
+    raise SystemExit(1)
 
 errors = [entry for entry in entries if entry.get("severity") == "error"]
 warnings = [

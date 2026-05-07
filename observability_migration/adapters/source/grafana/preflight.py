@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,15 @@ def probe_target_readiness(
                 "number_of_nodes": health.get("number_of_nodes", 0),
                 "number_of_data_nodes": health.get("number_of_data_nodes", 0),
                 "active_shards": health.get("active_shards", 0),
+            }
+        elif resp.status_code == 410:
+            result["cluster_health"] = {
+                "status": "serverless",
+                "number_of_nodes": 0,
+                "number_of_data_nodes": 0,
+                "active_shards": 0,
+                "unsupported": True,
+                "message": "Cluster health API is not available on Elasticsearch Serverless.",
             }
         else:
             result["errors"].append(f"cluster health: HTTP {resp.status_code}")
@@ -341,6 +351,101 @@ def build_dashboard_complexity(results: list[Any]) -> list[dict[str, Any]]:
 # Helpers for extracting referenced metrics/labels from QueryIR
 # ---------------------------------------------------------------------------
 
+_FIELD_TOKEN_RE = re.compile(r"\b([A-Za-z_:][A-Za-z0-9_:]*)\s*(?=\{|\[)")
+_BARE_FIELD_TOKEN_RE = re.compile(r"\b([A-Za-z_:][A-Za-z0-9_:]*)\b(?!\s*\()")
+_LABEL_FILTER_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*(?:!?=~?|=)")
+_DERIVED_METRIC_NAMES = {"computed_value", "constant_value", "log_count", "value"}
+_PROMQL_KEYWORDS = {
+    "abs",
+    "and",
+    "avg",
+    "bool",
+    "bottomk",
+    "by",
+    "ceil",
+    "count",
+    "count_values",
+    "floor",
+    "group",
+    "group_left",
+    "group_right",
+    "histogram_quantile",
+    "ignoring",
+    "irate",
+    "label_join",
+    "label_replace",
+    "le",
+    "max",
+    "min",
+    "offset",
+    "on",
+    "or",
+    "predict_linear",
+    "quantile",
+    "rate",
+    "round",
+    "scalar",
+    "stddev",
+    "stdvar",
+    "sum",
+    "time",
+    "topk",
+    "unless",
+    "vector",
+    "without",
+}
+_COUNTER_SUFFIXES = ("_total", "_count", "_sum")
+_GAUGE_RESOURCE_TOKENS = ("resource_limit", "resource_limits", "resource_request", "resource_requests")
+
+
+def _add_required_field(required_fields: dict[str, dict[str, Any]], field_name: str, role: str) -> None:
+    field_name = str(field_name or "").strip()
+    if not field_name or field_name in {"@timestamp", "time_bucket", "timestamp_bucket", "step", "__name__"}:
+        return
+    entry = required_fields.setdefault(field_name, {"roles": set(), "panels": 0})
+    entry["roles"].add(role)
+    entry["panels"] += 1
+
+
+def _metric_candidates(query_ir: dict[str, Any]) -> set[str]:
+    candidates = {
+        str(query_ir.get("source_metric", "") or "").strip(),
+        str(query_ir.get("metric", "") or "").strip(),
+    }
+    output_metric = str(query_ir.get("output_metric_field", "") or "").strip()
+    candidates.discard("")
+    if output_metric in candidates:
+        candidates.discard(output_metric)
+    candidates.difference_update(_DERIVED_METRIC_NAMES)
+
+    expression = str(query_ir.get("clean_expression", "") or query_ir.get("source_expression", "") or "")
+    candidates.update(match.group(1) for match in _FIELD_TOKEN_RE.finditer(expression))
+    expression_without_labels = re.sub(r"\{[^{}]*\}", "", expression)
+    expression_without_literals = re.sub(r'"[^"]*"', '""', expression_without_labels)
+    candidates.update(
+        match.group(1)
+        for match in _BARE_FIELD_TOKEN_RE.finditer(expression_without_literals)
+        if match.group(1) not in _PROMQL_KEYWORDS
+    )
+    return {
+        item
+        for item in candidates
+        if item and item not in {"scalar", "vector"}
+    }
+
+
+def _label_filter_field(filter_expr: Any) -> str:
+    match = _LABEL_FILTER_RE.match(str(filter_expr or ""))
+    return match.group(1) if match else ""
+
+
+def _looks_like_counter_metric(metric_name: str) -> bool:
+    metric_name = str(metric_name or "")
+    if any(token in metric_name for token in _GAUGE_RESOURCE_TOKENS):
+        return False
+    return metric_name.endswith(_COUNTER_SUFFIXES)
+
+
 def _collect_referenced_metrics(results: list[Any]) -> set[str]:
     """Collect all metric names referenced in source PromQL expressions."""
     metrics: set[str] = set()
@@ -349,12 +454,7 @@ def _collect_referenced_metrics(results: list[Any]) -> set[str]:
             query_ir = getattr(pr, "query_ir", {}) or {}
             if not isinstance(query_ir, dict):
                 continue
-            metric = str(query_ir.get("source_metric", "") or "")
-            if metric:
-                metrics.add(metric)
-            output_metric = str(query_ir.get("output_metric_field", "") or "")
-            if output_metric and not output_metric.startswith("@"):
-                metrics.add(output_metric)
+            metrics.update(_metric_candidates(query_ir))
     return metrics
 
 
@@ -415,27 +515,29 @@ def build_target_schema_contract(
             if target_index:
                 required_indexes[target_index] += 1
 
-            metric_field = str(query_ir.get("output_metric_field", "") or "")
-            if metric_field:
-                entry = required_fields.setdefault(
-                    metric_field, {"roles": set(), "panels": 0},
-                )
-                entry["roles"].add("metric")
-                entry["panels"] += 1
+            metric_fields = _metric_candidates(query_ir)
+            for metric_field in sorted(metric_fields):
+                _add_required_field(required_fields, metric_field, "metric")
 
-            for group_field in query_ir.get("output_group_fields", []) or []:
-                if group_field:
-                    entry = required_fields.setdefault(
-                        group_field, {"roles": set(), "panels": 0},
-                    )
-                    entry["roles"].add("group_by")
-                    entry["panels"] += 1
+            for group_field in (
+                list(query_ir.get("source_group_fields", []) or [])
+                + list(query_ir.get("group_labels", []) or [])
+            ):
+                _add_required_field(required_fields, group_field, "group_by")
+
+            for filter_expr in query_ir.get("label_filters", []) or []:
+                _add_required_field(required_fields, _label_filter_field(filter_expr), "filter")
+            for filter_field in query_ir.get("source_filter_fields", []) or []:
+                _add_required_field(required_fields, filter_field, "filter")
 
             source_type = str(query_ir.get("source_type", "") or "")
-            if source_type == "TS" and metric_field:
-                counter_expectations[metric_field] = (
-                    counter_expectations.get(metric_field, 0) + 1
-                )
+            if source_type == "TS":
+                for metric_field in metric_fields:
+                    if not _looks_like_counter_metric(metric_field):
+                        continue
+                    counter_expectations[metric_field] = (
+                        counter_expectations.get(metric_field, 0) + 1
+                    )
 
             for loss in query_ir.get("semantic_losses", []) or []:
                 loss_str = str(loss)
@@ -764,17 +866,29 @@ def _build_action_summary(
         if (pr.verification_packet or {}).get("semantic_gate") == "Green"
     )
     lines.append(f"Dashboards: {len(results)}")
-    lines.append(f"Panels: {total} ({green} ready for deployment)")
+    if evidence_level == "full":
+        readiness_text = f"{green} ready for deployment"
+    elif evidence_level == "static_analysis":
+        readiness_text = f"{green} Green by static analysis"
+    else:
+        readiness_text = f"{green} Green with {evidence_level} evidence"
+    lines.append(f"Panels: {total} ({readiness_text})")
     lines.append(f"Evidence level: {evidence_level}")
     lines.append("")
 
     cluster_health = target_readiness.get("cluster_health", {})
     if cluster_health:
-        lines.append(
-            f"Target cluster: {cluster_health.get('status', '?').upper()} "
-            f"({cluster_health.get('number_of_data_nodes', '?')} data nodes, "
-            f"{cluster_health.get('active_shards', '?')} active shards)"
-        )
+        if cluster_health.get("unsupported"):
+            lines.append(
+                f"Target cluster: {cluster_health.get('status', '?').upper()} "
+                "(cluster health API not available)"
+            )
+        else:
+            lines.append(
+                f"Target cluster: {cluster_health.get('status', '?').upper()} "
+                f"({cluster_health.get('number_of_data_nodes', '?')} data nodes, "
+                f"{cluster_health.get('active_shards', '?')} active shards)"
+            )
         lines.append("")
 
     inv_status = source_inventory.get("status", "not_configured")

@@ -746,6 +746,76 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         )
         self.assertTrue(yaml_output_exists)
 
+    def test_lint_failure_skips_only_failing_yaml_before_compile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir) / "yaml"
+            compiled_dir = Path(tmpdir) / "compiled"
+            yaml_dir.mkdir()
+            good_yaml = yaml_dir / "good.yaml"
+            bad_yaml = yaml_dir / "bad.yaml"
+            other_good_yaml = yaml_dir / "other-good.yaml"
+            for yaml_path in (good_yaml, bad_yaml, other_good_yaml):
+                yaml_path.write_text("dashboards: []\n", encoding="utf-8")
+
+            lint_results = {
+                good_yaml.name: (True, ""),
+                bad_yaml.name: (False, "bad threshold order"),
+                other_good_yaml.name: (True, ""),
+            }
+            compile_calls = []
+
+            def _fake_compile_yaml(yaml_path, output_dir):
+                compile_calls.append((Path(yaml_path).name, Path(output_dir).name))
+                return True, f"compiled {Path(yaml_path).name}"
+
+            with mock.patch.object(grafana_cli, "compile_yaml", side_effect=_fake_compile_yaml):
+                compile_results = grafana_cli._compile_linted_yaml_files(
+                    sorted(yaml_dir.glob("*.yaml")),
+                    lint_results,
+                    compiled_dir,
+                )
+
+        self.assertEqual(
+            compile_calls,
+            [("good.yaml", "good"), ("other-good.yaml", "other-good")],
+        )
+        self.assertEqual(
+            compile_results,
+            [
+                ("bad.yaml", False, "Dashboard YAML lint failed before compile.\nbad threshold order"),
+                ("good.yaml", True, "compiled good.yaml"),
+                ("other-good.yaml", True, "compiled other-good.yaml"),
+            ],
+        )
+
+    def test_layout_validation_runs_when_partial_lint_batch_still_compiles_dashboards(self):
+        results = [
+            MigrationResult("Bad", "bad-uid"),
+            MigrationResult("Good", "good-uid"),
+        ]
+        compile_results = [
+            ("bad.yaml", False, "Dashboard YAML lint failed before compile."),
+            ("good.yaml", True, "compiled good.yaml"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                grafana_cli,
+                "validate_compiled_layout",
+                return_value=(True, ""),
+            ) as mock_validate:
+                layout_ok, layout_output = grafana_cli._validate_compiled_layout_after_compile(
+                    results,
+                    compile_results,
+                    Path(tmpdir),
+                )
+
+        self.assertTrue(layout_ok)
+        self.assertEqual(layout_output, "")
+        mock_validate.assert_called_once()
+        self.assertTrue(all(result.layout_validated for result in results))
+        self.assertTrue(all(result.layout_error == "" for result in results))
+
 
 if __name__ == "__main__":
     unittest.main()
