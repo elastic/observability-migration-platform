@@ -1095,6 +1095,19 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("_timeseries", query)
         self.assertEqual(panels._native_promql_result_shape(expr), ("value", ["service.name"]))
 
+    def test_native_promql_rejects_server_unsupported_group_modifiers(self):
+        expr = (
+            'rate(container_cpu_usage_seconds_total{pod=~"loki.*"}[1m]) '
+            '/ on (pod, container) kube_pod_container_resource_limits_cpu_cores'
+        )
+
+        self.assertFalse(panels.can_use_native_promql(expr))
+
+    def test_native_promql_rejects_server_unsupported_histogram_quantile(self):
+        expr = 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+
+        self.assertFalse(panels.can_use_native_promql(expr))
+
     def test_native_promql_visual_ir_and_query_ir_match_emitted_yaml(self):
         panel = _make_panel(1, "rate(http_requests_total[5m])")
         yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)

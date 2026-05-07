@@ -500,9 +500,13 @@ _PROMQL_UNSUPPORTED_RE = re.compile(
     | \btopk\s*\(                                 # topk not supported by ES PROMQL bridge
     | \bbottomk\s*\(                              # bottomk not supported
     | \bchanges\s*\(                              # changes() not supported
+    | \bhistogram_quantile\s*\(                   # histogram_quantile not supported
+    | \bpredict_linear\s*\(                       # predict_linear not supported
     | \blabel_replace\s*\(                        # label_replace not supported
     | \blabel_join\s*\(                           # label_join not supported
     | \bscalar\s*\(                               # scalar() triggers planner error
+    | \b(?:on|ignoring)\s*\(                      # vector matching modifiers not supported
+    | \bgroup_(?:left|right)\b                    # group modifiers not supported
     """,
     re.VERBOSE | re.IGNORECASE,
 )
@@ -599,6 +603,8 @@ def _promql_has_known_server_bug(expr):
         return True
     stripped = _strip_promql_string_literals(cleaned)
     stripped = re.sub(r"\{[^{}]*\}", "{}", stripped)
+    if re.search(r"\band\b", stripped, re.IGNORECASE):
+        return True
     if re.search(r"\bor\b", stripped, re.IGNORECASE):
         return True
     if re.search(r"\bunless\b", stripped, re.IGNORECASE):
@@ -1914,7 +1920,10 @@ def _append_esql_constants(esql, constants):
 
 
 def _build_gauge_color_mapping(panel, minimum=None, maximum=None):
-    steps = _gauge_threshold_steps(panel)
+    steps = sorted(
+        _gauge_threshold_steps(panel),
+        key=lambda step: float("-inf") if step.get("value") is None else step.get("value"),
+    )
     if not steps:
         return None
     thresholds = []
@@ -1922,12 +1931,21 @@ def _build_gauge_color_mapping(panel, minimum=None, maximum=None):
         color = step.get("color")
         if not color:
             continue
+        current_value = step.get("value")
+        if maximum is not None and current_value is not None and current_value >= maximum:
+            continue
         next_value = None
         if index + 1 < len(steps):
             next_value = steps[index + 1].get("value")
         elif maximum is not None:
             next_value = maximum
         if next_value is None:
+            continue
+        if maximum is not None and next_value > maximum:
+            next_value = maximum
+        if minimum is not None and next_value <= minimum:
+            continue
+        if thresholds and next_value <= thresholds[-1]["up_to"]:
             continue
         thresholds.append({"up_to": next_value, "color": color})
     if not thresholds:
