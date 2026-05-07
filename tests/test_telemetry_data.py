@@ -135,6 +135,42 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertIsInstance(docs[0][1]["cpu"], float)
         self.assertGreaterEqual(len(docs), 6)
 
+    def test_generate_documents_populates_metrics_for_custom_metric_index_names(self):
+        contract = {
+            "streams": {
+                "mig-dd-e2e": {
+                    "fields": {
+                        "system_cpu_user": {"role": "metric", "metric_kind": "gauge"},
+                        "system_net_bytes_rcvd": {"role": "metric", "metric_kind": "counter"},
+                        "host.name": {"role": "dimension"},
+                    },
+                    "required_values": {"host.name": ["web01"]},
+                }
+            }
+        }
+
+        template = plan_index_template("mig-dd-e2e", contract["streams"]["mig-dd-e2e"])
+        docs = list(
+            generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+                max_combinations=1,
+            )
+        )
+
+        props = template["template"]["mappings"]["properties"]
+        metric_docs = [doc for index, doc in docs if index == "mig-dd-e2e"]
+        self.assertEqual(props["data_stream.type"]["value"], "metrics")
+        self.assertIn("mode", template["template"]["settings"]["index"])
+        self.assertNotIn("message", props)
+        self.assertTrue(props["host.name"]["time_series_dimension"])
+        self.assertTrue(metric_docs)
+        self.assertIsInstance(metric_docs[0]["system_cpu_user"], float)
+        self.assertIsInstance(metric_docs[0]["system_net_bytes_rcvd"], float)
+        self.assertNotIn("message", metric_docs[0])
+
     def test_generate_documents_covers_required_values_beyond_max_combinations(self):
         contract = {
             "streams": {

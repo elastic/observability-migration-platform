@@ -39,6 +39,7 @@ from observability_migration.core.cli_contract import (
 )
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
+from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
 from .extract import (
@@ -492,6 +493,14 @@ def _compile_all_dashboards(
             dr.compiled = True
             dr.compiled_path = str(out_dir)
             print(f"    Compiled: {stem}")
+            layout_ok, layout_output = validate_compiled_layout(out_dir)
+            dr.layout_checked = True
+            if layout_ok:
+                dr.layout_error = ""
+                print(f"    Layout validated: {stem}")
+            else:
+                dr.layout_error = layout_output[:500]
+                print(f"    LAYOUT FAILED: {stem}: {layout_output[:200]}")
         else:
             dr.compile_error = output[:500]
             print(f"    COMPILE FAILED: {stem}: {output[:200]}")
@@ -857,6 +866,11 @@ def _upload_all_dashboards(
                 else "Upload skipped because compile did not run."
             )
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
+            continue
+        if dr.layout_error:
+            dr.uploaded = False
+            dr.upload_error = f"Upload skipped because compiled layout validation failed: {dr.layout_error}"
+            print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error[:200]}")
             continue
 
         out_dir = compiled_dir / Path(dr.yaml_path).stem
