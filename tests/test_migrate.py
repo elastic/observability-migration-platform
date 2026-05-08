@@ -77,6 +77,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
 
+    def seed_field_caps(self, fields):
+        self.resolver._discovery_attempted = True
+        self.resolver._field_cache = fields
+        self.resolver._discovered_mappings = {}
+
     def test_schema_resolver_otel_profile_covers_workload_labels(self):
         self.assertEqual(self.resolver.resolve_label("deployment"), "k8s.deployment.name")
         self.assertEqual(self.resolver.resolve_label("daemonset"), "k8s.daemonset.name")
@@ -111,6 +116,27 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("node_memory_MemAvailable_bytes", translated.esql_query)
         self.assertIn("node_memory_MemTotal_bytes", translated.esql_query)
         self.assertIn("| EVAL computed_value =", translated.esql_query)
+
+    def test_mixed_known_and_unknown_gauge_arithmetic_keeps_from_fallback(self):
+        self.seed_field_caps(
+            {
+                "known_gauge": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("known_gauge + unknown_gauge")
+
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        self.assertIn("FROM metrics-*", translated.esql_query)
+        self.assertIn("AVG(known_gauge)", translated.esql_query)
+        self.assertIn("AVG(unknown_gauge)", translated.esql_query)
 
     def test_post_aggregation_filter_is_preserved(self):
         expr = 'sum(increase(net_conntrack_dialer_conn_failed_total{instance="$instance"}[$aggregation_interval])) by (instance) > 0'
@@ -257,7 +283,77 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate('topk(10, count by (__name__)({__name__=~".+"}))', panel_type="bargauge")
         self.assertEqual(translated.feasibility, "not_feasible")
 
+    def test_live_gauge_selector_uses_direct_ts_without_avg_warning(self):
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("node_systemd_units")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn(
+            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            translated.esql_query,
+        )
+        self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
+        self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
+
+    def test_unknown_gauge_selector_keeps_existing_avg_fallback(self):
+        translated = self.translate("node_systemd_units")
+
+        self.assertEqual(translated.source_type, "FROM")
+        self.assertIn("FROM metrics-*", translated.esql_query)
+        self.assertIn("AVG(node_systemd_units)", translated.esql_query)
+        self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
+
+    def test_conflicting_gauge_capability_keeps_avg_fallback(self):
+        self.seed_field_caps(
+            {
+                "ambiguous_gauge": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    },
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    },
+                }
+            }
+        )
+
+        translated = self.translate("ambiguous_gauge")
+
+        self.assertEqual(translated.source_type, "FROM")
+        self.assertIn("AVG(ambiguous_gauge)", translated.esql_query)
+        self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
+
     def test_same_metric_collapse_rebuilds_valid_query(self):
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
         panel = {
             "id": 100,
             "type": "graph",
@@ -275,12 +371,52 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
+        self.assertTrue(any("No explicit aggregation" in r for r in result.reasons))
         self.assertFalse(any("only 1 could be migrated" in r for r in result.reasons))
+        self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertIn("FROM metrics-*", result.query_ir["target_query"])
         self.assertEqual(
             result.query_ir["source_expression"],
             'node_systemd_units{instance="$node",job="$job",state="active"} ||| '
             'node_systemd_units{instance="$node",job="$job",state="failed"}',
         )
+
+    def test_multi_target_live_gauge_with_divergent_filters_keeps_all_series(self):
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 104,
+            "type": "graph",
+            "title": "Systemd Units",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'node_systemd_units{state="active"}', "refId": "A", "legendFormat": "active"},
+                {"expr": 'node_systemd_units{state="failed"}', "refId": "B", "legendFormat": "failed"},
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        metric_fields = [metric["field"] for metric in yaml_panel["esql"].get("metrics", [])]
+
+        self.assertNotIn("only 1 could be migrated", " ".join(result.reasons))
+        self.assertEqual(len(metric_fields), 2)
+        self.assertIn("active", metric_fields)
+        self.assertIn("failed", metric_fields)
+        self.assertIn('CASE((state == "active"', query)
+        self.assertIn('CASE((state == "failed"', query)
+        self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertIn("FROM metrics-*", result.query_ir["target_query"])
 
     def test_timeseries_legend_placeholder_drives_grouping(self):
         panel = {
@@ -331,6 +467,28 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "chip_name")
         self.assertTrue(any("Dropped group_left label enrichment" in reason for reason in result.reasons))
 
+    def test_supported_range_functions_stay_bare_with_time_bucket_only(self):
+        cases = [
+            ("rate(http_requests_total[5m])", "RATE(http_requests_total, 5m)"),
+            ("irate(http_requests_total[5m])", "IRATE(http_requests_total, 5m)"),
+            ("increase(http_requests_total[5m])", "INCREASE(http_requests_total, 5m)"),
+            ("avg_over_time(node_memory_MemFree_bytes[5m])", "AVG_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
+            ("sum_over_time(node_memory_MemFree_bytes[5m])", "SUM_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
+            ("max_over_time(node_memory_MemFree_bytes[5m])", "MAX_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
+            ("min_over_time(node_memory_MemFree_bytes[5m])", "MIN_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
+            ("count_over_time(node_memory_MemFree_bytes[5m])", "COUNT_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
+            ("delta(node_memory_MemFree_bytes[5m])", "DELTA(node_memory_MemFree_bytes, 5m)"),
+            ("deriv(node_memory_MemFree_bytes[5m])", "DERIV(node_memory_MemFree_bytes, 5m)"),
+        ]
+
+        for expr, expected_expr in cases:
+            with self.subTest(expr=expr):
+                translated = self.translate(expr)
+                self.assertEqual(translated.source_type, "TS")
+                self.assertIn(f"| STATS {translated.output_metric_field} = {expected_expr}", translated.esql_query)
+                self.assertIn("BY time_bucket = TBUCKET(5 minute)", translated.esql_query)
+                self.assertNotIn(f"AVG({expected_expr})", translated.esql_query)
+
     def test_grouped_range_agg_wraps_ts_function(self):
         panel = {
             "id": 103,
@@ -349,7 +507,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("AVG(IRATE(node_network_receive_bytes_total, 5m))", query)
         self.assertIn(", device", query)
-        self.assertTrue(any("Wrapped irate in AVG()" in reason for reason in result.reasons))
+        self.assertTrue(
+            any(
+                "requires an outer aggregation when grouping TS functions by label fields" in reason
+                for reason in result.reasons
+            )
+        )
 
     def test_query_ir_semantic_losses_include_accuracy_warning(self):
         ctx = SimpleNamespace(

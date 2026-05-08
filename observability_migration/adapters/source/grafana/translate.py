@@ -29,6 +29,7 @@ from .promql import (
     _build_shared_measure_pipeline,
     _build_stats_call,
     _build_where_lines,
+    _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
     _common_matchers,
     _format_scalar_value,
@@ -894,7 +895,11 @@ def range_agg_family_rule(context):
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
-        _append_unique(context.warnings, f"Wrapped {frag.range_func} in AVG() to support grouped TS queries")
+        _append_unique(
+            context.warnings,
+            f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
+            "when grouping TS functions by label fields",
+        )
     else:
         stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
 
@@ -1097,15 +1102,24 @@ def simple_metric_family_rule(context):
 
     group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-    source = "TS" if is_counter else "FROM"
-    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
-    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+    can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
 
     if is_counter:
+        source = "TS"
+        time_filter = rp.ts_time_filter
+        bucket = rp.ts_bucket
         inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
         _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
         stats_expr = f"AVG({inner_expr})"
+    elif can_use_direct_ts_gauge:
+        source = "TS"
+        time_filter = rp.ts_time_filter
+        bucket = rp.ts_bucket
+        stats_expr = frag.metric
     else:
+        source = "FROM"
+        time_filter = rp.from_time_filter
+        bucket = rp.from_bucket
         default_agg = rp.default_gauge_agg.upper()
         stats_expr = f"{default_agg}({frag.metric})"
         if frag.extra.get("wrapped_scalar"):

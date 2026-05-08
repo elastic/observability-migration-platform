@@ -1459,6 +1459,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             merged_query = _build_multi_target_series_query(fused_series)
             if merged_query:
                 primary.esql_query = merged_query["query"]
+                primary.source_type = merged_query["source_type"]
                 primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
                 primary.metadata["multi_series_metric_labels"] = merged_query.get("metric_label_hints", {})
                 primary.output_metric_field = merged_query["metric_fields"][0]
@@ -1614,6 +1615,8 @@ def _try_collapse_same_metric_targets(translations):
     sources = {t.source_type for t in translations}
     if len(sources) > 1:
         return None
+    if any(t.metadata.get("series_alias") != t.metadata.get("target_ref_id") for t in translations):
+        return None
 
     frags = [t.fragment for t in translations]
     if not all(frags):
@@ -1670,6 +1673,7 @@ def _try_collapse_same_metric_targets(translations):
     if not shared:
         return None
     parts, output_group_fields, metric_fields = shared
+    collapsed.source_type = plan.specs[0].source_type
     collapsed_summary = None
     if _summary_mode_from_metadata(collapsed.metadata):
         collapsed_summary = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
@@ -1704,6 +1708,8 @@ def _try_collapse_same_metric_targets(translations):
     if full_clean_exprs:
         collapsed.clean_expr = " ||| ".join(full_clean_exprs)
 
+    for warning in plan.warnings:
+        _append_unique(collapsed.warnings, warning)
     _append_unique(collapsed.warnings,
                    f"Collapsed {len(translations)} same-metric targets into BY {collapse_label}")
     return collapsed
@@ -1733,6 +1739,7 @@ def _build_multi_target_series_query(translations):
             alias_hint=alias_hint,
             summary_mode=_summary_mode_from_metadata(translation.metadata),
             preferred_group_labels=translation.metadata.get("preferred_group_labels"),
+            allow_direct_ts_gauge=False,
         )
         if pf is not None:
             translation.fragment.extra["post_filter"] = pf
@@ -1788,6 +1795,7 @@ def _build_multi_target_series_query(translations):
         "metric_fields": metric_fields,
         "metric_label_hints": metric_label_hints,
         "group_fields": output_group_fields,
+        "source_type": all_specs[0].source_type,
         "warnings": warnings,
     }
 

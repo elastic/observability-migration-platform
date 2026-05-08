@@ -1260,7 +1260,32 @@ def _matcher_alias_suffix(frag):
     return "_".join(part for part in parts if part)
 
 
-def _build_measure_spec(frag, resolver, rule_pack, alias_hint="", summary_mode=False, preferred_group_labels=None):
+def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
+    if not metric_name or not resolver:
+        return False
+    if group_fields:
+        return False
+    if frag and frag.extra.get("wrapped_scalar"):
+        return False
+    capability = resolver.field_capability(metric_name)
+    if not capability:
+        return False
+    if capability.conflicting_types:
+        return False
+    if capability.time_series_metric_kind != "gauge":
+        return False
+    return capability.type_family == "numeric"
+
+
+def _build_measure_spec(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    allow_direct_ts_gauge=True,
+):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
 
@@ -1279,13 +1304,24 @@ def _build_measure_spec(frag, resolver, rule_pack, alias_hint="", summary_mode=F
 
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
-        source = "TS" if is_counter else "FROM"
-        time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
-        bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
+        can_use_direct_ts_gauge = allow_direct_ts_gauge and _can_use_direct_ts_gauge(
+            frag.metric, resolver, group_fields, frag
+        )
         if is_counter:
+            source = "TS"
+            time_filter = rule_pack.ts_time_filter
+            bucket_expr = rule_pack.ts_bucket
             stats_expr = f"AVG(RATE({frag.metric}, {rule_pack.default_rate_window}))"
             warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
+        elif can_use_direct_ts_gauge:
+            source = "TS"
+            time_filter = rule_pack.ts_time_filter
+            bucket_expr = rule_pack.ts_bucket
+            stats_expr = frag.metric
         else:
+            source = "FROM"
+            time_filter = rule_pack.from_time_filter
+            bucket_expr = rule_pack.from_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
             stats_expr = f"{default_agg}({frag.metric})"
             if frag.extra.get("wrapped_scalar"):
@@ -1319,7 +1355,10 @@ def _build_measure_spec(frag, resolver, rule_pack, alias_hint="", summary_mode=F
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
-            warnings.append(f"Wrapped {frag.range_func} in AVG() to support grouped TS queries")
+            warnings.append(
+                f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
+                "when grouping TS functions by label fields"
+            )
         else:
             stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
     elif frag.family == "scaled_agg":
@@ -1493,7 +1532,15 @@ def _build_shared_measure_pipeline(index, specs):
     return parts, group_fields, metric_fields
 
 
-def _build_formula_plan(frag, resolver, rule_pack, alias_hint="", summary_mode=False, preferred_group_labels=None):
+def _build_formula_plan(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    allow_direct_ts_gauge=True,
+):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
         return FormulaPlan(specs=[], expr=scalar_expr)
@@ -1506,6 +1553,7 @@ def _build_formula_plan(frag, resolver, rule_pack, alias_hint="", summary_mode=F
             alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=False,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -1514,6 +1562,7 @@ def _build_formula_plan(frag, resolver, rule_pack, alias_hint="", summary_mode=F
             alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=False,
         )
         if not left_plan or not right_plan:
             return None
@@ -1534,6 +1583,7 @@ def _build_formula_plan(frag, resolver, rule_pack, alias_hint="", summary_mode=F
         alias_hint=alias_hint,
         summary_mode=summary_mode,
         preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
     )
     if not spec:
         return None
