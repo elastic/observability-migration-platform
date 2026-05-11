@@ -316,6 +316,277 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
 
+    def test_native_promql_panel_records_promql_contract(self):
+        self.rule_pack.native_promql = True
+        panel = {
+            "id": 901,
+            "type": "graph",
+            "title": "Req rate",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "rate(http_requests_total[5m])", "refId": "A"}],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
+        self.assertEqual(result.query_language, "promql")
+
+    def test_multi_target_native_promql_panel_records_contract_artifacts(self):
+        self.rule_pack.native_promql = True
+        panel = {
+            "id": 904,
+            "type": "graph",
+            "title": "Req rates",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": "sum without (instance) (rate(http_requests_total[5m]))", "refId": "A", "legendFormat": "a"},
+                {"expr": "sum without (instance) (rate(http_requests_total[5m]))", "refId": "B", "legendFormat": "b"},
+            ],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
+        self.assertIn("status", result.fulfillment_plan)
+
+    def test_multi_target_native_promql_mixed_metrics_contract_includes_all_fields(self):
+        self.rule_pack.native_promql = True
+        panel = {
+            "id": 908,
+            "type": "graph",
+            "title": "Mixed rates",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": "sum without (instance) (rate(cpu_total[5m]))", "refId": "A", "legendFormat": "cpu"},
+                {"expr": "sum without (instance) (rate(memory_total[5m]))", "refId": "B", "legendFormat": "memory"},
+            ],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        field_names = [item["name"] for item in result.target_query_contract.get("field_requirements", [])]
+        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertIn("cpu_total", field_names)
+        self.assertIn("memory_total", field_names)
+
+    def test_mixed_tsds_pattern_reports_exact_after_fulfillment(self):
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 902,
+            "type": "graph",
+            "title": "Gauge panel",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "node_systemd_units", "refId": "A"}],
+        }
+
+        self.resolver._index_pattern = "metrics-*"
+        self.resolver._concrete_index_cache = ["metrics-tsds", "metrics-plain"]
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(result.contract_evaluation["status"], "exact_after_fulfillment")
+        self.assertEqual(result.fulfillment_plan["actions"][0]["kind"], "narrow_index_pattern")
+
+    def test_multiple_concrete_targets_do_not_claim_exact_now_for_ts_contract(self):
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 905,
+            "type": "graph",
+            "title": "Gauge panel",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "node_systemd_units", "refId": "A"}],
+        }
+        self.resolver._index_pattern = "metrics-*"
+        self.resolver._concrete_index_cache = ["metrics-app", "metrics-host"]
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.target_query_contract["canonical_target"], "ts")
+        self.assertNotEqual(result.contract_evaluation["status"], "exact_now")
+
+    def test_issue8_tsds_query_prefers_ts_contract_over_from_fallback(self):
+        self.seed_field_caps(
+            {
+                "http_requests_total": {
+                    "long": {
+                        "type": "long",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                }
+            }
+        )
+        self.resolver._index_pattern = "metrics-*"
+        self.resolver._concrete_index_cache = ["metrics-tsds"]
+        panel = {
+            "id": 909,
+            "type": "graph",
+            "title": "Request rate",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "sum(rate(http_requests_total[5m]))", "refId": "A"}],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
+        self.assertEqual(result.fulfillment_plan["status"], "not_required")
+        self.assertEqual(result.fulfillment_plan["actions"], [])
+
+    def test_issue12_and_13_keep_exact_targets_or_fulfillment_states(self):
+        self.seed_field_caps(
+            {
+                "http_requests_total": {
+                    "long": {
+                        "type": "long",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+            }
+        )
+        self.resolver._index_pattern = "metrics-*"
+        self.resolver._concrete_index_cache = ["metrics-tsds"]
+
+        rate_panel = {
+            "id": 910,
+            "type": "graph",
+            "title": "Request rate",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "rate(http_requests_total[5m])", "refId": "A"}],
+        }
+        gauge_panel = {
+            "id": 911,
+            "type": "graph",
+            "title": "Systemd units",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "node_systemd_units", "refId": "A"}],
+        }
+
+        _rate_yaml_panel, rate_result = self.translate_panel(rate_panel)
+        _gauge_yaml_panel, gauge_result = self.translate_panel(gauge_panel)
+
+        self.assertEqual(rate_result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(rate_result.contract_evaluation["status"], "exact_now")
+        self.assertEqual(rate_result.fulfillment_plan["status"], "not_required")
+        self.assertEqual(rate_result.fulfillment_plan["actions"], [])
+
+        self.assertEqual(gauge_result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(gauge_result.contract_evaluation["status"], "exact_now")
+        self.assertEqual(gauge_result.fulfillment_plan["status"], "not_required")
+        self.assertEqual(gauge_result.fulfillment_plan["actions"], [])
+
+    def test_blocked_evaluation_is_not_overridden_for_from_panel(self):
+        from observability_migration.core.assets.target_query_contract import (
+            ContractEvaluation,
+            FulfillmentPlan,
+            TargetQueryContract,
+        )
+
+        panel = {
+            "id": 912,
+            "type": "graph",
+            "title": "Blocked panel",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "node_systemd_units", "refId": "A"}],
+        }
+
+        blocked_contract = TargetQueryContract(
+            canonical_target="promql",
+            exactness_class="exact_if_contract_met",
+            runtime_requirements={"source_command": "PROMQL"},
+            degradation_policy={"fallback": "forbidden"},
+        )
+        blocked_evaluation = ContractEvaluation(
+            status="blocked",
+            blocking=["PROMQL runtime is unavailable"],
+        )
+        blocked_fulfillment = FulfillmentPlan(status="not_required")
+
+        with mock.patch.object(
+            translate,
+            "_build_metric_contract_artifacts",
+            return_value=(blocked_contract, blocked_evaluation, blocked_fulfillment),
+        ), mock.patch.object(
+            panels,
+            "_build_metric_contract_artifacts",
+            return_value=(blocked_contract, blocked_evaluation, blocked_fulfillment),
+        ):
+            _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
+        self.assertEqual(result.contract_evaluation["status"], "blocked")
+        self.assertEqual(result.fulfillment_plan["status"], "not_required")
+
+    def test_native_promql_without_query_preserves_group_mode(self):
+        self.rule_pack.native_promql = True
+        panel = {
+            "id": 906,
+            "type": "graph",
+            "title": "Req rate",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "sum without (instance) (rate(http_requests_total[5m]))", "refId": "A"}],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.query_ir["group_mode"], "without")
+
+    def test_not_feasible_metric_panel_still_carries_contract_artifacts(self):
+        panel = {
+            "id": 903,
+            "type": "graph",
+            "title": "Unsupported metric",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": 'max_over_time(rate(foo_total[5m])[1h:])', "refId": "A"}],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "not_feasible")
+        self.assertTrue(result.target_query_contract)
+        self.assertTrue(result.contract_evaluation)
+        self.assertTrue(result.fulfillment_plan)
+        self.assertIn("canonical_target", result.target_query_contract)
+
     def test_conflicting_gauge_capability_keeps_avg_fallback(self):
         self.seed_field_caps(
             {
@@ -374,6 +645,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(any("No explicit aggregation" in r for r in result.reasons))
         self.assertFalse(any("only 1 could be migrated" in r for r in result.reasons))
         self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertEqual(result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        self.assertEqual(result.fulfillment_plan["status"], "not_required")
+        self.assertEqual(result.fulfillment_plan["actions"], [])
         self.assertIn("FROM metrics-*", result.query_ir["target_query"])
         self.assertEqual(
             result.query_ir["source_expression"],
@@ -416,7 +691,53 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('CASE((state == "active"', query)
         self.assertIn('CASE((state == "failed"', query)
         self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertEqual(result.target_query_contract["canonical_target"], "ts")
+        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        self.assertEqual(result.fulfillment_plan["status"], "not_required")
+        self.assertEqual(result.fulfillment_plan["actions"], [])
         self.assertIn("FROM metrics-*", result.query_ir["target_query"])
+
+    def test_fused_multi_metric_panel_contract_includes_all_metrics(self):
+        self.seed_field_caps(
+            {
+                "cpu_usage": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+                "memory_usage": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 907,
+            "type": "graph",
+            "title": "CPU and memory",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'cpu_usage{state="active"}', "refId": "A", "legendFormat": "cpu_usage"},
+                {"expr": 'memory_usage{state="active"}', "refId": "B", "legendFormat": "memory_usage"},
+            ],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(
+            set(result.query_ir["metadata"].get("multi_series_metric_fields", [])),
+            {"cpu_usage", "memory_usage"},
+        )
+        field_names = [item["name"] for item in result.target_query_contract.get("field_requirements", [])]
+        self.assertIn("cpu_usage", field_names)
+        self.assertIn("memory_usage", field_names)
 
     def test_timeseries_legend_placeholder_drives_grouping(self):
         panel = {
@@ -4976,6 +5297,10 @@ class NativePromqlTests(unittest.TestCase):
         self.assertNotIn("PROMQL index=", query)
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), device", query)
         self.assertNotIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), interface", query)
+        self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
+        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        self.assertEqual(result.fulfillment_plan["status"], "not_required")
 
     # ── flag disabled: normal translation ──
 

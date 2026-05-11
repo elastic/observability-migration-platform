@@ -74,6 +74,7 @@ from .preflight import (
     build_dashboard_complexity,
     build_datasource_audit,
     build_preflight_report,
+    build_target_contract_summary,
     build_target_schema_contract,
     probe_source_metric_inventory,
     probe_target_readiness,
@@ -746,6 +747,128 @@ def _validate_compiled_layout_after_compile(
     return layout_ok, layout_output
 
 
+def _run_preflight_reporting(
+    *,
+    args: argparse.Namespace,
+    results: list[Any],
+    resolver: Any,
+    base_dir: Path,
+    validation_summary: dict[str, Any],
+    validation_records: list[dict[str, Any]],
+    verification_payload: dict[str, Any],
+) -> dict[str, Any]:
+    source_urls_configured = bool(
+        getattr(args, "prometheus_url", "") or getattr(args, "loki_url", ""),
+    )
+
+    print("\n  Preflight probes...")
+    referenced_metrics = _collect_referenced_metrics(results)
+    referenced_labels = _collect_referenced_labels(results)
+
+    source_inventory = probe_source_metric_inventory(
+        getattr(args, "prometheus_url", "") or "",
+        required_metrics=referenced_metrics,
+        required_labels=referenced_labels,
+    )
+    if source_inventory.get("status") == "ok":
+        found = len(source_inventory.get("metrics_found", []))
+        missing = len(source_inventory.get("metrics_missing", []))
+        avail = len(source_inventory.get("available_metrics", []))
+        print(
+            f"    Source inventory: {avail} metrics in Prometheus, "
+            f"{found} referenced found, {missing} referenced missing"
+        )
+    elif source_inventory.get("status") == "error":
+        print(f"    Source inventory: error ({source_inventory.get('error', '')})")
+    else:
+        print("    Source inventory: not configured (pass --prometheus-url)")
+
+    schema_contract = build_target_schema_contract(results, resolver)
+    target_contract_summary = build_target_contract_summary(results)
+    required_index_patterns = list(
+        schema_contract.get("required_indexes", {}).keys(),
+    )
+
+    target_readiness = probe_target_readiness(
+        args.es_url, required_index_patterns,
+        es_api_key=args.es_api_key or None,
+    )
+    if target_readiness.get("cluster_health"):
+        health = target_readiness["cluster_health"]
+        tpl_count = sum(
+            v.get("found", 0)
+            for v in target_readiness.get("index_templates", {}).values()
+        )
+        ds_count = sum(
+            v.get("found", 0)
+            for v in target_readiness.get("data_streams", {}).values()
+        )
+        if health.get("unsupported"):
+            print(
+                f"    Target readiness: cluster {health.get('status', '?').upper()} "
+                f"(cluster health API unavailable), {tpl_count} index templates, "
+                f"{ds_count} data streams"
+            )
+        else:
+            print(
+                f"    Target readiness: cluster {health.get('status', '?').upper()}, "
+                f"{health.get('number_of_data_nodes', '?')} data nodes, "
+                f"{tpl_count} index templates, {ds_count} data streams"
+            )
+    elif target_readiness.get("status") != "not_configured":
+        print(f"    Target readiness: errors ({target_readiness.get('errors', [])})")
+    else:
+        print("    Target readiness: not configured (pass --es-url)")
+
+    datasource_audit = build_datasource_audit(results)
+    ds_types = datasource_audit.get("datasource_types", {})
+    if ds_types:
+        parts = [f"{t}:{c}" for t, c in ds_types.items()]
+        non_mig = datasource_audit.get("non_migratable_panels", 0)
+        extra = f" ({non_mig} non-migratable)" if non_mig else ""
+        print(f"    Datasource audit: {', '.join(parts)}{extra}")
+
+    complexity_scores = build_dashboard_complexity(results)
+    high = sum(1 for s in complexity_scores if s.get("complexity_score", 0) >= 50)
+    if high:
+        print(f"    Complexity: {high} dashboards scored >= 50 (high manual effort)")
+
+    preflight_report = build_preflight_report(
+        results,
+        validation_summary,
+        validation_records,
+        verification_payload,
+        schema_contract,
+        target_contract_summary=target_contract_summary,
+        source_urls_configured=source_urls_configured,
+        target_url_configured=bool(args.es_url),
+        source_inventory=source_inventory,
+        target_readiness=target_readiness,
+        datasource_audit=datasource_audit,
+        complexity_scores=complexity_scores,
+    )
+
+    preflight_path = base_dir / "preflight_report.json"
+    contract_path = base_dir / "required_target_contract.json"
+    target_contract_path = base_dir / "target_query_contract_summary.json"
+    save_preflight_report(preflight_report, preflight_path)
+    save_schema_contract(schema_contract, contract_path)
+    save_schema_contract(target_contract_summary, target_contract_path)
+    print(f"  Preflight report: {preflight_path}")
+    print(f"  Target schema contract: {contract_path}")
+    print(f"  Target contract summary: {target_contract_path}")
+
+    if args.suggest_rule_pack_out and validation_summary:
+        write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
+        print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
+
+    action_summary = preflight_report.get("customer_action_summary", "")
+    if action_summary:
+        print(f"\n{action_summary}")
+
+    return preflight_report
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     _validate_field_profile(args)
@@ -1236,109 +1359,15 @@ def main(argv: list[str] | None = None):
     )
 
     if args.preflight:
-        source_urls_configured = bool(
-            getattr(args, "prometheus_url", "") or getattr(args, "loki_url", ""),
+        _run_preflight_reporting(
+            args=args,
+            results=results,
+            resolver=resolver,
+            base_dir=base_dir,
+            validation_summary=validation_summary,
+            validation_records=validation_records,
+            verification_payload=verification_payload,
         )
-
-        print("\n  Preflight probes...")
-        referenced_metrics = _collect_referenced_metrics(results)
-        referenced_labels = _collect_referenced_labels(results)
-
-        source_inventory = probe_source_metric_inventory(
-            getattr(args, "prometheus_url", "") or "",
-            required_metrics=referenced_metrics,
-            required_labels=referenced_labels,
-        )
-        if source_inventory.get("status") == "ok":
-            found = len(source_inventory.get("metrics_found", []))
-            missing = len(source_inventory.get("metrics_missing", []))
-            avail = len(source_inventory.get("available_metrics", []))
-            print(
-                f"    Source inventory: {avail} metrics in Prometheus, "
-                f"{found} referenced found, {missing} referenced missing"
-            )
-        elif source_inventory.get("status") == "error":
-            print(f"    Source inventory: error ({source_inventory.get('error', '')})")
-        else:
-            print("    Source inventory: not configured (pass --prometheus-url)")
-
-        schema_contract = build_target_schema_contract(results, resolver)
-        required_index_patterns = list(
-            schema_contract.get("required_indexes", {}).keys(),
-        )
-
-        target_readiness = probe_target_readiness(
-            args.es_url, required_index_patterns,
-            es_api_key=args.es_api_key or None,
-        )
-        if target_readiness.get("cluster_health"):
-            health = target_readiness["cluster_health"]
-            tpl_count = sum(
-                v.get("found", 0)
-                for v in target_readiness.get("index_templates", {}).values()
-            )
-            ds_count = sum(
-                v.get("found", 0)
-                for v in target_readiness.get("data_streams", {}).values()
-            )
-            if health.get("unsupported"):
-                print(
-                    f"    Target readiness: cluster {health.get('status', '?').upper()} "
-                    f"(cluster health API unavailable), {tpl_count} index templates, "
-                    f"{ds_count} data streams"
-                )
-            else:
-                print(
-                    f"    Target readiness: cluster {health.get('status', '?').upper()}, "
-                    f"{health.get('number_of_data_nodes', '?')} data nodes, "
-                    f"{tpl_count} index templates, {ds_count} data streams"
-                )
-        elif target_readiness.get("status") != "not_configured":
-            print(f"    Target readiness: errors ({target_readiness.get('errors', [])})")
-        else:
-            print("    Target readiness: not configured (pass --es-url)")
-
-        datasource_audit = build_datasource_audit(results)
-        ds_types = datasource_audit.get("datasource_types", {})
-        if ds_types:
-            parts = [f"{t}:{c}" for t, c in ds_types.items()]
-            non_mig = datasource_audit.get("non_migratable_panels", 0)
-            extra = f" ({non_mig} non-migratable)" if non_mig else ""
-            print(f"    Datasource audit: {', '.join(parts)}{extra}")
-
-        complexity_scores = build_dashboard_complexity(results)
-        high = sum(1 for s in complexity_scores if s.get("complexity_score", 0) >= 50)
-        if high:
-            print(f"    Complexity: {high} dashboards scored >= 50 (high manual effort)")
-
-        preflight_report = build_preflight_report(
-            results,
-            validation_summary,
-            validation_records,
-            verification_payload,
-            schema_contract,
-            source_urls_configured=source_urls_configured,
-            target_url_configured=bool(args.es_url),
-            source_inventory=source_inventory,
-            target_readiness=target_readiness,
-            datasource_audit=datasource_audit,
-            complexity_scores=complexity_scores,
-        )
-
-        preflight_path = base_dir / "preflight_report.json"
-        contract_path = base_dir / "required_target_contract.json"
-        save_preflight_report(preflight_report, preflight_path)
-        save_schema_contract(schema_contract, contract_path)
-        print(f"  Preflight report: {preflight_path}")
-        print(f"  Target schema contract: {contract_path}")
-
-        if args.suggest_rule_pack_out and validation_summary:
-            write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
-            print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
-
-        action_summary = preflight_report.get("customer_action_summary", "")
-        if action_summary:
-            print(f"\n{action_summary}")
 
     print("\n[7/7] Rollout plan & feature summaries...")
     rollout_plan = build_rollout_plan(

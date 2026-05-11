@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
-from observability_migration.adapters.source.grafana import manifest, preflight
+from observability_migration.adapters.source.grafana import cli, manifest, preflight
 
 
 class GrafanaPreflightReportTests(unittest.TestCase):
@@ -193,6 +195,103 @@ class GrafanaPreflightReportTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest.classify_panel_readiness(panel), "elastic_ready")
+
+
+class TestPreflightReport(unittest.TestCase):
+    def test_contract_summary_counts_exact_after_fulfillment_panels(self):
+        panel = SimpleNamespace(
+            query_ir={"target_index": "metrics-*", "source_type": "TS"},
+            target_query_contract={"canonical_target": "ts"},
+            contract_evaluation={"status": "exact_after_fulfillment"},
+            fulfillment_plan={"status": "required", "actions": [{"kind": "narrow_index_pattern"}]},
+        )
+        result = SimpleNamespace(inventory={}, panel_results=[panel])
+
+        summary = preflight.build_target_contract_summary([result])
+
+        self.assertEqual(summary["totals"]["exact_after_fulfillment"], 1)
+        self.assertEqual(summary["action_kinds"]["narrow_index_pattern"], 1)
+
+    def test_customer_action_summary_mentions_fulfillment_actions(self):
+        summary = preflight._build_action_summary(
+            results=[],
+            blockers=[],
+            actions=[],
+            evidence_level="high",
+            schema_contract={"required_indexes": {}, "required_fields": {}, "counter_expectations": {}, "totals": {}},
+            target_contract_summary={
+                "totals": {
+                    "exact_after_fulfillment": 1,
+                    "degraded_if_forced": 2,
+                    "blocked": 1,
+                },
+                "action_kinds": {"narrow_index_pattern": 1},
+            },
+        )
+
+        self.assertIn("CONTRACT STATUS exact_after_fulfillment: 1", summary)
+        self.assertIn("CONTRACT STATUS degraded_if_forced: 2", summary)
+        self.assertIn("CONTRACT STATUS blocked: 1", summary)
+        self.assertIn("narrow_index_pattern", summary)
+        self.assertNotIn("All preflight checks passed", summary)
+
+
+class TestGrafanaCliPreflight(unittest.TestCase):
+    def test_preflight_cli_writes_target_query_contract_summary(self):
+        results = [SimpleNamespace(total_panels=1, panel_results=[])]
+        schema_contract = {
+            "required_indexes": {"metrics-*": 1},
+            "required_fields": {},
+            "counter_expectations": {},
+            "totals": {},
+        }
+        target_contract_summary = {
+            "totals": {"degraded_if_forced": 2},
+            "action_kinds": {"narrow_index_pattern": 1},
+        }
+        preflight_report = {"customer_action_summary": "summary"}
+        args = SimpleNamespace(
+            prometheus_url="",
+            loki_url="",
+            es_url="",
+            es_api_key="",
+            suggest_rule_pack_out=None,
+        )
+
+        with TemporaryDirectory() as tmpdir, \
+            mock.patch.object(cli, "_collect_referenced_metrics", return_value=set()), \
+            mock.patch.object(cli, "_collect_referenced_labels", return_value=set()), \
+            mock.patch.object(cli, "probe_source_metric_inventory", return_value={"status": "not_configured"}), \
+            mock.patch.object(cli, "build_target_schema_contract", return_value=schema_contract), \
+            mock.patch.object(cli, "build_target_contract_summary", return_value=target_contract_summary) as build_summary, \
+            mock.patch.object(cli, "probe_target_readiness", return_value={"status": "not_configured"}), \
+            mock.patch.object(cli, "build_datasource_audit", return_value={}), \
+            mock.patch.object(cli, "build_dashboard_complexity", return_value=[]), \
+            mock.patch.object(cli, "build_preflight_report", return_value=preflight_report) as build_report, \
+            mock.patch.object(cli, "save_preflight_report"), \
+            mock.patch.object(cli, "save_schema_contract") as save_contract:
+            cli._run_preflight_reporting(
+                args=args,
+                results=results,
+                resolver=None,
+                base_dir=Path(tmpdir),
+                validation_summary={},
+                validation_records=[],
+                verification_payload={},
+            )
+
+        build_summary.assert_called_once_with(results)
+        self.assertEqual(
+            build_report.call_args.kwargs["target_contract_summary"],
+            target_contract_summary,
+        )
+        self.assertEqual(
+            save_contract.call_args_list[1].args,
+            (
+                target_contract_summary,
+                Path(tmpdir) / "target_query_contract_summary.json",
+            ),
+        )
 
 
 if __name__ == "__main__":

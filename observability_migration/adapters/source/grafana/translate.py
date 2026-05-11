@@ -16,7 +16,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from observability_migration.core.assets.query import QueryIR, build_query_ir
+from observability_migration.core.assets.target_query_contract import (
+    FieldRequirement,
+    TargetEnvironmentSnapshot,
+    TargetQueryContract,
+)
+from observability_migration.core.verification.field_capabilities import FieldCapability
 
+from .contract_evaluator import evaluate_target_query_contract
+from .fulfillment_planner import plan_contract_fulfillment
 from .llm_translate import attempt_llm_translation
 from .promql import (
     AGG_FUNCTION_MAP,
@@ -53,6 +61,7 @@ from .rules import (
     RulePackConfig,
     _append_unique,
 )
+from .semantic_planner import RuntimeCapabilities, plan_grafana_metric_contract
 
 
 def _default_instance_field(rp):
@@ -94,6 +103,159 @@ class TranslationContext:
     datasource_name: str = ""
     query_language: str = ""
     query_ir: QueryIR | None = None
+    target_query_contract: Any = field(default_factory=dict)
+    contract_evaluation: Any = field(default_factory=dict)
+    fulfillment_plan: Any = field(default_factory=dict)
+
+
+def _artifact_to_dict(value):
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None):
+    if not query_ir:
+        return {}, {}, {}
+
+    metadata = (
+        query_ir.get("metadata", {})
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metadata", {})
+    ) or {}
+    multi_series_metric_fields = []
+    for field_name in (metadata.get("multi_series_metric_fields", []) or []):
+        normalized = str(field_name or "").strip()
+        if normalized and normalized not in multi_series_metric_fields:
+            multi_series_metric_fields.append(normalized)
+
+    source_language = str(
+        query_ir.get("source_language", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "source_language", "")
+        or ""
+    ).strip().lower()
+    family = str(
+        query_ir.get("family", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "family", "")
+        or ""
+    ).strip().lower()
+    metric_name = str(
+        query_ir.get("metric", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metric", "")
+        or ""
+    ).strip()
+    range_function = str(
+        query_ir.get("range_function", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "range_function", "")
+        or ""
+    ).strip().lower()
+    if source_language != "promql":
+        return {}, {}, {}
+
+    runtime_capabilities = RuntimeCapabilities(promql=bool((rule_pack or RulePackConfig()).native_promql))
+    index_pattern = str(
+        query_ir.get("target_index", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "target_index", "")
+        or ""
+    ) or "metrics-*"
+    planner_metric_name = metric_name or (multi_series_metric_fields[0] if multi_series_metric_fields else "")
+    if family == "native_promql" and runtime_capabilities.promql and not (planner_metric_name or range_function):
+        contract = TargetQueryContract(
+            canonical_target="promql",
+            exactness_class="exact_if_contract_met",
+            target_shape={"required_index_patterns": [index_pattern]},
+            runtime_requirements={"source_command": "PROMQL"},
+            degradation_policy={"fallback": "explicit_only"},
+        )
+    else:
+        if not (planner_metric_name or range_function):
+            return {}, {}, {}
+        contract = plan_grafana_metric_contract(
+            QueryIR(
+                source_language=source_language,
+                panel_type=str(
+                    query_ir.get("panel_type", "")
+                    if isinstance(query_ir, dict)
+                    else getattr(query_ir, "panel_type", "")
+                    or ""
+                ),
+                metric=planner_metric_name,
+                range_function=range_function,
+                outer_agg=str(
+                    query_ir.get("outer_agg", "")
+                    if isinstance(query_ir, dict)
+                    else getattr(query_ir, "outer_agg", "")
+                    or ""
+                ),
+                target_index=index_pattern,
+            ),
+            runtime_capabilities=runtime_capabilities,
+        )
+    if contract.target_shape.get("target_mode") == "all_tsds":
+        contract.fulfillment_hints.setdefault("allow_index_narrowing", True)
+
+    field_names = multi_series_metric_fields or [planner_metric_name] if planner_metric_name else []
+    if field_names:
+        template = (
+            contract.field_requirements[0]
+            if contract.field_requirements
+            else FieldRequirement(name=field_names[0], role="metric")
+        )
+        contract.field_requirements = [
+            FieldRequirement(
+                name=field_name,
+                role=template.role,
+                type_family=template.type_family,
+                metric_kind=template.metric_kind,
+                context=template.context,
+            )
+            for field_name in field_names
+        ]
+
+    field_capabilities = {}
+    for requirement in contract.field_requirements:
+        if not requirement.name:
+            continue
+        capability = resolver.field_capability(requirement.name) if resolver else None
+        if capability is None and contract.canonical_target == "promql":
+            capability = FieldCapability(name=requirement.name)
+        if capability is not None:
+            field_capabilities[requirement.name] = capability
+
+    concrete_indexes = list(getattr(resolver, "_concrete_index_cache", []) or [])
+    all_tsds = False
+    if len(concrete_indexes) == 1 and field_capabilities:
+        all_tsds = all(
+            bool(getattr(capability, "time_series_metric_kind", "") or "")
+            for capability in field_capabilities.values()
+        )
+    snapshot = TargetEnvironmentSnapshot(
+        target_patterns={
+            index_pattern: {
+                "all_tsds": all_tsds,
+            }
+        },
+        field_capabilities=field_capabilities,
+        runtime_capabilities={
+            "PROMQL": runtime_capabilities.promql,
+            "TS": True,
+            "FROM": True,
+            "TBUCKET": True,
+            "RATE": True,
+            "IRATE": True,
+            "INCREASE": True,
+        },
+    )
+    evaluation = evaluate_target_query_contract(contract, snapshot)
+    fulfillment = plan_contract_fulfillment(contract, evaluation)
+    return contract, evaluation, fulfillment
 
 
 def _field_is_available(resolver, field_name):
@@ -1465,6 +1627,14 @@ def translate_promql_to_esql(
     else:
         context.confidence = 0.85 if not context.warnings else 0.6
     context.query_ir = build_query_ir(context)
+    contract, evaluation, fulfillment = _build_metric_contract_artifacts(
+        context.query_ir,
+        resolver=context.resolver,
+        rule_pack=context.rule_pack,
+    )
+    context.target_query_contract = _artifact_to_dict(contract)
+    context.contract_evaluation = _artifact_to_dict(evaluation)
+    context.fulfillment_plan = _artifact_to_dict(fulfillment)
     return context
 
 

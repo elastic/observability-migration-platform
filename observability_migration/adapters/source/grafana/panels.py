@@ -65,13 +65,14 @@ from .promql import (
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
     _format_scalar_value,
+    _parse_fragment,
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .schema import SchemaResolver
-from .translate import TranslationContext, translate_promql_to_esql
+from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
 PANEL_TYPE_MAP = {
     "timeseries": "line",
@@ -838,6 +839,13 @@ def _translate_panel_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
+    native_fragment = _parse_fragment(cleaned_expr or expr)
+    query_ir.metric = str(getattr(native_fragment, "metric", "") or "")
+    query_ir.range_function = str(getattr(native_fragment, "range_func", "") or "")
+    query_ir.range_window = str(getattr(native_fragment, "range_window", "") or "")
+    query_ir.outer_agg = str(getattr(native_fragment, "outer_agg", "") or "")
+    query_ir.group_labels = list(getattr(native_fragment, "group_labels", []) or [])
+    query_ir.group_mode = str(getattr(native_fragment, "group_mode", "") or "by")
     if kibana_type in ("line", "bar", "area"):
         query_ir.output_group_fields = ["step"] + list(effective_group_cols)
     elif kibana_type == "datatable" or kibana_type == "pie":
@@ -867,6 +875,7 @@ def _translate_panel_native_promql(
         inventory=panel_inventory,
         query_ir=query_ir,
         yaml_panel=yaml_panel,
+        rule_pack=rule_pack,
     )
 
 
@@ -887,6 +896,7 @@ def _translate_multi_target_native_promql(
     index = datasource_index or "metrics-prometheus-*"
     had_bare_variable = False
     parts: list[str] = []
+    target_fragments = []
 
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
@@ -894,6 +904,7 @@ def _translate_multi_target_native_promql(
             return None
         cleaned, bare = _clean_promql_for_native_with_state(expr)
         had_bare_variable = had_bare_variable or bare
+        target_fragments.append(_parse_fragment(cleaned or expr))
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -936,6 +947,54 @@ def _translate_multi_target_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
+    metric_names = []
+    for frag in target_fragments:
+        metric_name = str(getattr(frag, "metric", "") or "").strip()
+        if metric_name and metric_name not in metric_names:
+            metric_names.append(metric_name)
+    if len(metric_names) == 1:
+        query_ir.metric = metric_names[0]
+    elif len(metric_names) > 1:
+        query_ir.metadata["multi_series_metric_fields"] = list(metric_names)
+    range_functions = {
+        str(getattr(frag, "range_func", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    range_functions.discard("")
+    if len(range_functions) == 1:
+        query_ir.range_function = next(iter(range_functions))
+    range_windows = {
+        str(getattr(frag, "range_window", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    range_windows.discard("")
+    if len(range_windows) == 1:
+        query_ir.range_window = next(iter(range_windows))
+    outer_aggs = {
+        str(getattr(frag, "outer_agg", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    outer_aggs.discard("")
+    if len(outer_aggs) == 1:
+        query_ir.outer_agg = next(iter(outer_aggs))
+    group_labels = {
+        tuple(getattr(frag, "group_labels", []) or [])
+        for frag in target_fragments
+        if frag
+    }
+    group_labels.discard(())
+    if len(group_labels) == 1:
+        query_ir.group_labels = list(next(iter(group_labels)))
+    group_modes = {
+        str(getattr(frag, "group_mode", "") or "by").strip()
+        for frag in target_fragments
+        if frag
+    }
+    if len(group_modes) == 1:
+        query_ir.group_mode = next(iter(group_modes))
     query_ir.output_group_fields = ["step", "__series"]
     query_ir.output_shape = infer_output_shape(panel_type, query_ir.output_group_fields, "promql")
     query_ir.target_index = index
@@ -954,11 +1013,36 @@ def _translate_multi_target_native_promql(
         inventory=panel_inventory,
         query_ir=query_ir,
         yaml_panel=yaml_panel,
+        rule_pack=rule_pack,
     )
 
 
 def _sync_visual_ir(panel_result, yaml_panel):
     panel_result.visual_ir = refresh_visual_ir(panel_result, yaml_panel)
+
+
+def _artifact_to_dict(value):
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _query_ir_multi_series_metric_fields(query_ir):
+    if not query_ir:
+        return []
+    metadata = (
+        query_ir.get("metadata", {})
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metadata", {})
+    ) or {}
+    fields = []
+    for field_name in (metadata.get("multi_series_metric_fields", []) or []):
+        normalized = str(field_name or "").strip()
+        if normalized and normalized not in fields:
+            fields.append(normalized)
+    return fields
 
 
 def _enrich_panel_result(
@@ -970,6 +1054,8 @@ def _enrich_panel_result(
     inventory=None,
     query_ir=None,
     yaml_panel=None,
+    translation=None,
+    rule_pack=None,
 ):
     panel = panel or {}
     datasource = datasource or {}
@@ -987,6 +1073,33 @@ def _enrich_panel_result(
         _append_unique(panel_result.notes, note)
     if query_ir:
         panel_result.query_ir = query_ir.to_dict() if hasattr(query_ir, "to_dict") else dict(query_ir)
+    carrier_query_ir = query_ir or panel_result.query_ir
+    contract = getattr(translation, "target_query_contract", {}) if translation is not None else {}
+    evaluation = getattr(translation, "contract_evaluation", {}) if translation is not None else {}
+    fulfillment = getattr(translation, "fulfillment_plan", {}) if translation is not None else {}
+    if carrier_query_ir and (
+        _query_ir_multi_series_metric_fields(carrier_query_ir)
+        or not any((contract, evaluation, fulfillment))
+    ):
+        contract, evaluation, fulfillment = _build_metric_contract_artifacts(
+            carrier_query_ir,
+            resolver=getattr(translation, "resolver", None),
+            rule_pack=rule_pack or getattr(translation, "rule_pack", None),
+        )
+    panel_result.target_query_contract = _artifact_to_dict(contract)
+    panel_result.contract_evaluation = _artifact_to_dict(evaluation)
+    panel_result.fulfillment_plan = _artifact_to_dict(fulfillment)
+    final_source_type = str((panel_result.query_ir or {}).get("source_type", "") or "").upper()
+    if final_source_type == "FROM" and panel_result.target_query_contract.get("canonical_target") in {"ts", "promql"}:
+        existing_status = (panel_result.contract_evaluation or {}).get("status")
+        if existing_status != "blocked":
+            if panel_result.contract_evaluation:
+                panel_result.contract_evaluation = dict(panel_result.contract_evaluation)
+                panel_result.contract_evaluation["status"] = "degraded_if_forced"
+            panel_result.fulfillment_plan = {
+                "status": "not_required",
+                "actions": [],
+            }
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
@@ -1530,7 +1643,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             query_language=query_language,
             notes=panel_notes,
             inventory=panel_inventory,
+            query_ir=primary.query_ir,
             yaml_panel=yaml_panel,
+            translation=primary,
+            rule_pack=rule_pack,
         )
 
     panel_context = PanelContext(
@@ -1594,6 +1710,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         inventory=panel_inventory,
         query_ir=primary.query_ir,
         yaml_panel=yaml_panel,
+        translation=primary,
+        rule_pack=rule_pack,
     )
 
 
