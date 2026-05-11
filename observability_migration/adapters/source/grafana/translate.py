@@ -166,14 +166,23 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
     if metric_name in _DERIVED_METRIC_NAMES:
         metric_name = ""
 
-    if not multi_series_metric_fields and not metric_name:
-        # Pull the real source metrics out of the source expression. This
-        # matters when the translator rewrote the panel to a synthetic alias
-        # like `computed_value` or `constant_value` and the IR's `metric`
-        # field no longer points at a real target field.
-        query_ir_dict = (
-            query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
-        )
+    # Prefer real source metric names from the source expression when one is
+    # available. This handles two cases:
+    #   1. The translator rewrote the panel to a synthetic alias like
+    #      `computed_value` or `constant_value` and the IR's `metric` field no
+    #      longer points at a real target field.
+    #   2. Panel-level fusion populated `multi_series_metric_fields` with the
+    #      output column aliases emitted in the ES|QL `STATS` clause (e.g.
+    #      `Namespaces`, `Linux_Packets_dropped_receive`); those are not source
+    #      field names and should never reach the contract.
+    query_ir_dict = (
+        query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
+    )
+    has_source_expression = bool(
+        str(query_ir_dict.get("source_expression", "") or "").strip()
+        or str(query_ir_dict.get("clean_expression", "") or "").strip()
+    )
+    if has_source_expression:
         derived_candidates = _metric_candidates(query_ir_dict) - _DERIVED_METRIC_NAMES
         if derived_candidates:
             multi_series_metric_fields = sorted(derived_candidates)
@@ -260,12 +269,19 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
         concrete_indexes = list(resolver.concrete_index_candidates() or [])
     else:
         concrete_indexes = []
-    all_tsds = False
+    # When `field_capabilities` is empty (e.g. every required field is missing
+    # from the target), we have no information about the index mode and must
+    # not emit a misleading "not all-TSDS" reason on top of the genuine
+    # "missing field" reasons. Treat all-TSDS as unknown-but-true in that case
+    # so the evaluator stays silent on index mode.
+    all_tsds = True
     if len(concrete_indexes) == 1 and field_capabilities:
         all_tsds = all(
             bool(getattr(capability, "time_series_metric_kind", "") or "")
             for capability in field_capabilities.values()
         )
+    elif len(concrete_indexes) > 1:
+        all_tsds = False
     snapshot = TargetEnvironmentSnapshot(
         target_patterns={
             index_pattern: {

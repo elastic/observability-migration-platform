@@ -394,6 +394,16 @@ _PROMQL_KEYWORDS = {
     "vector",
     "without",
 }
+_PROMQL_SET_OPERATORS = frozenset({
+    "or",
+    "and",
+    "unless",
+    "bool",
+    "on",
+    "ignoring",
+    "group_left",
+    "group_right",
+})
 _COUNTER_SUFFIXES = ("_total", "_count", "_sum")
 _GAUGE_RESOURCE_TOKENS = ("resource_limit", "resource_limits", "resource_request", "resource_requests")
 
@@ -420,17 +430,35 @@ def _metric_candidates(query_ir: dict[str, Any]) -> set[str]:
 
     expression = str(query_ir.get("clean_expression", "") or query_ir.get("source_expression", "") or "")
     candidates.update(match.group(1) for match in _FIELD_TOKEN_RE.finditer(expression))
-    expression_without_labels = re.sub(r"\{[^{}]*\}", "", expression)
+    # Strip non-metric token regions before the bare-identifier scan: labels
+    # inside `by(...)` / `without(...)` aggregation clauses and inside PromQL
+    # vector-match modifiers `on(...)` / `ignoring(...)` /
+    # `group_left(...)` / `group_right(...)`, Grafana interpolation tokens
+    # like `$__rate_interval` / `$cluster`, and the contents of bracketed
+    # time ranges like `[$__rate_interval]`. These can otherwise be picked
+    # up as metric names.
+    expression_stripped = re.sub(r"\b(?:by|without)\s*\(([^()]*)\)", "", expression)
+    expression_stripped = re.sub(
+        r"\b(?:on|ignoring|group_left|group_right)\s*\(([^()]*)\)",
+        "",
+        expression_stripped,
+    )
+    expression_stripped = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]*", "", expression_stripped)
+    expression_stripped = re.sub(r"\[[^\]]*\]", "", expression_stripped)
+    expression_without_labels = re.sub(r"\{[^{}]*\}", "", expression_stripped)
     expression_without_literals = re.sub(r'"[^"]*"', '""', expression_without_labels)
     candidates.update(
         match.group(1)
         for match in _BARE_FIELD_TOKEN_RE.finditer(expression_without_literals)
         if match.group(1) not in _PROMQL_KEYWORDS
+        and match.group(1).lower() not in _PROMQL_SET_OPERATORS
     )
     return {
         item
         for item in candidates
-        if item and item not in {"scalar", "vector"}
+        if item
+        and item not in {"scalar", "vector"}
+        and item.lower() not in _PROMQL_SET_OPERATORS
     }
 
 

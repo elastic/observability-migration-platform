@@ -2877,6 +2877,203 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(summary["heuristic_panels"], 1)
         self.assertEqual(panel_result.review_explanation["mode"], "heuristic")
 
+    def test_build_metric_contract_artifacts_replaces_alias_metadata_with_source_metrics(self):
+        """When `multi_series_metric_fields` metadata holds output column aliases
+        (set by panel-level fusion), the contract should derive the real source
+        metric names from the source expression instead.
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression=(
+                "sum(kube_namespace_labels) ||| sum(kube_pod_container_status_running) "
+                "||| sum(kube_pod_container_status_waiting)"
+            ),
+            clean_expression=(
+                "sum(kube_namespace_labels) ||| sum(kube_pod_container_status_running) "
+                "||| sum(kube_pod_container_status_waiting)"
+            ),
+            metric="computed_value",
+            target_index="metrics-*",
+            panel_type="timeseries",
+            metadata={
+                "multi_series_metric_fields": [
+                    "Namespaces",
+                    "Running_Containers",
+                    "Waiting_Containers",
+                ],
+            },
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        names = sorted(item["name"] for item in contract_dict["field_requirements"])
+        self.assertEqual(
+            names,
+            [
+                "kube_namespace_labels",
+                "kube_pod_container_status_running",
+                "kube_pod_container_status_waiting",
+            ],
+        )
+        for alias in ("Namespaces", "Running_Containers", "Waiting_Containers"):
+            self.assertNotIn(alias, names)
+
+    def test_metric_candidates_strips_aggregation_and_interpolation_tokens(self):
+        """_metric_candidates should drop labels inside `by(...)` / `without(...)`,
+        Grafana interpolation tokens like `$__rate_interval`, and bracketed
+        time ranges.
+        """
+        from observability_migration.adapters.source.grafana.preflight import (
+            _metric_candidates,
+        )
+
+        expr = (
+            'sum(rate(node_network_receive_bytes_total{device!~"veth.*",'
+            ' cluster="$cluster", job="$job"}[$__rate_interval])) by (device)'
+        )
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        self.assertIn("node_network_receive_bytes_total", candidates)
+        for label in ("device", "cluster", "job", "__rate_interval"):
+            self.assertNotIn(label, candidates)
+
+    def test_metric_candidates_strips_without_clauses(self):
+        from observability_migration.adapters.source.grafana.preflight import (
+            _metric_candidates,
+        )
+
+        expr = "sum without (instance, job) (rate(http_requests_total[5m]))"
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        self.assertIn("http_requests_total", candidates)
+        for label in ("instance", "job"):
+            self.assertNotIn(label, candidates)
+
+    def test_metric_candidates_strips_on_and_group_modifiers(self):
+        """`on(...)` and `group_left`/`group_right` modifiers must not leak
+        bare label names into the metric candidate set."""
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+
+        expr = (
+            'sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node"}[1m]))'
+            ' / on(instance) group_left sum by (instance)'
+            '((irate(node_cpu_seconds_total{instance="$node"}[1m])))'
+        )
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        self.assertIn("node_cpu_guest_seconds_total", candidates)
+        self.assertIn("node_cpu_seconds_total", candidates)
+        self.assertNotIn("instance", candidates)
+
+    def test_metric_candidates_strips_ignoring_modifier(self):
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+
+        expr = (
+            'sum(rate(http_requests_total[5m])) / ignoring(env) group_left'
+            ' sum(rate(http_response_total[5m]))'
+        )
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        self.assertIn("http_requests_total", candidates)
+        self.assertIn("http_response_total", candidates)
+        self.assertNotIn("env", candidates)
+
+    def test_metric_candidates_drops_set_operators_OR_AND_UNLESS(self):
+        """PromQL set operators (OR/AND/UNLESS, any case) must not be
+        treated as metric candidates."""
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+
+        expr = (
+            'kube_pod_container_info{image!=""} OR kube_pod_container_info'
+            '{container_id!=""} AND kube_namespace_created UNLESS kube_pod_info'
+        )
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        for metric in ("kube_pod_container_info", "kube_namespace_created", "kube_pod_info"):
+            self.assertIn(metric, candidates)
+        for op in ("OR", "AND", "UNLESS", "or", "and", "unless"):
+            self.assertNotIn(op, candidates)
+
+    def test_metric_candidates_keeps_built_in_alerts_and_count_sum_metrics(self):
+        """Capitalized metric names like ALERTS and real `_count`/`_sum` metrics
+        must NOT be mistaken for output aliases by the candidate scanner."""
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+
+        expr = (
+            'ALERTS{alertstate="firing"} or '
+            'sum(increase(prometheus_target_sync_length_seconds_count[5m])) or '
+            'sum(increase(prometheus_tsdb_compaction_duration_sum[30m]))'
+        )
+        candidates = _metric_candidates({
+            "source_expression": expr,
+            "clean_expression": expr,
+            "metric": "",
+            "source_metric": "",
+        })
+        for name in ("ALERTS", "prometheus_target_sync_length_seconds_count", "prometheus_tsdb_compaction_duration_sum"):
+            self.assertIn(name, candidates)
+
+    def test_build_metric_contract_artifacts_omits_all_tsds_when_fields_missing(self):
+        """When all required fields are missing from target capabilities, the
+        evaluator must not also report 'not all-TSDS' (we have no info about
+        index mode in that case).
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression="count(up == 1)",
+            clean_expression="count(up == 1)",
+            metric="up_count",
+            target_index="metrics-*",
+            panel_type="stat",
+        )
+
+        _contract, evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        unsatisfied = list(evaluation.unsatisfied) if hasattr(evaluation, 'unsatisfied') else list((evaluation or {}).get('unsatisfied', []))
+        self.assertFalse(
+            any("not all-TSDS" in reason for reason in unsatisfied),
+            f"Expected no 'not all-TSDS' reason when all fields are missing, got: {unsatisfied}",
+        )
+
 
 class TestVisualIRContract(unittest.TestCase):
 
