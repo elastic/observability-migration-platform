@@ -260,7 +260,8 @@ class SchemaResolver:
             candidate = f"prometheus.{metric_name}{suffix}"
             if self._field_cache and candidate in self._field_cache:
                 return candidate
-        return f"prometheus.{metric_name}.value"
+        default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
+        return f"prometheus.{metric_name}{default_suffix}"
 
     def resolve_labels(self, labels):
         resolved = []

@@ -650,9 +650,10 @@ def _detect_promql_support(
 ) -> bool | None:
     """Probe the cluster to see if the ES|QL ``PROMQL`` source command is available.
 
-    Returns True when the probe is accepted (HTTP 200 with ``columns``), False when
-    the cluster reports that the command isn't supported, and False on any auth or
-    transport failure. The probe is best-effort and never raises.
+    Returns ``True`` when the probe is accepted (HTTP 200 with ``columns``),
+    ``False`` when the cluster reports that the command isn't supported, and
+    ``None`` when the result is inconclusive (auth error or transport failure).
+    The probe is best-effort and never raises.
     """
     if not es_url:
         return False
@@ -667,11 +668,10 @@ def _detect_promql_support(
             json=payload,
             headers=headers,
             timeout=timeout,
-            verify=False,
         )
     except Exception as exc:
         print(f"  WARNING: PROMQL command detection failed ({exc.__class__.__name__}): {exc}")
-        return False
+        return None
 
     status = getattr(response, "status_code", 0)
     if status == 200:
@@ -692,7 +692,7 @@ def _detect_promql_support(
 
     if status in (401, 403):
         print("  WARNING: PROMQL command detection skipped (auth error from cluster)")
-        return False
+        return None
 
     if status == 400:
         signals = ("no handler", "unknown command", "promql")
@@ -725,24 +725,43 @@ def _resolve_native_promql(args: argparse.Namespace) -> bool:
     supported = _detect_promql_support(es_url, es_api_key)
     if supported is True:
         print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
-    else:
-        print("  PROMQL ES|QL command not available; falling back to ES|QL translation")
-    return bool(supported)
+        return True
+    if supported is False:
+        print("  PROMQL ES|QL command not supported on target; falling back to ES|QL translation")
+        return False
+    print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
+    return False
 
 
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
-    if _resolve_native_promql(args):
-        rule_pack.native_promql = True
-        rule_pack.metrics_dataset_filter = ""
     if args.dataset_filter:
         rule_pack.metrics_dataset_filter = args.dataset_filter
     if args.logs_dataset_filter:
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> None:
+    """Resolve --native-promql/--no-native-promql/auto and apply to the pack.
+
+    Separated from ``_load_configured_rule_pack`` so the offline
+    ``--print-rule-catalog`` command doesn't trigger the cluster probe.
+
+    When the user provided an explicit ``--dataset-filter`` it always wins,
+    even if native PROMQL would otherwise clear the filter to ``""``. That
+    preserves the pre-refactor behavior and respects an explicit user
+    signal over the default-clearing behavior advertised in the
+    ``--dataset-filter`` help text.
+    """
+    native = _resolve_native_promql(args)
+    if native:
+        rule_pack.native_promql = True
+        if not getattr(args, "dataset_filter", ""):
+            rule_pack.metrics_dataset_filter = ""
 
 
 def _build_dashboard_run_summary(
@@ -1042,6 +1061,7 @@ def main(argv: list[str] | None = None):
         return
 
     rule_pack = _load_configured_rule_pack(args)
+    _apply_native_promql_to_rule_pack(rule_pack, args)
 
     if args.es_api_key:
         configure_es_auth(args.es_api_key)

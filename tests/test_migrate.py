@@ -243,6 +243,28 @@ class TranslatorRegressionTests(unittest.TestCase):
             "http_requests_total",
         )
 
+    def test_resolve_metric_field_fallback_honors_prefer(self):
+        """When the profile is detected (one leaf field exists) but the
+        requested metric has no leaf at all, the fallback name must reflect
+        the caller's `prefer` so the missing-field signal points at the
+        right physical leaf."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.up.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("absent_metric", prefer="counter"),
+            "prometheus.absent_metric.counter",
+        )
+        self.assertEqual(
+            self.resolver.resolve_metric_field("absent_metric", prefer="gauge"),
+            "prometheus.absent_metric.value",
+        )
+        self.assertEqual(
+            self.resolver.resolve_metric_field("absent_metric", prefer="rate"),
+            "prometheus.absent_metric.rate",
+        )
+
     def test_translator_emits_namespaced_fields_against_prometheus_remote_write_profile(self):
         """End-to-end: a PromQL counter rate against a remote_write profile
         target must produce ESQL referencing `prometheus.labels.instance` and
@@ -1994,7 +2016,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
             self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
 
-    def test_detect_promql_support_false_on_exception(self):
+    def test_detect_promql_support_none_on_exception(self):
         from observability_migration.adapters.source.grafana.cli import (
             _detect_promql_support,
         )
@@ -2002,7 +2024,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             "observability_migration.adapters.source.grafana.cli.requests.post",
             side_effect=ConnectionError("network"),
         ):
-            self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
+            self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
 
     def test_resolve_native_promql_uses_detection_when_auto(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -2064,6 +2086,77 @@ class TranslatorRegressionTests(unittest.TestCase):
             es_api_key="",
         )
         self.assertFalse(_resolve_native_promql(args))
+
+    def test_print_rule_catalog_skips_promql_probe(self):
+        """`--print-rule-catalog` is an offline introspection command and
+        must not hit the cluster to auto-detect PROMQL support."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _load_configured_rule_pack,
+        )
+        args = SimpleNamespace(
+            rules_file=[],
+            plugin=[],
+            logs_index="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="auto",
+        )
+        with mock.patch("observability_migration.adapters.source.grafana.cli._detect_promql_support") as det:
+            _load_configured_rule_pack(args)
+            det.assert_not_called()
+
+    def test_apply_native_promql_preserves_explicit_dataset_filter(self):
+        """When the user passes both ``--native-promql`` and
+        ``--dataset-filter foo``, the explicit filter wins. Native-promql
+        only clears the default ``"prometheus"`` filter when no explicit
+        ``--dataset-filter`` was provided. Pre-refactor behavior is
+        preserved.
+        """
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+            _load_configured_rule_pack,
+        )
+        args = SimpleNamespace(
+            rules_file=[],
+            plugin=[],
+            logs_index="",
+            dataset_filter="custom-dataset",
+            logs_dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="force_on",
+        )
+        rule_pack = _load_configured_rule_pack(args)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "custom-dataset")
+        _apply_native_promql_to_rule_pack(rule_pack, args)
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "custom-dataset")
+
+    def test_apply_native_promql_clears_default_dataset_filter(self):
+        """Without an explicit ``--dataset-filter``, native PromQL clears
+        the rule pack's default ``"prometheus"`` filter so the broad
+        ``data_stream.dataset`` safety net doesn't fire on native-PromQL
+        queries."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+            _load_configured_rule_pack,
+        )
+        args = SimpleNamespace(
+            rules_file=[],
+            plugin=[],
+            logs_index="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            es_url="",
+            es_api_key="",
+            native_promql_flag="force_on",
+        )
+        rule_pack = _load_configured_rule_pack(args)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "prometheus")
+        _apply_native_promql_to_rule_pack(rule_pack, args)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "")
 
     def test_safe_alias_prefixes_leading_digits(self):
         self.assertEqual(migrate._safe_alias("5m load"), "series_5m_load")
@@ -3406,6 +3499,37 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
         for name in ("ALERTS", "prometheus_target_sync_length_seconds_count", "prometheus_tsdb_compaction_duration_sum"):
             self.assertIn(name, candidates)
+
+    def test_metric_candidates_handles_uppercase_by_without_on_ignoring(self):
+        """PromQL clauses are case-insensitive in real-world dashboards; the
+        stripper must drop labels inside uppercased ``BY``/``WITHOUT``/``ON``/
+        ``IGNORING``/``group_left``/``group_right``.
+        """
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+        for clause in ("by", "BY", "By"):
+            expr = f"sum(rate(http_requests_total[5m])) {clause} (instance)"
+            cands = _metric_candidates({"source_expression": expr, "clean_expression": expr, "metric": "", "source_metric": ""})
+            self.assertIn("http_requests_total", cands, f"{clause}: lost the metric name")
+            self.assertNotIn("instance", cands, f"{clause}: leaked the by-label")
+        for clause in ("without", "WITHOUT"):
+            expr = f"sum {clause} (instance) (rate(http_requests_total[5m]))"
+            cands = _metric_candidates({"source_expression": expr, "clean_expression": expr, "metric": "", "source_metric": ""})
+            self.assertNotIn("instance", cands, f"{clause}: leaked the without-label")
+        for clause in ("on", "ON"):
+            expr = f"rate(metric_a[5m]) / {clause}(instance) group_left rate(metric_b[5m])"
+            cands = _metric_candidates({"source_expression": expr, "clean_expression": expr, "metric": "", "source_metric": ""})
+            self.assertNotIn("instance", cands, f"{clause}: leaked the on-label")
+
+    def test_metric_candidates_filters_uppercase_promql_keywords(self):
+        from observability_migration.adapters.source.grafana.preflight import _metric_candidates
+        # SUM and RATE as bare identifiers should not become candidates even
+        # if they appear outside of function call context (rare but possible
+        # when migrating partial PromQL fragments).
+        expr = "SUM(RATE(http_requests_total[5m]))"
+        cands = _metric_candidates({"source_expression": expr, "clean_expression": expr, "metric": "", "source_metric": ""})
+        self.assertIn("http_requests_total", cands)
+        for name in ("SUM", "Sum", "RATE", "Rate", "sum", "rate"):
+            self.assertNotIn(name, cands)
 
     def test_build_metric_contract_artifacts_omits_all_tsds_when_fields_missing(self):
         """When all required fields are missing from target capabilities, the

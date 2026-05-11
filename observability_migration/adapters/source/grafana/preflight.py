@@ -437,11 +437,17 @@ def _metric_candidates(query_ir: dict[str, Any]) -> set[str]:
     # like `$__rate_interval` / `$cluster`, and the contents of bracketed
     # time ranges like `[$__rate_interval]`. These can otherwise be picked
     # up as metric names.
-    expression_stripped = re.sub(r"\b(?:by|without)\s*\(([^()]*)\)", "", expression)
+    expression_stripped = re.sub(
+        r"\b(?:by|without)\s*\(([^()]*)\)",
+        "",
+        expression,
+        flags=re.IGNORECASE,
+    )
     expression_stripped = re.sub(
         r"\b(?:on|ignoring|group_left|group_right)\s*\(([^()]*)\)",
         "",
         expression_stripped,
+        flags=re.IGNORECASE,
     )
     expression_stripped = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]*", "", expression_stripped)
     expression_stripped = re.sub(r"\[[^\]]*\]", "", expression_stripped)
@@ -450,7 +456,7 @@ def _metric_candidates(query_ir: dict[str, Any]) -> set[str]:
     candidates.update(
         match.group(1)
         for match in _BARE_FIELD_TOKEN_RE.finditer(expression_without_literals)
-        if match.group(1) not in _PROMQL_KEYWORDS
+        if match.group(1).lower() not in _PROMQL_KEYWORDS
         and match.group(1).lower() not in _PROMQL_SET_OPERATORS
     )
     return {
