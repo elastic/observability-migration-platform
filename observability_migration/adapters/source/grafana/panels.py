@@ -2457,7 +2457,12 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
         cache = {}
         setattr(resolver, "_alternate_resolvers", cache)
     if index_pattern not in cache:
-        cache[index_pattern] = SchemaResolver(rule_pack or RulePackConfig(), es_url=es_url, index_pattern=index_pattern)
+        cache[index_pattern] = SchemaResolver(
+            rule_pack or RulePackConfig(),
+            es_url=es_url,
+            index_pattern=index_pattern,
+            es_api_key=getattr(resolver, "_es_api_key", None),
+        )
     return cache[index_pattern]
 
 

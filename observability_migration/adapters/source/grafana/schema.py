@@ -155,10 +155,14 @@ class SchemaResolver:
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
         self._discover_fields()
-        if label in self._discovered_mappings:
-            return self._discovered_mappings[label]
+        # Source-faithful: if the target advertises the original label as a real
+        # field, use it as-is. This keeps PromQL semantics intact when the target
+        # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
         if self._field_cache and label in self._field_cache:
             return label
+        # Otherwise, fall back to OTEL/Prometheus normalization candidates.
+        if label in self._discovered_mappings:
+            return self._discovered_mappings[label]
         candidates = self._candidate_fields(label)
         if candidates:
             return candidates[0]

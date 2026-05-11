@@ -93,6 +93,95 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
 
+    def test_resolve_label_prefers_source_field_when_target_has_both(self):
+        """If the target has both `instance` AND `service.instance.id`, the
+        resolver must keep `instance` (source-faithful) instead of rewriting."""
+        self.seed_field_caps({
+            "instance": {"keyword": {"aggregatable": True, "searchable": True}},
+            "service.instance.id": {"keyword": {"aggregatable": True, "searchable": True}},
+        })
+        self.resolver._build_discovered_mappings()
+        self.assertEqual(self.resolver.resolve_label("instance"), "instance")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "instance")
+
+    def test_resolve_label_falls_back_to_otel_when_source_field_absent(self):
+        """If the target only has the OTEL field (no `instance`), the resolver
+        still rewrites to `service.instance.id`."""
+        self.seed_field_caps({
+            "service.instance.id": {"keyword": {"aggregatable": True, "searchable": True}},
+        })
+        self.resolver._build_discovered_mappings()
+        self.assertEqual(self.resolver.resolve_label("instance"), "service.instance.id")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "service.instance.id")
+
+    def test_resolve_label_keeps_source_field_when_only_source_present(self):
+        """If the target only has `instance`, the resolver keeps `instance`."""
+        self.seed_field_caps({
+            "instance": {"keyword": {"aggregatable": True, "searchable": True}},
+        })
+        self.resolver._build_discovered_mappings()
+        self.assertEqual(self.resolver.resolve_label("instance"), "instance")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "instance")
+
+    def test_resolve_label_offline_still_returns_otel_candidate(self):
+        """When no field cache exists (offline / no es_url), keep the existing
+        OTEL-candidate fallback behavior so the offline migration path is
+        unchanged."""
+        # No seed_field_caps() call → _field_cache stays None.
+        # resolve_label() will call _discover_fields() which sets it to {} when
+        # there is no es_url. Either way, empty cache means we should fall
+        # through to PROM_TO_OTEL_CANDIDATES.
+        self.assertEqual(self.resolver.resolve_label("instance"), "service.instance.id")
+        self.assertEqual(self.resolver.resolve_label("namespace"), "k8s.namespace.name")
+        self.assertEqual(self.resolver.resolve_label("node"), "k8s.node.name")
+
+    def test_resolve_label_user_override_still_wins(self):
+        """A user-provided label_rewrites entry trumps everything else."""
+        custom_pack = migrate.RulePackConfig(label_rewrites={"instance": "host.name"})
+        custom_resolver = migrate.SchemaResolver(custom_pack)
+        custom_resolver._discovery_attempted = True
+        custom_resolver._field_cache = {
+            "instance": {"keyword": {"aggregatable": True, "searchable": True}},
+            "service.instance.id": {"keyword": {"aggregatable": True, "searchable": True}},
+            "host.name": {"keyword": {"aggregatable": True, "searchable": True}},
+        }
+        custom_resolver._build_discovered_mappings()
+        self.assertEqual(custom_resolver.resolve_label("instance"), "host.name")
+
+    def test_translator_emits_source_faithful_field_in_where_clause(self):
+        """End-to-end: a PromQL with `instance="value"` against a target that
+        has the `instance` field should produce ESQL using `instance`, not
+        `service.instance.id`."""
+        self.seed_field_caps({
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "instance": {"keyword": {"aggregatable": True, "searchable": True}},
+            "service.instance.id": {"keyword": {"aggregatable": True, "searchable": True}},
+        })
+        self.resolver._build_discovered_mappings()
+        translated = self.translate('sum(rate(http_requests_total{instance="prom-1:9100"}[5m])) by (instance)')
+        self.assertIn('instance == "prom-1:9100"', translated.esql_query)
+        self.assertNotIn("service.instance.id", translated.esql_query)
+
+    def test_resolver_for_index_propagates_es_api_key(self):
+        """Alternate-index resolvers (used for controls and logs) must inherit
+        the parent resolver's API key so they can run `_field_caps` and pick
+        up source-faithful fields. Without the key, the alternate resolver
+        operated blind and silently fell back to OTEL-only mappings — the
+        exact root cause of elastic/mig-to-kbn#21 (the control bound to
+        `instance` ended up pointing at `service.instance.id` while the
+        panel WHERE clause correctly used `instance`)."""
+        parent = migrate.SchemaResolver(
+            self.rule_pack,
+            es_url="https://example-cluster.test",
+            index_pattern="metrics-prometheus-synthetic",
+            es_api_key="apikey-from-parent",
+        )
+        alt = panels._resolver_for_index(parent, self.rule_pack, "metrics-*")
+        self.assertIsNot(alt, parent)
+        self.assertEqual(alt._es_url, "https://example-cluster.test")
+        self.assertEqual(alt._es_api_key, "apikey-from-parent")
+        self.assertEqual(alt._index_pattern, "metrics-*")
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",
