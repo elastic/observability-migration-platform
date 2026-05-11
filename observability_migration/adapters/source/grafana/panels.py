@@ -1081,11 +1081,15 @@ def _enrich_panel_result(
         _query_ir_multi_series_metric_fields(carrier_query_ir)
         or not any((contract, evaluation, fulfillment))
     ):
-        contract, evaluation, fulfillment = _build_metric_contract_artifacts(
+        rebuilt_contract, rebuilt_evaluation, rebuilt_fulfillment = _build_metric_contract_artifacts(
             carrier_query_ir,
             resolver=getattr(translation, "resolver", None),
             rule_pack=rule_pack or getattr(translation, "rule_pack", None),
         )
+        if any((rebuilt_contract, rebuilt_evaluation, rebuilt_fulfillment)):
+            contract = rebuilt_contract
+            evaluation = rebuilt_evaluation
+            fulfillment = rebuilt_fulfillment
     panel_result.target_query_contract = _artifact_to_dict(contract)
     panel_result.contract_evaluation = _artifact_to_dict(evaluation)
     panel_result.fulfillment_plan = _artifact_to_dict(fulfillment)

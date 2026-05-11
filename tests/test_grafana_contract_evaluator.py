@@ -45,6 +45,44 @@ class TestGrafanaContractEvaluator(unittest.TestCase):
         evaluation = evaluate_target_query_contract(contract, snapshot)
 
         self.assertEqual(evaluation.status, "exact_now")
+        self.assertIn("metrics-* is all-TSDS", evaluation.satisfied)
+        self.assertIn("TS runtime is available", evaluation.satisfied)
+        self.assertIn("RATE runtime is available", evaluation.satisfied)
+        self.assertIn("http_requests_total has type_family numeric", evaluation.satisfied)
+        self.assertIn("http_requests_total is marked as counter", evaluation.satisfied)
+
+    def test_satisfied_reasons_omit_unspecified_field_requirements(self):
+        contract = TargetQueryContract(
+            canonical_target="ts",
+            exactness_class="exact_if_contract_met",
+            target_shape={"required_index_patterns": ["metrics-*"], "target_mode": "all_tsds"},
+            field_requirements=[
+                FieldRequirement(name="http_requests_total", role="metric"),
+            ],
+            runtime_requirements={"source_command": "TS"},
+            degradation_policy={"fallback": "explicit_only"},
+        )
+        snapshot = TargetEnvironmentSnapshot(
+            target_patterns={"metrics-*": {"all_tsds": True}},
+            field_capabilities={
+                "http_requests_total": FieldCapability(
+                    name="http_requests_total",
+                    type="long",
+                    type_family="numeric",
+                    time_series_metric_kind="counter",
+                )
+            },
+            runtime_capabilities={"TS": True},
+        )
+
+        evaluation = evaluate_target_query_contract(contract, snapshot)
+
+        self.assertEqual(evaluation.status, "exact_now")
+        self.assertIn("metrics-* is all-TSDS", evaluation.satisfied)
+        self.assertIn("TS runtime is available", evaluation.satisfied)
+        for reason in evaluation.satisfied:
+            self.assertNotIn("http_requests_total has type_family", reason)
+            self.assertNotIn("http_requests_total is marked as", reason)
 
     def test_mixed_pattern_becomes_exact_after_fulfillment(self):
         contract = TargetQueryContract(

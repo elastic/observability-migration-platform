@@ -17,28 +17,44 @@ def evaluate_target_query_contract(contract, snapshot):
     unsatisfied = []
     blocking = []
 
+    target_mode = contract.target_shape.get("target_mode", "")
     for pattern in contract.target_shape.get("required_index_patterns", []):
-        requirement = contract.target_shape.get("target_mode", "")
         pattern_info = (snapshot.target_patterns or {}).get(pattern, {})
-        if requirement == "all_tsds" and not pattern_info.get("all_tsds", False):
-            unsatisfied.append(f"{pattern} is not all-TSDS")
+        if target_mode == "all_tsds":
+            if pattern_info.get("all_tsds", False):
+                satisfied.append(f"{pattern} is all-TSDS")
+            else:
+                unsatisfied.append(f"{pattern} is not all-TSDS")
 
     for requirement in contract.field_requirements:
         capability = (snapshot.field_capabilities or {}).get(requirement.name)
         if capability is None:
             unsatisfied.append(f"missing field {requirement.name}")
             continue
-        if requirement.type_family and capability.type_family != requirement.type_family:
-            unsatisfied.append(f"{requirement.name} has type_family {capability.type_family}")
-        if requirement.metric_kind and capability.time_series_metric_kind != requirement.metric_kind:
-            unsatisfied.append(f"{requirement.name} is not marked as {requirement.metric_kind}")
+        if requirement.type_family:
+            if capability.type_family == requirement.type_family:
+                satisfied.append(f"{requirement.name} has type_family {capability.type_family}")
+            else:
+                unsatisfied.append(f"{requirement.name} has type_family {capability.type_family}")
+        if requirement.metric_kind:
+            if capability.time_series_metric_kind == requirement.metric_kind:
+                satisfied.append(
+                    f"{requirement.name} is marked as {capability.time_series_metric_kind or requirement.metric_kind}"
+                )
+            else:
+                unsatisfied.append(f"{requirement.name} is not marked as {requirement.metric_kind}")
 
     source_command = str(contract.runtime_requirements.get("source_command", "") or "")
-    if source_command and not (snapshot.runtime_capabilities or {}).get(source_command, False):
-        blocking.append(f"{source_command} runtime is unavailable")
+    if source_command:
+        if (snapshot.runtime_capabilities or {}).get(source_command, False):
+            satisfied.append(f"{source_command} runtime is available")
+        else:
+            blocking.append(f"{source_command} runtime is unavailable")
 
     for fn in contract.runtime_requirements.get("functions", []):
-        if not (snapshot.runtime_capabilities or {}).get(fn, False):
+        if (snapshot.runtime_capabilities or {}).get(fn, False):
+            satisfied.append(f"{fn} runtime is available")
+        else:
             blocking.append(f"{fn} runtime is unavailable")
 
     if blocking:

@@ -1007,7 +1007,7 @@ def save_preflight_report(
         json.dump(report, fh, indent=2)
 
 
-def save_schema_contract(
+def save_preflight_json(
     contract: dict[str, Any], output_path: str | Path,
 ) -> None:
     output_path = Path(output_path)
@@ -1023,6 +1023,6 @@ __all__ = [
     "build_target_schema_contract",
     "probe_source_metric_inventory",
     "probe_target_readiness",
+    "save_preflight_json",
     "save_preflight_report",
-    "save_schema_contract",
 ]

@@ -198,10 +198,13 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
             ),
             runtime_capabilities=runtime_capabilities,
         )
-    if contract.target_shape.get("target_mode") == "all_tsds":
-        contract.fulfillment_hints.setdefault("allow_index_narrowing", True)
 
-    field_names = multi_series_metric_fields or [planner_metric_name] if planner_metric_name else []
+    if multi_series_metric_fields:
+        field_names = list(multi_series_metric_fields)
+    elif planner_metric_name:
+        field_names = [planner_metric_name]
+    else:
+        field_names = []
     if field_names:
         template = (
             contract.field_requirements[0]
@@ -229,7 +232,10 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
         if capability is not None:
             field_capabilities[requirement.name] = capability
 
-    concrete_indexes = list(getattr(resolver, "_concrete_index_cache", []) or [])
+    if resolver is not None and hasattr(resolver, "concrete_index_candidates"):
+        concrete_indexes = list(resolver.concrete_index_candidates() or [])
+    else:
+        concrete_indexes = []
     all_tsds = False
     if len(concrete_indexes) == 1 and field_capabilities:
         all_tsds = all(

@@ -78,8 +78,8 @@ from .preflight import (
     build_target_schema_contract,
     probe_source_metric_inventory,
     probe_target_readiness,
+    save_preflight_json,
     save_preflight_report,
-    save_schema_contract,
 )
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
@@ -852,8 +852,8 @@ def _run_preflight_reporting(
     contract_path = base_dir / "required_target_contract.json"
     target_contract_path = base_dir / "target_query_contract_summary.json"
     save_preflight_report(preflight_report, preflight_path)
-    save_schema_contract(schema_contract, contract_path)
-    save_schema_contract(target_contract_summary, target_contract_path)
+    save_preflight_json(schema_contract, contract_path)
+    save_preflight_json(target_contract_summary, target_contract_path)
     print(f"  Preflight report: {preflight_path}")
     print(f"  Target schema contract: {contract_path}")
     print(f"  Target contract summary: {target_contract_path}")

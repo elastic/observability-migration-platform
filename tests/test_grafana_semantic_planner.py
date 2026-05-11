@@ -44,6 +44,7 @@ class TestGrafanaSemanticPlanner(unittest.TestCase):
         self.assertEqual(contract.canonical_target, "ts")
         self.assertEqual(contract.target_shape["target_mode"], "all_tsds")
         self.assertEqual(contract.runtime_requirements["source_command"], "TS")
+        self.assertIs(contract.fulfillment_hints.get("allow_index_narrowing"), True)
 
     def test_document_shaped_metric_query_can_fall_through_to_from(self):
         query_ir = QueryIR(

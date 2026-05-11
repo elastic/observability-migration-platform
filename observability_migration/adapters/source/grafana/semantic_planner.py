@@ -67,6 +67,7 @@ def plan_grafana_metric_contract(
             else [],
             runtime_requirements={"source_command": "TS", "functions": [range_function.upper(), "TBUCKET"]},
             degradation_policy={"fallback": "explicit_only"},
+            fulfillment_hints={"allow_index_narrowing": True},
         )
 
     if panel_type in {"table", "table-old"} and outer_agg == "count":
@@ -106,4 +107,5 @@ def plan_grafana_metric_contract(
         else [],
         runtime_requirements={"source_command": "TS", "functions": ["TBUCKET"]},
         degradation_policy={"fallback": "explicit_only"},
+        fulfillment_hints={"allow_index_narrowing": True},
     )

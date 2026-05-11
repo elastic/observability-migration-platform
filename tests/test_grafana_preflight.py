@@ -269,7 +269,7 @@ class TestGrafanaCliPreflight(unittest.TestCase):
             mock.patch.object(cli, "build_dashboard_complexity", return_value=[]), \
             mock.patch.object(cli, "build_preflight_report", return_value=preflight_report) as build_report, \
             mock.patch.object(cli, "save_preflight_report"), \
-            mock.patch.object(cli, "save_schema_contract") as save_contract:
+            mock.patch.object(cli, "save_preflight_json") as save_contract:
             cli._run_preflight_reporting(
                 args=args,
                 results=results,

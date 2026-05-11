@@ -555,6 +555,81 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result.contract_evaluation["status"], "blocked")
         self.assertEqual(result.fulfillment_plan["status"], "not_required")
 
+    def test_enrich_panel_result_preserves_translation_artifacts_when_rebuild_returns_empty(self):
+        self.seed_field_caps(
+            {
+                "cpu_usage": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+                "memory_usage": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 950,
+            "type": "graph",
+            "title": "CPU and memory",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'cpu_usage{state="active"}', "refId": "A", "legendFormat": "cpu_usage"},
+                {"expr": 'memory_usage{state="active"}', "refId": "B", "legendFormat": "memory_usage"},
+            ],
+        }
+        self.resolver._index_pattern = "metrics-*"
+        self.resolver._concrete_index_cache = ["metrics-tsds"]
+
+        original_build = panels._build_metric_contract_artifacts
+        call_log = []
+
+        def fake_build(query_ir, **kwargs):
+            call_log.append(query_ir)
+            return {}, {}, {}
+
+        panels._build_metric_contract_artifacts = fake_build
+        try:
+            _yaml_panel, result = self.translate_panel(panel)
+        finally:
+            panels._build_metric_contract_artifacts = original_build
+
+        self.assertTrue(call_log, "expected panels._build_metric_contract_artifacts to be invoked")
+        self.assertEqual(result.target_query_contract.get("canonical_target"), "ts")
+
+    def test_build_metric_contract_artifacts_prefers_multi_series_metric_fields(self):
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            metric="",
+            target_index="metrics-*",
+            metadata={
+                "multi_series_metric_fields": ["cpu_usage", "memory_usage"],
+            },
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        field_names = [item["name"] for item in contract_dict["field_requirements"]]
+        self.assertEqual(field_names, ["cpu_usage", "memory_usage"])
+
     def test_native_promql_without_query_preserves_group_mode(self):
         self.rule_pack.native_promql = True
         panel = {
