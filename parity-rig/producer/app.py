@@ -206,6 +206,217 @@ class CounterRegistry:
 REGISTRY = CounterRegistry()
 
 
+# ---------------------------------------------------------------------------
+# Synthetic kube-state-metrics + cAdvisor emulator
+# ---------------------------------------------------------------------------
+#
+# The Kubernetes / Views / Global fixture dashboard expects metrics in the
+# shape kube-state-metrics and cAdvisor produce. We emit a small but
+# self-consistent slice deterministically so the parity harness can compare
+# the same numbers on both sides without standing up a real K8s cluster.
+#
+# Coverage:
+# - kube_node_info, kube_node_role, kube_namespace_labels, kube_namespace_created
+# - kube_pod_info, kube_pod_container_info
+# - kube_pod_container_status_running / waiting / terminated / restarts_total
+# - container_cpu_usage_seconds_total (counter), container_memory_working_set_bytes (gauge)
+# - container_network_receive_bytes_total / transmit_bytes_total (counters)
+# - node_cpu_core_throttles_total (counter)
+# - node_network_receive_bytes_total / transmit_bytes_total / receive_drop_total / transmit_drop_total (counters)
+
+K8S_CLUSTER = "parity-cluster"
+K8S_NODES = ("node-1", "node-2")
+K8S_NAMESPACES = ("default", "kube-system", "monitoring")
+K8S_PODS_BY_NS = {
+    "default": ("app-1", "app-2"),
+    "kube-system": ("kube-dns",),
+    "monitoring": ("prometheus-0", "grafana-0"),
+}
+K8S_CONTAINERS_BY_POD = {
+    "app-1": ("server",),
+    "app-2": ("server", "sidecar"),
+    "kube-dns": ("coredns",),
+    "prometheus-0": ("prometheus", "config-reloader"),
+    "grafana-0": ("grafana",),
+}
+K8S_NETWORK_INTERFACES = ("eth0", "lo")
+
+
+def render_kube_state_metrics() -> str:
+    now = time.time()
+    elapsed = max(0.0, now - REGISTRY._reset_time)
+    lines: list[str] = []
+
+    lines.append("# HELP kube_node_info Information about each Node")
+    lines.append("# TYPE kube_node_info gauge")
+    for n in K8S_NODES:
+        lines.append(
+            f'kube_node_info{{node="{n}",cluster="{K8S_CLUSTER}",'
+            f'kernel_version="6.10.0",os_image="Linux"}} 1'
+        )
+
+    lines.append("# HELP kube_node_role Node roles")
+    lines.append("# TYPE kube_node_role gauge")
+    for n in K8S_NODES:
+        role = "master" if n == "node-1" else "worker"
+        lines.append(f'kube_node_role{{node="{n}",cluster="{K8S_CLUSTER}",role="{role}"}} 1')
+
+    lines.append("# HELP kube_namespace_labels Kubernetes labels on the namespace")
+    lines.append("# TYPE kube_namespace_labels gauge")
+    for ns in K8S_NAMESPACES:
+        lines.append(f'kube_namespace_labels{{namespace="{ns}",cluster="{K8S_CLUSTER}"}} 1')
+
+    lines.append("# HELP kube_namespace_created Unix timestamp when the namespace was created")
+    lines.append("# TYPE kube_namespace_created gauge")
+    for ns in K8S_NAMESPACES:
+        lines.append(f'kube_namespace_created{{namespace="{ns}",cluster="{K8S_CLUSTER}"}} {REGISTRY._reset_time}')
+
+    lines.append("# HELP kube_pod_info Information about each pod")
+    lines.append("# TYPE kube_pod_info gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for i, pod in enumerate(pods):
+            node = K8S_NODES[i % len(K8S_NODES)]
+            lines.append(
+                f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{node}",'
+                f'cluster="{K8S_CLUSTER}"}} 1'
+            )
+
+    lines.append("# HELP kube_pod_container_info Information about each container in each pod")
+    lines.append("# TYPE kube_pod_container_info gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                lines.append(
+                    f'kube_pod_container_info{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",image="example/{container}:v1",'
+                    f'image_id="example/{container}@sha256:deadbeef",'
+                    f'cluster="{K8S_CLUSTER}"}} 1'
+                )
+
+    lines.append("# HELP kube_pod_container_status_running Containers currently running")
+    lines.append("# TYPE kube_pod_container_status_running gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                lines.append(
+                    f'kube_pod_container_status_running{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",cluster="{K8S_CLUSTER}"}} 1'
+                )
+
+    lines.append("# HELP kube_pod_container_status_waiting Containers currently waiting")
+    lines.append("# TYPE kube_pod_container_status_waiting gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                lines.append(
+                    f'kube_pod_container_status_waiting{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",cluster="{K8S_CLUSTER}"}} 0'
+                )
+
+    lines.append("# HELP kube_pod_container_status_terminated Containers currently terminated")
+    lines.append("# TYPE kube_pod_container_status_terminated gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                lines.append(
+                    f'kube_pod_container_status_terminated{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",cluster="{K8S_CLUSTER}"}} 0'
+                )
+
+    lines.append("# HELP kube_pod_container_status_restarts_total Container restart count")
+    lines.append("# TYPE kube_pod_container_status_restarts_total counter")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                # 1 restart every 600s, deterministically.
+                restarts = int(elapsed / 600)
+                lines.append(
+                    f'kube_pod_container_status_restarts_total{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",cluster="{K8S_CLUSTER}"}} {restarts}'
+                )
+
+    lines.append("# HELP container_cpu_usage_seconds_total Cumulative CPU usage of the container")
+    lines.append("# TYPE container_cpu_usage_seconds_total counter")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                cpu_seconds = elapsed * 0.05
+                lines.append(
+                    f'container_cpu_usage_seconds_total{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",image="example/{container}:v1",'
+                    f'container_id="docker://{pod}-{container}",cluster="{K8S_CLUSTER}"}} {cpu_seconds}'
+                )
+
+    lines.append("# HELP container_memory_working_set_bytes Current working set bytes")
+    lines.append("# TYPE container_memory_working_set_bytes gauge")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            for container in K8S_CONTAINERS_BY_POD.get(pod, ()):
+                bytes_val = 64 * 1024 * 1024 + (hash(pod + container) % (32 * 1024 * 1024))
+                lines.append(
+                    f'container_memory_working_set_bytes{{namespace="{ns}",pod="{pod}",'
+                    f'container="{container}",image="example/{container}:v1",'
+                    f'container_id="docker://{pod}-{container}",cluster="{K8S_CLUSTER}"}} {bytes_val}'
+                )
+
+    lines.append("# HELP container_network_receive_bytes_total Cumulative count of bytes received")
+    lines.append("# TYPE container_network_receive_bytes_total counter")
+    lines.append("# HELP container_network_transmit_bytes_total Cumulative count of bytes transmitted")
+    lines.append("# TYPE container_network_transmit_bytes_total counter")
+    for ns, pods in K8S_PODS_BY_NS.items():
+        for pod in pods:
+            rx = elapsed * 1000
+            tx = elapsed * 500
+            lines.append(
+                f'container_network_receive_bytes_total{{namespace="{ns}",pod="{pod}",'
+                f'cluster="{K8S_CLUSTER}"}} {rx}'
+            )
+            lines.append(
+                f'container_network_transmit_bytes_total{{namespace="{ns}",pod="{pod}",'
+                f'cluster="{K8S_CLUSTER}"}} {tx}'
+            )
+
+    lines.append("# HELP node_cpu_core_throttles_total Number of CPU throttling events")
+    lines.append("# TYPE node_cpu_core_throttles_total counter")
+    for node in K8S_NODES:
+        for cpu in (0, 1, 2, 3):
+            throttles = int(elapsed * 0.01)
+            lines.append(
+                f'node_cpu_core_throttles_total{{instance="{node}",cluster="{K8S_CLUSTER}",'
+                f'core="{cpu}",package="0"}} {throttles}'
+            )
+
+    lines.append("# HELP node_network_receive_bytes_total Network device statistic receive_bytes")
+    lines.append("# TYPE node_network_receive_bytes_total counter")
+    lines.append("# HELP node_network_transmit_bytes_total Network device statistic transmit_bytes")
+    lines.append("# TYPE node_network_transmit_bytes_total counter")
+    lines.append("# HELP node_network_receive_drop_total Network device statistic receive_drop")
+    lines.append("# TYPE node_network_receive_drop_total counter")
+    lines.append("# HELP node_network_transmit_drop_total Network device statistic transmit_drop")
+    lines.append("# TYPE node_network_transmit_drop_total counter")
+    for node in K8S_NODES:
+        for device in K8S_NETWORK_INTERFACES:
+            base = 10000 if device == "eth0" else 100
+            lines.append(
+                f'node_network_receive_bytes_total{{instance="{node}",cluster="{K8S_CLUSTER}",'
+                f'device="{device}",job="node-exporter"}} {elapsed * base}'
+            )
+            lines.append(
+                f'node_network_transmit_bytes_total{{instance="{node}",cluster="{K8S_CLUSTER}",'
+                f'device="{device}",job="node-exporter"}} {elapsed * base * 0.4}'
+            )
+            lines.append(
+                f'node_network_receive_drop_total{{instance="{node}",cluster="{K8S_CLUSTER}",'
+                f'device="{device}",job="node-exporter"}} {int(elapsed * 0.05)}'
+            )
+            lines.append(
+                f'node_network_transmit_drop_total{{instance="{node}",cluster="{K8S_CLUSTER}",'
+                f'device="{device}",job="node-exporter"}} {int(elapsed * 0.03)}'
+            )
+
+    return "\n".join(lines) + "\n"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: Any) -> None:  # silence default access log
         return
@@ -213,6 +424,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/metrics":
             body = REGISTRY.render_prometheus().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/metrics-k8s":
+            body = render_kube_state_metrics().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))

@@ -11,6 +11,35 @@ services:
       interval: 5s
       retries: 5
 
+  # Real node-exporter scraped by Prometheus. Gives us authentic
+  # node_cpu_*, node_memory_*, node_disk_*, node_network_*,
+  # node_filesystem_*, node_hwmon_*, node_load*, etc. so the
+  # Node Exporter Full dashboard (1860) works end-to-end. On macOS
+  # Docker Desktop the container's /proc only sees the container's
+  # own kernel namespace, so values reflect the container's view of
+  # the host kernel — that's fine for parity (Prometheus sees the
+  # same view and Elastic ingests the same numbers via remote_write).
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: parity-node-exporter
+    command:
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.diskstats
+      - --collector.filesystem
+      - --collector.loadavg
+      - --collector.netdev
+      - --collector.netstat
+      - --collector.uname
+      - --collector.vmstat
+      - --collector.time
+      - --collector.stat
+      - --collector.hwmon
+    networks:
+      - rig
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.0.1
     container_name: parity-prometheus

@@ -51,12 +51,23 @@ doesn't yet support (`or`, `histogram_quantile`, etc.).
 - **producer/** — deterministic Prometheus exposition that mimics an
   express-prometheus-middleware instrumented Node.js app. Counters
   increment at a fixed wall-clock-driven rate so re-runs are
-  reproducible.
+  reproducible. Also exposes a second endpoint `/metrics-k8s` that
+  emits a self-consistent synthetic slice of kube-state-metrics and
+  cAdvisor (nodes, namespaces, pods, containers, restarts, container
+  cpu/memory/network), so dashboards that target the Kubernetes
+  exporters can be parity-checked without standing up a real cluster.
+- **node-exporter/** — real `prom/node-exporter` v1.8.2 running with
+  the standard host collectors (cpu, meminfo, diskstats, filesystem,
+  loadavg, netdev, netstat, stat, vmstat, hwmon). The Node Exporter
+  Full dashboards (id 1860 and our internal fixture) hit this directly.
 - **prometheus/** — config + entrypoint that materializes the
   `remote_write` URL with the `ELASTICSEARCH_ENDPOINT` and `KEY` from
-  the env at container start.
-- **grafana/** — pre-provisioned datasource and the
-  express-prometheus-middleware dashboard.
+  the env at container start. Scrapes 4 jobs: express-app, node-exporter,
+  kube-state-metrics (via `/metrics-k8s`), and prometheus itself.
+- **grafana/** — pre-provisioned datasource. Dashboards are stamped
+  onto the rig at deploy time by `scripts/prepare-dashboards.sh`
+  (which pulls the canonical fixtures from `../infra/grafana/dashboards/`
+  and optionally also downloads dashboard 1860 from grafana.com).
 - **harness/parity.py** — runs each migrated panel's PromQL against both
   Prometheus and Elasticsearch's ES|QL `PROMQL` command, diffs the
   results.
@@ -66,6 +77,7 @@ doesn't yet support (`or`, `histogram_quantile`, etc.).
 ```bash
 cd parity-rig
 set -a; source ../serverless_creds.env; set +a
+bash scripts/prepare-dashboards.sh --1860   # stamp fixture dashboards + fetch 1860
 docker compose up -d --build
 # Wait ~5 minutes so rate windows have enough history.
 ```
@@ -74,7 +86,22 @@ Ports:
 
 - producer: <http://localhost:27300/metrics>
 - prometheus: <http://localhost:29090>
-- grafana: <http://localhost:23000> (anonymous Admin, Express dashboard auto-loaded)
+- grafana: <http://localhost:23000> (anonymous Admin, dashboards auto-loaded)
+
+## Running parity across every dashboard
+
+The convenience driver migrates each fixture (plus the canonical 1860
+from grafana.com) against the rig's data stream and runs the parity
+harness against each:
+
+```bash
+bash run-all-parity.sh
+```
+
+It writes `reports/parity-all/<slug>/parity-report.json` per dashboard
+and `reports/parity-all/_combined.json` for the aggregate counts. See
+[`RESULTS.md`](./RESULTS.md) for an interpretation of what each
+verdict bucket means and which (few) translator gaps remain.
 
 ## Migrating the dashboard
 

@@ -16,6 +16,36 @@ scrape_configs:
           # compose restarts.
           instance: express-1:3000
 
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100
+        labels:
+          # Stable instance label so the Node Exporter Full dashboard's
+          # variable resolution lands on a known target across restarts.
+          instance: node-1:9100
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          instance: prometheus-1:9090
+
+  - job_name: producer-synth-k8s
+    # The producer also exposes a /metrics-k8s endpoint with synthesized
+    # kube_* and container_* metrics. Scraped as a separate job so the
+    # kube-state-metrics + cadvisor-style series are available with the
+    # right `__name__` / `job` shape the Kubernetes / Views / Global
+    # dashboard expects.
+    metrics_path: /metrics-k8s
+    static_configs:
+      - targets:
+          - producer:3000
+        labels:
+          instance: ksm-1:8080
+          job: kube-state-metrics
+
 # Native Elastic /_prometheus remote_write receiver: lands docs in
 # metrics-{dataset}.prometheus-{namespace} with a layout the ES|QL PROMQL
 # command can resolve directly. The placeholder secrets are filled in at

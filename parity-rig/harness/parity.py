@@ -59,7 +59,25 @@ VARIABLE_DEFAULTS = {
     "instance": "express-1:3000",
     "node_exporter": "express-1:3000",
     "datasource": "parity-prom",
+    # Variables introduced by the broader fixture set (k8s-views-global, the
+    # canonical 1860 Node Exporter Full, etc.). The harness can't enumerate
+    # values via Prometheus label_values, so we hard-code defaults that
+    # match the parity-rig data we ingest. Panels referencing a variable
+    # we don't recognise are skipped before query execution.
+    "cluster": "parity-cluster",
+    "job": "express-app",
+    "node": "node-1:9100",
+    "Filesystem": "/",
+    "device": "eth0",
+    "interval": "5m",
+    "aggregation_interval": "5m",
 }
+
+# Mig-to-kbn fuses multi-target Grafana panels by joining each target's
+# PromQL with ``|||``. The harness splits on this token and runs each
+# target separately against Prometheus, then unions the resulting series
+# before comparing against the (already-fused) ES|QL output.
+MULTI_TARGET_SEPARATOR = "|||"
 
 SKIPPABLE_TOKENS_RE = re.compile(
     r"\b(topk|bottomk|sort_desc|sort_asc|label_replace|vector|histogram_quantile)\b"
@@ -375,21 +393,51 @@ def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> 
         cmp_.skipped_reason = "PromQL construct without comparable ES|QL form"
         return cmp_
 
-    promql_run = expand_variables(promql_original)
-    cmp_.promql_run = promql_run
+    promql_run_combined = expand_variables(promql_original)
+    cmp_.promql_run = promql_run_combined
 
+    # mig-to-kbn fuses multi-target panels by joining each target's PromQL
+    # with ``|||``. Split and run each segment separately on Prometheus,
+    # then union the results before comparing against the (already-fused)
+    # ES|QL output.
+    promql_segments = [
+        seg.strip() for seg in promql_run_combined.split(MULTI_TARGET_SEPARATOR) if seg.strip()
+    ]
+    if not promql_segments:
+        cmp_.skipped_reason = "no PromQL segments after splitting"
+        return cmp_
+
+    # Skip panels that still contain unsubstituted Grafana variables; we
+    # can't honestly compare what Prometheus would have returned.
+    leftover = [s for s in promql_segments if "$" in s]
+    if leftover:
+        cmp_.skipped_reason = f"unsubstituted Grafana variables: {leftover[0][:80]}"
+        return cmp_
+
+    prom_norm: dict[SeriesKey, list[tuple[float, float]]] = {}
     try:
-        prom = run_promql_range(promql_run, t_start, t_end, STEP_SECONDS)
+        for segment in promql_segments:
+            seg_data = run_promql_range(segment, t_start, t_end, STEP_SECONDS)
+            for key, values in normalize_prom_series(seg_data).items():
+                # Concatenate values; if a series key appears in multiple
+                # segments (rare), keep the earlier samples and append later
+                # ones. The compute_diff step bucket-aligns so duplicates
+                # within one bucket fold cleanly.
+                prom_norm.setdefault(key, []).extend(values)
     except Exception as exc:
         cmp_.promql_error = str(exc)
         return cmp_
 
     try:
         if is_native:
-            # Strip the wrapper to get the inner PromQL; we already have it as
-            # promql_run (variables expanded). Run via the ES|QL PROMQL command.
-            es_data = run_esql_promql(promql_run, t_start, t_end, STEP_SECONDS)
-            es_norm = normalize_esql_promql_rows(es_data)
+            # The native-PROMQL ES|QL command parses the verbatim PromQL.
+            # Send each segment as its own PROMQL call and union, mirroring
+            # what we do on the Prom side.
+            es_norm: dict[SeriesKey, list[tuple[float, float]]] = {}
+            for segment in promql_segments:
+                es_data = run_esql_promql(segment, t_start, t_end, STEP_SECONDS)
+                for key, values in normalize_esql_promql_rows(es_data).items():
+                    es_norm.setdefault(key, []).extend(values)
         else:
             es_data = run_esql_raw(esql, t_start, t_end)
             es_norm = normalize_esql_translated(es_data)
@@ -397,7 +445,6 @@ def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> 
         cmp_.esql_error = str(exc)
         return cmp_
 
-    prom_norm = normalize_prom_series(prom)
     cmp_.prom_series_count = len(prom_norm)
     cmp_.es_series_count = len(es_norm)
     common = set(prom_norm) & set(es_norm)
