@@ -2393,18 +2393,48 @@ def _infer_controls_data_view(yaml_panels, datasource_index, rule_pack):
 
 
 def _infer_dashboard_filters(yaml_panels, rule_pack):
+    """Decide what dashboard-level filters to emit.
+
+    The historical design auto-added a ``data_stream.dataset`` ``match_phrase``
+    filter (defaulting to the literal ``"prometheus"``) as a safety net when
+    panels queried the broad ``metrics-*`` pattern: it kept the
+    multi-backend ``metrics-*`` view scoped to the Prometheus dataset only.
+
+    That safety net is destructive when:
+
+    * Every panel already targets a narrow concrete index (e.g. the migration
+      ran with ``--esql-index metrics-prometheus.remote_write-express``).
+      Adding a literal-``prometheus`` filter on top of a narrow Fleet
+      ``prometheus.remote_write`` data stream filters out **all** documents
+      because ``data_stream.dataset`` is the constant_keyword
+      ``"prometheus.remote_write"``, not ``"prometheus"``.
+    * The user explicitly disabled the filter via ``--dataset-filter ""`` —
+      already honored.
+
+    Skip the filter when none of the panel ESQL index patterns contain a
+    wildcard, since the index pattern is itself the constraint and adding an
+    unrelated literal filter is strictly harmful.
+    """
     indexes = {_panel_query_index(panel) for panel in yaml_panels if _panel_query_index(panel)}
     if not indexes:
         return []
     if indexes == {rule_pack.logs_index}:
         if not rule_pack.logs_dataset_filter:
             return []
+        if not _has_wildcard_index(indexes):
+            return []
         return [{"field": "data_stream.dataset", "equals": rule_pack.logs_dataset_filter}]
     if rule_pack.logs_index in indexes:
         return []
     if not rule_pack.metrics_dataset_filter:
         return []
+    if not _has_wildcard_index(indexes):
+        return []
     return [{"field": "data_stream.dataset", "equals": rule_pack.metrics_dataset_filter}]
+
+
+def _has_wildcard_index(indexes):
+    return any(any(token in idx for token in ("*", "?", ",")) for idx in indexes if idx)
 
 
 def _field_control_type(field_name, resolver):

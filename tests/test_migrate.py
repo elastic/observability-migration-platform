@@ -44,6 +44,7 @@ migrate = SimpleNamespace(
     mark_panel_requires_manual_after_failed_validation=report.mark_panel_requires_manual_after_failed_validation,
     translate_variables=panels.translate_variables,
     _infer_controls_data_view=panels._infer_controls_data_view,
+    _infer_dashboard_filters=panels._infer_dashboard_filters,
     _safe_alias=promql._safe_alias,
     translate_dashboard=panels.translate_dashboard,
     annotate_results_with_verification=verification.annotate_results_with_verification,
@@ -1918,6 +1919,49 @@ class TranslatorRegressionTests(unittest.TestCase):
             self.rule_pack,
         )
         self.assertEqual(inferred, "metrics-*")
+
+    def test_dashboard_filters_skipped_when_all_panels_target_narrow_index(self):
+        """If every panel targets a concrete (wildcard-free) data stream, the
+        dashboard's index pattern is already the constraint; adding a literal
+        ``data_stream.dataset == "prometheus"`` match_phrase filter strictly
+        cannot help and on Fleet-managed ``prometheus.remote_write`` data
+        streams it filters out every document because the actual dataset
+        value is ``prometheus.remote_write``."""
+        filters = migrate._infer_dashboard_filters(
+            [
+                {"esql": {"query": "TS metrics-prometheus.remote_write-express\n| STATS …"}},
+                {"esql": {"query": "FROM metrics-prometheus.remote_write-express\n| STATS …"}},
+            ],
+            self.rule_pack,
+        )
+        self.assertEqual(filters, [])
+
+    def test_dashboard_filters_emitted_when_panels_target_broad_pattern(self):
+        """The filter is still useful as a safety net when panels query a
+        wildcard pattern; that's the original design intent. Keep the
+        existing behavior in that case."""
+        filters = migrate._infer_dashboard_filters(
+            [
+                {"esql": {"query": "TS metrics-*\n| STATS …"}},
+                {"esql": {"query": "FROM metrics-prometheus-*\n| STATS …"}},
+            ],
+            self.rule_pack,
+        )
+        self.assertEqual(
+            filters,
+            [{"field": "data_stream.dataset", "equals": "prometheus"}],
+        )
+
+    def test_dashboard_filters_skipped_when_metrics_dataset_filter_explicit_empty(self):
+        rp = migrate.RulePackConfig()
+        rp.metrics_dataset_filter = ""
+        filters = migrate._infer_dashboard_filters(
+            [
+                {"esql": {"query": "TS metrics-*\n| STATS …"}},
+            ],
+            rp,
+        )
+        self.assertEqual(filters, [])
 
     def test_safe_alias_prefixes_leading_digits(self):
         self.assertEqual(migrate._safe_alias("5m load"), "series_5m_load")
