@@ -330,6 +330,109 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("node_memory_MemTotal_bytes", translated.esql_query)
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
+    def test_set_or_between_same_metric_with_disjoint_filters_unifies_where(self):
+        """``A{f1} or A{f2}`` over the same metric is set union; rewrite as a
+        single ``WHERE (f1 OR f2)`` to preserve every series.
+
+        Parity finding: ``http_requests_total{status=~"4.."} or
+        http_requests_total{status=~"5.."}`` previously translated to an
+        ES|QL pipeline that filtered only the left side and dropped both
+        the right operand and every breakdown label, collapsing 18 series
+        into a single empty-label row.
+        """
+        expr = (
+            'http_requests_total{instance="i",status=~"4.."} '
+            'or http_requests_total{instance="i",status=~"5.."}'
+        )
+        translated = self.translate(expr)
+        self.assertEqual(translated.feasibility, "feasible")
+        esql = translated.esql_query
+        # Both filters must survive the rewrite.
+        self.assertIn('"4.."', esql)
+        self.assertIn('"5.."', esql)
+        # And both must appear inside the same WHERE OR clause, not be
+        # silently dropped.
+        where_lines = [line for line in esql.splitlines() if line.lstrip().startswith("| WHERE")]
+        joined_where = "\n".join(where_lines)
+        self.assertIn('"4.."', joined_where)
+        self.assertIn('"5.."', joined_where)
+
+    def test_set_or_between_different_metrics_is_not_feasible(self):
+        """``A or B`` between two different metrics has no honest single-stage
+        ES|QL equivalent; refuse rather than silently dropping one operand."""
+        translated = self.translate(
+            "http_requests_total or http_other_total",
+        )
+        self.assertEqual(translated.feasibility, "not_feasible")
+        reasons = " ".join(getattr(translated, "warnings", []) or [])
+        self.assertRegex(reasons, r"(?i)set operator|or operator|set union")
+
+    def test_set_and_between_metrics_is_not_feasible(self):
+        translated = self.translate("http_requests_total and http_other_total")
+        self.assertEqual(translated.feasibility, "not_feasible")
+
+    def test_set_unless_between_metrics_is_not_feasible(self):
+        translated = self.translate("http_requests_total unless http_other_total")
+        self.assertEqual(translated.feasibility, "not_feasible")
+
+    def test_set_or_same_metric_preserves_legend_driven_breakdowns(self):
+        """When the panel's legend format declares breakdown labels, the
+        set-or rewrite must keep them in BY so we get one series per
+        label tuple (the parity-rig finding for the 4xx-or-5xx panel)."""
+        expr = (
+            'http_requests_total{instance="i",status=~"4.."} '
+            'or http_requests_total{instance="i",status=~"5.."}'
+        )
+        translated = self.translate(
+            expr,
+            translation_hints={
+                "preferred_group_labels": ["method", "path", "status"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(translated.feasibility, "feasible")
+        esql = translated.esql_query
+        self.assertIn('"4.."', esql)
+        self.assertIn('"5.."', esql)
+        stats_lines = [
+            line for line in esql.splitlines() if line.lstrip().startswith("| STATS")
+        ]
+        self.assertTrue(stats_lines, f"no STATS line found in:\n{esql}")
+        joined_stats = "\n".join(stats_lines)
+        for label in ("method", "path", "status"):
+            self.assertIn(label, joined_stats)
+
+    def test_set_or_same_metric_promotes_distinguishing_labels_to_BY(self):
+        """When the operands of ``A{X=~"a"} or A{X=~"b"}`` differ on
+        label X, the rewrite must add X to BY even if the legend doesn't
+        mention it. Otherwise the rate is averaged across X-values and
+        the union loses the per-X series PromQL would have produced.
+        """
+        expr = (
+            'http_requests_total{instance="i",status=~"4.."} '
+            'or http_requests_total{instance="i",status=~"5.."}'
+        )
+        # Caller asks to group by method+path only (legend format omits
+        # status, mirroring the express-prometheus-middleware panel).
+        translated = self.translate(
+            expr,
+            translation_hints={
+                "preferred_group_labels": ["method", "path"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(translated.feasibility, "feasible")
+        stats_lines = [
+            line for line in translated.esql_query.splitlines()
+            if line.lstrip().startswith("| STATS")
+        ]
+        joined_stats = "\n".join(stats_lines)
+        # The differing label must be promoted to BY despite the legend
+        # omitting it; otherwise the rate would be averaged across
+        # statuses and PromQL parity would degrade.
+        for label in ("method", "path", "status"):
+            self.assertIn(label, joined_stats)
+
     def test_mixed_known_and_unknown_gauge_arithmetic_keeps_from_fallback(self):
         self.seed_field_caps(
             {
@@ -3717,7 +3820,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("step", last_keep)
         self.assertIn("value", last_keep)
         self.assertIn("legend", last_keep)
-        self.assertNotIn("method", last_keep.split('|', 1)[1])
+        # The per-label columns (method/path/status) must remain in KEEP
+        # alongside ``legend`` so downstream consumers can distinguish
+        # series; Lens uses ``breakdown.field = "legend"`` and ignores
+        # the others when rendering.
+        for label in ("method", "path", "status"):
+            self.assertIn(label, last_keep.split('|', 1)[1])
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
 
     def test_apply_composite_legend_resolves_prometheus_labels_prefix(self):

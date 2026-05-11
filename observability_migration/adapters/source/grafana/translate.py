@@ -845,6 +845,22 @@ def binary_expr_family_rule(context):
         preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
+        # Set operators ``and`` / ``unless`` (and ``or`` between different
+        # metrics or different aggregations) have no honest single-stage
+        # ES|QL equivalent. Surface a clear ``not_feasible`` instead of
+        # falling through to a silent drop of one operand or every
+        # breakdown label.
+        op_lower = (frag.binary_op or "").lower()
+        if op_lower in {"or", "and", "unless"}:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            _append_unique(
+                context.warnings,
+                f"PromQL set operator '{op_lower}' between distinct metrics or aggregations "
+                "has no honest ES|QL translation; marked not_feasible",
+            )
+            return "set operator not feasible"
         return None
 
     if plan.specs:

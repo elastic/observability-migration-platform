@@ -1610,11 +1610,16 @@ class TestBinaryExpressions(unittest.TestCase):
         self.assertGreaterEqual(where_count, 2,
                                 "Should have time filter WHERE and comparison WHERE")
 
-    def test_unless_warns_about_approximation(self):
+    def test_unless_is_marked_not_feasible(self):
+        """PromQL ``unless`` (set difference) has no honest single-stage
+        ES|QL equivalent. The translator used to silently emit an
+        approximation; it now refuses, surfacing a clear ``not_feasible``
+        marker so the panel is reported rather than rendered with a
+        dropped operand. See parity-rig RESULTS.md."""
         ctx = _translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
-        has_approx_warning = any("left side" in w.lower() or "approximat" in w.lower()
-                                 for w in ctx.warnings)
-        self.assertTrue(has_approx_warning)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        reasons = " ".join(getattr(ctx, "warnings", []) or [])
+        self.assertRegex(reasons, r"(?i)set operator|unless|set difference")
 
 
 # =========================================================================

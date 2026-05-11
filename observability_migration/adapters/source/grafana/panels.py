@@ -2393,13 +2393,19 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
 
 
 def _splice_composite_legend_into_query(query, *, eval_line, label_columns):
-    """Insert *eval_line* immediately before the trailing ``KEEP`` and rewrite
-    that ``KEEP`` to drop the original label columns and append ``legend``.
+    """Insert *eval_line* immediately before the trailing ``KEEP`` and append
+    ``legend`` to that ``KEEP`` while keeping the original per-label columns.
+
+    Lens uses ``breakdown.field = "legend"`` to render one series per
+    composite-label tuple and ignores the per-label columns; downstream
+    consumers (parity harnesses, raw ES|QL drilldowns) still need the
+    underlying labels to distinguish series whose ``legend`` strings
+    collide. The ``label_columns`` parameter is accepted for backward
+    compatibility but no longer drives column removal.
 
     When the query has no trailing ``KEEP`` stage (the canonical ``STATS …``
     form used by translated PromQL), the helper appends ``EVAL legend = …``
-    only — Lens picks ``legend`` for the breakdown and ignores the other
-    columns. No synthetic ``KEEP`` is added because that would silently drop
+    only. No synthetic ``KEEP`` is added because that would silently drop
     the metric and time-bucket columns required by the XY panel shape.
 
     Handles both multi-line and inline single-line queries by operating on the
@@ -2420,7 +2426,15 @@ def _splice_composite_legend_into_query(query, *, eval_line, label_columns):
 
     keep_body = pipeline_stages[last_keep_index].strip()[5:].strip()
     existing = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
-    rewritten = [col for col in existing if col not in label_columns]
+    # Keep the original label columns alongside ``legend``. Lens uses
+    # ``breakdown.field = "legend"`` and ignores the other columns when
+    # rendering, but downstream consumers (parity harnesses, raw-ESQL
+    # readers, drilldown link generation) still need the underlying
+    # labels to distinguish series. Previously we removed the per-label
+    # columns and only emitted ``legend``, which made the output
+    # ambiguous when two underlying tuples mapped to the same legend
+    # string (e.g. when a status filter was unified into a WHERE OR).
+    rewritten = list(existing)
     if "legend" not in rewritten:
         rewritten.append("legend")
     new_keep_stage = f"KEEP {', '.join(rewritten)}"

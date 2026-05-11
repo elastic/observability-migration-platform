@@ -286,22 +286,71 @@ def normalize_esql_promql_rows(esql_data: dict[str, Any]) -> dict[SeriesKey, lis
 
 
 def normalize_esql_translated(esql_data: dict[str, Any]) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Parse a translated ES|QL query's output (``time_bucket`` + breakdown
-    labels + a single metric column)."""
+    """Parse a translated ES|QL query's output.
+
+    The translator's ``STATS`` shape is
+    ``STATS <metric> = <agg>(...) BY time_bucket = TBUCKET(...), <label1>, <label2>, ...``
+    so the result columns end up as ``[<metric>, time_bucket, <label1>, <label2>, ...]``
+    (the agg goes first, the BY columns follow). Subsequent rewrites can
+    add an ``EVAL computed_value = ...`` and an ``EVAL legend = CONCAT(...)``
+    which reorder the columns via ``KEEP``. We pick the metric column as
+    the *numeric* leftover (preferring ``computed_value`` and ``*_value``
+    when present) so labels that happen to come first in the KEEP order
+    (e.g. ``status`` after a BY-promotion) are still treated as labels.
+    """
     columns = [c["name"] for c in esql_data.get("columns", [])]
+    column_types = [c.get("type", "") for c in esql_data.get("columns", [])]
     rows = esql_data.get("values", [])
     if not columns or not rows:
         return {}
-    time_idx = metric_idx = None
-    label_idxs: list[tuple[int, str]] = []
+
+    NUMERIC_TYPES = {"double", "long", "integer", "float", "unsigned_long"}
+
+    # The translator's composite-legend rewrite adds an
+    # ``EVAL legend = CONCAT(...)`` column for Kibana's Lens chart, which
+    # is a display string derived from the underlying per-label columns
+    # (also retained in KEEP). For parity comparison we ignore it
+    # entirely and match on the real labels.
+    DERIVED_DISPLAY_COLUMNS = {"legend"}
+
+    time_idx = None
+    candidate_indices: list[int] = []
+    explicit_labels: list[tuple[int, str]] = []
     for i, name in enumerate(columns):
         lname = name.lower()
         if "time_bucket" in lname or lname == "@timestamp":
             time_idx = i
-        elif lname.startswith("labels.") or lname.startswith("prometheus.labels."):
-            label_idxs.append((i, lname.split(".")[-1]))
-        elif metric_idx is None:
+            continue
+        if lname.startswith("labels.") or lname.startswith("prometheus.labels."):
+            explicit_labels.append((i, lname.split(".")[-1]))
+            continue
+        if lname in DERIVED_DISPLAY_COLUMNS:
+            continue
+        candidate_indices.append(i)
+
+    metric_idx = None
+    for i in candidate_indices:
+        lname = columns[i].lower()
+        if lname == "computed_value" or lname.endswith("_value"):
             metric_idx = i
+            break
+    if metric_idx is None:
+        for i in candidate_indices:
+            if column_types[i] in NUMERIC_TYPES:
+                metric_idx = i
+                break
+    if metric_idx is None:
+        # Fallback: pick the first non-time, non-labels.* column.
+        for i in candidate_indices:
+            metric_idx = i
+            break
+
+    label_idxs = list(explicit_labels)
+    for i in candidate_indices:
+        if i == metric_idx:
+            continue
+        label_idxs.append((i, columns[i]))
+
     if time_idx is None or metric_idx is None:
         return {}
     bucket: dict[tuple[tuple[str, str], ...], list[tuple[float, float]]] = {}

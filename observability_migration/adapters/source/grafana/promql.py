@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from dataclasses import dataclass, field
@@ -77,6 +78,9 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "rate",
     "sum_over_time",
 }
+
+_SET_OPERATORS = frozenset({"or", "and", "unless"})
+
 
 HARD_UNSUPPORTED_AST_REASONS = {
     "__name__": "PromQL metric-name introspection via __name__ requires manual redesign",
@@ -910,6 +914,21 @@ def _ast_binary_fragment(node, expr):
         return frag
 
     modifier = getattr(node, "modifier", None)
+
+    # Set operators (``or``/``and``/``unless``) are not joins; they have
+    # set-union/intersection/difference semantics that preserve operands'
+    # label sets. Even though the parser models them with a ManyToMany
+    # cardinality modifier, mig-to-kbn's join translation path is wrong
+    # for them. Route them to the binary_expr family so the formula plan
+    # builder can either apply the safe same-metric ``or`` rewrite or
+    # refuse the translation honestly.
+    if op.lower() in _SET_OPERATORS:
+        frag = _make_binary_fragment(expr, left, op.lower(), right)
+        frag.extra.setdefault("parser_backend", "ast")
+        if modifier:
+            frag.extra["vector_matching"] = _ast_binary_matching(modifier)
+        return frag
+
     if modifier:
         matching = _ast_binary_matching(modifier)
         if matching["cardinality"] in {"ManyToOne", "OneToMany", "ManyToMany"}:
@@ -1574,6 +1593,214 @@ def _build_shared_measure_pipeline(index, specs):
     return parts, group_fields, metric_fields
 
 
+def _try_rewrite_set_or_same_metric(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    allow_direct_ts_gauge=False,
+    preferred_group_labels_origin=None,
+):
+    """Rewrite ``A{f1} or A{f2}`` (and longer chains of same-metric ``or``)
+    as a single MeasureSpec whose filters union the operands' matchers.
+
+    This is the one set-operator case that has an honest single-stage
+    ES|QL equivalent: PromQL's ``or`` of same-metric instant vectors is
+    set union over distinct matcher tuples, which is the same as a
+    single fetch of the metric with an ``OR`` over the matcher filter
+    sets. Each operand must:
+
+    - Be a leaf metric reference (``simple_metric`` family) — no inner
+      rate/aggregation, since rate over a unioned filter still produces
+      the right rate per resulting series.
+    - Reference the **same** metric name on both sides.
+    - Resolve to the **same** non-filter matcher structure (same
+      grouping labels, same range/agg shape if any).
+
+    For anything else we return ``None`` so the caller refuses the
+    translation.
+    """
+    op_lower = (frag.binary_op or "").lower()
+    if op_lower != "or":
+        return None
+
+    left_frag = frag.extra.get("left_frag")
+    right_frag = frag.extra.get("right_frag")
+    if not left_frag or not right_frag:
+        return None
+
+    # Recurse first into a left-leaning ``or`` chain so ``A or A or A``
+    # works.
+    operand_frags = []
+    for child in (left_frag, right_frag):
+        if child.family == "binary_expr" and (child.binary_op or "").lower() == "or":
+            sub = _try_rewrite_set_or_same_metric(
+                child,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+            )
+            if sub is None:
+                return None
+            if len(sub.specs) != 1:
+                return None
+            # Re-extract the operand fragments out of the nested ``or``
+            # chain so the unified filter logic below sees a flat list.
+            stack = [child]
+            while stack:
+                cur = stack.pop()
+                if cur.family == "binary_expr" and (cur.binary_op or "").lower() == "or":
+                    stack.append(cur.extra.get("left_frag"))
+                    stack.append(cur.extra.get("right_frag"))
+                else:
+                    operand_frags.append(cur)
+        else:
+            operand_frags.append(child)
+
+    if not operand_frags:
+        return None
+
+    # All operands must be simple metric references against the same
+    # metric. Range functions, outer aggregations, joins etc. all have
+    # set-union semantics that differ from a plain matcher OR.
+    metrics = {f.metric for f in operand_frags}
+    if len(metrics) != 1 or "" in metrics:
+        return None
+    if any(f.family != "simple_metric" for f in operand_frags):
+        return None
+    if any(f.binary_op for f in operand_frags):
+        return None
+    if any(f.outer_agg or f.range_func for f in operand_frags):
+        return None
+
+    # Build a single MeasureSpec from the first operand, then OR-fold
+    # the other operands' filter strings into its WHERE clause.
+    base = _build_measure_spec(
+        operand_frags[0],
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+    )
+    if base is None:
+        return None
+
+    per_operand_filters = [list(base.filters)]
+    for other in operand_frags[1:]:
+        spec = _build_measure_spec(
+            other,
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=allow_direct_ts_gauge,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+        )
+        if spec is None:
+            return None
+        # The non-filter parts of each MeasureSpec (source_type, stats,
+        # grouping) must agree for the union to be safe.
+        if (
+            spec.source_type != base.source_type
+            or spec.stats_expr != base.stats_expr
+            or spec.bucket_expr != base.bucket_expr
+            or spec.group_fields != base.group_fields
+        ):
+            return None
+        per_operand_filters.append(list(spec.filters))
+
+    # Compute the AND-intersection of filter clauses that are identical
+    # across every operand (those become unconditional WHERE clauses).
+    # The remaining per-operand filter clauses are OR'd together inside
+    # a single combined WHERE.
+    if all(filt_list == per_operand_filters[0] for filt_list in per_operand_filters):
+        unified_filters = per_operand_filters[0]
+    else:
+        common = []
+        for filt in per_operand_filters[0]:
+            if all(filt in other for other in per_operand_filters[1:]):
+                common.append(filt)
+        remainders = []
+        for filt_list in per_operand_filters:
+            rest = [f for f in filt_list if f not in common]
+            if not rest:
+                # An operand with no distinguishing filter means "match
+                # everything"; the union is therefore unfiltered.
+                remainders = []
+                break
+            if len(rest) == 1:
+                remainders.append(rest[0])
+            else:
+                remainders.append("(" + " AND ".join(rest) + ")")
+        if remainders:
+            common.append("(" + " OR ".join(remainders) + ")")
+        unified_filters = common
+
+    # The labels that differ across operands (e.g. ``status`` in
+    # ``A{status=~"4.."} or A{status=~"5.."}``) are the dimensions
+    # PromQL's set-or uses to keep operand series separate. The
+    # straightforward unified WHERE we just built would otherwise
+    # average them together and lose the operands' distinguishing
+    # dimensions. Promote any such labels to additional BY columns so
+    # the rate is computed per-(method, path, status, …) tuple, which
+    # matches PromQL's per-series output. Labels that the resolver
+    # cannot map to a known field are skipped.
+    distinguishing_labels = _set_or_distinguishing_labels(operand_frags)
+    if distinguishing_labels:
+        resolved = []
+        for label in distinguishing_labels:
+            field = resolver.resolve_label(label) if resolver else label
+            if field and field not in base.group_fields and field not in resolved:
+                resolved.append(field)
+        if resolved:
+            new_group_fields = list(base.group_fields) + resolved
+        else:
+            new_group_fields = base.group_fields
+    else:
+        new_group_fields = base.group_fields
+
+    new_spec = dataclasses.replace(
+        base,
+        filters=unified_filters,
+        group_fields=new_group_fields,
+        warnings=list(base.warnings)
+        + [
+            "Rewrote PromQL set-or between same metric as a unified WHERE OR clause"
+        ],
+    )
+    return FormulaPlan(
+        specs=[new_spec],
+        expr=new_spec.final_alias,
+        warnings=list(new_spec.warnings),
+    )
+
+
+def _set_or_distinguishing_labels(operand_frags):
+    """Return the matcher labels that differ across operands of an
+    ``A{...} or A{...}`` (or longer chain) so the rewrite can promote
+    them to BY columns and preserve the union's distinguishing dimensions.
+    """
+    by_label_values = {}
+    for frag in operand_frags:
+        for matcher in frag.matchers:
+            label = matcher.get("label")
+            if not label:
+                continue
+            by_label_values.setdefault(label, set()).add(
+                (matcher.get("op", "="), matcher.get("value", ""))
+            )
+    return [label for label, values in by_label_values.items() if len(values) > 1]
+
+
 def _build_formula_plan(
     frag,
     resolver,
@@ -1589,6 +1816,32 @@ def _build_formula_plan(
         return FormulaPlan(specs=[], expr=scalar_expr)
 
     if frag and frag.family == "binary_expr":
+        # Set operators (``or`` / ``and`` / ``unless``) are not arithmetic
+        # and cannot be composed by interpolating the operands into a single
+        # EVAL expression. PromQL's ``or`` is set union, ``and`` is set
+        # intersection, ``unless`` is set difference — all preserve the
+        # operands' label set and have no honest single-stage ES|QL
+        # equivalent. We handle one common, safe rewrite below
+        # (``A{f1} or A{f2}`` → ``A WHERE f1 OR f2``) and refuse everything
+        # else so the rule layer can mark the panel ``not_feasible``
+        # instead of silently dropping one operand or every breakdown
+        # label.
+        op_lower = (frag.binary_op or "").lower()
+        if op_lower in _SET_OPERATORS:
+            rewritten = _try_rewrite_set_or_same_metric(
+                frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                allow_direct_ts_gauge=False,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+            )
+            if rewritten is not None:
+                return rewritten
+            return None
+
         left_plan = _build_formula_plan(
             frag.extra.get("left_frag"),
             resolver,
