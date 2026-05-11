@@ -26,7 +26,11 @@ from observability_migration.core.verification.field_capabilities import FieldCa
 from .contract_evaluator import evaluate_target_query_contract
 from .fulfillment_planner import plan_contract_fulfillment
 from .llm_translate import attempt_llm_translation
-from .preflight import _DERIVED_METRIC_NAMES, _metric_candidates
+from .preflight import (
+    _DERIVED_METRIC_NAMES,
+    _looks_like_counter_metric,
+    _metric_candidates,
+)
 from .promql import (
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
@@ -232,7 +236,11 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
                 name=field_name,
                 role=template.role,
                 type_family=template.type_family,
-                metric_kind=template.metric_kind,
+                metric_kind=(
+                    "counter"
+                    if template.metric_kind and _looks_like_counter_metric(field_name)
+                    else template.metric_kind
+                ),
                 context=template.context,
             )
             for field_name in field_names

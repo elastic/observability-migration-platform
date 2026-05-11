@@ -697,6 +697,66 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(field_names, ["node_boot_time_seconds"])
         self.assertNotIn("constant_value", field_names)
 
+    def test_build_metric_contract_artifacts_classifies_counter_metric_kind_per_field(self):
+        """When the translator rewrote a counter-based formula to a synthetic
+        alias, the contract should classify each derived source metric by its
+        own name shape, not stamp the planner's gauge template onto a counter.
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression='1 - avg(irate(node_cpu_seconds_total{mode="idle"}[5m]))',
+            clean_expression='1 - avg(irate(node_cpu_seconds_total{mode="idle"}[5m]))',
+            metric="computed_value",
+            range_function="",
+            target_index="metrics-*",
+            panel_type="timeseries",
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        reqs = {item["name"]: item for item in contract_dict["field_requirements"]}
+        self.assertIn("node_cpu_seconds_total", reqs)
+        self.assertEqual(reqs["node_cpu_seconds_total"]["metric_kind"], "counter")
+
+    def test_build_metric_contract_artifacts_classifies_mixed_kinds_per_field(self):
+        """A formula combining a counter and a gauge should yield two field
+        requirements with distinct metric_kinds, not a single template value.
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression="rate(http_requests_total[5m]) / node_memory_MemTotal_bytes",
+            clean_expression="rate(http_requests_total[5m]) / node_memory_MemTotal_bytes",
+            metric="computed_value",
+            target_index="metrics-*",
+            panel_type="timeseries",
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        reqs = {item["name"]: item for item in contract_dict["field_requirements"]}
+        self.assertEqual(reqs["http_requests_total"]["metric_kind"], "counter")
+        self.assertEqual(reqs["node_memory_MemTotal_bytes"]["metric_kind"], "gauge")
+
     def test_native_promql_without_query_preserves_group_mode(self):
         self.rule_pack.native_promql = True
         panel = {
