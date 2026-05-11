@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: parity-rig
+    replica: A
+
+scrape_configs:
+  - job_name: express-app
+    static_configs:
+      - targets:
+          - producer:3000
+        labels:
+          # The producer's `__address__` becomes the `instance` label by
+          # default; pin it explicitly so Grafana sees a stable value across
+          # compose restarts.
+          instance: express-1:3000
+
+# Native Elastic /_prometheus remote_write receiver: lands docs in
+# metrics-{dataset}.prometheus-{namespace} with a layout the ES|QL PROMQL
+# command can resolve directly. The placeholder secrets are filled in at
+# compose-up time via envsubst-style ${VAR} expansion done by docker-compose
+# (env_file: ../serverless_creds.env exposes ELASTICSEARCH_ENDPOINT and KEY).
+# Substituted at container startup by ./prometheus/entrypoint.sh which fills
+# in ELASTICSEARCH_ENDPOINT and KEY from the env_file passed to the
+# Prometheus service in docker-compose.
+remote_write:
+  - url: "__ES_URL__/_prometheus/metrics/express/parity/api/v1/write"
+    authorization:
+      type: ApiKey
+      credentials: "__KEY__"
+    queue_config:
+      max_samples_per_send: 1000
+      capacity: 10000
+      batch_send_deadline: 5s

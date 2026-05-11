@@ -1,0 +1,54 @@
+services:
+  producer:
+    build: ./producer
+    container_name: parity-producer
+    networks:
+      - rig
+    ports:
+      - "27300:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/healthz').read()==b'ok' else 1)\""]
+      interval: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: parity-prometheus
+    entrypoint: /etc/prometheus/entrypoint.sh
+    environment:
+      ELASTICSEARCH_ENDPOINT: ${ELASTICSEARCH_ENDPOINT}
+      KEY: ${KEY}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
+    networks:
+      - rig
+    ports:
+      - "29090:9090"
+    depends_on:
+      producer:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana-oss:11.3.1
+    container_name: parity-grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - rig
+    ports:
+      - "23000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+
+networks:
+  rig:
+    name: parity-rig

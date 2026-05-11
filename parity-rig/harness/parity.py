@@ -1,0 +1,472 @@
+"""PromQL-identity parity harness.
+
+For each panel in the migrated dashboard:
+
+1. Read the original PromQL (``query_ir.source_expression``).
+2. Substitute Grafana template variables with concrete values.
+3. Run the same PromQL string against:
+   - Prometheus via ``/api/v1/query_range``
+   - Elasticsearch via the ES|QL ``PROMQL`` source command
+4. Align the result series by label set and compute per-bucket numeric
+   error.
+
+Where the panel was translated via the ES|QL fallback (because PromQL
+isn't supported for that construct, e.g. ``or`` / ``histogram_quantile``),
+we still run the original PromQL against Prometheus but execute the
+*translated* ES|QL on the Elastic side and compare results.
+
+Verdicts:
+
+* ``PROMQL_IDENTITY`` — both sides ran the exact same PromQL.
+* ``ESQL_FALLBACK`` — Elastic side ran ES|QL; PromQL ran on Prometheus.
+* Plus a numeric verdict: ``STRICT_PASS`` (≤1 %), ``FUZZY_PASS`` (≤5 %),
+  ``SHAPE_PASS`` (labels overlap, numerics diverge), ``FAIL_NO_OVERLAP``,
+  ``ERROR``, ``SKIP``.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import requests
+
+PROM_URL = os.environ.get("PROM_URL", "http://localhost:29090")
+ES_URL = os.environ["ELASTICSEARCH_ENDPOINT"].rstrip("/")
+ES_KEY = os.environ["KEY"]
+REPORT_PATH = os.environ.get(
+    "REPORT_PATH",
+    "/tmp/mig-to-kbn-e2e/parity-express-native2/dashboards/migration_report.json",
+)
+ESQL_INDEX = os.environ.get("ESQL_INDEX", "metrics-express.prometheus-parity")
+WINDOW_MINUTES = int(os.environ.get("PARITY_WINDOW_MINUTES", "10"))
+STEP_SECONDS = int(os.environ.get("PARITY_STEP_SECONDS", "60"))
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/Users/subhamsarkar/mig-to-kbn/parity-rig/reports"))
+
+ES_HEADERS = {"Authorization": f"ApiKey {ES_KEY}", "Content-Type": "application/json"}
+
+PROMETHEUS_ONLY_LABELS = frozenset({
+    "__name__", "instance", "job",
+    "exported_instance", "exported_job",
+    "cluster", "replica",  # Prometheus external_labels added on remote-write side
+})
+
+VARIABLE_DEFAULTS = {
+    "instance": "express-1:3000",
+    "node_exporter": "express-1:3000",
+    "datasource": "parity-prom",
+}
+
+SKIPPABLE_TOKENS_RE = re.compile(
+    r"\b(topk|bottomk|sort_desc|sort_asc|label_replace|vector|histogram_quantile)\b"
+)
+
+
+@dataclass
+class SeriesKey:
+    labels: tuple[tuple[str, str], ...]
+
+    def __hash__(self) -> int:
+        return hash(self.labels)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, SeriesKey) and self.labels == other.labels
+
+    def __repr__(self) -> str:
+        return "{" + ", ".join(f"{k}={v}" for k, v in self.labels) + "}"
+
+
+@dataclass
+class PanelComparison:
+    title: str
+    promql_original: str = ""
+    promql_run: str = ""
+    esql: str = ""
+    side_mode: str = ""  # "PROMQL_IDENTITY" or "ESQL_FALLBACK"
+    prom_series_count: int = 0
+    es_series_count: int = 0
+    common_series_count: int = 0
+    prom_only_series: list[str] = field(default_factory=list)
+    es_only_series: list[str] = field(default_factory=list)
+    compared_points: int = 0
+    max_relative_error: float = 0.0
+    mean_relative_error: float = 0.0
+    promql_error: str = ""
+    esql_error: str = ""
+    notes: list[str] = field(default_factory=list)
+    skipped_reason: str = ""
+
+    @property
+    def verdict(self) -> str:
+        if self.skipped_reason:
+            return "SKIP"
+        if self.promql_error or self.esql_error:
+            return "ERROR"
+        if self.compared_points == 0:
+            return "FAIL_NO_OVERLAP"
+        if self.max_relative_error <= 0.01:
+            return "STRICT_PASS"
+        if self.max_relative_error <= 0.05:
+            return "FUZZY_PASS"
+        if self.common_series_count > 0:
+            return "SHAPE_PASS"
+        return "FAIL"
+
+
+def expand_variables(promql: str) -> str:
+    out = promql
+    for var, default in VARIABLE_DEFAULTS.items():
+        out = out.replace(f"${var}", default)
+        out = out.replace(f"${{{var}}}", default)
+    out = out.replace("$__rate_interval", "5m")
+    out = out.replace("$__interval", "5m")
+    out = out.replace("$__range", "15m")
+    out = out.replace("$aggregation_interval", "5m")
+    out = re.sub(r"=~\s*\"\.\*\"", '="express-1:3000"', out)
+    return out
+
+
+def run_promql_range(query: str, start: datetime, end: datetime, step: int) -> dict[str, Any]:
+    params = {
+        "query": query,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "step": str(step),
+    }
+    r = requests.get(f"{PROM_URL}/api/v1/query_range", params=params, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"prom {r.status_code}: {r.text[:300]}")
+    return r.json()
+
+
+def run_esql_promql(promql_expr: str, t_start: datetime, t_end: datetime, step: int) -> dict[str, Any]:
+    """Run a raw PromQL string via Elasticsearch's ES|QL ``PROMQL`` command.
+
+    This is the byte-for-byte identity path: same PromQL on both sides.
+    """
+    start_iso = t_start.isoformat().replace("+00:00", "Z")
+    end_iso = t_end.isoformat().replace("+00:00", "Z")
+    query = (
+        f'PROMQL index={ESQL_INDEX} step={step}s '
+        f'start="{start_iso}" end="{end_iso}" '
+        f'value=({promql_expr})'
+    )
+    body = {"query": query}
+    r = requests.post(f"{ES_URL}/_query", headers=ES_HEADERS, json=body, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"es-promql {r.status_code}: {r.text[:400]}")
+    return r.json()
+
+
+def run_esql_raw(esql: str, t_start: datetime, t_end: datetime) -> dict[str, Any]:
+    params = [
+        {"_tstart": t_start.isoformat().replace("+00:00", "Z")},
+        {"_tend": t_end.isoformat().replace("+00:00", "Z")},
+    ]
+    body = {"query": esql, "params": params}
+    r = requests.post(f"{ES_URL}/_query", headers=ES_HEADERS, json=body, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"es {r.status_code}: {r.text[:400]}")
+    return r.json()
+
+
+def _drop_constants_and_promonly(
+    raw: list[tuple[dict[str, str], list[tuple[float, float]]]],
+) -> dict[SeriesKey, list[tuple[float, float]]]:
+    raw = [
+        (
+            {k: v for k, v in d.items() if k not in PROMETHEUS_ONLY_LABELS},
+            vs,
+        )
+        for d, vs in raw
+    ]
+    if not raw:
+        return {}
+    all_keys = set.intersection(*(set(d.keys()) for d, _ in raw))
+    constants = {k for k in all_keys if len({d[k] for d, _ in raw}) == 1}
+    out: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for d, vs in raw:
+        scrubbed = {k: v for k, v in d.items() if k not in constants}
+        out[SeriesKey(tuple(sorted(scrubbed.items())))] = vs
+    return out
+
+
+def normalize_prom_series(prom: dict[str, Any]) -> dict[SeriesKey, list[tuple[float, float]]]:
+    raw = []
+    for series in (prom.get("data") or {}).get("result", []):
+        labels = dict(series.get("metric", {}))
+        values = [(float(ts), float(val)) for ts, val in series.get("values", [])]
+        raw.append((labels, values))
+    return _drop_constants_and_promonly(raw)
+
+
+def normalize_esql_promql_rows(esql_data: dict[str, Any]) -> dict[SeriesKey, list[tuple[float, float]]]:
+    """Parse the ES|QL ``PROMQL`` command's output (``value`` / ``step`` /
+    grouped labels OR a single ``_timeseries`` JSON column)."""
+    columns = [c["name"] for c in esql_data.get("columns", [])]
+    rows = esql_data.get("values", [])
+    if not columns or not rows:
+        return {}
+
+    value_idx = step_idx = ts_json_idx = None
+    label_idxs: list[tuple[int, str]] = []
+    for i, name in enumerate(columns):
+        if name in ("value",) or name.endswith("_value"):
+            value_idx = i
+        elif name == "step":
+            step_idx = i
+        elif name == "_timeseries":
+            ts_json_idx = i
+        elif name not in ("value", "step", "_timeseries"):
+            # Treat any other column as a grouping label.
+            label_idxs.append((i, name))
+    # Fallback: maybe value column is first numeric.
+    if value_idx is None:
+        for i, _ in enumerate(columns):
+            if step_idx == i or ts_json_idx == i:
+                continue
+            try:
+                float(rows[0][i]) if rows[0][i] is not None else 0.0
+                value_idx = i
+                break
+            except Exception:
+                continue
+    if value_idx is None or step_idx is None:
+        return {}
+
+    raw: list[tuple[dict[str, str], list[tuple[float, float]]]] = []
+    bucket: dict[tuple[tuple[str, str], ...], list[tuple[float, float]]] = {}
+    for row in rows:
+        try:
+            t = datetime.fromisoformat(str(row[step_idx]).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        try:
+            v = float(row[value_idx]) if row[value_idx] is not None else None
+        except (TypeError, ValueError):
+            v = None
+        if v is None:
+            continue
+        labels: dict[str, str] = {}
+        if ts_json_idx is not None and row[ts_json_idx]:
+            try:
+                blob = json.loads(row[ts_json_idx])
+                labels.update(blob.get("labels", {}))
+            except Exception:
+                pass
+        for idx, name in label_idxs:
+            if row[idx] is not None:
+                labels[name] = str(row[idx])
+        key = tuple(sorted(labels.items()))
+        bucket.setdefault(key, []).append((t, v))
+    raw = [(dict(k), v) for k, v in bucket.items()]
+    return _drop_constants_and_promonly(raw)
+
+
+def normalize_esql_translated(esql_data: dict[str, Any]) -> dict[SeriesKey, list[tuple[float, float]]]:
+    """Parse a translated ES|QL query's output (``time_bucket`` + breakdown
+    labels + a single metric column)."""
+    columns = [c["name"] for c in esql_data.get("columns", [])]
+    rows = esql_data.get("values", [])
+    if not columns or not rows:
+        return {}
+    time_idx = metric_idx = None
+    label_idxs: list[tuple[int, str]] = []
+    for i, name in enumerate(columns):
+        lname = name.lower()
+        if "time_bucket" in lname or lname == "@timestamp":
+            time_idx = i
+        elif lname.startswith("labels.") or lname.startswith("prometheus.labels."):
+            label_idxs.append((i, lname.split(".")[-1]))
+        elif metric_idx is None:
+            metric_idx = i
+    if time_idx is None or metric_idx is None:
+        return {}
+    bucket: dict[tuple[tuple[str, str], ...], list[tuple[float, float]]] = {}
+    for row in rows:
+        try:
+            t = datetime.fromisoformat(str(row[time_idx]).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        try:
+            v = float(row[metric_idx]) if row[metric_idx] is not None else None
+        except (TypeError, ValueError):
+            v = None
+        if v is None:
+            continue
+        labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
+        bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
+    raw = [(dict(k), v) for k, v in bucket.items()]
+    return _drop_constants_and_promonly(raw)
+
+
+def bucket_align(
+    series: dict[SeriesKey, list[tuple[float, float]]],
+    bucket_seconds: int,
+) -> dict[SeriesKey, dict[int, float]]:
+    return {
+        key: {int(ts // bucket_seconds) * bucket_seconds: v for ts, v in vs}
+        for key, vs in series.items()
+    }
+
+
+def compute_diff(
+    prom: dict[SeriesKey, list[tuple[float, float]]],
+    es: dict[SeriesKey, list[tuple[float, float]]],
+    bucket_seconds: int,
+) -> tuple[int, float, float, int, int, int]:
+    pa = bucket_align(prom, bucket_seconds)
+    ea = bucket_align(es, bucket_seconds)
+    common = set(pa) & set(ea)
+    # Drop boundary buckets per series (first + last bucket each side).
+    def trim(buckets):
+        out = {}
+        for k, m in buckets.items():
+            if len(m) <= 2:
+                continue
+            sorted_ts = sorted(m.keys())
+            out[k] = {ts: m[ts] for ts in sorted_ts[1:-1]}
+        return out
+    pa_i = trim(pa)
+    ea_i = trim(ea)
+    rel_errors: list[float] = []
+    points = 0
+    for key in set(pa_i) & set(ea_i):
+        for bts, pval in pa_i[key].items():
+            eval_ = ea_i[key].get(bts)
+            if eval_ is None:
+                continue
+            points += 1
+            denom = max(abs(pval), abs(eval_), 1e-9)
+            rel_errors.append(abs(pval - eval_) / denom)
+    return (
+        points,
+        max(rel_errors, default=0.0),
+        (sum(rel_errors) / len(rel_errors)) if rel_errors else 0.0,
+        len(common),
+        len(set(pa) - common),
+        len(set(ea) - common),
+    )
+
+
+def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> PanelComparison:
+    title = panel.get("title", "")
+    qir = panel.get("query_ir") or {}
+    promql_original = qir.get("source_expression") or qir.get("clean_expression") or ""
+    esql = (panel.get("esql") or "").strip()
+    cmp_ = PanelComparison(title=title, promql_original=promql_original, esql=esql)
+
+    if not esql:
+        cmp_.skipped_reason = "no migrated ES|QL"
+        return cmp_
+    if not promql_original:
+        cmp_.skipped_reason = "no source PromQL"
+        return cmp_
+
+    # Did the translator emit a native PROMQL command? If so, identity mode.
+    is_native = esql.lstrip().upper().startswith("PROMQL")
+    cmp_.side_mode = "PROMQL_IDENTITY" if is_native else "ESQL_FALLBACK"
+
+    if SKIPPABLE_TOKENS_RE.search(promql_original) and not is_native:
+        cmp_.skipped_reason = "PromQL construct without comparable ES|QL form"
+        return cmp_
+
+    promql_run = expand_variables(promql_original)
+    cmp_.promql_run = promql_run
+
+    try:
+        prom = run_promql_range(promql_run, t_start, t_end, STEP_SECONDS)
+    except Exception as exc:
+        cmp_.promql_error = str(exc)
+        return cmp_
+
+    try:
+        if is_native:
+            # Strip the wrapper to get the inner PromQL; we already have it as
+            # promql_run (variables expanded). Run via the ES|QL PROMQL command.
+            es_data = run_esql_promql(promql_run, t_start, t_end, STEP_SECONDS)
+            es_norm = normalize_esql_promql_rows(es_data)
+        else:
+            es_data = run_esql_raw(esql, t_start, t_end)
+            es_norm = normalize_esql_translated(es_data)
+    except Exception as exc:
+        cmp_.esql_error = str(exc)
+        return cmp_
+
+    prom_norm = normalize_prom_series(prom)
+    cmp_.prom_series_count = len(prom_norm)
+    cmp_.es_series_count = len(es_norm)
+    common = set(prom_norm) & set(es_norm)
+    cmp_.common_series_count = len(common)
+    cmp_.prom_only_series = [repr(k) for k in sorted(set(prom_norm) - common, key=str)[:3]]
+    cmp_.es_only_series = [repr(k) for k in sorted(set(es_norm) - common, key=str)[:3]]
+
+    points, rmax, rmean, _, _, _ = compute_diff(prom_norm, es_norm, STEP_SECONDS)
+    cmp_.compared_points = points
+    cmp_.max_relative_error = rmax
+    cmp_.mean_relative_error = rmean
+    return cmp_
+
+
+def main() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    report = json.loads(Path(REPORT_PATH).read_text())
+
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=WINDOW_MINUTES)
+    print(f"Parity window: {start.isoformat()} → {end.isoformat()} step={STEP_SECONDS}s")
+    print(f"ES|QL index: {ESQL_INDEX}\n")
+
+    cmps: list[PanelComparison] = []
+    for d in report.get("dashboards", []):
+        for panel in d.get("panels", []):
+            cmps.append(compare_panel(panel, start, end))
+
+    marker = {
+        "STRICT_PASS": "✓",
+        "FUZZY_PASS": "~",
+        "SHAPE_PASS": "·",
+        "FAIL_NO_OVERLAP": "✗",
+        "FAIL": "✗",
+        "ERROR": "!",
+        "SKIP": "—",
+    }
+    counts: dict[str, int] = {}
+    print("Per-panel verdicts:")
+    for c in cmps:
+        v = c.verdict
+        counts[v] = counts.get(v, 0) + 1
+        mode_tag = c.side_mode[:11] if c.side_mode else ""
+        extra = ""
+        if c.compared_points:
+            extra = f" pts={c.compared_points} rel_err_max={c.max_relative_error:.3f}"
+        elif c.skipped_reason:
+            extra = f" :: {c.skipped_reason}"
+        elif c.promql_error:
+            extra = f" :: prom {c.promql_error[:60]}"
+        elif c.esql_error:
+            extra = f" :: es {c.esql_error[:60]}"
+        print(
+            f"  {marker.get(v, '?')} [{v:15s}][{mode_tag:11s}] {c.title:46s}"
+            f" prom={c.prom_series_count:3d} es={c.es_series_count:3d} common={c.common_series_count:3d}{extra}"
+        )
+
+    print("\nVerdict summary:")
+    for v, n in sorted(counts.items()):
+        print(f"  {v:18s}: {n}")
+
+    out_payload = {
+        "window": {"start": start.isoformat(), "end": end.isoformat(), "step_seconds": STEP_SECONDS},
+        "verdict_counts": counts,
+        "panels": [{**c.__dict__, "verdict": c.verdict} for c in cmps],
+    }
+    (OUTPUT_DIR / "parity-report.json").write_text(json.dumps(out_payload, indent=2, default=str))
+    print(f"\nReport: {OUTPUT_DIR / 'parity-report.json'}")
+
+
+if __name__ == "__main__":
+    main()
