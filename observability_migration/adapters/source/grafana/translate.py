@@ -26,6 +26,7 @@ from observability_migration.core.verification.field_capabilities import FieldCa
 from .contract_evaluator import evaluate_target_query_contract
 from .fulfillment_planner import plan_contract_fulfillment
 from .llm_translate import attempt_llm_translation
+from .preflight import _DERIVED_METRIC_NAMES, _metric_candidates
 from .promql import (
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
@@ -157,6 +158,21 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
     ).strip().lower()
     if source_language != "promql":
         return {}, {}, {}
+
+    if metric_name in _DERIVED_METRIC_NAMES:
+        metric_name = ""
+
+    if not multi_series_metric_fields and not metric_name:
+        # Pull the real source metrics out of the source expression. This
+        # matters when the translator rewrote the panel to a synthetic alias
+        # like `computed_value` or `constant_value` and the IR's `metric`
+        # field no longer points at a real target field.
+        query_ir_dict = (
+            query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
+        )
+        derived_candidates = _metric_candidates(query_ir_dict) - _DERIVED_METRIC_NAMES
+        if derived_candidates:
+            multi_series_metric_fields = sorted(derived_candidates)
 
     runtime_capabilities = RuntimeCapabilities(promql=bool((rule_pack or RulePackConfig()).native_promql))
     index_pattern = str(

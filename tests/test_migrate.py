@@ -630,6 +630,73 @@ class TranslatorRegressionTests(unittest.TestCase):
         field_names = [item["name"] for item in contract_dict["field_requirements"]]
         self.assertEqual(field_names, ["cpu_usage", "memory_usage"])
 
+    def test_build_metric_contract_artifacts_skips_derived_alias_metric_names(self):
+        """When the translator rewrote the panel to a synthetic alias like
+        `computed_value`, the contract should describe the real source metric
+        names from the source expression, not the alias.
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression=(
+                "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100"
+            ),
+            clean_expression=(
+                "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100"
+            ),
+            metric="computed_value",
+            target_index="metrics-*",
+            panel_type="timeseries",
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        field_names = sorted(item["name"] for item in contract_dict["field_requirements"])
+        self.assertEqual(
+            field_names,
+            ["node_memory_MemAvailable_bytes", "node_memory_MemTotal_bytes"],
+        )
+        # And the synthetic alias must never appear as a field requirement.
+        self.assertNotIn("computed_value", field_names)
+
+    def test_build_metric_contract_artifacts_skips_derived_alias_for_constant_value(self):
+        """Scalar PromQL like `scalar(...)` rewrites to `constant_value`; the
+        contract should still describe the underlying metric, not the alias.
+        """
+        from observability_migration.adapters.source.grafana.translate import (
+            _build_metric_contract_artifacts,
+        )
+        from observability_migration.core.assets.query import QueryIR
+
+        query_ir = QueryIR(
+            source_language="promql",
+            source_expression="scalar(node_boot_time_seconds)",
+            clean_expression="scalar(node_boot_time_seconds)",
+            metric="constant_value",
+            target_index="metrics-*",
+            panel_type="stat",
+        )
+
+        contract, _evaluation, _fulfillment = _build_metric_contract_artifacts(
+            query_ir,
+            resolver=None,
+            rule_pack=self.rule_pack,
+        )
+
+        contract_dict = contract.to_dict() if hasattr(contract, "to_dict") else contract
+        field_names = [item["name"] for item in contract_dict["field_requirements"]]
+        self.assertEqual(field_names, ["node_boot_time_seconds"])
+        self.assertNotIn("constant_value", field_names)
+
     def test_native_promql_without_query_preserves_group_mode(self):
         self.rule_pack.native_promql = True
         panel = {
