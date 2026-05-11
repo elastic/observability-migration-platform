@@ -299,6 +299,9 @@ def _target_translation_hints(panel, panel_type, target):
         hints["preferred_group_labels"] = preferred_group_labels
     if legend_contributed and not style_labels:
         hints["preferred_group_labels_origin"] = "legend"
+    legend_template = target.get("legendFormat", "")
+    if isinstance(legend_template, str) and len(legend_labels) >= 2:
+        hints["legend_format_template"] = legend_template
     return hints
 
 
@@ -437,7 +440,8 @@ _select_xy_dimension_fields = _select_xy_dimension_fields_canonical
 
 
 def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
-                            override_group_cols=None, mode=None):
+                            override_group_cols=None, mode=None,
+                            legend_format_template=None, legend_labels=None):
     metric_col = None
     metric_fields = None
     xy_by_cols = None
@@ -485,9 +489,18 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
                 by_cols=xy_by_cols,
                 time_fields=time_fields,
                 mode=mode,
+                legend_format_template=legend_format_template,
+                legend_labels=legend_labels,
             )
-        return _build_esql_xy_panel(query, kibana_type, metric_col=metric_col,
-                                    by_cols=xy_by_cols, time_fields=time_fields, mode=mode)
+        return _build_esql_xy_panel(
+            query, kibana_type,
+            metric_col=metric_col,
+            by_cols=xy_by_cols,
+            time_fields=time_fields,
+            mode=mode,
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     if kibana_type == "datatable":
         if metric_fields and len(metric_fields) > 1:
             return _build_esql_datatable_panel(query, metric_fields=metric_fields, by_cols=table_by_cols)
@@ -824,9 +837,12 @@ def _translate_panel_native_promql(
         effective_group_cols = group_cols
 
     xy_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
+    composite_legend_template = legend_format if len(legend_labels) >= 2 else None
     native_panel = _native_esql_panel_spec(
         promql_query, kibana_type, promql_expr=expr, panel=panel,
         override_group_cols=effective_group_cols, mode=xy_mode,
+        legend_format_template=composite_legend_template,
+        legend_labels=legend_labels if composite_legend_template else None,
     )
     if not native_panel:
         return None
@@ -1211,6 +1227,9 @@ def xy_panel_rule(context):
     primary = context.translation
     mode = _infer_xy_stacking_mode(context.panel) if context.kibana_type in ("bar", "area") else None
     series_fields = primary.metadata.get("multi_series_metric_fields", [])
+    legend_template = primary.metadata.get("legend_format_template") or None
+    legend_labels = _extract_legend_labels(legend_template) if legend_template else []
+    composite_template = legend_template if len(legend_labels) >= 2 else None
     if series_fields:
         context.yaml_panel["esql"] = _build_esql_multi_series_xy(
             primary.esql_query,
@@ -1218,6 +1237,8 @@ def xy_panel_rule(context):
             metric_fields=series_fields,
             by_cols=primary.output_group_fields,
             mode=mode,
+            legend_format_template=composite_template,
+            legend_labels=legend_labels if composite_template else None,
         )
     else:
         context.yaml_panel["esql"] = _build_esql_xy_panel(
@@ -1226,6 +1247,8 @@ def xy_panel_rule(context):
             metric_col=primary.output_metric_field or None,
             by_cols=primary.output_group_fields,
             mode=mode,
+            legend_format_template=composite_template,
+            legend_labels=legend_labels if composite_template else None,
         )
     context.handled = True
     return f"mapped to {context.kibana_type} panel"
@@ -1296,14 +1319,20 @@ def pie_panel_rule(context):
 def fallback_line_panel_rule(context):
     if context.handled:
         return None
+    primary = context.translation
+    legend_template = primary.metadata.get("legend_format_template") or None
+    legend_labels = _extract_legend_labels(legend_template) if legend_template else []
+    composite_template = legend_template if len(legend_labels) >= 2 else None
     context.yaml_panel["esql"] = _build_esql_xy_panel(
-        context.translation.esql_query,
+        primary.esql_query,
         "line",
-        metric_col=context.translation.output_metric_field or None,
-        by_cols=context.translation.output_group_fields,
+        metric_col=primary.output_metric_field or None,
+        by_cols=primary.output_group_fields,
+        legend_format_template=composite_template,
+        legend_labels=legend_labels if composite_template else None,
     )
     _append_unique(
-        context.translation.warnings,
+        primary.warnings,
         f"Approximated as line chart (no direct {context.kibana_type} mapping)",
     )
     context.handled = True
@@ -2239,8 +2268,222 @@ def _build_esql_metric_panel(esql, metric_col=None):
     }
 
 
+_COMPOSITE_LEGEND_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def _resolve_legend_label_to_column(label, columns):
+    """Map a ``legendFormat`` label name to an actual ES|QL output column.
+
+    Tries the bare label name, then the ``prometheus.labels.<label>`` Fleet
+    layout, then a generic ``labels.<label>`` fallback. Returns ``None`` when
+    no candidate is in *columns*.
+    """
+    if not label:
+        return None
+    candidates = [
+        label,
+        f"prometheus.labels.{label}",
+        f"labels.{label}",
+    ]
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _extract_keep_columns(esql_query):
+    """Return the column names from the **last** ``KEEP …`` pipeline stage.
+
+    Returns ``[]`` when no ``KEEP`` stage is present. Operates on pipeline
+    stages produced by :func:`_split_esql_pipeline` so the parser handles both
+    multi-line (``| KEEP …`` on its own line) and inline single-line queries.
+    """
+    for stage in reversed(_split_esql_pipeline(esql_query)):
+        body = str(stage or "").strip()
+        if not body.lower().startswith("keep "):
+            continue
+        return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
+    return []
+
+
+def _output_columns_for_composite_legend(esql_query):
+    """Return the best-effort set of output column names for the query.
+
+    Combines the canonical shape extractor (which is robust for ``STATS …``
+    queries) with a direct parse of the trailing ``KEEP`` line (which is the
+    canonical XY shape used by the native-PROMQL path).
+    """
+    columns = set()
+    metric_col, by_cols = _extract_esql_columns(esql_query)
+    if metric_col:
+        columns.add(metric_col)
+    columns.update(by_cols or [])
+    columns.update(_extract_keep_columns(esql_query))
+    return columns
+
+
+def _escape_esql_double_quoted_literal(text):
+    """Escape backslashes and double quotes for an ES|QL double-quoted string."""
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _apply_composite_legend_to_xy_panel(yaml_panel, *,
+                                        legend_format_template, legend_labels):
+    """Rewrite an XY panel to break down by a synthetic ``legend`` column.
+
+    Lens ``breakdown.field`` only supports a single column, so a Grafana panel
+    with a multi-label legend like ``"{{ method }} {{ path }} - {{ status }}"``
+    collapses to one series per ``method`` value unless we pre-compute a
+    composite breakdown column. This helper:
+
+    * Bails out when the template has fewer than 2 ``{{ label }}`` placeholders.
+    * Resolves each label to an actual output column (bare, prefixed with
+      ``prometheus.labels.``, or ``labels.``); bails out if any label fails.
+    * Inserts ``| EVAL legend = CONCAT(...)`` before the final ``| KEEP`` and
+      rewrites that ``KEEP`` to drop the now-redundant per-label columns.
+    * Sets ``breakdown.field = "legend"``.
+
+    Returns the panel either way; the panel is mutated in place.
+    """
+    if not legend_format_template:
+        return yaml_panel
+    template_labels = list(legend_labels or [])
+    if len(template_labels) < 2:
+        return yaml_panel
+    esql = yaml_panel.get("esql")
+    if not isinstance(esql, dict):
+        return yaml_panel
+    query = str(esql.get("query") or "")
+    if not query.strip():
+        return yaml_panel
+
+    columns = _output_columns_for_composite_legend(query)
+    resolved = {}
+    for label in template_labels:
+        column = _resolve_legend_label_to_column(label, columns)
+        if column is None:
+            return yaml_panel
+        resolved[label] = column
+
+    segments = _COMPOSITE_LEGEND_PLACEHOLDER_RE.split(legend_format_template)
+    concat_args = []
+    for index, segment in enumerate(segments):
+        is_label = index % 2 == 1
+        if is_label:
+            column = resolved.get(segment)
+            if column is None:
+                return yaml_panel
+            concat_args.append(f'COALESCE({column}, "")')
+        else:
+            if segment == "":
+                continue
+            concat_args.append(f'"{_escape_esql_double_quoted_literal(segment)}"')
+    if not concat_args:
+        return yaml_panel
+    concat_expr = "CONCAT(" + ", ".join(concat_args) + ")"
+    eval_line = f"| EVAL legend = {concat_expr}"
+
+    label_columns = set(resolved.values())
+    new_query = _splice_composite_legend_into_query(
+        query, eval_line=eval_line, label_columns=label_columns,
+    )
+    esql["query"] = new_query
+    esql["breakdown"] = {"field": "legend"}
+    return yaml_panel
+
+
+def _splice_composite_legend_into_query(query, *, eval_line, label_columns):
+    """Insert *eval_line* immediately before the trailing ``KEEP`` and rewrite
+    that ``KEEP`` to drop the original label columns and append ``legend``.
+
+    When the query has no trailing ``KEEP`` stage (the canonical ``STATS …``
+    form used by translated PromQL), the helper appends ``EVAL legend = …``
+    only — Lens picks ``legend`` for the breakdown and ignores the other
+    columns. No synthetic ``KEEP`` is added because that would silently drop
+    the metric and time-bucket columns required by the XY panel shape.
+
+    Handles both multi-line and inline single-line queries by operating on the
+    pipeline stages.
+    """
+    pipeline_stages = _split_esql_pipeline(query)
+    if not pipeline_stages:
+        return query
+    last_keep_index = None
+    for idx in range(len(pipeline_stages) - 1, -1, -1):
+        stage = pipeline_stages[idx].strip()
+        if stage.lower().startswith("keep "):
+            last_keep_index = idx
+            break
+
+    if last_keep_index is None:
+        return _append_eval_before_trailing_sort(query, eval_line)
+
+    keep_body = pipeline_stages[last_keep_index].strip()[5:].strip()
+    existing = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+    rewritten = [col for col in existing if col not in label_columns]
+    if "legend" not in rewritten:
+        rewritten.append("legend")
+    new_keep_stage = f"KEEP {', '.join(rewritten)}"
+
+    is_multiline = "\n" in query
+    if is_multiline:
+        lines = query.splitlines()
+        keep_line_index = None
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("keep "):
+                keep_line_index = idx
+                break
+        if keep_line_index is not None:
+            lines.insert(keep_line_index, eval_line)
+            lines[keep_line_index + 1] = "| " + new_keep_stage
+            return "\n".join(lines)
+
+    rebuilt_stages = list(pipeline_stages)
+    rebuilt_stages[last_keep_index] = new_keep_stage
+    rebuilt_stages.insert(last_keep_index, eval_line.lstrip("|").strip())
+    head = rebuilt_stages[0]
+    tail = " | ".join(rebuilt_stages[1:]) if len(rebuilt_stages) > 1 else ""
+    return f"{head} | {tail}" if tail else head
+
+
+def _append_eval_before_trailing_sort(query, eval_line):
+    """Append *eval_line* at the tail of *query*, but BEFORE a trailing ``SORT``.
+
+    The translated ES|QL bodies frequently end with ``| SORT time_bucket ASC``
+    so we want ``EVAL`` to sit before that to (a) keep the SORT semantically
+    last and (b) avoid the downstream ``_ensure_bucket_sort`` appending a
+    duplicate trailing SORT.
+    """
+    is_multiline = "\n" in query
+    if is_multiline:
+        lines = query.splitlines()
+        sort_idx = None
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if not stripped:
+                continue
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("sort "):
+                sort_idx = idx
+            break
+        if sort_idx is not None:
+            lines.insert(sort_idx, eval_line)
+            return "\n".join(lines)
+        if query.endswith("\n"):
+            return query + eval_line + "\n"
+        return query + "\n" + eval_line
+    stages = _split_esql_pipeline(query)
+    if stages and stages[-1].strip().lower().startswith("sort "):
+        stages.insert(len(stages) - 1, eval_line.lstrip("|").strip())
+        head = stages[0]
+        tail = " | ".join(stages[1:])
+        return f"{head} | {tail}" if tail else head
+    return query + " " + eval_line
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
-                         time_fields=None, mode=None):
+                         time_fields=None, mode=None,
+                         legend_format_template=None, legend_labels=None):
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
@@ -2261,11 +2504,18 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    if legend_format_template and legend_labels and len(legend_labels) >= 2:
+        _apply_composite_legend_to_xy_panel(
+            {"esql": panel},
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     return panel
 
 
 def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
-                                time_fields=None, mode=None):
+                                time_fields=None, mode=None,
+                                legend_format_template=None, legend_labels=None):
     """Build an XY panel from a single merged ES|QL query."""
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
@@ -2285,6 +2535,12 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    if legend_format_template and legend_labels and len(legend_labels) >= 2:
+        _apply_composite_legend_to_xy_panel(
+            {"esql": panel},
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     return panel
 
 

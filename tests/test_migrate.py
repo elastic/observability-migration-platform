@@ -1200,7 +1200,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("| WHERE node_hwmon_temp_celsius IS NOT NULL", query)
         self.assertIn(", chip_name", query)
-        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "chip_name")
+        self.assertIn(", sensor", query)
+        self.assertIn('EVAL legend = CONCAT(', query)
+        self.assertIn('COALESCE(chip_name, "")', query)
+        self.assertIn('COALESCE(sensor, "")', query)
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
         self.assertTrue(any("Dropped group_left label enrichment" in reason for reason in result.reasons))
 
     def test_supported_range_functions_stay_bare_with_time_bucket_only(self):
@@ -3657,6 +3661,256 @@ class TranslatorRegressionTests(unittest.TestCase):
         widened_by_tail = widened.esql_query.split("BY ", 1)[-1]
         unwidened_by_tail = unwidened.esql_query.split("BY ", 1)[-1]
         self.assertEqual(widened_by_tail, unwidened_by_tail)
+
+    def test_target_translation_hints_stash_multi_label_legend_template(self):
+        """The raw legendFormat must be plumbed into translation hints so the
+        panel emitter can later build a composite breakdown column."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+        panel = {"type": "timeseries"}
+        target = {"legendFormat": "{{ method }} {{ path }} - {{ status }}"}
+        hints = _target_translation_hints(panel, panel_type="timeseries", target=target)
+        self.assertEqual(hints.get("legend_format_template"),
+                         "{{ method }} {{ path }} - {{ status }}")
+
+    def test_target_translation_hints_skip_single_label_legend_template(self):
+        """Single-label legends don't need the composite-breakdown treatment;
+        existing single-field breakdown already works correctly."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+        panel = {"type": "timeseries"}
+        target = {"legendFormat": "{{ method }}"}
+        hints = _target_translation_hints(panel, panel_type="timeseries", target=target)
+        self.assertNotIn("legend_format_template", hints)
+
+    def test_apply_composite_legend_to_xy_panel_inserts_concat(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": (
+                    "PROMQL index=metrics-* value=(http_requests_total)\n"
+                    "| EVAL method = MV_FIRST(SPLIT(_timeseries, \"\"))\n"
+                    "| EVAL path = MV_FIRST(SPLIT(_timeseries, \"\"))\n"
+                    "| EVAL status = MV_FIRST(SPLIT(_timeseries, \"\"))\n"
+                    "| KEEP step, value, method, path, status"
+                ),
+                "breakdown": {"field": "method"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template="{{ method }} {{ path }} - {{ status }}",
+            legend_labels=["method", "path", "status"],
+        )
+        query = result["esql"]["query"]
+        self.assertIn('EVAL legend = CONCAT(', query)
+        self.assertIn('COALESCE(method, "")', query)
+        self.assertIn('COALESCE(path, "")', query)
+        self.assertIn('COALESCE(status, "")', query)
+        self.assertIn('" - "', query)
+        last_keep = query.strip().splitlines()[-1]
+        self.assertIn("step", last_keep)
+        self.assertIn("value", last_keep)
+        self.assertIn("legend", last_keep)
+        self.assertNotIn("method", last_keep.split('|', 1)[1])
+        self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
+
+    def test_apply_composite_legend_resolves_prometheus_labels_prefix(self):
+        """Translated ES|QL path uses prometheus.labels.X column names."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": (
+                    "TS metrics-prometheus.remote_write-express\n"
+                    "| STATS http_requests_total = AVG(RATE(prometheus.http_requests_total.counter, 5m)) "
+                    "BY time_bucket = TBUCKET(5 minute), prometheus.labels.method, "
+                    "prometheus.labels.path, prometheus.labels.status\n"
+                    "| SORT time_bucket ASC"
+                ),
+                "breakdown": {"field": "prometheus.labels.method"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template="{{ method }} {{ path }} - {{ status }}",
+            legend_labels=["method", "path", "status"],
+        )
+        query = result["esql"]["query"]
+        self.assertIn('COALESCE(prometheus.labels.method, "")', query)
+        self.assertIn('COALESCE(prometheus.labels.path, "")', query)
+        self.assertIn('COALESCE(prometheus.labels.status, "")', query)
+        self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
+
+    def test_apply_composite_legend_no_op_when_label_missing_from_query(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": "FROM metrics-* | STATS x = COUNT(*) BY time, method | KEEP time, x, method",
+                "breakdown": {"field": "method"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template="{{ method }} {{ status }}",
+            legend_labels=["method", "status"],
+        )
+        self.assertNotIn("EVAL legend", result["esql"]["query"])
+        self.assertEqual(result["esql"]["breakdown"]["field"], "method")
+
+    def test_apply_composite_legend_skip_for_single_label_template(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": "FROM metrics-* | STATS x = COUNT(*) BY time, method | KEEP time, x, method",
+                "breakdown": {"field": "method"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template="{{ method }}",
+            legend_labels=["method"],
+        )
+        self.assertNotIn("EVAL legend", result["esql"]["query"])
+
+    def test_apply_composite_legend_escapes_quotes_in_literal_text(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": "FROM metrics-* | KEEP time, value, a, b",
+                "breakdown": {"field": "a"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template='{{ a }} "literal" {{ b }}',
+            legend_labels=["a", "b"],
+        )
+        query = result["esql"]["query"]
+        self.assertIn('\\"literal\\"', query)
+
+    def test_split_esql_pipeline_handles_triple_quoted_strings(self):
+        """ES|QL ``\"\"\"...\"\"\"`` raw strings must not flip the quote state on
+        each individual ``\"`` character. Otherwise pipeline stages after a
+        triple-quoted literal get swallowed.
+        """
+        from observability_migration.targets.kibana.emit.esql_utils import split_esql_pipeline
+        query = (
+            'FROM metrics-*\n'
+            '| EVAL x = REPLACE(_timeseries, """.*"method":"([^"]+)".*""", "$1")\n'
+            '| KEEP step, x'
+        )
+        stages = split_esql_pipeline(query)
+        self.assertEqual(len(stages), 3)
+        self.assertTrue(stages[0].startswith("FROM metrics-"))
+        self.assertTrue(stages[1].startswith("EVAL x ="))
+        self.assertTrue(stages[2].startswith("KEEP"))
+
+    def test_split_esql_pipeline_handles_pipe_inside_triple_quoted_string(self):
+        """A ``|`` inside a ``\"\"\"...\"\"\"`` literal must not split the pipeline."""
+        from observability_migration.targets.kibana.emit.esql_utils import split_esql_pipeline
+        query = 'FROM metrics-* | EVAL y = REPLACE(x, """foo|bar""", "z") | KEEP y'
+        stages = split_esql_pipeline(query)
+        self.assertEqual(len(stages), 3)
+        self.assertIn("foo|bar", stages[1])
+
+    def test_split_esql_pipeline_handles_consecutive_triple_quoted_strings(self):
+        """Two triple-quoted literals in a row must each open + close cleanly."""
+        from observability_migration.targets.kibana.emit.esql_utils import split_esql_pipeline
+        query = (
+            'FROM x\n'
+            '| EVAL a = REPLACE(b, """A""", "x"), '
+            'c = REPLACE(d, """B""", "y")\n'
+            '| KEEP a, c'
+        )
+        stages = split_esql_pipeline(query)
+        self.assertEqual(len(stages), 3)
+
+    def test_split_esql_pipeline_native_promql_keep_line_is_visible(self):
+        """End-to-end: the native PROMQL emission's trailing KEEP line must be
+        recoverable from the splitter so downstream column extraction works.
+        """
+        from observability_migration.targets.kibana.emit.esql_utils import split_esql_pipeline
+        query = (
+            'PROMQL index=metrics-* step=1m value=(http_requests_total)\n'
+            '| EVAL _ts = COALESCE(_timeseries, "")\n'
+            '| EVAL _raw_method = CASE(_ts == "", "unknown", '
+            'REPLACE(_ts, """.*"method":"([^"]+)".*""", "$1"))\n'
+            '| EVAL method = CASE(STARTS_WITH(_raw_method, "{"), '
+            'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_method)\n'
+            '| EVAL _raw_path = CASE(_ts == "", "unknown", '
+            'REPLACE(_ts, """.*"path":"([^"]+)".*""", "$1"))\n'
+            '| EVAL path = CASE(STARTS_WITH(_raw_path, "{"), '
+            'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_path)\n'
+            '| EVAL _raw_status = CASE(_ts == "", "unknown", '
+            'REPLACE(_ts, """.*"status":"([^"]+)".*""", "$1"))\n'
+            '| EVAL status = CASE(STARTS_WITH(_raw_status, "{"), '
+            'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_status)\n'
+            '| KEEP step, value, method, path, status'
+        )
+        stages = split_esql_pipeline(query)
+        self.assertEqual(len(stages), 9)
+        self.assertTrue(stages[-1].lower().startswith("keep "))
+
+    def test_composite_legend_helper_applies_after_pipeline_fix(self):
+        """End-to-end: the composite-legend helper must successfully resolve
+        ``method``/``path``/``status`` against the native PROMQL output and emit
+        ``EVAL legend = CONCAT(...)`` plus ``breakdown.field = \"legend\"``. Before
+        the pipeline-splitter fix this test failed because ``_extract_keep_columns``
+        returned ``[]``.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_composite_legend_to_xy_panel,
+        )
+        panel = {
+            "esql": {
+                "type": "line",
+                "query": (
+                    'PROMQL index=metrics-* step=1m value=(http_requests_total)\n'
+                    '| EVAL _ts = COALESCE(_timeseries, "")\n'
+                    '| EVAL _raw_method = CASE(_ts == "", "unknown", '
+                    'REPLACE(_ts, """.*"method":"([^"]+)".*""", "$1"))\n'
+                    '| EVAL method = CASE(STARTS_WITH(_raw_method, "{"), '
+                    'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_method)\n'
+                    '| EVAL _raw_path = CASE(_ts == "", "unknown", '
+                    'REPLACE(_ts, """.*"path":"([^"]+)".*""", "$1"))\n'
+                    '| EVAL path = CASE(STARTS_WITH(_raw_path, "{"), '
+                    'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_path)\n'
+                    '| EVAL _raw_status = CASE(_ts == "", "unknown", '
+                    'REPLACE(_ts, """.*"status":"([^"]+)".*""", "$1"))\n'
+                    '| EVAL status = CASE(STARTS_WITH(_raw_status, "{"), '
+                    'REPLACE(REPLACE(_ts, """[{}""]""", ""), ",", ", "), _raw_status)\n'
+                    '| KEEP step, value, method, path, status'
+                ),
+                "breakdown": {"field": "method"},
+            }
+        }
+        result = _apply_composite_legend_to_xy_panel(
+            panel,
+            legend_format_template="{{ method }} {{ path }} - {{ status }}",
+            legend_labels=["method", "path", "status"],
+        )
+        self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
+        self.assertIn('EVAL legend = CONCAT(', result["esql"]["query"])
+        self.assertIn('COALESCE(method, "")', result["esql"]["query"])
+        self.assertIn('COALESCE(path, "")', result["esql"]["query"])
+        self.assertIn('COALESCE(status, "")', result["esql"]["query"])
 
 
 class TestVisualIRContract(unittest.TestCase):
