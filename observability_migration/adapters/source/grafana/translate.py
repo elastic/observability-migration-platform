@@ -578,7 +578,12 @@ def uptime_family_rule(context):
     filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{start_metric}_uptime_seconds")
 
     context.parser_backend = "fragment"
@@ -813,6 +818,7 @@ def binary_expr_family_rule(context):
         rp,
         summary_mode=_summary_mode_from_metadata(context.metadata),
         preferred_group_labels=context.metadata.get("preferred_group_labels"),
+        preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
         return None
@@ -878,7 +884,12 @@ def topk_family_rule(context):
     filters, had_vars = _frag_filters(frag, resolver)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     if not group_fields:
         return None
 
@@ -935,7 +946,12 @@ def scaled_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     bucket = rp.ts_bucket
     group_by_parts, output_group = _grouping_parts(bucket, group_fields)
@@ -1088,7 +1104,12 @@ def range_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     esql_inner_name = AGG_FUNCTION_MAP.get(frag.range_func)
     if not esql_inner_name:
         return None
@@ -1162,7 +1183,12 @@ def simple_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
 
@@ -1308,7 +1334,12 @@ def simple_metric_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
 

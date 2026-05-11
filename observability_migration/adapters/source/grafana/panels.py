@@ -284,14 +284,21 @@ def _target_translation_hints(panel, panel_type, target):
         "series_alias": _target_series_alias(panel, target),
     }
     preferred_group_labels = []
+    style_labels = []
     if panel_type in {"table", "table-old"}:
-        preferred_group_labels.extend(_panel_group_label_patterns(panel))
+        style_labels = _panel_group_label_patterns(panel)
+        preferred_group_labels.extend(style_labels)
     legend_labels = _extract_legend_labels(target.get("legendFormat", ""))
+    legend_contributed = False
     if not summary_mode or panel_type == "bargauge":
-        if legend_labels and legend_labels[0] not in preferred_group_labels:
-            preferred_group_labels.append(legend_labels[0])
+        for lbl in legend_labels:
+            if lbl not in preferred_group_labels:
+                preferred_group_labels.append(lbl)
+                legend_contributed = True
     if preferred_group_labels:
         hints["preferred_group_labels"] = preferred_group_labels
+    if legend_contributed and not style_labels:
+        hints["preferred_group_labels_origin"] = "legend"
     return hints
 
 
@@ -1788,6 +1795,7 @@ def _try_collapse_same_metric_targets(translations):
         alias_hint=collapsed.metadata.get("target_ref_id") or "collapsed",
         summary_mode=_summary_mode_from_metadata(collapsed.metadata),
         preferred_group_labels=collapsed.metadata.get("preferred_group_labels"),
+        preferred_group_labels_origin=collapsed.metadata.get("preferred_group_labels_origin"),
     )
     if not plan or not plan.specs:
         return None
@@ -1862,6 +1870,7 @@ def _build_multi_target_series_query(translations):
             summary_mode=_summary_mode_from_metadata(translation.metadata),
             preferred_group_labels=translation.metadata.get("preferred_group_labels"),
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
         )
         if pf is not None:
             translation.fragment.extra["post_filter"] = pf

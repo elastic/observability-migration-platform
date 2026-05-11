@@ -59,13 +59,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.rule_pack = migrate.RulePackConfig()
         self.resolver = migrate.SchemaResolver(self.rule_pack)
 
-    def translate(self, expr, panel_type="graph"):
+    def translate(self, expr, panel_type="graph", translation_hints=None):
         return migrate.translate_promql_to_esql(
             expr,
             esql_index="metrics-*",
             panel_type=panel_type,
             rule_pack=self.rule_pack,
             resolver=self.resolver,
+            translation_hints=translation_hints,
         )
 
     def translate_panel(self, panel):
@@ -3073,6 +3074,102 @@ class TranslatorRegressionTests(unittest.TestCase):
             any("not all-TSDS" in reason for reason in unsatisfied),
             f"Expected no 'not all-TSDS' reason when all fields are missing, got: {unsatisfied}",
         )
+
+    def test_translation_hints_include_all_legend_labels_when_no_explicit_by(self):
+        """All `{{label}}` placeholders in legendFormat must enter
+        `preferred_group_labels`, not just the first one."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "timeseries", "targets": []}
+        target = {
+            "expr": 'irate(node_interrupts_total{instance="$node"}[5m])',
+            "legendFormat": "{{ type }} - {{ info }}",
+            "format": "time_series",
+        }
+        hints = _target_translation_hints(panel, "timeseries", target)
+        self.assertEqual(hints.get("preferred_group_labels"), ["type", "info"])
+        self.assertEqual(hints.get("preferred_group_labels_origin"), "legend")
+
+    def test_translation_hints_dedupes_repeated_legend_labels(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "timeseries", "targets": []}
+        target = {
+            "expr": 'rate(metric_x[5m])',
+            "legendFormat": "{{ a }} on {{ a }} - {{ b }}",
+            "format": "time_series",
+        }
+        hints = _target_translation_hints(panel, "timeseries", target)
+        self.assertEqual(hints.get("preferred_group_labels"), ["a", "b"])
+
+    def test_translation_hints_table_style_patterns_do_not_set_legend_origin(self):
+        """When panel-style patterns contribute, the origin must NOT be
+        marked as legend (so the consumer still unions with explicit by())."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {
+            "type": "table",
+            "targets": [],
+            "styles": [
+                {"pattern": "namespace", "type": "string"},
+            ],
+        }
+        target = {
+            "expr": 'sum(rate(metric_x{cluster="$cluster"}[5m])) by (namespace)',
+            "legendFormat": "{{ namespace }}",
+            "format": "table",
+        }
+        hints = _target_translation_hints(panel, "table", target)
+        self.assertIn("namespace", hints.get("preferred_group_labels", []))
+        self.assertNotEqual(hints.get("preferred_group_labels_origin"), "legend")
+
+    def test_translator_widens_by_with_multi_label_legend_when_no_explicit_by(self):
+        """End-to-end: a multi-label legend on a PromQL with no `by(...)` must
+        produce a wider BY clause in the emitted ESQL."""
+        translated = self.translate(
+            'irate(node_interrupts_total[5m])',
+            translation_hints={
+                "preferred_group_labels": ["type", "info"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertIn("BY time_bucket", translated.esql_query)
+        self.assertIn("type", translated.esql_query)
+        self.assertIn("info", translated.esql_query)
+
+    def test_translator_keeps_explicit_by_when_legend_origin_is_legend(self):
+        """When PromQL has explicit `by(handler)`, a legend that mentions extra
+        labels must NOT widen the BY clause (the operator already chose the
+        cardinality).
+
+        Use labels that the OTEL resolver does NOT remap (``handler``, ``info``,
+        ``type``); otherwise the test could pass vacuously because the
+        candidate label gets rewritten to ``service.instance.id`` etc.
+        """
+        widened = self.translate(
+            'sum(increase(http_requests_total[5m])) by (handler)',
+            translation_hints={
+                "preferred_group_labels": ["handler", "info", "type"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        unwidened = self.translate(
+            'sum(increase(http_requests_total[5m])) by (handler)',
+            translation_hints=None,
+        )
+        self.assertIn("BY time_bucket", widened.esql_query)
+        self.assertIn("handler", widened.esql_query)
+        self.assertNotIn("info", widened.esql_query)
+        self.assertNotIn(" type", widened.esql_query.replace(",", " "))
+        widened_by_tail = widened.esql_query.split("BY ", 1)[-1]
+        unwidened_by_tail = unwidened.esql_query.split("BY ", 1)[-1]
+        self.assertEqual(widened_by_tail, unwidened_by_tail)
 
 
 class TestVisualIRContract(unittest.TestCase):

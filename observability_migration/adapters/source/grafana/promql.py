@@ -1152,7 +1152,9 @@ def _summary_mode_from_metadata(metadata):
     return bool((metadata or {}).get("summary_mode"))
 
 
-def _merge_group_fields(explicit_fields, preferred_fields):
+def _merge_group_fields(explicit_fields, preferred_fields, preferred_origin=None):
+    if preferred_origin == "legend" and explicit_fields:
+        return explicit_fields
     if not preferred_fields:
         return explicit_fields
     merged = list(preferred_fields)
@@ -1162,11 +1164,11 @@ def _merge_group_fields(explicit_fields, preferred_fields):
     return merged
 
 
-def _frag_group_labels(frag, resolver, preferred_labels=None):
+def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
     """Resolve fragment group labels through the resolver."""
     explicit = resolver.resolve_labels(frag.group_labels) if resolver else list(frag.group_labels or [])
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
-    return _merge_group_fields(explicit, preferred)
+    return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
 
 
 def _grouping_parts(bucket_expr, group_fields):
@@ -1285,6 +1287,7 @@ def _build_measure_spec(
     summary_mode=False,
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
+    preferred_group_labels_origin=None,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
@@ -1293,7 +1296,12 @@ def _build_measure_spec(
     warnings = []
     if had_vars:
         warnings.append("Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, preferred_group_labels)
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        preferred_group_labels,
+        preferred_origin=preferred_group_labels_origin,
+    )
     if alias_hint:
         suffix = alias_hint
     else:
@@ -1540,6 +1548,7 @@ def _build_formula_plan(
     summary_mode=False,
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
+    preferred_group_labels_origin=None,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
@@ -1554,6 +1563,7 @@ def _build_formula_plan(
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=preferred_group_labels_origin,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -1563,6 +1573,7 @@ def _build_formula_plan(
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=preferred_group_labels_origin,
         )
         if not left_plan or not right_plan:
             return None
@@ -1584,6 +1595,7 @@ def _build_formula_plan(
         summary_mode=summary_mode,
         preferred_group_labels=preferred_group_labels,
         allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
     )
     if not spec:
         return None
