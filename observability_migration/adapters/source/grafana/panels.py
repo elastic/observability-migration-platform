@@ -1560,7 +1560,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 yaml_panel["esql"]["query"] = primary.esql_query
             _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
 
-    yaml_panel = _normalize_esql_panel_query(yaml_panel)
+    yaml_panel = _normalize_esql_panel_query(yaml_panel, primary.rule_pack)
     enrich_yaml_panel_display(
         yaml_panel,
         panel,
@@ -1568,6 +1568,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     )
     if yaml_panel.get("esql", {}).get("query"):
         primary.esql_query = yaml_panel["esql"]["query"]
+        primary.query_ir = build_query_ir(primary)
     panel_confidence = 0.85 if not primary.warnings else 0.6
     status = "migrated" if not primary.warnings else "migrated_with_warnings"
 
@@ -2057,14 +2058,32 @@ def _build_summary_category_bar_query(esql, metric_fields, metric_label_hints=No
     return "\n".join(lines)
 
 
-def _normalize_esql_panel_query(yaml_panel):
+def _strip_dashboard_timestamp_range_filter(esql, time_filters=None):
+    if not esql:
+        return esql
+    removable_filters = {
+        f"| WHERE {str(time_filter).strip()}"
+        for time_filter in (time_filters or [])
+        if str(time_filter).strip()
+    }
+    if not removable_filters:
+        return str(esql)
+    lines = [line for line in str(esql).splitlines() if line.strip() not in removable_filters]
+    return "\n".join(lines)
+
+
+def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
     esql_panel = yaml_panel.get("esql")
     if not isinstance(esql_panel, dict):
         return yaml_panel
     query = esql_panel.get("query")
     if not query:
         return yaml_panel
-    query = str(query)
+    rule_pack = rule_pack or RulePackConfig()
+    query = _strip_dashboard_timestamp_range_filter(
+        query,
+        [rule_pack.from_time_filter, rule_pack.ts_time_filter],
+    )
     esql_panel["query"] = _ensure_bucket_sort(query)
     yaml_panel["esql"] = esql_panel
     return yaml_panel
