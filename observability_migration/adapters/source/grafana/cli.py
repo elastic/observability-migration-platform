@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from observability_migration.core.cli_contract import (
     ASSET_CHOICES,
     alert_output_dir,
@@ -237,11 +239,28 @@ def parse_args(argv: list[str] | None = None):
         default=os.getenv("LOKI_URL", ""),
         help="Loki URL for live source-side query execution during verification",
     )
-    parser.add_argument(
+    native_promql_group = parser.add_mutually_exclusive_group()
+    native_promql_group.add_argument(
         "--native-promql",
-        action="store_true",
-        help="Emit native PROMQL source commands instead of translating to ES|QL (for Elastic Serverless with PromQL support)",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_on",
+        help=(
+            "Force native PROMQL emission regardless of cluster support detection "
+            "(for Elastic clusters with the ES|QL PROMQL command)."
+        ),
     )
+    native_promql_group.add_argument(
+        "--no-native-promql",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_off",
+        help=(
+            "Force ES|QL translation even when the cluster supports the PROMQL command "
+            "(opt out of the auto-detected default)."
+        ),
+    )
+    parser.set_defaults(native_promql_flag="auto")
     parser.add_argument(
         "--dataset-filter", default="",
         help="Explicit data_stream.dataset value for metrics dashboard filter "
@@ -617,11 +636,105 @@ def extract_dashboards_for_alerts(args: argparse.Namespace) -> list[dict[str, An
     return extract_dashboards_from_files(args.input_dir)
 
 
+_PROMQL_DETECTION_PROBE = (
+    'PROMQL index=metrics-* step=1m '
+    'start="2024-01-01T00:00:00Z" end="2024-01-01T01:00:00Z" '
+    "value=(up)"
+)
+
+
+def _detect_promql_support(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> bool | None:
+    """Probe the cluster to see if the ES|QL ``PROMQL`` source command is available.
+
+    Returns True when the probe is accepted (HTTP 200 with ``columns``), False when
+    the cluster reports that the command isn't supported, and False on any auth or
+    transport failure. The probe is best-effort and never raises.
+    """
+    if not es_url:
+        return False
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    url = es_url.rstrip("/") + "/_query"
+    payload = {"query": _PROMQL_DETECTION_PROBE}
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+            verify=False,
+        )
+    except Exception as exc:
+        print(f"  WARNING: PROMQL command detection failed ({exc.__class__.__name__}): {exc}")
+        return False
+
+    status = getattr(response, "status_code", 0)
+    if status == 200:
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
+        columns = body.get("columns") if isinstance(body, dict) else None
+        if isinstance(columns, list) and columns:
+            return True
+        return False
+
+    body_text = ""
+    try:
+        body_text = (response.text or "").lower()
+    except Exception:
+        body_text = ""
+
+    if status in (401, 403):
+        print("  WARNING: PROMQL command detection skipped (auth error from cluster)")
+        return False
+
+    if status == 400:
+        signals = ("no handler", "unknown command", "promql")
+        if any(signal in body_text for signal in signals):
+            return False
+        return False
+
+    return False
+
+
+def _resolve_native_promql(args: argparse.Namespace) -> bool:
+    """Resolve the effective ``native_promql`` setting for this run.
+
+    Precedence:
+      ``--no-native-promql`` (force_off) → False
+      ``--native-promql``    (force_on)  → True
+      otherwise (auto)                   → cluster auto-detection
+    Auto-detection silently falls back to False when no ES URL is configured or
+    when the probe fails for any reason.
+    """
+    mode = getattr(args, "native_promql_flag", "auto")
+    if mode == "force_off":
+        return False
+    if mode == "force_on":
+        return True
+    es_url = getattr(args, "es_url", "") or ""
+    if not es_url:
+        return False
+    es_api_key = getattr(args, "es_api_key", "") or None
+    supported = _detect_promql_support(es_url, es_api_key)
+    if supported is True:
+        print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
+    else:
+        print("  PROMQL ES|QL command not available; falling back to ES|QL translation")
+    return bool(supported)
+
+
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
-    if args.native_promql:
+    if _resolve_native_promql(args):
         rule_pack.native_promql = True
         rule_pack.metrics_dataset_filter = ""
     if args.dataset_filter:

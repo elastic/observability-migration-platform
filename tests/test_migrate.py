@@ -1963,6 +1963,108 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(filters, [])
 
+    def test_detect_promql_support_true_when_query_returns_columns(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "columns": [{"name": "value"}, {"name": "step"}],
+                    "values": [],
+                },
+                text="",
+            )
+            self.assertTrue(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_false_when_no_handler(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {"error": "no handler found for uri [/_query]"},
+                text='{"error":"no handler found"}',
+            )
+            self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_false_on_exception(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+            side_effect=ConnectionError("network"),
+        ):
+            self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_resolve_native_promql_uses_detection_when_auto(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        args = SimpleNamespace(
+            native_promql_flag="auto",
+            es_url="https://es.example",
+            es_api_key="apikey",
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+            return_value=True,
+        ):
+            self.assertTrue(_resolve_native_promql(args))
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+            return_value=False,
+        ):
+            self.assertFalse(_resolve_native_promql(args))
+
+    def test_resolve_native_promql_force_off_overrides_detection(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        args = SimpleNamespace(
+            native_promql_flag="force_off",
+            es_url="https://es.example",
+            es_api_key="apikey",
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+        ) as det:
+            self.assertFalse(_resolve_native_promql(args))
+            det.assert_not_called()
+
+    def test_resolve_native_promql_force_on_overrides_detection(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        args = SimpleNamespace(
+            native_promql_flag="force_on",
+            es_url="",
+            es_api_key="",
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+        ) as det:
+            self.assertTrue(_resolve_native_promql(args))
+            det.assert_not_called()
+
+    def test_resolve_native_promql_auto_without_es_url_returns_false(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        args = SimpleNamespace(
+            native_promql_flag="auto",
+            es_url="",
+            es_api_key="",
+        )
+        self.assertFalse(_resolve_native_promql(args))
+
     def test_safe_alias_prefixes_leading_digits(self):
         self.assertEqual(migrate._safe_alias("5m load"), "series_5m_load")
         self.assertEqual(migrate._safe_alias("1m"), "series_1m")
