@@ -2386,6 +2386,9 @@ def _infer_controls_data_view(yaml_panels, datasource_index, rule_pack):
     indexes = {_panel_query_index(panel) for panel in yaml_panels if _panel_query_index(panel)}
     if indexes == {rule_pack.logs_index}:
         return rule_pack.logs_index
+    metrics_indexes = {idx for idx in indexes if idx and idx != rule_pack.logs_index}
+    if len(metrics_indexes) == 1:
+        return next(iter(metrics_indexes))
     return datasource_index
 
 

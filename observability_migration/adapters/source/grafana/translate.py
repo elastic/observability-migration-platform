@@ -53,6 +53,7 @@ from .promql import (
     _is_counter_fallback,
     _parse_fragment,
     _parse_logql_search,
+    _resolve_metric_field,
     _summary_mode_from_metadata,
     classify_promql_complexity,
     preprocess_grafana_macros,
@@ -240,19 +241,28 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
             if contract.field_requirements
             else FieldRequirement(name=field_names[0], role="metric")
         )
+        resolved_field_names = []
+        for field_name in field_names:
+            metric_kind = (
+                "counter"
+                if template.metric_kind and _looks_like_counter_metric(field_name)
+                else template.metric_kind
+            )
+            if resolver is not None and hasattr(resolver, "resolve_metric_field"):
+                prefer = "counter" if metric_kind == "counter" else "gauge"
+                resolved_name = resolver.resolve_metric_field(field_name, prefer=prefer)
+            else:
+                resolved_name = field_name
+            resolved_field_names.append((resolved_name, metric_kind))
         contract.field_requirements = [
             FieldRequirement(
-                name=field_name,
+                name=resolved_name,
                 role=template.role,
                 type_family=template.type_family,
-                metric_kind=(
-                    "counter"
-                    if template.metric_kind and _looks_like_counter_metric(field_name)
-                    else template.metric_kind
-                ),
+                metric_kind=metric_kind,
                 context=template.context,
             )
-            for field_name in field_names
+            for resolved_name, metric_kind in resolved_field_names
         ]
 
     field_capabilities = {}
@@ -585,13 +595,14 @@ def uptime_family_rule(context):
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{start_metric}_uptime_seconds")
+    physical_metric = _resolve_metric_field(resolver, start_metric, prefer="gauge")
 
     context.parser_backend = "fragment"
     context.source_type = "FROM"
     context.metric_name = start_metric
     context.output_metric_field = result_alias
     context.output_group_fields = group_fields
-    stats_line = f"| STATS start_time_ms = MAX({start_metric} * 1000)"
+    stats_line = f"| STATS start_time_ms = MAX({physical_metric} * 1000)"
     if group_fields:
         stats_line += f" BY {', '.join(group_fields)}"
     context.esql_query = "\n".join(
@@ -599,7 +610,7 @@ def uptime_family_rule(context):
             f"FROM {context.index}",
             f"| WHERE {rp.from_time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {start_metric} IS NOT NULL",
+            f"| WHERE {physical_metric} IS NOT NULL",
             stats_line,
             f'| EVAL {result_alias} = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())',
             f"| KEEP {', '.join(group_fields + [result_alias]) if group_fields else result_alias}",
@@ -647,6 +658,10 @@ def join_family_rule(context):
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
             output_group = ["time_bucket"] + join_labels
             group_by_parts = [rp.ts_bucket] + join_labels
+            left_prefer = "counter" if left_frag.range_func in {"rate", "irate", "increase"} else "gauge"
+            right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} else "gauge"
+            left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
+            right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -659,8 +674,8 @@ def join_family_rule(context):
                     f"| WHERE {rp.ts_time_filter}",
                     *common_filters,
                     "| STATS "
-                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_frag.metric, left_info['range_window'])}, "
-                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_frag.metric, right_info['range_window'])} "
+                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])}, "
+                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])} "
                     f"BY {', '.join(group_by_parts)}",
                     f"| EVAL {result_alias} = numerator / denominator",
                     f"| KEEP {', '.join(output_group + [result_alias])}",
@@ -689,6 +704,9 @@ def join_family_rule(context):
         source = "TS" if is_counter else "FROM"
         time_filter = rp.ts_time_filter if is_counter else rp.from_time_filter
         bucket = rp.ts_bucket if is_counter else rp.from_bucket
+        physical_metric = _resolve_metric_field(
+            resolver, metric_name, prefer="counter" if is_counter else "gauge"
+        )
 
         context.parser_backend = "fragment"
         context.source_type = source
@@ -701,8 +719,8 @@ def join_family_rule(context):
                 f"{source} {context.index}",
                 f"| WHERE {time_filter}",
                 *_build_where_lines(filters),
-                f"| WHERE {metric_name} IS NOT NULL",
-                f"| STATS {metric_alias} = {default_agg}({metric_name}) BY {by_clause}",
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS {metric_alias} = {default_agg}({physical_metric}) BY {by_clause}",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -732,15 +750,20 @@ def join_family_rule(context):
         source = "TS" if (is_counter or left_frag.range_func in AGG_FUNCTION_MAP) else "FROM"
         time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
         bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+        if left_frag.range_func in {"rate", "irate", "increase"} or is_counter:
+            prefer = "counter"
+        else:
+            prefer = "gauge"
+        physical_metric = _resolve_metric_field(resolver, left_frag.metric, prefer=prefer)
 
         if left_frag.range_func and left_frag.range_func in AGG_FUNCTION_MAP:
             esql_inner = AGG_FUNCTION_MAP[left_frag.range_func]
             w = left_frag.range_window or rp.default_rate_window
-            inner_expr = f"{esql_inner}({left_frag.metric}, {w})"
+            inner_expr = f"{esql_inner}({physical_metric}, {w})"
         elif is_counter:
-            inner_expr = f"RATE({left_frag.metric}, {rp.default_rate_window})"
+            inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
-            inner_expr = left_frag.metric
+            inner_expr = physical_metric
 
         outer = OUTER_AGG_MAP.get(left_frag.outer_agg or "avg", "AVG")
         stats_expr = f"{outer}({inner_expr})"
@@ -790,11 +813,12 @@ def _build_ts_rate_over_count_distinct_pipeline(index, plan):
     expr = str(plan.expr)
     expr = expr.replace(numerator.alias, "numerator")
     expr = expr.replace(denominator.alias, "denominator")
+    presence_field = str(numerator.metric_field or numerator.metric_name).strip()
     parts = [
         f"TS {index}",
         f"| WHERE {numerator.time_filter}",
         *_build_where_lines(numerator.filters),
-        f"| WHERE {numerator.metric_name} IS NOT NULL",
+        f"| WHERE {presence_field} IS NOT NULL",
         f"| STATS _per_series_value = {numerator.stats_expr} BY {numerator.bucket_expr}, {count_field}",
         "| STATS numerator = SUM(_per_series_value), denominator = COUNT(*) BY time_bucket",
         f"| EVAL {result_alias} = {expr}",
@@ -897,15 +921,20 @@ def topk_family_rule(context):
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
     inner_func = frag.range_func or ("rate" if _is_counter_fallback(frag.metric, rp) else "")
+    if inner_func in {"rate", "irate", "increase"}:
+        prefer = "counter"
+    else:
+        prefer = "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
     if inner_func:
         stats_expr = _build_stats_call(
             frag.outer_agg or "avg",
             inner_func,
-            frag.metric,
+            physical_metric,
             frag.range_window or rp.default_rate_window,
         )
     else:
-        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({frag.metric})"
+        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({physical_metric})"
     limit = int(frag.extra.get("topk_limit") or 10)
 
     context.parser_backend = "fragment"
@@ -918,7 +947,7 @@ def topk_family_rule(context):
             f"{source} {context.index}",
             f"| WHERE {time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {frag.metric} IS NOT NULL",
+            f"| WHERE {physical_metric} IS NOT NULL",
             f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
             "| SORT time_bucket ASC",
             f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
@@ -959,6 +988,8 @@ def scaled_agg_family_rule(context):
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
     eval_line, final_alias = _frag_eval_line(alias, frag)
+    prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
     context.parser_backend = "fragment"
     context.source_type = "TS"
@@ -969,9 +1000,9 @@ def scaled_agg_family_rule(context):
         f"TS {context.index}",
         f"| WHERE {rp.ts_time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({frag.metric}, {frag.range_window}))"
+    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({physical_metric}, {frag.range_window}))"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -1014,7 +1045,8 @@ def nested_agg_family_rule(context):
     inner_agg_name = frag.extra.get("inner_agg", "count")
     esql_inner_agg = OUTER_AGG_MAP.get(inner_agg_name, "COUNT")
     inner_alias = "inner_val"
-    count_presence_filter = f"| WHERE {frag.metric} IS NOT NULL" if inner_agg_name == "count" else ""
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    count_presence_filter = f"| WHERE {physical_metric} IS NOT NULL" if inner_agg_name == "count" else ""
     metric_like_panels = {"stat", "singlestat", "gauge", "bargauge"}
 
     if frag.outer_agg == "count" and inner_agg_name == "count" and len(inner_group) == 1:
@@ -1043,7 +1075,7 @@ def nested_agg_family_rule(context):
         return "translated nested count(count()) expression"
 
     first_stats_expr = (
-        f"{inner_alias} = {esql_inner_agg}({frag.metric})"
+        f"{inner_alias} = {esql_inner_agg}({physical_metric})"
         if inner_agg_name != "count"
         else f"{inner_alias} = COUNT(*)"
     )
@@ -1119,8 +1151,10 @@ def range_agg_family_rule(context):
     source = "TS" if needs_ts else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+    prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({frag.metric}, {frag.range_window})"
+    inner_expr = f"{esql_inner_name}({physical_metric}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
@@ -1145,7 +1179,7 @@ def range_agg_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -1191,6 +1225,14 @@ def simple_agg_family_rule(context):
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
+    physical_metric = _resolve_metric_field(
+        resolver, frag.metric, prefer="counter" if is_counter else "gauge"
+    )
+    gauge_physical_metric = (
+        physical_metric
+        if not is_counter
+        else _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    )
 
     if pre_agg_filter:
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
@@ -1200,18 +1242,18 @@ def simple_agg_family_rule(context):
             f"FROM {context.index}",
             f"| WHERE {rp.from_time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {frag.metric} {pre_agg_filter['op']} {filter_value}",
+            f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})")
+            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [rp.from_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})"
+            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -1238,7 +1280,7 @@ def simple_agg_family_rule(context):
                     f"FROM {context.index}",
                     f"| WHERE {rp.from_time_filter}",
                     *_build_where_lines(filters),
-                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| WHERE {physical_metric} IS NOT NULL",
                     f"| STATS series_present = COUNT(*) BY {by_clause}",
                     f"| STATS {alias} = COUNT(*)",
                 ]
@@ -1251,7 +1293,7 @@ def simple_agg_family_rule(context):
                     f"FROM {context.index}",
                     f"| WHERE {rp.from_time_filter}",
                     *_build_where_lines(filters),
-                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| WHERE {physical_metric} IS NOT NULL",
                     f"| STATS series_present = COUNT(*) BY {by_clause}",
                     f"| STATS {alias} = COUNT(*) BY time_bucket",
                     "| SORT time_bucket ASC",
@@ -1269,10 +1311,10 @@ def simple_agg_family_rule(context):
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
     if is_counter and frag.outer_agg != "count":
-        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
     else:
-        inner_expr = frag.metric
+        inner_expr = physical_metric
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = f"{outer}({inner_expr})"
@@ -1289,7 +1331,7 @@ def simple_agg_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -1347,20 +1389,23 @@ def simple_metric_family_rule(context):
         source = "TS"
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
-        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
         stats_expr = f"AVG({inner_expr})"
     elif can_use_direct_ts_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
-        stats_expr = frag.metric
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = physical_metric
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
         bucket = rp.from_bucket
         default_agg = rp.default_gauge_agg.upper()
-        stats_expr = f"{default_agg}({frag.metric})"
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = f"{default_agg}({physical_metric})"
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
@@ -1379,7 +1424,7 @@ def simple_metric_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -1525,11 +1570,13 @@ def stats_expression_rule(context):
     if not context.metric_name:
         return None
 
-    inner_expr = context.metric_name
+    prefer = "counter" if context.inner_func in {"rate", "irate", "increase"} else "gauge"
+    physical_metric = _resolve_metric_field(context.resolver, context.metric_name, prefer=prefer)
+    inner_expr = physical_metric
     if context.inner_func in AGG_FUNCTION_MAP:
         esql_func = AGG_FUNCTION_MAP[context.inner_func]
         window_arg = f", {context.range_window}" if context.range_window else ""
-        inner_expr = f"{esql_func}({context.metric_name}{window_arg})"
+        inner_expr = f"{esql_func}({physical_metric}{window_arg})"
 
     if context.outer_agg in OUTER_AGG_MAP:
         context.stats_expr = f"{OUTER_AGG_MAP[context.outer_agg]}({inner_expr})"
@@ -1540,7 +1587,7 @@ def stats_expression_rule(context):
         return f"built stats expression {context.stats_expr}"
 
     default_agg = context.rule_pack.default_gauge_agg.upper()
-    context.stats_expr = f"{default_agg}({context.metric_name})"
+    context.stats_expr = f"{default_agg}({physical_metric})"
     if context.inner_func:
         _append_unique(
             context.warnings,

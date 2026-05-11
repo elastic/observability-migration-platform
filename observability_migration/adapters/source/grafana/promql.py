@@ -21,6 +21,22 @@ def _is_counter_fallback(metric_name, rule_pack):
     suffixes = getattr(rule_pack, "counter_suffixes", ["_total"])
     return any(metric_name.endswith(s) for s in suffixes)
 
+
+def _resolve_metric_field(resolver, metric_name, *, prefer=None):
+    """Resolve a PromQL metric name to its physical target field.
+
+    Passes through to ``resolver.resolve_metric_field`` when a resolver is
+    available, otherwise returns ``metric_name`` unchanged so callers without
+    a resolver (offline / fallback paths) still emit the source-faithful
+    field reference.
+    """
+    if resolver is None or not metric_name:
+        return metric_name
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if resolve is None:
+        return metric_name
+    return resolve(metric_name, prefer=prefer)
+
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -117,6 +133,7 @@ class MeasureSpec:
     final_alias: str
     eval_expr: str = ""
     metric_name: str = ""
+    metric_field: str = ""
     warnings: list = field(default_factory=list)
 
 
@@ -1270,6 +1287,10 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
     if frag and frag.extra.get("wrapped_scalar"):
         return False
     capability = resolver.field_capability(metric_name)
+    if capability is None:
+        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+        if resolved and resolved != metric_name:
+            capability = resolver.field_capability(resolved)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -1310,6 +1331,8 @@ def _build_measure_spec(
     final_alias = None
     eval_expr = ""
 
+    metric_field = frag.metric
+
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         can_use_direct_ts_gauge = allow_direct_ts_gauge and _can_use_direct_ts_gauge(
@@ -1319,19 +1342,22 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            stats_expr = f"AVG(RATE({frag.metric}, {rule_pack.default_rate_window}))"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            stats_expr = f"AVG(RATE({metric_field}, {rule_pack.default_rate_window}))"
             warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
         elif can_use_direct_ts_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            stats_expr = frag.metric
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            stats_expr = metric_field
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
             bucket_expr = rule_pack.from_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            stats_expr = f"{default_agg}({frag.metric})"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            stats_expr = f"{default_agg}({metric_field})"
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
@@ -1344,10 +1370,12 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         if is_counter and frag.outer_agg != "count":
-            inner_expr = f"RATE({frag.metric}, {rule_pack.default_rate_window})"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            inner_expr = f"RATE({metric_field}, {rule_pack.default_rate_window})"
             warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
         else:
-            inner_expr = frag.metric
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            inner_expr = metric_field
         outer = OUTER_AGG_MAP.get(frag.outer_agg, rule_pack.default_gauge_agg.upper())
         stats_expr = f"{outer}({inner_expr})"
     elif frag.family == "range_agg":
@@ -1359,7 +1387,9 @@ def _build_measure_spec(
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
-        inner_expr = f"{esql_inner}({frag.metric}, {frag.range_window})"
+        prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        inner_expr = f"{esql_inner}({metric_field}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -1377,7 +1407,9 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
-        stats_expr = f"{esql_outer}({esql_inner}({frag.metric}, {frag.range_window}))"
+        prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        stats_expr = f"{esql_outer}({esql_inner}({metric_field}, {frag.range_window}))"
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
@@ -1409,7 +1441,8 @@ def _build_measure_spec(
         source = "FROM"
         time_filter = rule_pack.from_time_filter
         bucket_expr = rule_pack.from_bucket if summary_mode else ""
-        stats_expr = f"MAX({start_metric} * 1000)"
+        metric_field = _resolve_metric_field(resolver, start_metric, prefer="gauge")
+        stats_expr = f"MAX({metric_field} * 1000)"
         eval_expr = f'DATE_DIFF("seconds", TO_DATETIME({alias}), NOW())'
     else:
         return None
@@ -1427,6 +1460,7 @@ def _build_measure_spec(
         final_alias=final_alias,
         eval_expr=eval_expr,
         metric_name=frag.metric,
+        metric_field=metric_field,
         warnings=warnings,
     )
 
@@ -1523,9 +1557,9 @@ def _build_shared_measure_pipeline(index, specs):
     ]
     presence_metrics = []
     for spec in specs:
-        metric_name = str(spec.metric_name or "").strip()
-        if metric_name and metric_name not in presence_metrics:
-            presence_metrics.append(metric_name)
+        physical_field = str(spec.metric_field or spec.metric_name or "").strip()
+        if physical_field and physical_field not in presence_metrics:
+            presence_metrics.append(physical_field)
     if presence_metrics:
         parts.append("| WHERE " + " OR ".join(f"{metric} IS NOT NULL" for metric in presence_metrics))
     stats_line = "| STATS " + ", ".join(stats_terms)

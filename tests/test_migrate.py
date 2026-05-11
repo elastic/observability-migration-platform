@@ -182,6 +182,106 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(alt._es_api_key, "apikey-from-parent")
         self.assertEqual(alt._index_pattern, "metrics-*")
 
+    def test_resolver_detects_prometheus_remote_write_profile(self):
+        """Profile detection: presence of `prometheus.labels.*` + at least one
+        `prometheus.<metric>.counter|value` field triggers the
+        `prometheus_remote_write` profile."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
+
+    def test_resolver_does_not_detect_profile_when_only_otel_fields(self):
+        self.seed_field_caps({
+            "service.instance.id": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+
+    def test_resolve_label_namespaces_to_prometheus_labels_when_profile_active(self):
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        self.assertEqual(self.resolver.resolve_label("instance"), "prometheus.labels.instance")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "prometheus.labels.instance")
+
+    def test_resolve_metric_field_picks_counter_suffix_for_counter_metric(self):
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            "prometheus.http_requests_total.counter",
+        )
+
+    def test_resolve_metric_field_picks_value_suffix_for_gauge_metric(self):
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "prometheus.process_resident_memory_bytes.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("process_resident_memory_bytes", prefer="gauge"),
+            "prometheus.process_resident_memory_bytes.value",
+        )
+
+    def test_resolve_metric_field_passthrough_when_profile_not_active(self):
+        # Plain target with no prometheus.* nesting.
+        self.seed_field_caps({
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            "http_requests_total",
+        )
+
+    def test_translator_emits_namespaced_fields_against_prometheus_remote_write_profile(self):
+        """End-to-end: a PromQL counter rate against a remote_write profile
+        target must produce ESQL referencing `prometheus.labels.instance` and
+        `prometheus.http_requests_total.counter` in the right places."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.labels.path": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.labels.status": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        translated = self.translate(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+        )
+        self.assertIn('prometheus.labels.instance == "i-1"', translated.esql_query)
+        # The aggregation argument is the namespaced counter field.
+        self.assertIn("prometheus.http_requests_total.counter", translated.esql_query)
+        # BY uses the namespaced label dimensions.
+        self.assertIn("prometheus.labels.instance", translated.esql_query)
+        self.assertIn("prometheus.labels.method", translated.esql_query)
+        # The aliased output column keeps the bare metric name so legends and
+        # breakdowns still match downstream.
+        self.assertIn("http_requests_total =", translated.esql_query)
+
+    def test_translator_emits_bare_fields_against_top_level_layout(self):
+        """When the target has a top-level layout (no prometheus.* nesting),
+        the translator must NOT prepend `prometheus.` (regression guard)."""
+        self.seed_field_caps({
+            "instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        translated = self.translate(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance)'
+        )
+        self.assertIn('instance == "i-1"', translated.esql_query)
+        self.assertIn("http_requests_total", translated.esql_query)
+        self.assertNotIn("prometheus.labels.instance", translated.esql_query)
+        self.assertNotIn("prometheus.http_requests_total", translated.esql_query)
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",
@@ -1790,6 +1890,34 @@ class TranslatorRegressionTests(unittest.TestCase):
             self.rule_pack,
         )
         self.assertEqual(inferred, "logs-*")
+
+    def test_controls_data_view_uses_narrow_index_when_all_panels_share_one(self):
+        """When every metric panel targets the same narrow index pattern, the
+        controls data view should follow it. Otherwise the controls resolver
+        runs `_field_caps` against the broad datasource and may end up with a
+        different field shape than the panels actually query — the root cause
+        of empty controls on Fleet `prometheus.remote_write` data streams.
+        """
+        inferred = migrate._infer_controls_data_view(
+            [
+                {"esql": {"query": "TS metrics-prometheus.remote_write-express\n| STATS …"}},
+                {"esql": {"query": "FROM metrics-prometheus.remote_write-express\n| STATS …"}},
+            ],
+            "metrics-*",
+            self.rule_pack,
+        )
+        self.assertEqual(inferred, "metrics-prometheus.remote_write-express")
+
+    def test_controls_data_view_falls_back_to_datasource_when_panels_target_mixed_indexes(self):
+        inferred = migrate._infer_controls_data_view(
+            [
+                {"esql": {"query": "TS metrics-prometheus-synthetic\n| STATS …"}},
+                {"esql": {"query": "TS metrics-otel-default\n| STATS …"}},
+            ],
+            "metrics-*",
+            self.rule_pack,
+        )
+        self.assertEqual(inferred, "metrics-*")
 
     def test_safe_alias_prefixes_leading_digits(self):
         self.assertEqual(migrate._safe_alias("5m load"), "series_5m_load")
