@@ -192,6 +192,33 @@ def _build_parser() -> argparse.ArgumentParser:
     cluster_cmd.add_argument("--data-view-patterns", default="metrics-*",
                              help="Comma-separated data view patterns (for ensure-data-views)")
 
+    verify_cmd = sub.add_parser(
+        "verify-panels",
+        help="Run the 5-tier panel verifier against a migrated dashboard "
+             "(source PromQL -> translator -> YAML -> NDJSON -> cluster -> live _query).",
+    )
+    verify_cmd.add_argument(
+        "--migration-out",
+        required=True,
+        help="Per-dashboard mig-to-kbn output directory (contains migration_report.json, yaml/, compiled/).",
+    )
+    verify_cmd.add_argument("--kibana-url", default="", help="Kibana base URL (required for T4).")
+    verify_cmd.add_argument("--es-url", default="", help="Elasticsearch base URL (required for T5).")
+    verify_cmd.add_argument("--api-key", default="", help="Elastic API key (used for both Kibana and ES).")
+    verify_cmd.add_argument("--dashboard-id", default="", help="Kibana saved-object id (required for T4/T5).")
+    verify_cmd.add_argument("--space", default="default", help="Kibana space (default: default).")
+    verify_cmd.add_argument(
+        "--output",
+        required=True,
+        help="Path to write the JSON report; a .md triage doc is written alongside.",
+    )
+    verify_cmd.add_argument("--es-index", default="", help="Default ES index name for the translator output.")
+    verify_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Process at most this many panels (0 = no limit).",
+    )
+    verify_cmd.add_argument("--verbose", action="store_true", help="Verbose logging.")
+
     extensions_cmd = sub.add_parser("extensions", help="Show adapter extension points")
     extensions_cmd.add_argument(
         "--source", choices=source_registry.names(), required=True,
@@ -234,9 +261,47 @@ def main(argv: list[str] | None = None) -> None:
         _run_extensions(args)
     elif args.command == "cluster":
         _run_cluster(args)
+    elif args.command == "verify-panels":
+        _run_verify_panels(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_verify_panels(args: Any) -> None:
+    """Dispatch to the 5-tier panel verifier."""
+    # The verifier lives outside the package import root (in parity-rig/
+    # so it can be vendored independently); add it to sys.path here.
+    repo_root = Path(__file__).resolve().parents[2]
+    verifier_parent = repo_root / "parity-rig"
+    if str(verifier_parent) not in sys.path:
+        sys.path.insert(0, str(verifier_parent))
+    try:
+        from verifier.cli import main as verifier_main  # type: ignore
+    except ImportError as exc:
+        print(f"verifier unavailable: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    argv = [
+        "--migration-out", args.migration_out,
+        "--output", args.output,
+        "--space", args.space,
+    ]
+    if args.kibana_url:
+        argv += ["--kibana-url", args.kibana_url]
+    if args.es_url:
+        argv += ["--es-url", args.es_url]
+    if args.api_key:
+        argv += ["--api-key", args.api_key]
+    if args.dashboard_id:
+        argv += ["--dashboard-id", args.dashboard_id]
+    if args.es_index:
+        argv += ["--es-index", args.es_index]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    if args.verbose:
+        argv += ["--verbose"]
+    sys.exit(verifier_main(argv))
 
 
 def _run_migrate(args: Any) -> None:

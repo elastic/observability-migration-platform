@@ -702,6 +702,64 @@ class TestUnifiedCliRouting(unittest.TestCase):
             self.assertIn("metric_map: {}", contents)
 
 
+class TestUnifiedCliVerifyPanels(unittest.TestCase):
+    def test_verify_panels_parser_has_required_flags(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(
+            [
+                "verify-panels",
+                "--migration-out", "/tmp/migration",
+                "--output", "/tmp/report.json",
+            ]
+        )
+        self.assertEqual(args.command, "verify-panels")
+        self.assertEqual(args.migration_out, "/tmp/migration")
+        self.assertEqual(args.output, "/tmp/report.json")
+        self.assertEqual(args.space, "default")
+        self.assertEqual(args.limit, 0)
+        self.assertFalse(args.verbose)
+
+    def test_verify_panels_routes_to_verifier_main(self):
+        # Ensure the verifier package is importable before we patch its
+        # `main` symbol (the routing function mutates sys.path at call
+        # time; pre-mutating here lets `patch` resolve the target).
+        repo_root = Path(app_cli.__file__).resolve().parents[2]
+        verifier_parent = repo_root / "parity-rig"
+        if str(verifier_parent) not in sys.path:
+            sys.path.insert(0, str(verifier_parent))
+        import verifier.cli as _verifier_cli  # noqa: F401
+
+        args = SimpleNamespace(
+            command="verify-panels",
+            migration_out="/tmp/m",
+            output="/tmp/o.json",
+            kibana_url="https://kbn",
+            es_url="https://es",
+            api_key="KEY",
+            dashboard_id="dash-1",
+            space="custom",
+            es_index="metrics-*",
+            limit=5,
+            verbose=True,
+        )
+        with patch("sys.exit") as mock_exit, patch(
+            "verifier.cli.main", return_value=0
+        ) as mock_main:
+            app_cli._run_verify_panels(args)
+        self.assertTrue(mock_main.called)
+        forwarded = mock_main.call_args.args[0]
+        self.assertIn("--migration-out", forwarded)
+        self.assertIn("/tmp/m", forwarded)
+        self.assertIn("--dashboard-id", forwarded)
+        self.assertIn("dash-1", forwarded)
+        self.assertIn("--space", forwarded)
+        self.assertIn("custom", forwarded)
+        self.assertIn("--limit", forwarded)
+        self.assertIn("5", forwarded)
+        self.assertIn("--verbose", forwarded)
+        mock_exit.assert_called_once_with(0)
+
+
 class TestUnifiedCliLegacyFlagContract(unittest.TestCase):
     def test_unified_migrate_does_not_accept_include(self):
         parser = app_cli._build_parser()
