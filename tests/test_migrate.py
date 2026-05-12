@@ -6670,17 +6670,138 @@ class KibanaNativeLayoutTests(unittest.TestCase):
 
         _apply_kibana_native_layout(panels)
 
-        # bar/gauge both have L2 per-type min widths (8 and 6
-        # respectively); the faithful scaled w=6 gets bumped to 8 for
-        # bar, kept at 6 for gauge. Heights stay at the scaled 6.
-        self.assertEqual(panels[0]["size"], {"w": 8, "h": 6}, "bar bumps to L2 min_w=8")
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge bumps to L2 min_h=8")
+        # bar's L2 min_w=8 *would* bump Pressure's right edge to
+        # x=8, but CPU Busy sits at x=6..12 -- collision-aware L2
+        # keeps Pressure at w=6 to preserve the side-by-side layout
+        # the author chose. Height bumps are independent: gauge h=6
+        # has no vertical neighbour to collide with so it bumps to
+        # L2 gauge min_h=8.
+        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6}, "bar w stays at 6 (collision with CPU Busy)")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge h bumps to L2 min_h=8")
         # Both panels share Grafana y=1 -> they're the topmost, so
         # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
         self.assertEqual(panels[1]["position"], {"x": 6, "y": 0})
         self.assertNotIn("_grafana_w", panels[0])
         self.assertNotIn("_grafana_h", panels[0])
+
+    def test_style_guide_does_not_stretch_2d_grid_rows(self):
+        """``apply_style_guide_layout._fill_simple_row`` must not
+        rescale a row that is part of a 2D grid (panels below sharing
+        the same x-range). Otherwise the row's right-edge panels get
+        pushed further right, colliding with the rows below.
+
+        Reproduces the bug in node-exporter-full pre-fix: the wide
+        top row was 30 cols, scaled to 48 cols by ``_fill_simple_row``,
+        which moved CPU Cores from x=18 to x=37 and broke alignment
+        with RootFS Total at x=18 below it.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Top row: 5 panels totalling 30 cols (less than 48)
+                {"title": "A", "position": {"x": 0,  "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "B", "position": {"x": 6,  "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "C", "position": {"x": 12, "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "D", "position": {"x": 18, "y": 0}, "size": {"w": 4, "h": 3}},
+                {"title": "E", "position": {"x": 22, "y": 0}, "size": {"w": 8, "h": 3}},
+                # Below-row: stat tiles at the right share x with D/E
+                {"title": "D2", "position": {"x": 18, "y": 3}, "size": {"w": 4, "h": 3}},
+                {"title": "E2", "position": {"x": 22, "y": 3}, "size": {"w": 8, "h": 3}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+
+        # D must stay at x=18 (not pushed by row-stretch); D2 below
+        # must still align at x=18 underneath it.
+        self.assertEqual(panels["D"]["position"]["x"], 18,
+                         "row stretch must not move D out from under D2")
+        self.assertEqual(panels["D2"]["position"]["x"], 18,
+                         "D2 keeps its source x position")
+        # And the source widths are preserved (no stretch).
+        self.assertEqual(panels["A"]["size"]["w"], 6,
+                         "row width must not be stretched -- 2D grid below should suppress _fill_simple_row")
+
+    def test_style_guide_still_stretches_pure_1d_row(self):
+        """When there is no 2D grid below it, the row IS stretched to
+        the full 48 cols (the original purpose of
+        ``_fill_simple_row``). This is the negative control for the
+        2D-grid check.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                {"title": "A", "position": {"x": 0,  "y": 0}, "size": {"w": 12, "h": 6}},
+                {"title": "B", "position": {"x": 12, "y": 0}, "size": {"w": 12, "h": 6}},
+                # No below-row panels -> still a pure 1D row
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        # Both widths scaled up to fill 48 cols (24+24).
+        total_w = panels["A"]["size"]["w"] + panels["B"]["size"]["w"]
+        self.assertEqual(total_w, 48, "pure 1D row should still be stretched to 48 cols")
+
+    def test_kibana_native_layout_l2_yields_to_2d_grid(self):
+        """L2 per-type minimums must NOT break the 2D grid the
+        source author authored.
+
+        Reproduces the ``node-exporter-full`` "Quick CPU / Mem / Disk"
+        section: 6 wide gauges along the top, with two short stat
+        tiles in the corner that the author *deliberately* sized to
+        h=3 so they could stack two-deep beside a tall neighbour.
+        Before the collision-aware fix, L2's metric ``min_h=6``
+        bumped each short tile to h=6, blowing through the gauge
+        below it and forcing the overlap resolver to cascade panels
+        to y=8/y=6 -- producing the ugly "right-side dangling stat
+        tile cluster" layout in the screenshot at 2026-05-13 01:24.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_kibana_native_layout,
+        )
+
+        # Tall gauge on the left + two stacked short stats on its
+        # right. Heights 8 and (3 + 3) tile to the same 8 rows.
+        panels = [
+            {"title": "GaugeLeft", "esql": {"type": "gauge"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 6},
+            {"title": "StatTop", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 12,
+             "_grafana_w": 8, "_grafana_h": 3},
+            {"title": "StatBottom", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 3, "_grafana_row_x": 12,
+             "_grafana_w": 8, "_grafana_h": 3},
+        ]
+        _apply_kibana_native_layout(panels)
+
+        gauge, top, bot = panels
+        # StatTop's min_h=6 *would* push its bottom to y=6,
+        # overlapping StatBottom at y=5..8 (scaled). Collision-
+        # aware L2 keeps the source-author-chosen short height for
+        # StatTop so the 2D grid remains intact.
+        self.assertLessEqual(
+            top["size"]["h"], 5,
+            "StatTop must keep its short height when StatBottom is below it; "
+            f"got h={top['size']['h']} which would clash",
+        )
+        # StatBottom has nothing below in this group so the L2 min_h
+        # can be applied to it.
+        self.assertGreaterEqual(top["position"]["y"] + top["size"]["h"], bot["position"]["y"])
+        # And the gauge keeps its faithful height (no false collision).
+        self.assertGreater(gauge["size"]["h"], 0)
 
     def test_kibana_native_layout_preserves_relative_y_spacing(self):
         """L1 universal fix: when multiple Grafana visual rows are

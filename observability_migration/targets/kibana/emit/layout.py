@@ -59,8 +59,55 @@ def _fix_panel_group(panels: list[dict[str, Any]]) -> None:
 
     rows = _collect_rows(panels)
     for row in rows:
-        if len(row) > 1 and _is_simple_contiguous_row(row):
+        if (
+            len(row) > 1
+            and _is_simple_contiguous_row(row)
+            and not _row_has_overlapping_x_neighbours(row, panels)
+        ):
             _fill_simple_row(row)
+
+
+def _row_has_overlapping_x_neighbours(
+    row: list[dict[str, Any]],
+    all_panels: list[dict[str, Any]],
+) -> bool:
+    """Detect when a row is the top stripe of a 2D grid.
+
+    ``_fill_simple_row`` stretches a row's panels to span the full 48
+    columns. That's correct for true 1D rows (one strip of panels
+    above and below empty space) but **wrong** when the panels in
+    the row sit beside taller neighbours, or when other panels
+    below share x-ranges with the row -- stretching the row pushes
+    those neighbours to the wrong x positions, often introducing
+    overlaps that ``_resolve_panel_overlaps`` then has to fix by
+    cascading panels down.
+
+    A row counts as having overlapping x-neighbours when any panel
+    OUTSIDE the row (above OR below) has an x-range that overlaps
+    the rightmost panel in the row. Top-stripes of 2D grids are
+    exactly that pattern: the right-edge stat tiles in
+    ``node-exporter-full``'s "Quick CPU" section sit at x=36..48 at
+    both y=0 and y=3, so the y=0 row has below-neighbours at
+    overlapping x and should NOT be stretched.
+    """
+    if not row:
+        return False
+    row_ids = {id(p) for p in row}
+    row_min_x = min(int(p["position"].get("x", 0) or 0) for p in row)
+    row_max_x = max(
+        int(p["position"].get("x", 0) or 0)
+        + int(p["size"].get("w", 0) or 0)
+        for p in row
+    )
+    for other in all_panels:
+        if id(other) in row_ids:
+            continue
+        ox = int(other.get("position", {}).get("x", 0) or 0)
+        ow = int(other.get("size", {}).get("w", 0) or 0)
+        # Overlap in x-range (touching is fine; strict overlap is not)
+        if ox < row_max_x and ox + ow > row_min_x:
+            return True
+    return False
 
 
 def _clamp_single_panel(panel: dict[str, Any]) -> None:

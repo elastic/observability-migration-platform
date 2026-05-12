@@ -3838,9 +3838,113 @@ def _apply_kibana_native_layout(yaml_panels):
         panel.pop("_grafana_row_x", None)
         panel.pop("_grafana_w", None)
         panel.pop("_grafana_h", None)
-        _normalize_tile_size(panel, _kibana_panel_type(panel))
+
+    # L2 (collision-aware): apply per-type minimums **without**
+    # breaking the 2D grid the source author authored. If bumping a
+    # panel's w or h to its L2 minimum would overlap another panel
+    # in this group, prefer the smaller dimension (the author's
+    # intent) over the readability floor.
+    _apply_collision_aware_minimums(yaml_panels)
 
     return yaml_panels
+
+
+def _rect(panel: dict) -> tuple[int, int, int, int]:
+    """Return ``(x, y, w, h)`` from a panel's position/size dicts.
+
+    Defaults to (0, 0, 0, 0) for missing fields so callers can
+    short-circuit on zero-sized panels.
+    """
+    pos = panel.get("position", {}) or {}
+    sz = panel.get("size", {}) or {}
+    return (
+        int(pos.get("x", 0) or 0),
+        int(pos.get("y", 0) or 0),
+        int(sz.get("w", 0) or 0),
+        int(sz.get("h", 0) or 0),
+    )
+
+
+def _rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
+def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
+    """L2 with a 2D-grid safety guard.
+
+    For each panel we compute its current ``(x, y, w, h)`` (post-L1)
+    plus the L2 per-type ``(min_w, min_h, max_h)``. We try to grow
+    the panel to those minimums **only when** doing so does not
+    collide with another panel in the same group. If a bump would
+    overlap a neighbour we keep the smaller dimension -- the source
+    author chose those dimensions for a reason (typically because
+    the panel sits in a 2D grid beside taller panels).
+
+    Specifically the algorithm walks panels in **document order**
+    (so earlier panels get the first crack at the readability bump)
+    and treats already-bumped neighbours as fixed obstacles.
+
+    ``max_h`` clamps always apply because shrinking a panel cannot
+    create new overlaps.
+    """
+    for idx, panel in enumerate(yaml_panels):
+        kibana_type = _kibana_panel_type(panel)
+        esql_cfg = panel.get("esql")
+        if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+            effective_type = str(esql_cfg["type"])
+        elif "markdown" in panel:
+            effective_type = "markdown"
+        else:
+            effective_type = str(kibana_type or "")
+
+        constraints = _TYPE_SIZE_CONSTRAINTS.get(effective_type)
+        if constraints is None:
+            # Apply legacy single-rule clamps and the position-clamp
+            # via the standard helper for unknown types.
+            _normalize_tile_size(panel, kibana_type)
+            continue
+
+        min_w, min_h, max_h = constraints
+        x, y, w, h = _rect(panel)
+        if w <= 0 or h <= 0:
+            _normalize_tile_size(panel, kibana_type)
+            continue
+
+        # Max-h always applies (shrinking never creates overlap).
+        if max_h is not None and h > max_h:
+            h = max_h
+
+        # Try to bump width to min_w. Reject if it would overlap any
+        # other panel in this group.
+        if w < min_w:
+            candidate = (x, y, min_w, h)
+            collides = any(
+                i != idx and _rects_overlap(candidate, _rect(other))
+                for i, other in enumerate(yaml_panels)
+            )
+            if not collides:
+                w = min_w
+
+        # Try to bump height to min_h. Same collision check.
+        if h < min_h:
+            candidate = (x, y, w, min_h)
+            collides = any(
+                i != idx and _rects_overlap(candidate, _rect(other))
+                for i, other in enumerate(yaml_panels)
+            )
+            if not collides:
+                h = min_h
+
+        panel["size"] = {"w": w, "h": h}
+        # Re-apply the legacy x-clamp + grid-overflow guard.
+        position = dict(panel.get("position", {}))
+        max_x = KIBANA_GRID_COLS - w
+        if max_x < 0:
+            max_x = 0
+        position["x"] = min(int(position.get("x", 0) or 0), max_x)
+        panel["position"] = position
 
 
 def _apply_faithful_coordinate_transform(yaml_panels):
