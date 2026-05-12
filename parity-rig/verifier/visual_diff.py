@@ -205,24 +205,56 @@ def _extract_json(stdout: str) -> dict | list | None:
     return last_blob
 
 
+def _unwrap_diff_result(blob: dict | list) -> dict:
+    """Unwrap whatever shape agent-browser hands us down to the dict
+    that actually carries the per-pixel diff numbers.
+
+    agent-browser shapes observed in the wild:
+      * 0.27 ``batch --json``: ``[{... "command": ["diff", "screenshot",
+        ...], "result": {"mismatchPercentage": X, "diffPath": Y, ...}},
+        ...]`` -- we pick the LAST batch step (the diff step).
+      * 0.27 single command: ``{"success": true, "data":
+        {"mismatchPercentage": X, "diffPath": Y, ...}}`` -- unwrap
+        ``data``.
+      * Older shapes: ``{"score": X, "output": Y}`` -- already at the
+        right level.
+
+    Returns ``{}`` if no usable dict is found.
+    """
+    if isinstance(blob, list):
+        # Prefer the last step whose command is the diff step; fall
+        # back to the last dict.
+        last_step: dict = {}
+        for step in blob:
+            if not isinstance(step, dict):
+                continue
+            last_step = step
+            cmd = step.get("command")
+            if isinstance(cmd, list) and cmd and "diff" in cmd[:2]:
+                last_step = step
+        obj = last_step
+    elif isinstance(blob, dict):
+        obj = blob
+    else:
+        return {}
+
+    if "result" in obj and isinstance(obj["result"], dict):
+        obj = obj["result"]
+    if "data" in obj and isinstance(obj["data"], dict):
+        obj = obj["data"]
+    return obj
+
+
 def _coerce_score(blob: dict | list) -> float:
     """Pull a 0..1 score out of a JSON diff result.
 
     Score keys we recognise (in priority order): ``score``,
-    ``diff_score``, ``diffPercentage``, ``mismatch``. A ``data``
-    sub-object is unwrapped first. Percentages are normalised by
-    dividing by 100 when the value > 1.0.
+    ``diff_score``, ``mismatchPercentage`` (agent-browser 0.27+),
+    ``diffPercentage`` (legacy), ``mismatch``. Percentages are
+    normalised by dividing by 100 when the value > 1.0.
     """
-    obj: dict
-    if isinstance(blob, list):
-        if not blob:
-            return 0.0
-        obj = blob[-1] if isinstance(blob[-1], dict) else {}
-    else:
-        obj = blob
-    if "data" in obj and isinstance(obj["data"], dict):
-        obj = obj["data"]
-    for key in ("score", "diff_score", "diffPercentage", "mismatch"):
+    obj = _unwrap_diff_result(blob)
+    for key in ("score", "diff_score", "mismatchPercentage", "diffPercentage", "mismatch"):
         if key in obj:
             try:
                 value = float(obj[key])
@@ -233,14 +265,10 @@ def _coerce_score(blob: dict | list) -> float:
 
 
 def _coerce_path(blob: dict | list, fallback_output: Path) -> str:
-    obj: dict
-    if isinstance(blob, list):
-        obj = blob[-1] if blob and isinstance(blob[-1], dict) else {}
-    else:
-        obj = blob
-    if "data" in obj and isinstance(obj["data"], dict):
-        obj = obj["data"]
-    for key in ("output", "diff_path", "output_path", "path"):
+    obj = _unwrap_diff_result(blob)
+    # agent-browser 0.27+ writes ``diffPath`` at the result/data level;
+    # older shapes used ``output`` / ``output_path``.
+    for key in ("diffPath", "output", "diff_path", "output_path", "path"):
         if key in obj and isinstance(obj[key], str):
             return obj[key]
     return str(fallback_output) if fallback_output.exists() else ""

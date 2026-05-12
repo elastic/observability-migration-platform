@@ -164,6 +164,36 @@ class TestDiffScreenshots:
         assert score == pytest.approx(0.042)
         assert path == str(out)
 
+    def test_parses_agent_browser_027_mismatchPercentage_and_diffPath(self, tmp_path):
+        """Real agent-browser 0.27 output format. Without this parser
+        the harness silently scored everything 0.0 even when the
+        diff was 66.44%."""
+        baseline = _png(tmp_path / "b.png")
+        candidate = _png(tmp_path / "c.png")
+        out = tmp_path / "diff.png"
+        stdout = json.dumps(
+            {
+                "success": True,
+                "error": None,
+                "data": {
+                    "diffPath": str(out),
+                    "differentPixels": 490716,
+                    "dimensionMismatch": None,
+                    "match": False,
+                    "mismatchPercentage": 66.44,
+                    "totalPixels": 738560,
+                },
+            }
+        )
+        with patch.object(shutil, "which", return_value="/usr/bin/agent-browser"), \
+             patch.object(subprocess, "run", return_value=_completed(stdout=stdout)):
+            score, path = visual_diff.diff_screenshots(
+                baseline, candidate, out, threshold=0.15
+            )
+        # 66.44% must be normalised to 0..1
+        assert score == pytest.approx(0.6644, abs=1e-4)
+        assert path == str(out)
+
     def test_normalises_percentage_score_above_one(self, tmp_path):
         baseline = _png(tmp_path / "b.png")
         candidate = _png(tmp_path / "c.png")

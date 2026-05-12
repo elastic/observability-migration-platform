@@ -39,28 +39,49 @@ echo "    leave the window open until this script tells you to close it."
 agent-browser close --all >/dev/null 2>&1 || true
 agent-browser --profile "$PROFILE_DIR" --headed open "$KIBANA_URL/app/home" >/dev/null
 
+# Derive the bare Kibana host so we don't false-positive on
+# upstream SAML redirects whose URL happens to contain "/app/"
+# (e.g. elastic.okta.com/app/google/.../sso/saml).
+KIBANA_HOST="$(echo "$KIBANA_URL" | awk -F[/:] '{print $4}')"
+if [[ -z "$KIBANA_HOST" ]]; then
+  echo "Could not parse host from KIBANA_URL: $KIBANA_URL" >&2
+  exit 1
+fi
+
+is_logged_in() {
+  local url="$1"
+  # Must be hosted on the Kibana origin AND inside /app/* AND NOT
+  # the security capture-url interstitial.
+  case "$url" in
+    *"${KIBANA_HOST}/app/"*)
+      case "$url" in
+        *"/internal/security/capture-url"*) return 1 ;;
+        *"auth_provider_hint"*)             return 1 ;;
+        *)                                   return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
 echo
-echo "Waiting up to ${WAIT_SECONDS}s for the URL to settle inside /app/* (i.e. SAML complete)."
+echo "Waiting up to ${WAIT_SECONDS}s for browser to settle on https://${KIBANA_HOST}/app/* (SAML complete)."
 deadline=$((SECONDS + WAIT_SECONDS))
 while (( SECONDS < deadline )); do
   current_url="$(agent-browser get url 2>/dev/null | tail -1 || true)"
-  case "$current_url" in
-    *"/app/"*)
-      echo "Detected logged-in URL: $current_url"
-      break
-      ;;
-  esac
+  if is_logged_in "$current_url"; then
+    echo "Detected logged-in URL: $current_url"
+    break
+  fi
   sleep 3
 done
 
 current_url="$(agent-browser get url 2>/dev/null | tail -1 || true)"
-case "$current_url" in
-  *"/app/"*) : ;;
-  *)
-    echo "Did not reach /app/* after ${WAIT_SECONDS}s; aborting (still at: $current_url)" >&2
-    exit 2
-    ;;
-esac
+if ! is_logged_in "$current_url"; then
+  echo "Did not land on https://${KIBANA_HOST}/app/* after ${WAIT_SECONDS}s; aborting" >&2
+  echo "  current URL: $current_url" >&2
+  exit 2
+fi
 
 echo
 echo "==> saving auth state to $STATE_FILE"
