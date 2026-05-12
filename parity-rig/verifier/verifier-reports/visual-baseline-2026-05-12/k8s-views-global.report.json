@@ -1,0 +1,305 @@
+{
+  "grafana_uid": "mig-k8s-views-global",
+  "kibana_dashboard_id": "16967937-f23d-8b27-02ae-de989e3a1dde",
+  "panels": [
+    {
+      "title": "CPU Core Throttled by instance",
+      "grafana_panel_id": 83,
+      "kibana_panel_id": "35508280-810a-5eac-eb8a-023b73317323",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cpu-core-throttled-by-instance.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cpu-core-throttled-by-instance.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cpu-core-throttled-by-instance.png",
+      "diff_score": 0.12469129116117852,
+      "notes": []
+    },
+    {
+      "title": "CPU Throttled seconds by namespace",
+      "grafana_panel_id": 82,
+      "kibana_panel_id": "069320a0-02d8-cada-9a0c-3c53ea1fe0c6",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cpu-throttled-seconds-by-namespace.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cpu-throttled-seconds-by-namespace.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cpu-throttled-seconds-by-namespace.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "CPU Usage",
+      "grafana_panel_id": 37,
+      "kibana_panel_id": "52520ea3-9a57-8ce6-181f-d1aa68a5892f",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cpu-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cpu-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cpu-usage.png",
+      "diff_score": 0.20627978769497404,
+      "notes": []
+    },
+    {
+      "title": "CPU Utilization by instance",
+      "grafana_panel_id": 54,
+      "kibana_panel_id": "136db63a-3805-a26c-aab1-6b38ea2eb76d",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cpu-utilization-by-instance.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cpu-utilization-by-instance.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cpu-utilization-by-instance.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "CPU Utilization by namespace",
+      "grafana_panel_id": 46,
+      "kibana_panel_id": "55e5cf00-afbc-b6f0-592e-8d648890669d",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cpu-utilization-by-namespace.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cpu-utilization-by-namespace.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cpu-utilization-by-namespace.png",
+      "diff_score": 0.3387700389948007,
+      "notes": []
+    },
+    {
+      "title": "Cluster CPU Utilization",
+      "grafana_panel_id": 72,
+      "kibana_panel_id": "ff3148e4-0100-7c16-5794-da3d2ee12a7f",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cluster-cpu-utilization.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cluster-cpu-utilization.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cluster-cpu-utilization.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "Cluster Memory Utilization",
+      "grafana_panel_id": 55,
+      "kibana_panel_id": "a3cbb80c-d29a-0655-6223-b1a39d61b32c",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/cluster-memory-utilization.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/cluster-memory-utilization.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/cluster-memory-utilization.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "Container Restarts by namespace",
+      "grafana_panel_id": 88,
+      "kibana_panel_id": "8075818b-d7b8-990b-242b-c466a87f945d",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/container-restarts-by-namespace.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/container-restarts-by-namespace.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/container-restarts-by-namespace.png",
+      "diff_score": 0.13182138214904682,
+      "notes": []
+    },
+    {
+      "title": "Global CPU  Usage",
+      "grafana_panel_id": 77,
+      "kibana_panel_id": "dc30dc3c-413f-3df8-8d79-07a6ea7c88f4",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/global-cpu-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/global-cpu-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/global-cpu-usage.png",
+      "diff_score": 0.1893075714904679,
+      "notes": []
+    },
+    {
+      "title": "Global Network Utilization by device",
+      "grafana_panel_id": 44,
+      "kibana_panel_id": "39427d50-4856-5f82-bb2b-3bcab1be6404",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/global-network-utilization-by-device.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/global-network-utilization-by-device.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/global-network-utilization-by-device.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "Global RAM Usage",
+      "grafana_panel_id": 78,
+      "kibana_panel_id": "7172e61d-330b-c2c8-bb8d-9a5a2854edf6",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/global-ram-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/global-ram-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/global-ram-usage.png",
+      "diff_score": 0.1893075714904679,
+      "notes": []
+    },
+    {
+      "title": "Kubernetes Pods QoS classes",
+      "grafana_panel_id": 84,
+      "kibana_panel_id": "cf5f97cd-d1a5-0258-b8e0-131ff723a6d2",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/kubernetes-pods-qos-classes.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/kubernetes-pods-qos-classes.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/kubernetes-pods-qos-classes.png",
+      "diff_score": 0.1324536936741768,
+      "notes": []
+    },
+    {
+      "title": "Kubernetes Pods Status Reason",
+      "grafana_panel_id": 85,
+      "kibana_panel_id": "43d998b5-f19f-722d-1e91-3644e0574711",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/kubernetes-pods-status-reason.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/kubernetes-pods-status-reason.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/kubernetes-pods-status-reason.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "Kubernetes Resource Count",
+      "grafana_panel_id": 52,
+      "kibana_panel_id": "177c1693-9abe-48a1-21f2-25729a97f21b",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/kubernetes-resource-count.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/kubernetes-resource-count.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/kubernetes-resource-count.png",
+      "diff_score": 0.2446151971403813,
+      "notes": []
+    },
+    {
+      "title": "Memory Utilization by instance",
+      "grafana_panel_id": 73,
+      "kibana_panel_id": "60dce2bd-8701-d9f0-f0fe-706cfc45c1f1",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/memory-utilization-by-instance.png",
+      "kibana_screenshot": "/tmp/visual-rig/k8s-views-global/kibana/memory-utilization-by-instance.png",
+      "diff_screenshot": "/tmp/visual-rig/k8s-views-global/diffs/memory-utilization-by-instance.png",
+      "diff_score": 0.12281737435008663,
+      "notes": []
+    },
+    {
+      "title": "Memory Utilization by namespace",
+      "grafana_panel_id": 50,
+      "kibana_panel_id": "c5da8fdd-089e-b1fa-be0f-f068402284fa",
+      "grafana_screenshot": "/tmp/visual-rig/k8s-views-global/grafana/memory-utilization-by-namespace.png",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Namespaces",
+      "grafana_panel_id": 59,
+      "kibana_panel_id": "1a984289-a74a-4e3c-60be-58d9ef20a4da",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Network Received (loopback only) by instance",
+      "grafana_panel_id": 81,
+      "kibana_panel_id": "90cb7272-1a54-0445-5ed9-242bcda9afaf",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Network Received (without loopback)  by instance",
+      "grafana_panel_id": 56,
+      "kibana_panel_id": "d090bc4c-b1e3-74f1-df29-25fc8e811a50",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Network Received by namespace",
+      "grafana_panel_id": 79,
+      "kibana_panel_id": "1fcf7c10-b69c-4e0a-0118-c8b39590f63c",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Network Saturation - Packets dropped",
+      "grafana_panel_id": 53,
+      "kibana_panel_id": "0be5134d-3bc0-8d7c-4928-8ae289ee0240",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Nodes",
+      "grafana_panel_id": 63,
+      "kibana_panel_id": "69144d27-e316-5853-32f2-fc2d029aa4a8",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "OOM Events by namespace",
+      "grafana_panel_id": 87,
+      "kibana_panel_id": "08305fd1-9c19-1556-892d-653c9f6c727e",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "RAM Usage",
+      "grafana_panel_id": 39,
+      "kibana_panel_id": "f0eb7521-f619-d48a-6b16-476e9c01c930",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Running Pods",
+      "grafana_panel_id": 62,
+      "kibana_panel_id": "434424d2-eb16-41cf-8709-7095db2f95ad",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    },
+    {
+      "title": "Total Network Received (with all virtual devices) by instance",
+      "grafana_panel_id": 80,
+      "kibana_panel_id": "e52c7fe5-961b-a606-5ea3-a3114e1519ec",
+      "grafana_screenshot": "",
+      "kibana_screenshot": "",
+      "diff_screenshot": "",
+      "diff_score": 0.0,
+      "notes": [
+        "grafana_capture_failed",
+        "kibana_capture_failed"
+      ]
+    }
+  ],
+  "unpaired_grafana": [],
+  "unpaired_kibana": [],
+  "median_score": 0.12469129116117852,
+  "p95_score": 0.2446151971403813,
+  "max_score": 0.3387700389948007,
+  "captured_pairs": 15,
+  "skipped_pairs": 11
+}

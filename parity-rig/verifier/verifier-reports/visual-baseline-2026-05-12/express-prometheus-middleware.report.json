@@ -1,0 +1,243 @@
+{
+  "grafana_uid": "zJfYJhynk",
+  "kibana_dashboard_id": "e966c568-64c5-c05c-6d99-0eff78110baf",
+  "panels": [
+    {
+      "title": "4xx by request",
+      "grafana_panel_id": 70,
+      "kibana_panel_id": "4f530086-612e-f711-daf5-742352514d0c",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/4xx-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/4xx-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/4xx-by-request.png",
+      "diff_score": 0.6567577448006933,
+      "notes": []
+    },
+    {
+      "title": "4xx or 5xx by request",
+      "grafana_panel_id": 74,
+      "kibana_panel_id": "dd532507-dcfe-c787-1379-6d53dd7dc48c",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/4xx-or-5xx-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/4xx-or-5xx-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/4xx-or-5xx-by-request.png",
+      "diff_score": 0.6236257040727903,
+      "notes": []
+    },
+    {
+      "title": "5xx by request",
+      "grafana_panel_id": 72,
+      "kibana_panel_id": "0a31a239-f3dd-8cdf-e204-fdd2d775a2ee",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/5xx-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/5xx-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/5xx-by-request.png",
+      "diff_score": 0.6529246100519931,
+      "notes": []
+    },
+    {
+      "title": "Count by class",
+      "grafana_panel_id": 40,
+      "kibana_panel_id": "0ea5f187-a3d8-72e3-cd1b-3dbfe486e5a9",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/count-by-class.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/count-by-class.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/count-by-class.png",
+      "diff_score": 0.538147205372617,
+      "notes": []
+    },
+    {
+      "title": "Instance CPU usage",
+      "grafana_panel_id": 78,
+      "kibana_panel_id": "d55179eb-04b7-1a8b-0f5a-91f8d939f084",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/instance-cpu-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/instance-cpu-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/instance-cpu-usage.png",
+      "diff_score": 0.5049312175043328,
+      "notes": []
+    },
+    {
+      "title": "Instance RAM usage",
+      "grafana_panel_id": 80,
+      "kibana_panel_id": "804e7f82-7e69-bb6f-4e93-fd38b5563d00",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/instance-ram-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/instance-ram-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/instance-ram-usage.png",
+      "diff_score": 0.5170927209705373,
+      "notes": []
+    },
+    {
+      "title": "Request count by request",
+      "grafana_panel_id": 68,
+      "kibana_panel_id": "d3109a10-13ae-ee18-d89f-635175c4ebec",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-count-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-count-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-count-by-request.png",
+      "diff_score": 0.5750582214038128,
+      "notes": []
+    },
+    {
+      "title": "Request duration 95th percentile",
+      "grafana_panel_id": 82,
+      "kibana_panel_id": "d5b27226-61b6-9ea7-0c1f-9b7f3a66e6ac",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-95th-percentile.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-95th-percentile.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-95th-percentile.png",
+      "diff_score": 0.5166093479202774,
+      "notes": []
+    },
+    {
+      "title": "Request duration 99th percentile",
+      "grafana_panel_id": 84,
+      "kibana_panel_id": "61711bc8-1e8d-fcee-78a9-f4d7e0875877",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-99th-percentile.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-99th-percentile.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-99th-percentile.png",
+      "diff_score": 0.5165375866551126,
+      "notes": []
+    },
+    {
+      "title": "Request duration average by request",
+      "grafana_panel_id": 66,
+      "kibana_panel_id": "e31e8824-e608-e172-c92e-768f4a03da9c",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-average-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-average-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-average-by-request.png",
+      "diff_score": 0.6246479636048526,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 100ms by request",
+      "grafana_panel_id": 50,
+      "kibana_panel_id": "6f009796-edd0-564c-8709-5c27af3d91ef",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-100ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-100ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-100ms-by-request.png",
+      "diff_score": 0.5772584488734835,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 10ms by request",
+      "grafana_panel_id": 44,
+      "kibana_panel_id": "9324f2ae-7469-3ff5-f448-469eae0c55cf",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-10ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-10ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-10ms-by-request.png",
+      "diff_score": 0.578950931542461,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 10s by request",
+      "grafana_panel_id": 62,
+      "kibana_panel_id": "2895502e-c167-42a5-8a88-8772d42c7cd7",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-10s-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-10s-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-10s-by-request.png",
+      "diff_score": 0.5049312175043328,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 1s by request",
+      "grafana_panel_id": 56,
+      "kibana_panel_id": "abf6f4d9-1473-5449-00b3-06cc247fb85e",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-1s-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-1s-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-1s-by-request.png",
+      "diff_score": 0.5049312175043328,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 2.5s by request",
+      "grafana_panel_id": 58,
+      "kibana_panel_id": "b6a6ffbf-4b83-2e1c-ee2c-ec8d66bc2aad",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-2-5s-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-2-5s-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-2-5s-by-request.png",
+      "diff_score": 0.5774899805025997,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 250ms by request",
+      "grafana_panel_id": 52,
+      "kibana_panel_id": "d4fed9d6-e2f4-b118-4098-a0852dde2b0c",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-250ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-250ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-250ms-by-request.png",
+      "diff_score": 0.57064693457539,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 25ms by request",
+      "grafana_panel_id": 46,
+      "kibana_panel_id": "97143475-f971-d4bf-a24a-d67eb3591417",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-25ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-25ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-25ms-by-request.png",
+      "diff_score": 0.5800639081455806,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 500ms by request",
+      "grafana_panel_id": 54,
+      "kibana_panel_id": "b4f2fd89-edb4-94aa-0b6d-4e226c020322",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-500ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-500ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-500ms-by-request.png",
+      "diff_score": 0.6114574306759099,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 50ms by request",
+      "grafana_panel_id": 48,
+      "kibana_panel_id": "37ea5988-8d70-21a5-e05c-84eb916ea292",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-50ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-50ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-50ms-by-request.png",
+      "diff_score": 0.5634477902946274,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 5ms by request",
+      "grafana_panel_id": 42,
+      "kibana_panel_id": "f978f282-80e2-34af-c251-816521650714",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-5ms-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-5ms-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-5ms-by-request.png",
+      "diff_score": 0.5722581780762565,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to 5s by request",
+      "grafana_panel_id": 60,
+      "kibana_panel_id": "6fce405c-ba3e-c027-b0f1-32968362581e",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-5s-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-5s-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-5s-by-request.png",
+      "diff_score": 0.5049312175043328,
+      "notes": []
+    },
+    {
+      "title": "Request duration up to Infinity by request",
+      "grafana_panel_id": 64,
+      "kibana_panel_id": "dfed638b-0556-47c5-33c1-f0e09c45d0e0",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-duration-up-to-infinity-by-request.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-duration-up-to-infinity-by-request.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-duration-up-to-infinity-by-request.png",
+      "diff_score": 0.5673093587521664,
+      "notes": []
+    },
+    {
+      "title": "Request rate",
+      "grafana_panel_id": 76,
+      "kibana_panel_id": "4af12de6-2732-dfd1-243f-c97fbfd5e378",
+      "grafana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/grafana/request-rate.png",
+      "kibana_screenshot": "/tmp/visual-rig/express-prometheus-middleware/kibana/request-rate.png",
+      "diff_screenshot": "/tmp/visual-rig/express-prometheus-middleware/diffs/request-rate.png",
+      "diff_score": 0.5179145905545928,
+      "notes": []
+    }
+  ],
+  "unpaired_grafana": [],
+  "unpaired_kibana": [],
+  "median_score": 0.57064693457539,
+  "p95_score": 0.6529246100519931,
+  "max_score": 0.6567577448006933,
+  "captured_pairs": 23,
+  "skipped_pairs": 0
+}
