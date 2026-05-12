@@ -166,23 +166,32 @@ class TestListGrafanaPanels:
 
     def test_synthesizes_ids_in_mixed_case(self):
         """When some panels have explicit IDs and others are missing,
-        Grafana assigns missing ones ``max(existing_so_far) + 1``.
-
-        Empirical evidence from /d-solo probing (Grafana 11.3.1):
-            JSON ids = [10, None, None, 5, None]
-            Runtime  = [10, 11,   12,   5, 13]
+        the verifier synthesizes ``max(existing_so_far) + 1`` for the
+        missing ones. The walk happens in migration-canonical order
+        ``(gridPos.y, gridPos.x)`` with stable insertion-order ties,
+        then the synthesis is applied to that order. Real-world
+        dashboards have unique ``(y, x)`` per panel (no visual
+        overlap), so this is equivalent to JSON document order for
+        all sane inputs.
         """
+        # All panels at (y=0, x=0) -> the canonical walk preserves
+        # JSON document order because Python's sort is stable.
         fake_response = mock.Mock()
         fake_response.raise_for_status = mock.Mock()
         fake_response.json = mock.Mock(
             return_value={
                 "dashboard": {
                     "panels": [
-                        {"id": 10, "title": "P10", "type": "stat"},
-                        {"id": None, "title": "PM1", "type": "stat"},
-                        {"title": "PM2", "type": "stat"},
-                        {"id": 5, "title": "P5", "type": "stat"},
-                        {"title": "PM3", "type": "stat"},
+                        {"id": 10, "title": "P10", "type": "stat",
+                         "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4}},
+                        {"id": None, "title": "PM1", "type": "stat",
+                         "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4}},
+                        {"title": "PM2", "type": "stat",
+                         "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4}},
+                        {"id": 5, "title": "P5", "type": "stat",
+                         "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4}},
+                        {"title": "PM3", "type": "stat",
+                         "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4}},
                     ]
                 }
             }
@@ -191,6 +200,9 @@ class TestListGrafanaPanels:
         panels = vr.list_grafana_panels(
             "http://localhost:23000", "uid", session=session
         )
+        # Sorted by x within y=0, JSON order is already sorted -> no
+        # reordering. Synthesis: P10=10 -> max=10, PM1=11 -> max=11,
+        # PM2=12 -> max=12, P5=5 (keeps), PM3=13 (max+1=13).
         assert [p["id"] for p in panels] == [10, 11, 12, 5, 13]
         assert [p["title"] for p in panels] == ["P10", "PM1", "PM2", "P5", "PM3"]
 
@@ -727,6 +739,185 @@ class TestSlugForTitle:
         long_title = "A" * 200
         slug = vr._slug_for_title(long_title)
         assert len(slug) == 80
+
+
+# --------------------------------------------------------------------- #
+#  Position-based pairing                                               #
+# --------------------------------------------------------------------- #
+
+
+class TestPositionPairing:
+    """U2: pair Grafana ↔ Kibana panels by walk order, not by title.
+
+    Title-only pairing breaks for the very common case of empty-title
+    panels (text/markdown dividers, untitled stat tiles). Walk order
+    is universal because the migration emits panels in deterministic
+    ``(gridPos.y, gridPos.x, id)`` order, walking rows in place.
+    """
+
+    def test_pairs_empty_title_panels_by_position(self):
+        """Two empty-title Grafana panels must each pair with the
+        Kibana panel at the same position, even though title-based
+        matching would group them all under ``""``.
+        """
+        # Grafana: 3 panels, two of which have empty titles
+        graf = [
+            {"id": 1, "title": "", "type": "text"},
+            {"id": 2, "title": "Real Title", "type": "stat"},
+            {"id": 3, "title": "", "type": "text"},
+        ]
+        # Kibana (in migration-walk order): the migration replaces
+        # empty titles with placeholders that can clash ("Untitled",
+        # or even a value-derived title for some panel types).
+        kib = [
+            {"id": "uuid-1", "title": "Untitled", "type": None},
+            {"id": "uuid-2", "title": "Real Title", "type": None},
+            {"id": "uuid-3", "title": "Untitled", "type": None},
+        ]
+        paired, only_g, only_k = vr.pair_panels_by_position(graf, kib)
+        assert len(paired) == 3
+        # pairs are (grafana_panel, kibana_panel) preserving order
+        assert paired[0][0]["id"] == 1
+        assert paired[0][1]["id"] == "uuid-1"
+        assert paired[1][0]["id"] == 2
+        assert paired[1][1]["id"] == "uuid-2"
+        assert paired[2][0]["id"] == 3
+        assert paired[2][1]["id"] == "uuid-3"
+        assert only_g == []
+        assert only_k == []
+
+    def test_pairs_duplicate_title_panels_by_position(self):
+        """Real dashboards sometimes have repeated titles
+        (eg. ``"Untitled"`` appearing multiple times in
+        ``prometheus-all``). Position pairing must still pair them
+        distinctly instead of grouping them all under one title.
+        """
+        graf = [
+            {"id": 1, "title": "Untitled", "type": "text"},
+            {"id": 2, "title": "Untitled", "type": "text"},
+        ]
+        kib = [
+            {"id": "u-1", "title": "Untitled", "type": None},
+            {"id": "u-2", "title": "Untitled", "type": None},
+        ]
+        paired, _only_g, _only_k = vr.pair_panels_by_position(graf, kib)
+        assert [(p[0]["id"], p[1]["id"]) for p in paired] == [
+            (1, "u-1"),
+            (2, "u-2"),
+        ]
+
+    def test_unpaired_extras_reported_when_lengths_differ(self):
+        """If Grafana has more leaves than Kibana (panels lost in
+        migration), pair the common prefix and report the tail as
+        ``only_grafana``. Symmetrically for Kibana extras."""
+        graf = [
+            {"id": 1, "title": "A", "type": "stat"},
+            {"id": 2, "title": "B", "type": "stat"},
+            {"id": 3, "title": "C-only-grafana", "type": "stat"},
+        ]
+        kib = [
+            {"id": "u-1", "title": "A", "type": None},
+            {"id": "u-2", "title": "B", "type": None},
+        ]
+        paired, only_g, only_k = vr.pair_panels_by_position(graf, kib)
+        assert [(p[0]["id"], p[1]["id"]) for p in paired] == [(1, "u-1"), (2, "u-2")]
+        assert only_g == ["C-only-grafana"]
+        assert only_k == []
+
+    def test_pairs_when_titles_diverge_but_order_holds(self):
+        """The migration rewrites some empty titles to placeholders
+        (``"Untitled"`` for text panels, ``"2"`` for an empty-title
+        singlestat showing value=2, etc.). Position pairing must
+        ignore title divergence and still produce 1:1 pairs.
+        """
+        graf = [
+            {"id": 1, "title": "", "type": "text"},
+            {"id": 2, "title": "", "type": "singlestat"},
+        ]
+        kib = [
+            {"id": "u-1", "title": "Untitled", "type": None},
+            {"id": "u-2", "title": "2", "type": None},
+        ]
+        paired, _only_g, _only_k = vr.pair_panels_by_position(graf, kib)
+        assert [(p[0]["id"], p[1]["id"]) for p in paired] == [
+            (1, "u-1"),
+            (2, "u-2"),
+        ]
+
+
+class TestListGrafanaPanelsCanonicalOrder:
+    """U2: ``list_grafana_panels`` must walk Grafana in the same
+    canonical order the migration uses
+    (``(gridPos.y, gridPos.x, id)`` with row children expanded
+    in place) so position N in the returned list pairs with
+    position N in the migration YAML.
+    """
+
+    def test_sorts_top_level_panels_by_gridpos(self):
+        """Modern dashboards: top-level panels must be sorted by
+        ``(y, x)``, not returned in file order. The migration sorts;
+        the verifier must agree."""
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [
+                        # File order is reversed from grid order
+                        {"id": 1, "title": "bottom-right", "type": "stat",
+                         "gridPos": {"x": 12, "y": 10, "w": 12, "h": 8}},
+                        {"id": 2, "title": "bottom-left", "type": "stat",
+                         "gridPos": {"x": 0, "y": 10, "w": 12, "h": 8}},
+                        {"id": 3, "title": "top-right", "type": "stat",
+                         "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}},
+                        {"id": 4, "title": "top-left", "type": "stat",
+                         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}},
+                    ]
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels("http://localhost:23000", "uid", session=session)
+        assert [p["title"] for p in panels] == [
+            "top-left", "top-right", "bottom-left", "bottom-right",
+        ]
+
+    def test_expands_row_children_in_place(self):
+        """Modern row containers: when a ``type=row`` is encountered
+        in the walk, its children are emitted right after the row,
+        before the next top-level item. (Mirrors the migration's
+        section grouping.)
+        """
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [
+                        {"id": 1, "title": "pre-row", "type": "stat",
+                         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4}},
+                        {"id": 2, "title": "row-A", "type": "row",
+                         "gridPos": {"x": 0, "y": 4, "w": 24, "h": 1},
+                         "panels": [
+                             {"id": 3, "title": "in-A-1", "type": "stat"},
+                             {"id": 4, "title": "in-A-2", "type": "stat"},
+                         ]},
+                        {"id": 5, "title": "row-B", "type": "row",
+                         "gridPos": {"x": 0, "y": 9, "w": 24, "h": 1},
+                         "panels": [
+                             {"id": 6, "title": "in-B-1", "type": "stat"},
+                         ]},
+                    ]
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels("http://localhost:23000", "uid", session=session)
+        # Row container itself is skipped; its children are emitted in
+        # the row's position in the canonical walk.
+        assert [p["title"] for p in panels] == [
+            "pre-row", "in-A-1", "in-A-2", "in-B-1",
+        ]
 
 
 # --------------------------------------------------------------------- #

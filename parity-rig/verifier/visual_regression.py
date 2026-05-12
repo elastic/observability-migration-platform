@@ -183,35 +183,28 @@ def list_grafana_panels(
     (str). Row panels are skipped because they're containers, not
     chart instances.
 
-    Handles two dashboard layout shapes:
+    Panels are emitted in **migration-canonical walk order** so that
+    position N in this list corresponds to position N in the migrated
+    Kibana dashboard's YAML/NDJSON. The order is:
 
-    * **Modern (schemaVersion >= 17)** -- ``dashboard.panels`` is the
-      flat panel list; row-typed entries wrap their children in
-      ``panels[]``. We flatten those.
-    * **Legacy (schemaVersion 14)** -- ``dashboard.rows[]`` is the
-      top-level layout, each row carries its own ``panels[]``. We fall
-      back to walking ``rows[*].panels[*]`` when ``dashboard.panels``
-      is absent or empty.
+    1. Top-level panels sorted by ``(gridPos.y, gridPos.x, id)``.
+    2. When a row container is encountered in that sort, its
+       ``panels[]`` children are emitted right after it before the
+       next top-level item (mirrors the migration's
+       ``_build_section_groups``).
+    3. For schemaVersion 14 dashboards using legacy
+       ``dashboard.rows[]``, panels are walked row-by-row in file
+       order (these rarely have ``gridPos``).
 
-    Panels without a numeric ``id`` in JSON get one **synthesized**
-    here using Grafana's own runtime rule. Empirically, Grafana's
-    frontend assigns missing IDs at render time as
-    ``max(existing_ids_so_far) + 1``, walked in JSON document order
-    (verified against Grafana 11.3.1 with explicit, missing, and
-    mixed-id dashboards):
+    Pairing by position (U2) replaces title-based pairing because
+    real dashboards routinely have empty-title panels (text/markdown
+    dividers, untitled stat tiles) that can't be distinguished by
+    title alone.
 
-    ::
-
-        JSON ids       Runtime panelIds (used by /d-solo)
-        [None, None]   [1, 2]                            (all-idless: 1..N)
-        [10, None, 5]  [10, 11, 5]                       (mixed)
-        [None, 7]      [1, 7]                            (mixed)
-
-    This makes every panel capture-able via
-    ``/d-solo/<uid>/<slug>?panelId=<N>`` regardless of whether the
-    source JSON has IDs -- so dashboards exported from grafana.com
-    or hand-authored without IDs work universally without requiring
-    operator intervention.
+    Panels without a numeric ``id`` in JSON get one synthesised via
+    Grafana's own runtime rule (``max(existing) + 1``) so every panel
+    is capture-able via ``/d-solo?panelId=<N>``. See
+    :func:`_assign_runtime_ids` for the empirical justification.
 
     Raises:
         requests.HTTPError: on a non-2xx response from Grafana.
@@ -225,23 +218,64 @@ def list_grafana_panels(
     payload = resp.json()
     dashboard = payload.get("dashboard", {}) or {}
 
-    raw_panels = dashboard.get("panels", []) or []
-    flat: list[dict[str, Any]] = []
-    if raw_panels:
-        for panel in raw_panels:
+    flat = _walk_grafana_in_migration_order(dashboard)
+    return _assign_runtime_ids(flat, dashboard_uid)
+
+
+def _grafana_panel_sort_key(panel: dict[str, Any]) -> tuple[int, int]:
+    """The same sort key the migration's _build_section_groups uses,
+    minus the ``id`` tiebreaker.
+
+    Returns ``(gridPos.y, gridPos.x)``. The migration appends ``id``
+    as a tiebreaker, but here we drop it: when two panels share
+    ``(y, x)`` (or when both lack ``gridPos`` and the key reduces to
+    ``(0, 0)``) we want Python's *stable* sort to preserve JSON
+    document order, not reorder by id. JSON document order is the
+    only reliable proxy for "what the migration emitted next" when
+    coordinates collide.
+    """
+    grid = panel.get("gridPos") or {}
+    return (
+        int(grid.get("y", 0) or 0),
+        int(grid.get("x", 0) or 0),
+    )
+
+
+def _walk_grafana_in_migration_order(
+    dashboard: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Flatten a Grafana dashboard in the order the migration would.
+
+    For modern dashboards:
+
+    * Sort ``dashboard.panels`` by ``(y, x, id)``.
+    * Walk that sorted list, expanding row containers in place: when
+      a ``type=row`` entry is found, its ``panels[]`` children are
+      appended to the output immediately and the row marker itself
+      is dropped.
+
+    For legacy (schemaVersion 14) dashboards:
+
+    * Walk ``dashboard.rows[].panels[]`` row-by-row in file order
+      (these rarely carry gridPos so we don't try to sort them).
+    """
+    out: list[dict[str, Any]] = []
+    top_level = dashboard.get("panels", []) or []
+    if top_level:
+        for panel in sorted(top_level, key=_grafana_panel_sort_key):
             if panel.get("type") == "row":
                 for child in panel.get("panels", []) or []:
                     if child.get("type") != "row":
-                        flat.append(child)
+                        out.append(child)
                 continue
-            flat.append(panel)
-    else:
-        for row in dashboard.get("rows", []) or []:
-            for child in row.get("panels", []) or []:
-                if child.get("type") != "row":
-                    flat.append(child)
+            out.append(panel)
+        return out
 
-    return _assign_runtime_ids(flat, dashboard_uid)
+    for row in dashboard.get("rows", []) or []:
+        for child in row.get("panels", []) or []:
+            if child.get("type") != "row":
+                out.append(child)
+    return out
 
 
 def _assign_runtime_ids(
@@ -701,6 +735,62 @@ def capture_kibana_panel(
 
 
 # --------------------------------------------------------------------- #
+#  Panel pairing                                                        #
+# --------------------------------------------------------------------- #
+
+
+def pair_panels_by_position(
+    grafana_panels: list[dict[str, Any]],
+    kibana_panels: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[dict[str, Any], dict[str, Any]]],
+    list[str],
+    list[str],
+]:
+    """Pair Grafana ↔ Kibana panels by walk order (U2 universal fix).
+
+    Both inputs MUST already be in migration-canonical order:
+
+    * Grafana side: produced by :func:`list_grafana_panels`, which
+      walks ``(gridPos.y, gridPos.x, id)`` with row containers
+      expanded in place.
+    * Kibana side: produced by :func:`list_kibana_panels_from_migration`,
+      which walks the migration YAML / NDJSON
+      (``section.panels`` flattened in their emit order).
+
+    The migration emits both sides in the same canonical order, so
+    pairing reduces to: position N on the left pairs with position N
+    on the right. This is the only correct approach when titles can
+    be empty (text/markdown dividers), duplicated (``"Untitled"``
+    appearing multiple times in ``prometheus-all``), or rewritten by
+    the migration (``""`` -> ``"Untitled"``, ``""`` -> ``"2"`` for
+    value-typed singlestats with empty source title).
+
+    Returns:
+        ``(paired, only_in_grafana_titles, only_in_kibana_titles)``.
+        Length mismatches are tolerated: we pair the common prefix
+        and report the tail of each side as unpaired. Each pair is a
+        2-tuple of the underlying panel dicts (with all metadata
+        including ``id``, ``title``, ``type``) so the caller can
+        reach for whichever identifier it needs.
+    """
+    paired: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    common = min(len(grafana_panels), len(kibana_panels))
+    for i in range(common):
+        paired.append((grafana_panels[i], kibana_panels[i]))
+
+    only_grafana_titles = [
+        (p.get("title") or f"<grafana panel id={p.get('id')}>")
+        for p in grafana_panels[common:]
+    ]
+    only_kibana_titles = [
+        (p.get("title") or f"<kibana panel id={p.get('id')}>")
+        for p in kibana_panels[common:]
+    ]
+    return paired, only_grafana_titles, only_kibana_titles
+
+
+# --------------------------------------------------------------------- #
 #  Aggregation                                                          #
 # --------------------------------------------------------------------- #
 
@@ -751,9 +841,9 @@ def run_dashboard(
     """Run the full visual-regression loop for one dashboard.
 
     Steps:
-        1. List Grafana panels via API.
-        2. List Kibana panels via migration YAML.
-        3. Pair by title.
+        1. List Grafana panels via API (in migration-canonical order).
+        2. List Kibana panels via migration YAML (also canonical).
+        3. Pair by position (U2 universal fix).
         4. For each pair: capture Grafana + Kibana, diff, score.
         5. Aggregate, build report.
     """
@@ -780,15 +870,16 @@ def run_dashboard(
         len(kibana_panels),
     )
 
-    grafana_by_title: dict[str, dict[str, Any]] = {
-        p["title"]: p for p in grafana_panels if p["title"]
-    }
-    kibana_by_title: dict[str, dict[str, Any]] = {
-        p["title"]: p for p in kibana_panels if p["title"]
-    }
-    paired_titles = sorted(set(grafana_by_title) & set(kibana_by_title))
-    only_grafana = sorted(set(grafana_by_title) - set(kibana_by_title))
-    only_kibana = sorted(set(kibana_by_title) - set(grafana_by_title))
+    paired, only_grafana, only_kibana = pair_panels_by_position(
+        grafana_panels, kibana_panels
+    )
+    if only_grafana or only_kibana:
+        LOG.info(
+            "panel-count mismatch: %d only-grafana, %d only-kibana "
+            "(paired the common prefix)",
+            len(only_grafana),
+            len(only_kibana),
+        )
 
     report = DashboardReport(
         grafana_uid=grafana_uid,
@@ -797,16 +888,21 @@ def run_dashboard(
         unpaired_kibana=only_kibana,
     )
 
-    for title in paired_titles:
-        g_meta = grafana_by_title[title]
-        k_meta = kibana_by_title[title]
+    for idx, (g_meta, k_meta) in enumerate(paired):
+        # Use the Grafana title as the display title; fall back to a
+        # position-indexed placeholder when both sides have empty
+        # titles (eg. text dividers).
+        display_title = (g_meta.get("title") or "").strip() or (
+            (k_meta.get("title") or "").strip() or f"panel-{idx + 1:03d}"
+        )
         comp = PanelComparison(
-            title=title,
+            title=display_title,
             grafana_panel_id=int(g_meta["id"]) if g_meta.get("id") else None,
             kibana_panel_id=str(k_meta.get("id") or ""),
         )
-        # Capture both sides
-        slug = _slug_for_title(title)
+        # Slug uses the position index so empty-title and
+        # duplicate-title panels still get unique filenames.
+        slug = _slug_for_panel(idx, display_title)
         grafana_png = grafana_dir / f"{slug}.png"
         kibana_png = kibana_dir / f"{slug}.png"
         diff_png = diff_dir / f"{slug}.png"
@@ -891,6 +987,19 @@ def _slug_for_title(title: str) -> str:
                 prev_dash = True
     slug = "".join(out).strip("-")
     return slug[:80] or "untitled"
+
+
+def _slug_for_panel(position_index: int, title: str) -> str:
+    """Filesystem-safe slug that's unique per panel position.
+
+    Empty-title and duplicate-title panels would collide if we used
+    title alone (eg. ``prometheus-all`` has 3 empty-title panels and
+    2 of them become ``"Untitled"`` in the migration). Prefixing
+    with the 0-based position index, zero-padded to 3 digits, gives
+    every panel a unique filename while keeping the title visible
+    for human debugging.
+    """
+    return f"{position_index:03d}-{_slug_for_title(title)}"
 
 
 # --------------------------------------------------------------------- #
