@@ -219,6 +219,42 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify_cmd.add_argument("--verbose", action="store_true", help="Verbose logging.")
 
+    visual_cmd = sub.add_parser(
+        "verify-visual",
+        help="Pixel-diff a migrated Kibana dashboard against its source Grafana "
+             "dashboard. Drives agent-browser over both, captures per-panel "
+             "screenshots, and aggregates per-panel + median + p95 diff scores. "
+             "Requires the parity-rig docker-compose stack to be running for "
+             "Grafana access and (optionally) a bootstrapped agent-browser "
+             "state file for Kibana SAML auth.",
+    )
+    visual_cmd.add_argument("--migration-out", required=True,
+                            help="Per-dashboard migration output (contains yaml/, compiled/).")
+    visual_cmd.add_argument("--grafana-url", default="http://localhost:23000",
+                            help="Parity-rig Grafana base URL (default: http://localhost:23000).")
+    visual_cmd.add_argument("--grafana-uid", required=True,
+                            help="Source Grafana dashboard UID.")
+    visual_cmd.add_argument("--grafana-slug", required=True,
+                            help="Source Grafana dashboard slug (appears after the UID in the URL).")
+    visual_cmd.add_argument("--kibana-url", required=True,
+                            help="Kibana base URL (https://...).")
+    visual_cmd.add_argument("--kibana-dash-id", required=True,
+                            help="Kibana dashboard saved-object id.")
+    visual_cmd.add_argument("--output-dir", required=True,
+                            help="Directory for screenshots and per-panel diff images.")
+    visual_cmd.add_argument("--report", required=True,
+                            help="JSON report output path.")
+    visual_cmd.add_argument("--from", dest="from_", default="now-1h",
+                            help="Time range start (default: now-1h).")
+    visual_cmd.add_argument("--to", default="now", help="Time range end (default: now).")
+    visual_cmd.add_argument("--threshold", type=float, default=0.15,
+                            help="Per-pixel diff threshold 0..1 (default: 0.15).")
+    visual_cmd.add_argument("--wait-extra-seconds", type=int, default=4,
+                            help="Wait time after navigation before screenshot (default: 4).")
+    visual_cmd.add_argument("--state", default="",
+                            help="agent-browser persistent state file (for Kibana SAML).")
+    visual_cmd.add_argument("--verbose", action="store_true", help="Verbose logging.")
+
     extensions_cmd = sub.add_parser("extensions", help="Show adapter extension points")
     extensions_cmd.add_argument(
         "--source", choices=source_registry.names(), required=True,
@@ -263,6 +299,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_cluster(args)
     elif args.command == "verify-panels":
         _run_verify_panels(args)
+    elif args.command == "verify-visual":
+        _run_verify_visual(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -302,6 +340,44 @@ def _run_verify_panels(args: Any) -> None:
     if args.verbose:
         argv += ["--verbose"]
     sys.exit(verifier_main(argv))
+
+
+def _run_verify_visual(args: Any) -> None:
+    """Dispatch to the visual-regression harness.
+
+    Mirrors :func:`_run_verify_panels`: adds the ``parity-rig`` parent
+    to ``sys.path`` so the ``verifier.visual_regression`` module
+    imports cleanly, then forwards CLI args verbatim.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    verifier_parent = repo_root / "parity-rig"
+    if str(verifier_parent) not in sys.path:
+        sys.path.insert(0, str(verifier_parent))
+    try:
+        from verifier.visual_regression import main as visual_main  # type: ignore
+    except ImportError as exc:
+        print(f"visual regression module unavailable: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    argv = [
+        "--migration-out", args.migration_out,
+        "--grafana-url", args.grafana_url,
+        "--grafana-uid", args.grafana_uid,
+        "--grafana-slug", args.grafana_slug,
+        "--kibana-url", args.kibana_url,
+        "--kibana-dash-id", args.kibana_dash_id,
+        "--output-dir", args.output_dir,
+        "--report", args.report,
+        "--from", args.from_,
+        "--to", args.to,
+        "--threshold", str(args.threshold),
+        "--wait-extra-seconds", str(args.wait_extra_seconds),
+    ]
+    if args.state:
+        argv += ["--state", args.state]
+    if args.verbose:
+        argv += ["--verbose"]
+    sys.exit(visual_main(argv))
 
 
 def _run_migrate(args: Any) -> None:

@@ -760,6 +760,75 @@ class TestUnifiedCliVerifyPanels(unittest.TestCase):
         mock_exit.assert_called_once_with(0)
 
 
+class TestUnifiedCliVerifyVisual(unittest.TestCase):
+    def test_verify_visual_parser_has_required_flags(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(
+            [
+                "verify-visual",
+                "--migration-out", "/tmp/m",
+                "--grafana-uid", "g-uid",
+                "--grafana-slug", "g-slug",
+                "--kibana-url", "https://kbn",
+                "--kibana-dash-id", "k-id",
+                "--output-dir", "/tmp/vrout",
+                "--report", "/tmp/vrout/report.json",
+            ]
+        )
+        self.assertEqual(args.command, "verify-visual")
+        self.assertEqual(args.grafana_uid, "g-uid")
+        self.assertEqual(args.kibana_dash_id, "k-id")
+        # Default Grafana URL points at the parity rig
+        self.assertEqual(args.grafana_url, "http://localhost:23000")
+        self.assertEqual(args.from_, "now-1h")
+        self.assertEqual(args.to, "now")
+        self.assertEqual(args.threshold, 0.15)
+
+    def test_verify_visual_routes_to_visual_regression_main(self):
+        repo_root = Path(app_cli.__file__).resolve().parents[2]
+        verifier_parent = repo_root / "parity-rig"
+        if str(verifier_parent) not in sys.path:
+            sys.path.insert(0, str(verifier_parent))
+        import verifier.visual_regression as _vr  # noqa: F401
+
+        args = SimpleNamespace(
+            command="verify-visual",
+            migration_out="/tmp/m",
+            grafana_url="http://localhost:23000",
+            grafana_uid="g-uid",
+            grafana_slug="g-slug",
+            kibana_url="https://kbn",
+            kibana_dash_id="k-id",
+            output_dir="/tmp/vrout",
+            report="/tmp/vrout/report.json",
+            from_="now-2h",
+            to="now",
+            threshold=0.20,
+            wait_extra_seconds=6,
+            state="/tmp/state.json",
+            verbose=True,
+        )
+        with patch("sys.exit") as mock_exit, patch(
+            "verifier.visual_regression.main", return_value=0
+        ) as mock_main:
+            app_cli._run_verify_visual(args)
+        self.assertTrue(mock_main.called)
+        forwarded = mock_main.call_args.args[0]
+        # Key flags forwarded verbatim
+        self.assertIn("--grafana-uid", forwarded)
+        self.assertIn("g-uid", forwarded)
+        self.assertIn("--kibana-dash-id", forwarded)
+        self.assertIn("k-id", forwarded)
+        self.assertIn("--from", forwarded)
+        self.assertIn("now-2h", forwarded)
+        self.assertIn("--threshold", forwarded)
+        self.assertIn("0.2", forwarded)
+        self.assertIn("--state", forwarded)
+        self.assertIn("/tmp/state.json", forwarded)
+        self.assertIn("--verbose", forwarded)
+        mock_exit.assert_called_once_with(0)
+
+
 class TestUnifiedCliLegacyFlagContract(unittest.TestCase):
     def test_unified_migrate_does_not_accept_include(self):
         parser = app_cli._build_parser()
