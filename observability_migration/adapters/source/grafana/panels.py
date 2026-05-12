@@ -723,7 +723,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 
 
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
-                              legend_labels=None, kibana_type=None):
+                              legend_labels=None, kibana_type=None,
+                              legend_format=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -733,6 +734,14 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     When the PROMQL result includes ``_timeseries`` (no explicit ``by`` clause)
     and *legend_labels* are provided, appends ``EVAL`` pipes to extract those
     labels from the ``_timeseries`` JSON string, producing clean named columns.
+
+    When *legend_labels* is empty but *legend_format* is a non-empty literal
+    string with no placeholders, emits ``EVAL label = "<text>"`` so Lens
+    renders the author's chosen series name instead of the raw label tuple.
+    When both are absent, no synthetic label column is added: Lens renders a
+    single unlabeled series, which matches what Grafana shows for an empty
+    ``legendFormat`` and avoids dumping the stringified ``_timeseries`` JSON
+    as the legend entry.
 
     For single-value panel types (metric, gauge) the ``_timeseries`` extraction
     is skipped because aggregated scalars don't have that column.
@@ -771,12 +780,24 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         keep = ["step", "value"] + list(legend_labels)
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
-    return (
-        base
-        + '\n| EVAL _ts = COALESCE(_timeseries, "")'
-        + '\n| EVAL label = CASE(_ts == "", "series", REPLACE(REPLACE(_ts, """[{}"]""", ""), ",", ", "))'
-        + '\n| KEEP step, value, label'
-    )
+    static_label = (legend_format or "").strip()
+    if static_label:
+        # Static legend text (no placeholders) — emit it verbatim as the
+        # series label so Lens uses the author's chosen name.
+        escaped = _escape_esql_double_quoted_literal(static_label)
+        return (
+            base
+            + f'\n| EVAL label = "{escaped}"'
+            + "\n| KEEP step, value, label"
+        )
+
+    # Neither placeholders nor static legend text — drop the synthetic
+    # label column entirely. Lens then renders one unlabeled series,
+    # matching Grafana's behaviour for an empty legendFormat. Previously
+    # we emitted ``EVAL label = CASE(_ts == "", "series", REPLACE(...))``
+    # which dumped the stringified label tuple as the legend, an ugly
+    # regression spotted in NEF screenshots.
+    return base
 
 
 def can_use_native_promql(promql_expr):
@@ -797,6 +818,110 @@ _COUNTER_RANGE_FUNC_PATTERN = re.compile(
     r"\b(?P<func>rate|irate|increase)\s*\(\s*(?P<metric>[A-Za-z_:][A-Za-z0-9_:]*)\b",
     re.IGNORECASE,
 )
+
+
+_METRIC_REF_PATTERN = re.compile(
+    r"\b(?P<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\s*(?:\{|\[|\(|$|\s|/|\*|\+|-)",
+)
+
+# PromQL function / aggregator / keyword tokens that look like metric
+# selectors but aren't.
+_PROMQL_KEYWORDS = frozenset({
+    "by", "without", "on", "ignoring", "group_left", "group_right",
+    "and", "or", "unless", "bool", "offset", "atan2",
+    # Aggregators
+    "sum", "avg", "min", "max", "count", "stddev", "stdvar",
+    "topk", "bottomk", "quantile", "group", "count_values",
+    # Range/instant functions
+    "rate", "irate", "increase", "delta", "deriv", "predict_linear",
+    "changes", "resets", "idelta",
+    "avg_over_time", "sum_over_time", "min_over_time", "max_over_time",
+    "stddev_over_time", "stdvar_over_time", "count_over_time",
+    "last_over_time", "quantile_over_time", "present_over_time",
+    "histogram_quantile", "histogram_count", "histogram_sum",
+    "histogram_avg", "histogram_fraction", "histogram_stddev",
+    "histogram_stdvar",
+    # Math / time functions
+    "abs", "absent", "absent_over_time", "ceil", "exp", "floor",
+    "ln", "log2", "log10", "round", "scalar", "sgn", "sort", "sort_desc",
+    "sqrt", "time", "year", "month", "day_of_month", "day_of_week",
+    "day_of_year", "days_in_month", "hour", "minute", "timestamp",
+    "vector", "pi", "label_replace", "label_join", "clamp", "clamp_max",
+    "clamp_min", "acos", "acosh", "asin", "asinh", "atan", "atanh",
+    "cos", "cosh", "sin", "sinh", "tan", "tanh", "deg", "rad",
+    "nan", "inf",
+})
+
+
+def _extract_promql_metric_names(promql_expr):
+    """Return the distinct metric names referenced by *promql_expr*.
+
+    Strips string literals and label-set bodies first, then walks the
+    remaining text picking up tokens that look like metric identifiers.
+    PromQL keywords and function names are filtered against a curated
+    list so they don't show up as fake metric references.
+    """
+    if not promql_expr:
+        return []
+    sanitized = _strip_promql_string_literals(promql_expr)
+    # Replace ``{...}`` label-set bodies with empty braces so the inside
+    # doesn't leak label names as metric tokens.
+    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
+    seen: list[str] = []
+    for match in _METRIC_REF_PATTERN.finditer(sanitized):
+        name = match.group("metric")
+        if not name or name.lower() in _PROMQL_KEYWORDS:
+            continue
+        # Skip bare numbers picked up as identifiers (the pattern
+        # already filters them out, but be safe).
+        if name[0].isdigit():
+            continue
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _native_promql_has_distinct_metric_arithmetic(promql_expr):
+    """Return True if *promql_expr* contains an arithmetic binary op
+    (``+``/``-``/``*``/``/``/``%``/``^``) between two operands that
+    reference different metric names.
+
+    Elastic's PROMQL preview can't infer the implicit 1:1 label-set
+    match Prometheus uses for such expressions and returns an empty
+    result or 400. The translator should detect this and fall through
+    to ES|QL translation, which performs the arithmetic at the bucket
+    level with explicit groupings.
+
+    Explicit ``ignoring(...)`` / ``on(...)`` modifiers are already
+    rejected by ``can_use_native_promql``; here we catch the
+    implicit-match case where the user just wrote ``A / B``. Grafana
+    template variables (``$var`` / ``${var}`` / ``[[var]]``) are
+    excluded from the metric-name extraction so panels like
+    ``up * $scale`` still route through native PROMQL.
+    """
+    if not promql_expr:
+        return False
+    sanitized = _strip_promql_string_literals(promql_expr)
+    # Replace label-set bodies so their contents don't leak operators.
+    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
+    # Remove Grafana template variable tokens so they don't get
+    # mistaken for metric references.
+    sanitized_no_vars = sanitized
+    for pattern in (
+        _GRAFANA_VAR_BRACED_RE,
+        _GRAFANA_VAR_BRACKET_RE,
+        _GRAFANA_VAR_PLAIN_RE,
+    ):
+        sanitized_no_vars = pattern.sub(" ", sanitized_no_vars)
+    metrics = _extract_promql_metric_names(sanitized_no_vars)
+    if len(metrics) < 2:
+        return False
+    # If the expression contains any arithmetic operator AND references
+    # two or more distinct metric names, treat it as distinct-metric
+    # arithmetic that Elastic's PROMQL preview can't safely evaluate.
+    if re.search(r"[+\-*/%^]", sanitized_no_vars):
+        return True
+    return False
 
 
 def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
@@ -874,6 +999,15 @@ def _translate_panel_native_promql(
     # treats them as gauges).
     if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
         return None
+    # Gate: Elastic's PROMQL preview can't perform implicit label-set
+    # match for arithmetic between two distinct instant vectors (e.g.
+    # ``A / B`` without ``on()``). Fall through to ES|QL translation,
+    # which does the math at the bucket level. Surfaced by reviewing
+    # uploaded NEF panels like ``Disk Space Used Basic`` that rendered
+    # "No results found" because the native PROMQL command rejected
+    # the query.
+    if _native_promql_has_distinct_metric_arithmetic(expr):
+        return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
 
@@ -884,12 +1018,21 @@ def _translate_panel_native_promql(
         return None
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
-                                             kibana_type=kibana_type)
+                                             kibana_type=kibana_type,
+                                             legend_format=legend_format)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
+    static_legend_label = (legend_format or "").strip() and not legend_labels
     if "_timeseries" in group_cols:
-        effective_group_cols = legend_labels if legend_labels else ["label"]
+        if legend_labels:
+            effective_group_cols = legend_labels
+        elif static_legend_label:
+            # Single static label per series.
+            effective_group_cols = ["label"]
+        else:
+            # No legend dimension; the query keeps just step+value.
+            effective_group_cols = []
     else:
         effective_group_cols = group_cols
 

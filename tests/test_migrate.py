@@ -1236,6 +1236,86 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("AVG(ambiguous_gauge)", translated.esql_query)
         self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
 
+    def test_native_promql_empty_legendformat_does_not_dump_ts_tuple(self):
+        """When a Grafana panel uses native PROMQL and has no
+        ``legendFormat`` (or one with no ``{{label}}`` placeholders), the
+        translator used to emit::
+
+            | EVAL _ts = COALESCE(_timeseries, "")
+            | EVAL label = CASE(_ts == "", "series", REPLACE(...))
+            | KEEP step, value, label
+
+        which renders the legend as the raw stringified label tuple
+        (``labels__name__=node_..., cluster=..., instance=..., job=..., replica=A``).
+        Surfaced by reviewing screenshots of the uploaded Node Exporter
+        Full dashboard - panels like ``Sockstat Used``, ``Memory Bounce``,
+        ``Time PLL Adjust`` rendered with that ugly tuple as their only
+        legend entry.
+
+        Expected behaviour: emit no synthetic ``label`` column when there's
+        no usable legend text, so Lens renders a single unlabeled series
+        (mirroring what Grafana itself shows for an empty legendFormat).
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            build_native_promql_query,
+        )
+        # No legend_labels (no placeholders) and no static legend text
+        # => no synthetic label column.
+        query = build_native_promql_query(
+            "node_sockstat_sockets_used", index="metrics-*", legend_labels=None,
+        )
+        self.assertNotIn('EVAL label = CASE', query)
+        self.assertNotIn('REPLACE(REPLACE(_ts', query)
+
+    def test_native_promql_gate_skips_binary_op_between_distinct_vectors(self):
+        """Elastic's PROMQL preview rejects ``A / B`` between two
+        instant vectors of **different** metric names — it can't infer
+        a label-set match without an explicit ``on()`` clause and falls
+        over. Reviewing the uploaded Node Exporter Full dashboard
+        showed ``Disk Space Used Basic`` (PromQL
+        ``100 - ((node_filesystem_avail_bytes * 100) / node_filesystem_size_bytes)``)
+        rendering as ``No results found`` because the native PROMQL
+        command returned an error. The translator's native-PROMQL gate
+        must detect this pattern and fall through to ES|QL translation,
+        where bucket-aligned arithmetic works.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _native_promql_has_distinct_metric_arithmetic,
+        )
+        self.assertTrue(_native_promql_has_distinct_metric_arithmetic(
+            "100 - ((node_filesystem_avail_bytes{job=\"x\"} * 100) "
+            "/ node_filesystem_size_bytes{job=\"x\"})"
+        ))
+        # Plain arithmetic with literals is fine.
+        self.assertFalse(_native_promql_has_distinct_metric_arithmetic(
+            "node_filesystem_avail_bytes * 100 / 1024 / 1024"
+        ))
+        # Same-metric arithmetic (would be a label-set conflict, but
+        # Elastic handles it because the metric resolves once); leave it
+        # alone for the native path to attempt.
+        self.assertFalse(_native_promql_has_distinct_metric_arithmetic(
+            "(node_cpu_seconds_total{mode=\"idle\"}) "
+            "/ ignoring(mode) (node_cpu_seconds_total)"
+        ))
+
+    def test_native_promql_static_legendformat_uses_literal_label(self):
+        """A non-empty legendFormat with no placeholders (e.g.
+        ``"Pages out ops"``) is a fixed series label. The translator
+        should emit ``EVAL label = "Pages out ops"`` and keep that
+        column in KEEP so Lens uses the author's text rather than the
+        raw label tuple."""
+        from observability_migration.adapters.source.grafana.panels import (
+            build_native_promql_query,
+        )
+        query = build_native_promql_query(
+            "node_vmstat_pgpgout", index="metrics-*",
+            legend_labels=None, legend_format="Pages out ops",
+        )
+        self.assertIn('EVAL label = "Pages out ops"', query)
+        self.assertIn("| KEEP step, value, label", query)
+        # Must NOT emit the _ts dump.
+        self.assertNotIn('REPLACE(REPLACE(_ts', query)
+
     def test_same_metric_collapse_handles_regex_and_negated_matchers(self):
         """The Node Exporter Full "CPU Basic" panel has 6 targets that all
         wrap ``node_cpu_seconds_total`` with different ``mode`` matchers,
@@ -6426,10 +6506,23 @@ class PrometheusDashboardIntegrationTests(unittest.TestCase):
         panels_by_title = {
             panel.get("title"): panel for panel in self._walk_panels(yaml_doc["dashboards"][0]["panels"])
         }
+        # ``Head chunks count`` uses a single-metric instant vector, so
+        # it still routes through native PROMQL and the value metric is
+        # relabelled with the panel title.
         head_chunks = panels_by_title["Head chunks count"]
-        head_block = panels_by_title["Length of head block"]
         self.assertEqual(head_chunks["esql"]["metrics"][0]["label"], "Head chunk count")
-        self.assertEqual(head_block["esql"]["metrics"][0]["label"], "Length of head block")
+        # ``Length of head block`` does ``A - B`` between two distinct
+        # metric vectors (``prometheus_tsdb_head_max_time`` minus
+        # ``prometheus_tsdb_head_min_time``). Elastic's native PROMQL
+        # preview can't handle implicit-match arithmetic between
+        # distinct vectors, so this panel falls through to ES|QL
+        # translation, which performs the subtraction at bucket level
+        # and stores the result in a ``computed_value`` field. The
+        # native-PROMQL value-relabelling path therefore doesn't apply.
+        head_block = panels_by_title["Length of head block"]
+        head_block_query = head_block["esql"].get("query", "")
+        self.assertNotIn("PROMQL index=", head_block_query)
+        self.assertIn("computed_value", head_block_query)
 
 
 class KibanaNativeLayoutTests(unittest.TestCase):

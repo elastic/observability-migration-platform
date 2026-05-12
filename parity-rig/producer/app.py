@@ -584,6 +584,48 @@ def render_node_extras_metrics() -> str:
     lines.append("# TYPE node_textfile_scrape_error gauge")
     lines.append('node_textfile_scrape_error{instance="node-1:9100"} 0')
 
+    # Power-supply state (laptop/desktop only, but real). Reflect a
+    # plugged-in AC adapter so the panel shows a value rather than
+    # "No results found".
+    lines.append("# HELP node_power_supply_online Power supply online state")
+    lines.append("# TYPE node_power_supply_online gauge")
+    for supply in ("AC0", "BAT0"):
+        lines.append(
+            f'node_power_supply_online{{instance="node-1:9100",power_supply="{supply}"}} '
+            f'{1 if supply.startswith("AC") else 0}'
+        )
+
+    # ARP table entries per network interface.
+    lines.append("# HELP node_arp_entries Number of ARP entries per device")
+    lines.append("# TYPE node_arp_entries gauge")
+    for device in ("eth0", "wlan0"):
+        n = 12 if device == "eth0" else 4
+        lines.append(
+            f'node_arp_entries{{instance="node-1:9100",device="{device}"}} {n}'
+        )
+
+    # Per-socket current connections. Synthetic but stable; the panel
+    # uses these as gauges and shows one bar per socket name.
+    lines.append("# HELP node_systemd_socket_current_connections Current systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_current_connections gauge")
+    lines.append("# HELP node_systemd_socket_accepted_connections_total Accepted systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_accepted_connections_total counter")
+    lines.append("# HELP node_systemd_socket_refused_connections_total Refused systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_refused_connections_total counter")
+    for sock in ("dbus.socket", "ssh.socket", "syslog.socket"):
+        cur = (hash(sock) % 5)
+        accepted = int(elapsed * 0.02 + (hash(sock) % 7))
+        refused = int(elapsed * 0.001)
+        lines.append(
+            f'node_systemd_socket_current_connections{{instance="node-1:9100",name="{sock}"}} {cur}'
+        )
+        lines.append(
+            f'node_systemd_socket_accepted_connections_total{{instance="node-1:9100",name="{sock}"}} {accepted}'
+        )
+        lines.append(
+            f'node_systemd_socket_refused_connections_total{{instance="node-1:9100",name="{sock}"}} {refused}'
+        )
+
     # /proc/net/udp + /proc/net/udp6 queue sizes (rx/tx) per protocol
     # family. node-exporter exposes this via --collector.udp_queues but
     # the container's /proc/net/udp doesn't show realistic values; the
