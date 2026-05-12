@@ -21,31 +21,37 @@ the others.
 |---|---:|---:|---:|---:|---|
 | `diverse-panels-test` | 10 / 10 | 0.5544 | 0.8616 | 0.8616 | Mixed — Kibana panels mostly empty |
 | `express-prometheus-middleware` | 23 / 23 | 0.5706 | 0.6529 | 0.6568 | Noisy — Kibana shows "No results found" on most panels |
-| `home` | 5 / 5 | **0.2948** | 0.3648 | 0.3648 | Good — only 5 panels, real data |
+| `home` | 5 / 5 | **0.2935** | 0.3661 | 0.3661 | Good — captured with universal id-synthesis (commit `a3cc5e3`); empty-title text panel doesn't pair |
 | `k8s-views-global` | 15 / 26 | **0.1247** | 0.2446 | 0.3388 | **Cleanest signal** — Kibana has real data, layout is faithful |
 | `node-exporter-full` | — | — | — | — | DEFERRED — Kibana cluster timing out on `expandedPanelId` for 116-panel dashboard |
 | `prometheus-all` | — | — | — | — | DEFERRED — same cluster slowness issue |
 
 ## What the bugs were before this baseline
 
-Three bugs in the verifier itself surfaced during the first attempt
-at this baseline (fixed in commits `4041e9f` and `35b3efa`):
+Three universal bugs in the verifier surfaced during the first
+attempt at this baseline:
 
-1. **`home` captured 0/0 panels** — the hand-authored source
-   `home.json` had `id: null` on all panels, which Grafana strips
-   from its API response. `list_grafana_panels` correctly filters
-   for panels with numeric IDs (required by `/d-solo?panelId=N`),
-   but did so silently. Fix: log dropped count; also assigned
-   explicit IDs to the in-repo fixture.
+1. **`home` captured 0/0 panels** — the source `home.json` had
+   `id: null` on all panels, which Grafana strips from its API
+   response. `list_grafana_panels` correctly filtered for panels
+   with numeric IDs (required by `/d-solo?panelId=N`), but did so
+   silently. The first fix patched our specific fixture to add
+   explicit ids; the **universal** fix (commit `a3cc5e3`) now
+   synthesises Grafana's runtime panel-id assignment rule
+   (`max(existing_so_far) + 1` in document order) so any
+   dashboard exported from grafana.com or hand-authored without
+   ids works without operator intervention.
 2. **`prometheus-all` captured 0/0 panels** — the dashboard is
    schemaVersion 14 (Grafana 4 era), with panels in top-level
    `rows[]` instead of `panels[]`. `list_grafana_panels` only knew
-   the modern shape. Fix: fall back to walking `rows[*].panels[*]`.
+   the modern shape. Fix (`35b3efa`): fall back to walking
+   `rows[*].panels[*]`.
 3. **Kibana selector capture rejected legitimate small Lens
    panels** — when `gridData.h` is small, a real panel screenshot
    can be as small as ~1.8 KiB, which our 2 KiB threshold dropped.
-   Fix: trust agent-browser's success signal on selector captures;
-   only use byte-size threshold on fall-back viewport captures.
+   Fix (`4041e9f`): trust agent-browser's success signal on
+   selector captures; only use byte-size threshold on fall-back
+   viewport captures.
 
 ## What the deferred panels mean
 
