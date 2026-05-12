@@ -416,6 +416,26 @@ class TestCaptureKibanaPanel:
         assert path == out_png
         assert notes == []
 
+    def test_accepts_small_real_png_from_selector_capture(self, tmp_path):
+        """Lens panels can legitimately render to PNGs as small as
+        ~1.8 KiB when gridData.h is tiny. The selector-capture branch
+        must trust agent-browser's success signal regardless of byte
+        size; only the fall-back viewport capture branch can use byte
+        size to differentiate render failure from a tiny render."""
+        out_png = tmp_path / "k.png"
+
+        def fake_run(commands, **_kwargs):
+            # Write a real PNG header but well under MIN_REAL_SCREENSHOT_BYTES
+            out_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return True, _ok_open_response(self.REAL_LANDING), ""
+
+        with mock.patch.object(vr, "_run_agent_browser_batch", side_effect=fake_run):
+            path, notes = vr.capture_kibana_panel(
+                "https://kb.example", "dash", "panel-uuid", out_png
+            )
+        assert path == out_png
+        assert notes == []
+
     def test_auth_redirect_url_immediately_tags_auth_required(self, tmp_path):
         """When the post-navigation URL matches our auth-redirect
         substrings we short-circuit *before* attempting the fall-back

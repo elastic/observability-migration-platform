@@ -569,13 +569,16 @@ def capture_kibana_panel(
         state_file=state_file,
         session=session,
     )
-    # Inspect the post-navigation URL to tell auth bounce from real
-    # render failure regardless of PNG size.
+    # The most reliable signal of an auth bounce is the post-navigation
+    # URL; PNG size is unreliable because Lens panels can legitimately
+    # render as small as ~1.8 KiB when gridData.h is tiny.
     landed_url = _extract_open_url(stdout)
     if _looks_like_auth_redirect(landed_url):
         return None, [NOTE_KIBANA_AUTH]
 
-    if ok and output_path.exists() and output_path.stat().st_size >= MIN_REAL_SCREENSHOT_BYTES:
+    # Trust the agent-browser response: success + file on disk means
+    # we got a real panel render regardless of byte size.
+    if ok and output_path.exists() and output_path.stat().st_size > 0:
         return output_path, []
 
     notes: list[str] = []
@@ -585,9 +588,10 @@ def capture_kibana_panel(
         landed_url or "<no url>",
         stderr.strip() or stdout.strip(),
     )
-    # Selector capture didn't yield a real PNG. If Kibana rendered
-    # *something* real-sized, tag render_failed so the operator
-    # investigates the URL/panel id rather than chasing auth.
+    # Selector capture failed AND the URL didn't look like auth. Try
+    # a fall-back viewport capture so we can distinguish render
+    # failure (real-sized fall-back) from a deeper issue
+    # (capture_failed).
     fallback_path = output_path.with_suffix(".fallback.png")
     fb_ok, fb_stdout, _fb_stderr = _run_agent_browser_batch(
         [
@@ -602,6 +606,9 @@ def capture_kibana_panel(
     if _looks_like_auth_redirect(fb_landed):
         notes.append(NOTE_KIBANA_AUTH)
         return None, notes
+    # Fall-back PNG IS a viewport screenshot so byte-size *is* a
+    # reasonable signal of "Kibana rendered something". Use the 2 KiB
+    # threshold here.
     if fb_ok and fallback_path.exists() and fallback_path.stat().st_size >= MIN_REAL_SCREENSHOT_BYTES:
         notes.append("kibana_render_failed")
         return None, notes
