@@ -49,6 +49,7 @@ from .promql import (
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
+    _gauge_fallback_for_counter_range_func,
     _grouping_parts,
     _is_counter_fallback,
     _parse_fragment,
@@ -759,6 +760,14 @@ def join_family_rule(context):
         if left_frag.range_func and left_frag.range_func in AGG_FUNCTION_MAP:
             esql_inner = AGG_FUNCTION_MAP[left_frag.range_func]
             w = left_frag.range_window or rp.default_rate_window
+            # Same gauge-fallback story as range_agg_family_rule: emitting
+            # RATE/IRATE/INCREASE on a gauge-typed field hard-fails.
+            if (
+                not is_counter
+                and left_frag.range_func in {"rate", "irate", "increase"}
+            ):
+                esql_inner, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
+                _append_unique(context.warnings, warning.format(metric=left_frag.metric))
             inner_expr = f"{esql_inner}({physical_metric}, {w})"
         elif is_counter:
             inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
@@ -1004,7 +1013,14 @@ def scaled_agg_family_rule(context):
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
     eval_line, final_alias = _frag_eval_line(alias, frag)
-    prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    if (
+        not is_counter
+        and frag.range_func in {"rate", "irate", "increase"}
+    ):
+        esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+        _append_unique(context.warnings, warning.format(metric=frag.metric))
+    prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
     context.parser_backend = "fragment"
@@ -1163,11 +1179,25 @@ def range_agg_family_rule(context):
         return None
 
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    # ES|QL's RATE / IRATE / INCREASE require a ``counter_*`` typed
+    # field. Some Prometheus counters don't end in ``_total`` (kernel
+    # vmstat / netstat / softnet); Elastic's ``/_prometheus/api/v1/write``
+    # ingest types those as ``gauge`` based on the metric-name
+    # heuristic, and the resulting ES|QL panel hard-fails with
+    # ``first argument of [RATE(...)] must be counter``. Degrade the
+    # query to a gauge-equivalent so the panel still renders honest
+    # numbers and surface a warning.
+    if (
+        not is_counter
+        and frag.range_func in {"rate", "irate", "increase"}
+    ):
+        esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+        _append_unique(context.warnings, warning.format(metric=frag.metric))
     needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
     source = "TS" if needs_ts else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
-    prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+    prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
     inner_expr = f"{esql_inner_name}({physical_metric}, {frag.range_window})"

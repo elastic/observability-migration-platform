@@ -402,6 +402,112 @@ class TranslatorRegressionTests(unittest.TestCase):
         for label in ("method", "path", "status"):
             self.assertIn(label, joined_stats)
 
+    def test_rate_on_gauge_typed_field_degrades_to_gauge_equivalent(self):
+        """Some Prometheus counters don't end in ``_total`` (kernel vmstat,
+        netstat, etc.). Elastic's ``/_prometheus/api/v1/write`` ingest
+        types them as ``gauge`` based on the name suffix heuristic. If the
+        translator emits ``RATE(X, 5m)`` against such a gauge-typed field,
+        ES|QL rejects with ``first argument of [RATE(...)] must be counter``
+        and the panel hard-fails in Kibana.
+
+        When the source PromQL asks for a counter-style range function
+        (``rate``/``irate``/``increase``) but the resolved field is typed
+        ``gauge``, degrade to a gauge equivalent so the panel still
+        renders something honest, and warn loudly.
+
+        Surfaced by validating the canonical Node Exporter Full dashboard
+        (id 1860) end-to-end against the parity-rig data.
+        """
+        self.seed_field_caps({
+            "node_vmstat_pgpgin": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "gauge",
+                },
+            },
+        })
+
+        translated = self.translate("irate(node_vmstat_pgpgin[5m])")
+        esql = translated.esql_query
+
+        # No bare RATE/IRATE/INCREASE call on the gauge-typed field.
+        self.assertNotIn("IRATE(node_vmstat_pgpgin", esql)
+        self.assertNotIn("RATE(node_vmstat_pgpgin", esql)
+        self.assertNotIn("INCREASE(node_vmstat_pgpgin", esql)
+
+        # The query must still reference the metric (we degraded, not
+        # dropped) and produce a valid ES|QL pipeline.
+        self.assertIn("node_vmstat_pgpgin", esql)
+
+        # A loud warning explains the degradation.
+        warnings = " ".join(translated.warnings or [])
+        self.assertRegex(
+            warnings,
+            r"(?i)(counter[- ]typed|gauge[- ]typed|degraded|rate.*gauge|"
+            r"counter metric|not a counter)",
+        )
+
+    def test_rate_on_counter_typed_field_still_uses_RATE(self):
+        """Regression guard: degradation must only fire for gauge-typed
+        fields, not for proper counters."""
+        self.seed_field_caps({
+            "http_requests_total": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "counter",
+                },
+            },
+        })
+
+        translated = self.translate("rate(http_requests_total[5m])")
+        esql = translated.esql_query
+        self.assertIn("RATE(http_requests_total", esql)
+
+    def test_native_promql_gate_skips_counter_func_on_gauge(self):
+        """When the source PromQL applies a counter-style range function
+        to a gauge-typed field, the panel-level native-PROMQL gate must
+        fall through to ES|QL translation (where the gauge fallback can
+        degrade honestly) instead of emitting a ``PROMQL value=(irate(X))``
+        that hard-fails at render time."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _native_promql_has_counter_func_on_gauge,
+        )
+        self.seed_field_caps({
+            "node_vmstat_oom_kill": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "gauge",
+                },
+            },
+            "http_requests_total": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "counter",
+                },
+            },
+        })
+        # Counter-style range function on a gauge-typed field: gate fires.
+        self.assertTrue(_native_promql_has_counter_func_on_gauge(
+            "irate(node_vmstat_oom_kill[5m])", self.resolver,
+        ))
+        # Counter-style range function on a counter-typed field: gate
+        # doesn't fire; native PROMQL is still preferred.
+        self.assertFalse(_native_promql_has_counter_func_on_gauge(
+            "rate(http_requests_total[5m])", self.resolver,
+        ))
+        # No counter-style range function: gate doesn't fire.
+        self.assertFalse(_native_promql_has_counter_func_on_gauge(
+            "avg_over_time(node_vmstat_oom_kill[5m])", self.resolver,
+        ))
+
     def test_set_or_same_metric_promotes_distinguishing_labels_to_BY(self):
         """When the operands of ``A{X=~"a"} or A{X=~"b"}`` differ on
         label X, the rewrite must add X to BY even if the legend doesn't

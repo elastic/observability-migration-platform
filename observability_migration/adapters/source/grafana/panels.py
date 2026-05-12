@@ -792,10 +792,55 @@ def can_use_native_promql(promql_expr):
     return True
 
 
+_COUNTER_RANGE_FUNC_PATTERN = re.compile(
+    r"\b(?P<func>rate|irate|increase)\s*\(\s*(?P<metric>[A-Za-z_:][A-Za-z0-9_:]*)\b",
+    re.IGNORECASE,
+)
+
+
+def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
+    """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
+    to a metric that the resolver has *positively* identified as
+    gauge-typed in the target index.
+
+    Used as a pre-flight gate before emitting native PROMQL: Elastic's
+    PROMQL command rejects counter-style range functions on gauge-typed
+    fields at render time with ``first argument of [RATE(...)] must be
+    counter``. Falling through to ES|QL translation lets the gauge
+    fallback emit a degraded query the cluster can actually serve.
+
+    The gate requires positive evidence (the field is present in the
+    target index AND is typed gauge). Unknown fields or fields without
+    a recorded ``time_series_metric`` are left alone so existing
+    coverage of expressions like ``rate(foo[5m]) offset 1h`` against a
+    bare/empty schema isn't disturbed.
+    """
+    if resolver is None or not promql_expr:
+        return False
+    sanitized = _strip_promql_string_literals(promql_expr)
+    for match in _COUNTER_RANGE_FUNC_PATTERN.finditer(sanitized):
+        metric = match.group("metric")
+        if not metric:
+            continue
+        try:
+            cap = resolver.field_capability(metric)
+        except Exception:
+            continue
+        if cap is None:
+            continue
+        # Only act when the cluster has explicitly typed this field as
+        # something other than ``counter``. ``None`` / unknown means
+        # "no evidence either way" — leave the native PROMQL path alone.
+        kind = getattr(cap, "time_series_metric_kind", None)
+        if kind and kind != "counter":
+            return True
+    return False
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
-    query_language, visible_targets,
+    query_language, visible_targets, resolver=None,
 ):
     """Attempt native PROMQL translation for single or multi-target panels.
 
@@ -816,6 +861,17 @@ def _translate_panel_native_promql(
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
     if not can_use_native_promql(expr):
+        return None
+    # Pre-flight type check: if the source PromQL applies a counter-style
+    # range function (``rate``/``irate``/``increase``) to a metric that
+    # the target index has typed as gauge, the native PROMQL command will
+    # 400 with ``first argument of [RATE(...)] must be counter`` at
+    # render time. Fall through to ES|QL translation, which knows how to
+    # degrade to a gauge-equivalent. Surfaced by validating uploaded
+    # Node Exporter Full panels referencing node_vmstat_* / node_netstat_*
+    # counters that don't end in ``_total`` (Elastic's auto-mapping
+    # treats them as gauges).
+    if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
@@ -1507,7 +1563,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         native_result = _translate_panel_native_promql(
             panel, yaml_panel, title, panel_type, kibana_type,
             datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
-            query_language, visible_targets,
+            query_language, visible_targets, resolver=resolver,
         )
         if native_result is not None:
             return native_result

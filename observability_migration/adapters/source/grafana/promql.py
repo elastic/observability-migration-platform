@@ -57,6 +57,52 @@ AGG_FUNCTION_MAP = {
     "histogram_quantile": "PERCENTILE_OVER_TIME",
 }
 
+
+# Degradations applied when the source PromQL asks for a counter-style
+# range function but the resolved field is typed ``gauge`` (e.g. an
+# Elastic ``/_prometheus/api/v1/write`` ingest that didn't detect a
+# counter by name). ES|QL's RATE/IRATE/INCREASE require ``counter_*``
+# typing; emitting them against a gauge produces a hard 400 in Kibana.
+# The chosen gauge analogues let the panel still render real numbers
+# while a warning explains the swap.
+_COUNTER_TO_GAUGE_FALLBACK = {
+    # ``rate``/``irate`` over a gauge degrades to the value averaged
+    # across the window — not a per-second rate, but the closest honest
+    # measurement available without a proper counter type.
+    "rate": (
+        "AVG_OVER_TIME",
+        "Source PromQL used rate() but {metric} is typed as gauge in the "
+        "target index; rendered as AVG_OVER_TIME instead. Fix the ingest "
+        "mapping to mark this field as a counter to get a true rate.",
+    ),
+    "irate": (
+        "AVG_OVER_TIME",
+        "Source PromQL used irate() but {metric} is typed as gauge in the "
+        "target index; rendered as AVG_OVER_TIME instead. Fix the ingest "
+        "mapping to mark this field as a counter to get a true rate.",
+    ),
+    # ``increase`` is total change over the window; the closest gauge
+    # analogue is MAX - MIN, but ES|QL only allows a single function
+    # call inside STATS so we fall back to ``MAX_OVER_TIME`` (upper
+    # bound of the cumulative value) and warn loudly.
+    "increase": (
+        "MAX_OVER_TIME",
+        "Source PromQL used increase() but {metric} is typed as gauge in "
+        "the target index; rendered as MAX_OVER_TIME (cumulative ceiling) "
+        "instead. Fix the ingest mapping to mark this field as a counter "
+        "to recover the true increase over the window.",
+    ),
+}
+
+
+def _gauge_fallback_for_counter_range_func(range_func):
+    """Return ``(esql_function, warning_template)`` to use when a
+    counter-style range function (``rate``/``irate``/``increase``) is
+    applied to a field that the target cluster has typed as a gauge.
+    The warning template contains a ``{metric}`` placeholder for the
+    caller to substitute the source metric name."""
+    return _COUNTER_TO_GAUGE_FALLBACK[range_func]
+
 OUTER_AGG_MAP = {
     "sum": "SUM",
     "avg": "AVG",
@@ -1402,11 +1448,25 @@ def _build_measure_spec(
         if not esql_inner:
             return None
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        # ES|QL's RATE / IRATE / INCREASE require a ``counter_*`` typed
+        # field. Some Prometheus counters don't end in ``_total`` (kernel
+        # vmstat / netstat / softnet); Elastic's ``/_prometheus/api/v1/write``
+        # ingest types those as ``gauge`` based on the metric-name
+        # heuristic, and the resulting ES|QL panel hard-fails with
+        # ``first argument of [RATE(...)] must be counter``. Degrade the
+        # query to a gauge-equivalent so the panel still renders honest
+        # numbers and surface a warning.
+        if (
+            not is_counter
+            and frag.range_func in {"rate", "irate", "increase"}
+        ):
+            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+            warnings.append(warning.format(metric=frag.metric))
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
-        prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+        prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
         inner_expr = f"{esql_inner}({metric_field}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
@@ -1425,8 +1485,15 @@ def _build_measure_spec(
         source = "TS"
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
+        is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        if (
+            not is_counter
+            and frag.range_func in {"rate", "irate", "increase"}
+        ):
+            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+            warnings.append(warning.format(metric=frag.metric))
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
-        prefer = "counter" if frag.range_func in {"rate", "irate", "increase"} else "gauge"
+        prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
         stats_expr = f"{esql_outer}({esql_inner}({metric_field}, {frag.range_window}))"
     elif frag.family == "nested_agg":
