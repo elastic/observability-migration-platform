@@ -5289,7 +5289,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         }
         groups = panels._build_section_groups(dashboard)
         self.assertEqual(len(groups), 1)
-        _, group_panels = groups[0]
+        _, group_panels, _is_row = groups[0]
         self.assertEqual(len(group_panels), 2)
 
         left = group_panels[0]
@@ -5315,7 +5315,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             ],
         }
         groups = panels._build_section_groups(dashboard)
-        _, group_panels = groups[0]
+        _, group_panels, _is_row = groups[0]
         grid_h = group_panels[0]["gridPos"]["h"]
         self.assertEqual(grid_h, 10, "300px / 30 = 10 grid units")
 
@@ -6837,6 +6837,147 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             f"Kibana gap (got {gap}); a gap of 0 means the y-cursor "
             f"regression has returned.",
         )
+
+
+class L3RowAwareSectioningTests(unittest.TestCase):
+    """L3 universal fix: every explicit Grafana ``type: row`` panel
+    (modern schema) and every legacy ``rows[]`` entry (schemaVersion
+    14) becomes a Kibana ``section`` in the emitted YAML, even when
+    the source row has an empty/missing title.
+
+    Before L3 the emitter only created a section when the row title
+    was truthy; otherwise the panels were flattened into the top
+    level with a ``_offset_yaml_panels`` y shift. That silently
+    discarded the author's grouping intent for any dashboard that
+    organises panels into untitled rows (a real-world quirk in
+    auto-generated dashboards from Helm charts, Prometheus
+    rule-driven dashboards, etc.).
+    """
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana import (
+            rules as rules_mod,
+        )
+        from observability_migration.adapters.source.grafana import (
+            schema as schema_mod,
+        )
+        self.rule_pack = rules_mod.RulePackConfig()
+        self.resolver = schema_mod.SchemaResolver(self.rule_pack)
+
+    def _translate(self, dashboard):
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, yaml_path = panels_mod.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            with open(yaml_path) as f:
+                doc = yaml.safe_load(f)
+        return doc["dashboards"][0]["panels"]
+
+    def test_titled_row_becomes_section(self):
+        """Baseline (was already working): a titled row produces a
+        section entry with the row's title."""
+        dashboard = {
+            "title": "T", "uid": "titled-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "Health",
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+                {"id": 2, "type": "stat", "title": "Up",
+                 "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Health")
+        self.assertEqual(len(sections[0]["section"]["panels"]), 1)
+
+    def test_untitled_explicit_row_still_becomes_section(self):
+        """Untitled row (``title: ""``) used to silently flatten its
+        children into the top level. L3: it now produces a section
+        with a fallback title so the grouping is preserved."""
+        dashboard = {
+            "title": "T", "uid": "untitled-row-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "stat", "title": "Outside",
+                 "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+                {"id": 2, "type": "row", "title": "",
+                 "gridPos": {"x": 0, "y": 4, "w": 24, "h": 1}},
+                {"id": 3, "type": "stat", "title": "Inside",
+                 "gridPos": {"x": 0, "y": 5, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        flat = [n for n in top if isinstance(n, dict) and "section" not in n]
+        # "Outside" is before any row -> stays flat.
+        self.assertEqual(len(flat), 1)
+        self.assertEqual(flat[0]["title"], "Outside")
+        # "Inside" was under the untitled row -> goes into a section
+        # with a synthesised title (not the empty string).
+        self.assertEqual(len(sections), 1)
+        self.assertTrue(
+            bool(sections[0].get("title", "").strip()),
+            "Synthesised section title must not be empty",
+        )
+        self.assertEqual(len(sections[0]["section"]["panels"]), 1)
+        self.assertEqual(sections[0]["section"]["panels"][0]["title"], "Inside")
+
+    def test_collapsed_row_with_empty_title_becomes_section(self):
+        """Collapsed rows with empty titles (children nested in
+        ``panels[]``) follow the same rule."""
+        dashboard = {
+            "title": "T", "uid": "collapsed-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "",
+                 "collapsed": True,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                 "panels": [
+                     {"id": 2, "type": "stat", "title": "Inner",
+                      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertTrue(bool(sections[0].get("title", "").strip()))
+
+    def test_panels_before_any_row_stay_flat(self):
+        """Panels that genuinely precede every row (the author chose
+        to put them at the top of the dashboard, not in a row) stay
+        as flat top-level panels. L3 only wraps panels that belong to
+        an explicit row container."""
+        dashboard = {
+            "title": "T", "uid": "no-row-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "stat", "title": "Header",
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        # No row -> no section
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 0)
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]["title"], "Header")
 
 
 class L2PerTypeMinimumsTests(unittest.TestCase):

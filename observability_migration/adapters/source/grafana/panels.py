@@ -150,6 +150,13 @@ class NormalizedPanelGroup:
     title: str | None
     panels: list[dict]
     skipped_panel_results: list[PanelResult] = field(default_factory=list)
+    # L3: set when the normaliser decided this group should NOT be
+    # emitted as a section even though it came from an explicit row
+    # (eg. legacy single-panel rows where a 1-panel section would be
+    # visual clutter; placeholder titles like "New Row" / "Row").
+    # Defaults to False so callers default to the L3 "always section
+    # for explicit rows" behaviour unless this overrides it.
+    force_flatten: bool = False
 
 
 _PLACEHOLDER_SECTION_TITLES = frozenset({"title", "new row", "row"})
@@ -3217,21 +3224,35 @@ def _flatten_dashboard_panels(dashboard):
 def _build_section_groups(dashboard):
     """Group Grafana panels by their parent row.
 
-    Returns a list of ``(row_title | None, [panel, ...])``.
-    Panels before the first row form a group with ``row_title=None``.
-    Collapsed rows carry their children in ``panel["panels"]``.
+    Returns a list of ``(row_title | None, [panel, ...], is_explicit_row)``.
+
+    * ``row_title`` is the source row's title (``None`` when the row
+      had an empty/missing title).
+    * ``is_explicit_row`` is True iff the group came from a real
+      Grafana row container (modern ``type: row`` or legacy
+      ``rows[]``). False marks panels that genuinely live at the
+      top level, before any row.
+
+    Downstream, :func:`translate_dashboard` uses ``is_explicit_row``
+    to decide whether to emit a Kibana section (L3): every explicit
+    row becomes a section, even when the source row had no title.
+    Top-level panels stay flat. This preserves the author's
+    grouping intent and keeps the section-emit path the single
+    source of truth for the "always emit a section for a row" rule.
     """
-    groups: list[tuple[str | None, list[dict]]] = []
+    groups: list[tuple[str | None, list[dict], bool]] = []
     current_title: str | None = None
     current_panels: list[dict] = []
+    current_is_row: bool = False
 
     top_level = dashboard.get("panels", [])
     for panel in sorted(top_level, key=_panel_sort_key):
         if panel.get("type") == "row":
             if current_panels or groups:
-                groups.append((current_title, current_panels))
+                groups.append((current_title, current_panels, current_is_row))
             current_title = str(panel.get("title") or "").strip() or None
             current_panels = list(panel.get("panels", []))
+            current_is_row = True
         else:
             current_panels.append(panel)
 
@@ -3260,10 +3281,10 @@ def _build_section_groups(dashboard):
             if x_cursor >= GRAFANA_GRID_COLS:
                 x_cursor = 0
             patched.append(enriched)
-        groups.append((row_title, patched))
+        groups.append((row_title, patched, True))
 
     if current_panels or not groups:
-        groups.append((current_title, current_panels))
+        groups.append((current_title, current_panels, current_is_row))
 
     return groups
 
@@ -3364,9 +3385,18 @@ def _is_decorative_repeat_header_panel(panel):
 
 
 def _is_placeholder_section_title(title):
+    """True for Grafana's stock "untitled row" placeholders.
+
+    L3 deliberately *excludes* the truly-empty case from this check:
+    an empty row title means "the author didn't bother labelling
+    this row", which L3 handles by synthesising a numbered section
+    title rather than flattening. The stock placeholder strings
+    (``Title``, ``New Row``, ``Row``) DO indicate "this is just
+    Grafana's default, please flatten".
+    """
     cleaned = clean_template_variables(str(title or "")).strip()
     if not cleaned:
-        return True
+        return False
     return cleaned.casefold() in _PLACEHOLDER_SECTION_TITLES
 
 
@@ -3408,20 +3438,31 @@ def _normalize_panel_group(row_title, group_panels):
 
     cleaned_title = clean_template_variables(str(row_title or "")).strip() or None
     legacy_row = any(bool(panel.get("_legacy_row")) for panel in group_panels)
-    should_flatten = cleaned_title is None
+
+    # ``force_flatten`` is only True when there is a positive reason
+    # to drop the section wrapper (placeholder row title, legacy
+    # single-panel row, or a section whose only child has the same
+    # title as the section). A *missing* row title alone is NOT a
+    # reason -- L3 wants to wrap untitled explicit rows in
+    # synthesised-title sections, not flatten them.
+    force_flatten = False
     if _is_placeholder_section_title(row_title) or (legacy_row and len(retained_panels) <= 1):
-        should_flatten = True
+        force_flatten = True
     elif len(retained_panels) == 1 and cleaned_title:
         child_title = clean_template_variables(str(retained_panels[0].get("title") or "")).strip()
         if not child_title:
             child_title = str(retained_panels[0].get("title") or "").strip()
         if child_title and child_title.casefold() == cleaned_title.casefold():
-            should_flatten = True
+            force_flatten = True
 
+    # ``title is None`` still signals "no source title" to callers
+    # that don't read force_flatten; they decide whether to synthesise
+    # one based on whether the group came from an explicit row.
     return NormalizedPanelGroup(
-        title=None if should_flatten else cleaned_title,
+        title=None if force_flatten else cleaned_title,
         panels=retained_panels,
         skipped_panel_results=skipped_panel_results,
+        force_flatten=force_flatten,
     )
 
 
@@ -3767,7 +3808,8 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             result.skipped += 1
 
     used_section_titles: dict[str, int] = {}
-    for row_title, group_panels in section_groups:
+    untitled_section_counter = 0
+    for row_title, group_panels, is_explicit_row in section_groups:
         normalized_group = _normalize_panel_group(row_title, group_panels)
         legacy_group = any(bool(panel.get("_legacy_row")) for panel in group_panels)
         for panel_result in normalized_group.skipped_panel_results:
@@ -3802,8 +3844,29 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         if legacy_group and normalized_group.title is None:
             _restore_flattened_legacy_panel_titles(translated)
         group_height = _panel_group_height(translated)
-        if normalized_group.title:
-            cleaned = clean_template_variables(normalized_group.title) or normalized_group.title
+
+        # L3: every explicit Grafana row container becomes a Kibana
+        # section, even when the source row had no title. Synthesise
+        # a fallback title in that case so each section gets a
+        # unique, human-readable label. Panels before any row stay
+        # flat at the top level.
+        #
+        # The pre-existing ``_normalize_panel_group`` flattening
+        # heuristic (legacy single-panel rows, placeholder titles
+        # like "New Row") wins over L3 -- it knows when a section
+        # would be visual clutter, and we don't want to undo that.
+        should_emit_section = (
+            bool(normalized_group.title) or is_explicit_row
+        ) and not normalized_group.force_flatten
+        if should_emit_section:
+            if normalized_group.title:
+                cleaned = (
+                    clean_template_variables(normalized_group.title)
+                    or normalized_group.title
+                )
+            else:
+                untitled_section_counter += 1
+                cleaned = f"Section {untitled_section_counter}"
             count = used_section_titles.get(cleaned, 0) + 1
             used_section_titles[cleaned] = count
             unique_title = f"{cleaned} ({count})" if count > 1 else cleaned
