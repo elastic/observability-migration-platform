@@ -6839,6 +6839,260 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         )
 
 
+class L4RepeatPanelExpansionTests(unittest.TestCase):
+    """L4 universal fix: expand ``repeat: "$var"`` panels into N
+    concrete clones (one per variable value), with PromQL,
+    title, and ``gridPos`` updated per clone.
+
+    Before L4, repeated Grafana panels were collapsed: the variable
+    became a single-select Kibana control, and only one panel was
+    emitted. The author's "show me one chart per instance" intent
+    was lost entirely.
+
+    L4 resolves variable values from:
+
+    * ``variable["options"]`` (custom vars / explicit lists), then
+    * ``variable["current"]["text"]``  (the last-resolved set
+      Grafana cached when the dashboard was saved).
+
+    Variables that can't be resolved this way (unconfigured query
+    vars) keep the single-panel behaviour and emit a warning. The
+    expansion is capped at 8 panels to prevent dashboard explosion
+    for high-cardinality vars; the rest are dropped with a warning.
+    """
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana import (
+            rules as rules_mod,
+        )
+        from observability_migration.adapters.source.grafana import (
+            schema as schema_mod,
+        )
+        self.rule_pack = rules_mod.RulePackConfig()
+        self.resolver = schema_mod.SchemaResolver(self.rule_pack)
+
+    def _translate(self, dashboard):
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = panels_mod.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            with open(yaml_path) as f:
+                doc = yaml.safe_load(f)
+        return result, doc["dashboards"][0]
+
+    def _walk_leaves(self, panels):
+        for p in panels or []:
+            if isinstance(p, dict) and "section" in p:
+                yield from self._walk_leaves(p["section"].get("panels") or [])
+            elif isinstance(p, dict):
+                yield p
+
+    def test_custom_variable_repeat_fans_out_three_panels(self):
+        """A panel with ``repeat: instance`` against a custom var
+        with 3 options should produce 3 leaf panels with
+        substituted titles."""
+        dashboard = {
+            "title": "Repeat Custom", "uid": "rep-custom-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "query": "alpha, beta, gamma",
+                "options": [
+                    {"text": "alpha", "value": "alpha"},
+                    {"text": "beta", "value": "beta"},
+                    {"text": "gamma", "value": "gamma"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "CPU on $instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "rate(node_cpu{instance=\"$instance\"}[5m])", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(
+            titles,
+            ["CPU on alpha", "CPU on beta", "CPU on gamma"],
+            "Each clone must substitute $instance in the panel title",
+        )
+
+    def test_repeat_substitutes_promql_variable_references(self):
+        """Each clone's PromQL must reference the clone's specific
+        variable value, not the literal ``$instance``."""
+        dashboard = {
+            "title": "T", "uid": "rep-promql-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "options": [
+                    {"text": "a", "value": "a"},
+                    {"text": "b", "value": "b"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "x",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up{instance=\"$instance\"}", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        queries = [
+            (p.get("esql") or {}).get("query", "")
+            for p in leaves
+            if p.get("esql")
+        ]
+        # We can't predict the exact ESQL, but each query should
+        # mention the clone's value and not the literal $instance.
+        a_clone = next((q for q in queries if "service.instance.id" in q and '"a"' in q), None)
+        b_clone = next((q for q in queries if "service.instance.id" in q and '"b"' in q), None)
+        self.assertIsNotNone(a_clone, f"clone for instance=a missing; queries={queries!r}")
+        self.assertIsNotNone(b_clone, f"clone for instance=b missing; queries={queries!r}")
+        # Neither clone should still contain the unresolved variable.
+        for q in queries:
+            self.assertNotIn("$instance", q, "ESQL must not contain the unresolved Grafana variable")
+
+    def test_high_cardinality_cap_at_eight(self):
+        """Variables with >8 values are capped to 8 with a warning."""
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        values = [{"text": f"v{i}", "value": f"v{i}"} for i in range(12)]
+        dashboard = {
+            "title": "T", "uid": "rep-cap-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom", "options": values,
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        result, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(
+            len(titles), panels_mod.L4_REPEAT_EXPANSION_CAP,
+            f"Expected exactly {panels_mod.L4_REPEAT_EXPANSION_CAP} clones, "
+            f"got {len(titles)}: {titles!r}",
+        )
+        # A skip result should record the cap-warning for the
+        # operator.
+        cap_warning_titles = [
+            pr.title for pr in result.panel_results
+            if pr.status == "skipped" and "repeat" in (pr.warnings or [""])[0].lower()
+        ]
+        self.assertTrue(cap_warning_titles, "expected a skip-result mentioning the repeat cap")
+
+    def test_unresolvable_query_var_keeps_single_panel_with_warning(self):
+        """Query vars without resolved current/options stay as a
+        single Kibana panel with an explanatory warning. (We don't
+        hit Elasticsearch from the translator for label values
+        in v1 of L4.)"""
+        dashboard = {
+            "title": "T", "uid": "rep-unresolvable-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "query",
+                "query": "label_values(up, instance)",
+                # No options, no current value resolved.
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "u: $instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        result, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        # Single panel preserved (legacy behaviour for this case)
+        self.assertEqual(len(leaves), 1)
+        # A skip warning was recorded
+        unresolvable_warnings = [
+            pr for pr in result.panel_results
+            if pr.status == "skipped"
+            and any("unresolvable" in w.lower() or "could not resolve" in w.lower()
+                    for w in (pr.warnings or []))
+        ]
+        self.assertTrue(
+            unresolvable_warnings,
+            "expected a skipped PanelResult mentioning the unresolvable variable",
+        )
+
+    def test_repeat_uses_current_text_when_options_missing(self):
+        """For query vars that have a cached ``current`` set
+        (multi-value), we fall back to those values."""
+        dashboard = {
+            "title": "T", "uid": "rep-current-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "query",
+                "query": "label_values(up, instance)",
+                "current": {
+                    "text": ["host-1", "host-2"],
+                    "value": ["host-1", "host-2"],
+                },
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(titles, ["host-1", "host-2"])
+
+    def test_horizontal_repeat_lays_out_left_to_right(self):
+        """``repeatDirection: h`` clones get laid out
+        left-to-right wrapping at the Grafana 24-col width;
+        downstream L1 scales them to the Kibana 48-col grid."""
+        dashboard = {
+            "title": "T", "uid": "rep-h-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "options": [
+                    {"text": "a", "value": "a"},
+                    {"text": "b", "value": "b"},
+                    {"text": "c", "value": "c"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "repeatDirection": "h",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        xs = sorted(p["position"]["x"] for p in leaves)
+        # Three panels of w=8 (Grafana cols) -> w=16 (Kibana cols
+        # after the 2x scale). Laid out horizontally they should
+        # occupy x=0, 16, 32 in Kibana coordinates.
+        self.assertEqual(xs, [0, 16, 32], f"horizontal lay-out fan-out, got x={xs}")
+
+
 class L3RowAwareSectioningTests(unittest.TestCase):
     """L3 universal fix: every explicit Grafana ``type: row`` panel
     (modern schema) and every legacy ``rows[]`` entry (schemaVersion

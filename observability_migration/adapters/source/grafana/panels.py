@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass, field
@@ -3295,6 +3296,278 @@ def _repeat_variable_name(value):
     return value.strip()
 
 
+# L4: maximum number of fan-out clones produced per repeating panel.
+# Beyond this, we emit a warning and keep the first N. The cap stops
+# a single ``repeat: instance`` on a 50-node cluster from ballooning
+# the dashboard into 50 separate Lens panels.
+L4_REPEAT_EXPANSION_CAP = 8
+
+
+_VARIABLE_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _resolve_variable_values(variable: dict) -> tuple[list[str], str]:
+    """Return ``(values, source)`` for a Grafana templating variable.
+
+    Resolution order:
+
+    * ``variable["options"]`` -- present for custom vars (always) and
+      cached for query vars when the dashboard JSON has been saved
+      with a "current" snapshot. Each option is ``{text, value}``.
+    * ``variable["current"]["text"]`` / ``["value"]`` -- the last
+      multi-select snapshot the Grafana UI cached.
+
+    ``source`` is one of ``"options"``, ``"current"``, or ``""`` when
+    no values could be resolved (most often: a fresh query var that
+    has never been evaluated, or a query var pointing at a metric
+    series we can't enumerate without hitting the live Elasticsearch).
+    """
+    options = variable.get("options")
+    if isinstance(options, list) and options:
+        out: list[str] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            value = opt.get("value")
+            if value is None:
+                value = opt.get("text")
+            if value in ("$__all", "$__all_value", "All"):
+                # Skip the "All" sentinel; we expand its constituents.
+                continue
+            if isinstance(value, str) and value:
+                out.append(value)
+            elif isinstance(value, list):
+                out.extend(str(v) for v in value if v)
+        if out:
+            return out, "options"
+
+    current = variable.get("current") or {}
+    if isinstance(current, dict):
+        text = current.get("text")
+        value = current.get("value")
+        for candidate in (text, value):
+            if isinstance(candidate, list) and candidate:
+                vals = [str(v) for v in candidate if v and v != "All"]
+                if vals:
+                    return vals, "current"
+            if isinstance(candidate, str) and candidate and candidate != "All":
+                return [candidate], "current"
+
+    return [], ""
+
+
+def _substitute_grafana_variables(text: str, substitutions: dict[str, str]) -> str:
+    """Replace ``$var`` and ``${var}`` (and ``${var:fmt}``) in ``text``
+    with ``substitutions[var]``. Variables not in the dict are left
+    untouched so a downstream pass still sees them.
+    """
+    if not isinstance(text, str) or not substitutions:
+        return text
+
+    def _repl(match: re.Match) -> str:
+        name = match.group(1) or match.group(2)
+        return substitutions.get(name, match.group(0))
+
+    return _VARIABLE_REFERENCE_RE.sub(_repl, text)
+
+
+def _clone_panel_with_substitutions(
+    panel: dict,
+    substitutions: dict[str, str],
+    new_id: int,
+) -> dict:
+    """Deep-copy a panel and substitute ``$var`` references in its
+    title and target expressions. ``gridPos`` is preserved verbatim
+    here; the caller is responsible for repositioning the clones."""
+    clone = copy.deepcopy(panel)
+    clone["id"] = new_id
+    clone.pop("repeat", None)
+    clone.pop("repeatDirection", None)
+    clone.pop("repeatPanelId", None)
+
+    if "title" in clone:
+        clone["title"] = _substitute_grafana_variables(
+            str(clone.get("title") or ""), substitutions
+        )
+
+    targets = clone.get("targets")
+    if isinstance(targets, list):
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            if "expr" in target and isinstance(target["expr"], str):
+                target["expr"] = _substitute_grafana_variables(
+                    target["expr"], substitutions
+                )
+            if "query" in target and isinstance(target["query"], str):
+                target["query"] = _substitute_grafana_variables(
+                    target["query"], substitutions
+                )
+    return clone
+
+
+def _expand_repeat_panels(
+    dashboard: dict,
+    result: MigrationResult,
+) -> dict:
+    """L4: fan out ``repeat: $var`` panels into one clone per resolved
+    variable value, returning a new dashboard with the expansion in
+    place of the templates.
+
+    The pass runs before :func:`_build_section_groups`, so downstream
+    layout / translation logic sees ordinary, distinct panels rather
+    than the original templates. Sections / rows / legacy
+    ``dashboard.rows[]`` panel arrays are all handled by walking the
+    same shape recursively.
+
+    Cap behaviour: panels whose variable resolves to more than
+    :data:`L4_REPEAT_EXPANSION_CAP` values produce the first
+    ``L4_REPEAT_EXPANSION_CAP`` clones and a ``skipped`` PanelResult
+    warning so the operator can spot the dropped dimension.
+
+    Unresolvable variables (query vars without cached options /
+    current) leave the original panel in place and record a
+    ``skipped`` warning so the lost ``repeat`` dimension is visible.
+    """
+    variables = {
+        v.get("name", ""): v
+        for v in (dashboard.get("templating", {}).get("list") or [])
+        if isinstance(v, dict) and v.get("name")
+    }
+    if not variables:
+        # No variables -> no repeats can resolve; cheap-skip.
+        return dashboard
+
+    # Find the maximum existing panel id so synthesised ids never
+    # collide with author-supplied ids.
+    max_id = 0
+    for panel in _flatten_dashboard_panels(dashboard):
+        pid = panel.get("id")
+        if isinstance(pid, int) and pid > max_id:
+            max_id = pid
+
+    next_id = [max_id + 1]
+
+    def expand_panels(panel_list: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for panel in panel_list:
+            if not isinstance(panel, dict):
+                out.append(panel)
+                continue
+
+            # Recurse into row containers first so any repeats nested
+            # in a collapsed row are also expanded.
+            if panel.get("type") == "row" and panel.get("panels"):
+                new_panel = dict(panel)
+                new_panel["panels"] = expand_panels(panel["panels"])
+                out.append(new_panel)
+                continue
+
+            repeat_name = _repeat_variable_name(panel.get("repeat"))
+            if not repeat_name or repeat_name not in variables:
+                out.append(panel)
+                continue
+
+            values, _source = _resolve_variable_values(variables[repeat_name])
+            if not values:
+                # Variable can't be resolved at translation time;
+                # keep the original single panel (downstream control
+                # logic in ``translate_variables`` will collapse the
+                # repeat dimension into a single-select control as a
+                # best-effort fallback) and emit a warning so the
+                # operator knows the repeat dimension wasn't fanned
+                # out.
+                warn_result = PanelResult(
+                    str(panel.get("title") or panel.get("type") or "panel"),
+                    str(panel.get("type") or ""),
+                    "skipped",
+                    "skipped",
+                    1.0,
+                )
+                warn_result.warnings = [
+                    f"Could not resolve repeat variable ${repeat_name}; "
+                    f"the dashboard's templating doesn't expose its values "
+                    f"(no options[] or current cached). The repeat "
+                    f"dimension is lost; consider adding explicit options "
+                    f"to the variable definition.",
+                ]
+                result.panel_results.append(warn_result)
+                result.skipped += 1
+                # Preserve the original panel unchanged so the
+                # existing decorative-header / control-collapse paths
+                # downstream still recognise it.
+                out.append(panel)
+                continue
+
+            capped_values = values[:L4_REPEAT_EXPANSION_CAP]
+            if len(values) > L4_REPEAT_EXPANSION_CAP:
+                warn_result = PanelResult(
+                    str(panel.get("title") or panel.get("type") or "panel"),
+                    str(panel.get("type") or ""),
+                    "skipped",
+                    "skipped",
+                    1.0,
+                )
+                warn_result.warnings = [
+                    f"Repeat variable ${repeat_name} has {len(values)} "
+                    f"values; capped expansion to the first "
+                    f"{L4_REPEAT_EXPANSION_CAP} to prevent dashboard "
+                    f"explosion. Add a dashboard control filter to "
+                    f"select among the remaining "
+                    f"{len(values) - L4_REPEAT_EXPANSION_CAP} values.",
+                ]
+                result.panel_results.append(warn_result)
+                result.skipped += 1
+
+            direction = str(panel.get("repeatDirection") or "v").lower()
+            origin = panel.get("gridPos") or {}
+            base_x = int(origin.get("x", 0) or 0)
+            base_y = int(origin.get("y", 0) or 0)
+            base_w = int(origin.get("w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS)
+            base_h = int(origin.get("h", 4) or 4)
+
+            for idx, value in enumerate(capped_values):
+                subs = {repeat_name: str(value)}
+                clone = _clone_panel_with_substitutions(panel, subs, next_id[0])
+                next_id[0] += 1
+                if direction == "h":
+                    # Lay out horizontally, wrapping at the 24-col
+                    # Grafana grid. Each clone keeps the source
+                    # gridPos width and height.
+                    cols_per_row = max(1, GRAFANA_GRID_COLS // base_w)
+                    row_offset = idx // cols_per_row
+                    col_offset = idx % cols_per_row
+                    gpos = {
+                        "x": base_x + col_offset * base_w,
+                        "y": base_y + row_offset * base_h,
+                        "w": base_w,
+                        "h": base_h,
+                    }
+                else:
+                    # Vertical (default): stack top-to-bottom.
+                    gpos = {
+                        "x": base_x,
+                        "y": base_y + idx * base_h,
+                        "w": base_w,
+                        "h": base_h,
+                    }
+                clone["gridPos"] = gpos
+                out.append(clone)
+        return out
+
+    expanded = dict(dashboard)
+    if dashboard.get("panels"):
+        expanded["panels"] = expand_panels(dashboard["panels"])
+    if dashboard.get("rows"):
+        new_rows = []
+        for row in dashboard["rows"]:
+            new_row = dict(row)
+            new_row["panels"] = expand_panels(row.get("panels") or [])
+            new_rows.append(new_row)
+        expanded["rows"] = new_rows
+    return expanded
+
+
 def _collect_repeat_variable_names(dashboard):
     repeat_variables: set[str] = set()
     for panel in _flatten_dashboard_panels(dashboard):
@@ -3787,6 +4060,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         folder_title=str((dashboard.get("_grafana_meta") or {}).get("folderTitle") or ""),
         inventory=build_dashboard_inventory(dashboard),
     )
+
+    # L4: expand ``repeat: $var`` panels into one concrete clone per
+    # resolved variable value BEFORE any downstream logic walks the
+    # panels. From here on every panel in ``dashboard`` is a regular
+    # (non-templated) panel and the rest of the pipeline can stay
+    # ignorant of the fan-out.
+    dashboard = _expand_repeat_panels(dashboard, result)
 
     all_panels = _flatten_dashboard_panels(dashboard)
     result.total_panels = len(all_panels)
