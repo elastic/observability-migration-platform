@@ -2975,16 +2975,89 @@ def _field_control_type(field_name, resolver):
 MIN_DATATABLE_HEIGHT = 5
 
 
+# L2: per-panel-type min/max width and height.
+#
+# Each entry is ``(min_w, min_h, max_h | None)``. ``None`` means
+# "do not clamp the upper bound" (used for long-form markdown).
+#
+# Rationale (from the layout-redesign plan + survey of every parity
+# dashboard's emitted YAML on 2026-05-12):
+#
+# - ``metric`` (stat / single-value): h=3 is unreadable on Kibana's
+#   20px row height (60px tall); bump to 6 (~120px). Beyond ~12 rows
+#   the value is just whitespace -- cap there.
+# - ``gauge``: need ~8 rows for the dial; cap at 16 to avoid stretching
+#   the dial to fill an absurd vertical strip.
+# - ``bar`` / ``line`` / ``area`` / ``xy``: a 12+ column chart with
+#   h<6 has no room for axis labels + legend. Cap at 24 so anemic
+#   heatmap-to-bar degradations don't stretch the full viewport.
+# - ``datatable``: min w=12 (one column is unreadable below); min
+#   h=8 (header + ~3 rows visible); cap at 24 for the same reason.
+# - ``pie`` / ``heatmap`` / ``treemap`` / ``bargauge``: chart-shaped,
+#   apply chart-shaped minimums.
+# - ``markdown``: w=4 / h=2 is the absolute floor (text fits); we
+#   deliberately don't clamp the max because long-form notes/runbooks
+#   need to be tall by design.
+_TYPE_SIZE_CONSTRAINTS: dict[str, tuple[int, int, int | None]] = {
+    "metric": (4, 6, 12),
+    "gauge": (6, 8, 16),
+    "bargauge": (6, 6, 16),
+    "bar": (8, 6, 24),
+    "line": (8, 6, 24),
+    "area": (8, 6, 24),
+    "xy": (8, 6, 24),
+    "datatable": (12, 8, 24),
+    "pie": (8, 8, 24),
+    "treemap": (8, 8, 24),
+    "heatmap": (8, 8, 24),
+    "markdown": (4, 2, None),
+}
+
+
 def _normalize_tile_size(panel, kibana_type):
+    """Apply per-type width/height min and max clamps (L2).
+
+    Resolves the effective panel type from the panel's
+    ``esql.type`` if present (this is the actual Kibana
+    visualization), falling back to the caller-supplied
+    ``kibana_type``, then ``markdown`` if the panel is a plain
+    markdown tile. Unknown types pass through with no clamping,
+    preserving the legacy behaviour for any future visualization
+    type that doesn't have an entry in the constraint table.
+    """
     size = dict(panel.get("size", {}))
     width = int(size.get("w", 0) or 0)
     height = int(size.get("h", 0) or 0)
-    actual_type = (panel.get("esql") or {}).get("type", kibana_type)
-    if kibana_type == "metric" and 0 < width < MIN_PANEL_WIDTH:
-        size["w"] = MIN_PANEL_WIDTH
-    if actual_type == "datatable" and 0 < height < MIN_DATATABLE_HEIGHT:
-        size["h"] = MIN_DATATABLE_HEIGHT
+
+    esql_cfg = panel.get("esql")
+    if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+        effective_type = str(esql_cfg["type"])
+    elif "markdown" in panel:
+        effective_type = "markdown"
+    else:
+        effective_type = str(kibana_type or "")
+
+    constraints = _TYPE_SIZE_CONSTRAINTS.get(effective_type)
+    if constraints is not None:
+        min_w, min_h, max_h = constraints
+        if 0 < width < min_w:
+            width = min_w
+        if 0 < height < min_h:
+            height = min_h
+        if max_h is not None and height > max_h:
+            height = max_h
+    elif effective_type == "metric" and 0 < width < MIN_PANEL_WIDTH:
+        # Defensive: in case "metric" got dropped from the table.
+        width = MIN_PANEL_WIDTH
+    elif effective_type == "datatable" and 0 < height < MIN_DATATABLE_HEIGHT:
+        height = MIN_DATATABLE_HEIGHT
+
+    if width > 0:
+        size["w"] = width
+    if height > 0:
+        size["h"] = height
     panel["size"] = size
+
     position = dict(panel.get("position", {}))
     max_x = KIBANA_GRID_COLS - int(size.get("w", 0) or 0)
     if max_x < 0:

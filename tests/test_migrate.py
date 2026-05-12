@@ -5731,7 +5731,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(yaml_panel["size"]["w"], 48)
 
     def test_kibana_native_layout_sets_type_based_height(self):
-        """After Kibana-native layout, height is determined by panel type."""
+        """After Kibana-native layout (the no-geometry fallback path),
+        height is determined by panel type via ``KIBANA_TYPE_HEIGHT``
+        and then clamped to the L2 per-type minimum (so a ``metric``
+        gets ``max(KIBANA_TYPE_HEIGHT['metric']=5, L2 min h=6) = 6``)."""
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
         panels = [
             {"title": "Chart", "esql": {"type": "line"}, "size": {"w": 48, "h": 8}, "position": {"x": 0, "y": 0}, "_grafana_row_y": 0, "_grafana_row_x": 0},
@@ -5739,7 +5742,8 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         ]
         result = _apply_kibana_native_layout(panels)
         self.assertEqual(result[0]["size"]["h"], 12, "line chart should be h=12")
-        self.assertEqual(result[1]["size"]["h"], 5, "metric should be h=5")
+        # Metric: KIBANA_TYPE_HEIGHT=5 -> L2 clamp -> 6
+        self.assertEqual(result[1]["size"]["h"], 6, "metric should be h=6 (L2 min)")
 
     # ------------------------------------------------------------------
     # Text panel handling
@@ -6592,7 +6596,8 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         self.assertEqual(panels[0]["position"]["y"], 0)
         self.assertEqual(panels[0]["size"]["h"], 12)
         self.assertEqual(panels[1]["position"]["y"], 12)
-        self.assertEqual(panels[1]["size"]["h"], 5)
+        # metric: KIBANA_TYPE_HEIGHT=5 -> L2 min_h=6 -> 6
+        self.assertEqual(panels[1]["size"]["h"], 6)
 
     def test_row_height_is_max_of_types(self):
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
@@ -6667,8 +6672,11 @@ class KibanaNativeLayoutTests(unittest.TestCase):
 
         _apply_kibana_native_layout(panels)
 
-        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6})
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 6})
+        # bar/gauge both have L2 per-type min widths (8 and 6
+        # respectively); the faithful scaled w=6 gets bumped to 8 for
+        # bar, kept at 6 for gauge. Heights stay at the scaled 6.
+        self.assertEqual(panels[0]["size"], {"w": 8, "h": 6}, "bar bumps to L2 min_w=8")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge bumps to L2 min_h=8")
         # Both panels share Grafana y=1 -> they're the topmost, so
         # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -6829,6 +6837,112 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             f"Kibana gap (got {gap}); a gap of 0 means the y-cursor "
             f"regression has returned.",
         )
+
+
+class L2PerTypeMinimumsTests(unittest.TestCase):
+    """L2 universal fix: every panel type gets per-type
+    width/height minimums (and a max where one makes sense) enforced
+    by :func:`_normalize_tile_size`, regardless of what the L1
+    coordinate transform produced.
+
+    The current floor of "metric width >= 4" and "datatable height >=
+    5" is far too sparse: ``node-exporter-full`` has 11 metric tiles
+    at h=3 (60px tall on Kibana's 20px row height — unreadable).
+    """
+
+    def _normalize(self, esql_type, w, h, **extra):
+        from observability_migration.adapters.source.grafana.panels import (
+            _normalize_tile_size,
+        )
+        panel = {
+            "title": "T",
+            "size": {"w": w, "h": h},
+            "position": {"x": 0, "y": 0},
+            **extra,
+        }
+        if esql_type == "markdown":
+            panel["markdown"] = {"content": "x"}
+        else:
+            panel["esql"] = {"type": esql_type}
+        _normalize_tile_size(panel, esql_type)
+        return panel["size"]
+
+    # --- metric ----------------------------------------------------
+
+    def test_metric_h3_bumped_to_min_6(self):
+        """The most common L2 defect: stat tiles with h=3 (60px)
+        render unreadably small. Bump to the per-type min of 6."""
+        self.assertEqual(self._normalize("metric", 4, 3)["h"], 6)
+
+    def test_metric_h_above_min_is_unchanged(self):
+        self.assertEqual(self._normalize("metric", 6, 8)["h"], 8)
+
+    def test_metric_h_above_max_is_clamped(self):
+        """Metrics don't benefit from going beyond ~12 rows tall;
+        they show one value plus a sparkline at most."""
+        self.assertEqual(self._normalize("metric", 6, 30)["h"], 12)
+
+    def test_metric_w_below_min_is_bumped(self):
+        """Pre-existing MIN_PANEL_WIDTH=4 enforcement is preserved."""
+        self.assertEqual(self._normalize("metric", 2, 6)["w"], 4)
+
+    # --- gauge -----------------------------------------------------
+
+    def test_gauge_min_size(self):
+        """Gauges need room for the dial; min_w=6, min_h=8."""
+        size = self._normalize("gauge", 4, 4)
+        self.assertEqual(size["w"], 6)
+        self.assertEqual(size["h"], 8)
+
+    def test_gauge_max_h(self):
+        self.assertEqual(self._normalize("gauge", 12, 30)["h"], 16)
+
+    # --- datatable -------------------------------------------------
+
+    def test_datatable_min_w_bumped(self):
+        """Datatables need at least ~12 cols to show columns."""
+        self.assertEqual(self._normalize("datatable", 6, 10)["w"], 12)
+
+    def test_datatable_min_h_bumped(self):
+        self.assertEqual(self._normalize("datatable", 24, 4)["h"], 8)
+
+    def test_datatable_max_h(self):
+        self.assertEqual(self._normalize("datatable", 24, 30)["h"], 24)
+
+    # --- bar / xy / line / area ------------------------------------
+
+    def test_chart_types_min_h(self):
+        """Charts (bar/xy/line/area) need at least h=6 to show
+        their data clearly."""
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 12, 4)["h"], 6, t)
+
+    def test_chart_types_min_w(self):
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 6, 12)["w"], 8, t)
+
+    def test_chart_types_max_h(self):
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 12, 30)["h"], 24, t)
+
+    # --- markdown / text ------------------------------------------
+
+    def test_markdown_min_size(self):
+        size = self._normalize("markdown", 2, 1)
+        self.assertEqual(size["w"], 4)
+        self.assertEqual(size["h"], 2)
+
+    def test_markdown_unbounded_max_h(self):
+        """Long-form markdown can be tall by design; we don't clamp."""
+        self.assertEqual(self._normalize("markdown", 48, 30)["h"], 30)
+
+    # --- pie / heatmap / treemap ----------------------------------
+
+    def test_pie_min_h(self):
+        self.assertEqual(self._normalize("pie", 12, 4)["h"], 8)
 
 
 class NativePromqlTests(unittest.TestCase):
