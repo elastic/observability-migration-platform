@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -3409,54 +3408,43 @@ def _apply_kibana_native_layout(yaml_panels):
 
     Uses the ``_grafana_row_y`` / ``_grafana_row_x`` metadata tags set during
     translation to detect which panels belong to the same visual row, then
-    distributes them evenly across the 48-column Kibana grid with
+    distributes them across the 48-column Kibana grid with
     type-appropriate heights.
+
+    **L1 universal layout (the "faithful coordinate transform")**: when
+    every panel carries the original Grafana geometry
+    (``_grafana_w`` and ``_grafana_h`` are both set) we scale each
+    panel's ``(x, y, w, h)`` independently and shift the whole group
+    so the topmost panel sits at Kibana y=0. This preserves the
+    *relative* vertical spacing that the Grafana author chose
+    (a 9-row gap stays a ~14-row gap in Kibana after the 30/20 row
+    scale), instead of stacking every Grafana y-band sequentially
+    with a cumulative y-cursor.
+
+    Scale factors:
+
+    * Column scale = ``KIBANA_GRID_COLS / GRAFANA_GRID_COLS = 48/24 = 2``
+    * Row scale    = ``GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX = 30/20 = 1.5``
+
+    When some panels lack original geometry (legacy schema 14 row
+    panels, dashboards built before this metadata was tagged) we fall
+    back to the even-distribution path which keeps panels sequential
+    with a y-cursor. This is the "best effort" branch and will go
+    away with L3 (row-aware sectioning).
     """
     if not yaml_panels:
         return yaml_panels
 
-    rows: dict[int, list[dict]] = {}
-    for panel in yaml_panels:
-        gy = panel.get("_grafana_row_y", 0)
-        rows.setdefault(gy, []).append(panel)
+    has_original_geometry = all(
+        panel.get("_grafana_w") is not None
+        and panel.get("_grafana_h") is not None
+        for panel in yaml_panels
+    )
 
-    y_cursor = 0
-    for grafana_y in sorted(rows):
-        row_panels = rows[grafana_y]
-        row_panels.sort(key=lambda p: p.get("_grafana_row_x", 0))
-        has_original_geometry = all(
-            panel.get("_grafana_w") is not None and panel.get("_grafana_h") is not None
-            for panel in row_panels
-        )
-
-        if has_original_geometry:
-            col_scale = KIBANA_GRID_COLS / GRAFANA_GRID_COLS
-            row_scale = GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX
-            row_height = 0
-            for panel in row_panels:
-                raw_w = int(panel.get("_grafana_w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS)
-                raw_h = int(panel.get("_grafana_h", KIBANA_DEFAULT_HEIGHT) or KIBANA_DEFAULT_HEIGHT)
-                pw = max(1, round(raw_w * col_scale))
-                ph = max(1, math.ceil(raw_h * row_scale))
-                px = round(int(panel.get("_grafana_row_x", 0) or 0) * col_scale)
-                panel["size"] = {"w": pw, "h": ph}
-                panel["position"] = {"x": px, "y": y_cursor}
-                row_height = max(row_height, ph)
-        else:
-            n = len(row_panels)
-            row_height = max(
-                KIBANA_TYPE_HEIGHT.get(_kibana_panel_type(p), KIBANA_DEFAULT_HEIGHT)
-                for p in row_panels
-            )
-            base_w = KIBANA_GRID_COLS // n
-            remainder = KIBANA_GRID_COLS - base_w * n
-            x_cursor = 0
-            for i, panel in enumerate(row_panels):
-                pw = base_w + (1 if i < remainder else 0)
-                panel["size"] = {"w": pw, "h": row_height}
-                panel["position"] = {"x": x_cursor, "y": y_cursor}
-                x_cursor += pw
-        y_cursor += row_height
+    if has_original_geometry:
+        _apply_faithful_coordinate_transform(yaml_panels)
+    else:
+        _apply_even_distribution_fallback(yaml_panels)
 
     for panel in yaml_panels:
         panel.pop("_grafana_row_y", None)
@@ -3466,6 +3454,103 @@ def _apply_kibana_native_layout(yaml_panels):
         _normalize_tile_size(panel, _kibana_panel_type(panel))
 
     return yaml_panels
+
+
+def _apply_faithful_coordinate_transform(yaml_panels):
+    """L1: scale each panel's Grafana coords independently and shift
+    the group so the topmost panel sits at Kibana y=0.
+
+    See :func:`_apply_kibana_native_layout` for the rationale and
+    scale factors. This function assumes every panel has
+    ``_grafana_w`` and ``_grafana_h``; callers route to
+    :func:`_apply_even_distribution_fallback` otherwise.
+
+    Edge alignment: rather than scaling ``y`` and ``h`` independently
+    (which lets rounding errors introduce 1-row overlaps between
+    panels that are exactly touching in Grafana, eg.
+    ``y=25,h=6`` immediately followed by ``y=31,h=4``), we scale
+    the *top* and the *bottom* of each panel and derive the height
+    from their difference. This guarantees that touching Grafana
+    panels remain touching (not overlapping) in Kibana, which the
+    downstream ``kb-dashboard-cli`` compile step refuses.
+
+    We use round-half-up (``int(x + 0.5)``) instead of Python's
+    default banker's rounding (``round(0.5) == 0``). Banker's rounding
+    silently strips half-rows from panel heights when the scaled
+    bottom edge lands on ``.5``, which over time eats into the
+    minimum tile heights downstream code assumes.
+    """
+    col_scale = KIBANA_GRID_COLS / GRAFANA_GRID_COLS
+    row_scale = GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX
+
+    def half_up(value: float) -> int:
+        return int(value + 0.5)
+
+    # First pass: compute every panel's absolute Kibana coords and
+    # remember the minimum scaled y so we can normalise.
+    scaled: list[tuple[dict, int, int, int, int]] = []
+    min_y = None
+    for panel in yaml_panels:
+        gy = int(panel.get("_grafana_row_y", 0) or 0)
+        gx = int(panel.get("_grafana_row_x", 0) or 0)
+        raw_w = int(
+            panel.get("_grafana_w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS
+        )
+        raw_h = int(
+            panel.get("_grafana_h", KIBANA_DEFAULT_HEIGHT)
+            or KIBANA_DEFAULT_HEIGHT
+        )
+        # Scale the right and bottom edges, then derive width/height
+        # from the difference so adjacent panels stay adjacent.
+        kx = half_up(gx * col_scale)
+        kx_right = half_up((gx + raw_w) * col_scale)
+        ky = half_up(gy * row_scale)
+        ky_bottom = half_up((gy + raw_h) * row_scale)
+        kw = max(1, kx_right - kx)
+        kh = max(1, ky_bottom - ky)
+        scaled.append((panel, kx, ky, kw, kh))
+        if min_y is None or ky < min_y:
+            min_y = ky
+
+    shift_y = -(min_y or 0)
+    for panel, kx, ky, kw, kh in scaled:
+        panel["size"] = {"w": kw, "h": kh}
+        panel["position"] = {"x": kx, "y": ky + shift_y}
+
+
+def _apply_even_distribution_fallback(yaml_panels):
+    """Best-effort layout for panels without original Grafana
+    geometry. Groups by ``_grafana_row_y`` and distributes each band's
+    panels evenly across the 48-col grid, stacking bands with a
+    y-cursor.
+
+    This is the only path that still uses cumulative y-cursor banding;
+    L3 (row-aware sectioning) is expected to eliminate the need for
+    this branch by always tagging panels with original geometry.
+    """
+    rows: dict[int, list[dict]] = {}
+    for panel in yaml_panels:
+        gy = panel.get("_grafana_row_y", 0)
+        rows.setdefault(gy, []).append(panel)
+
+    y_cursor = 0
+    for grafana_y in sorted(rows):
+        row_panels = rows[grafana_y]
+        row_panels.sort(key=lambda p: p.get("_grafana_row_x", 0))
+        n = len(row_panels)
+        row_height = max(
+            KIBANA_TYPE_HEIGHT.get(_kibana_panel_type(p), KIBANA_DEFAULT_HEIGHT)
+            for p in row_panels
+        )
+        base_w = KIBANA_GRID_COLS // n
+        remainder = KIBANA_GRID_COLS - base_w * n
+        x_cursor = 0
+        for i, panel in enumerate(row_panels):
+            pw = base_w + (1 if i < remainder else 0)
+            panel["size"] = {"w": pw, "h": row_height}
+            panel["position"] = {"x": x_cursor, "y": y_cursor}
+            x_cursor += pw
+        y_cursor += row_height
 
 
 def _panel_bounds(yaml_panel):

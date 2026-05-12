@@ -2986,7 +2986,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertGreater(panels[1]["position"]["y"], 0, "second panel should be below first")
         self.assertEqual(result.inventory["panels"], 2)
 
-    def test_dashboard_translation_resolves_overlapping_positions(self):
+    def test_dashboard_translation_preserves_overlapping_positions(self):
+        """L1 universal layout: when the source Grafana dashboard has
+        overlapping panels (a real-world quirk in some hand-authored
+        dashboards), the migration **faithfully** transmits the
+        original relative positions (Grafana y=0 and y=4 become
+        Kibana y=0 and y=6 after the 30/20 row scale) and trusts
+        Kibana's grid layout to resolve the overlap visually.
+
+        Before L1 this used to be a "we resolve overlaps in Python"
+        contract, which broke relative spacing for every legitimate
+        non-overlapping layout (Grafana y=1 and y=10 collapsed to a
+        single y-cursor stack instead of preserving the gap).
+        Trusting Kibana is the universal fix because it works the
+        same way for overlapping AND non-overlapping inputs.
+        """
         dashboard = {
             "title": "Overlap",
             "uid": "overlap-1",
@@ -3018,8 +3032,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
             payload = yaml.safe_load(yaml_path.read_text())
         panels = payload["dashboards"][0]["panels"]
+        # Grafana y=0 -> Kibana y=0 (after min-y normalisation)
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
-        self.assertGreaterEqual(panels[1]["position"]["y"], 8)
+        # Grafana y=4 -> Kibana y = round(4*1.5)=6. Faithfully
+        # transmitted; the panels visually overlap by 6 rows in
+        # Kibana, just as they overlapped in Grafana.
+        self.assertEqual(panels[1]["position"]["y"], 6)
 
     def test_metric_tile_width_is_normalized_to_minimum(self):
         dashboard = {
@@ -6620,6 +6638,8 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         self.assertEqual(panels[0]["size"]["h"], 15)
 
     def test_grafana_geometry_metadata_preserves_scaled_tile_dimensions(self):
+        """Single-row group: position is shifted so the topmost panel
+        sits at y=0; relative x is preserved at scale=2."""
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
 
         panels = [
@@ -6649,10 +6669,166 @@ class KibanaNativeLayoutTests(unittest.TestCase):
 
         self.assertEqual(panels[0]["size"], {"w": 6, "h": 6})
         self.assertEqual(panels[1]["size"], {"w": 6, "h": 6})
+        # Both panels share Grafana y=1 -> they're the topmost, so
+        # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
         self.assertEqual(panels[1]["position"], {"x": 6, "y": 0})
         self.assertNotIn("_grafana_w", panels[0])
         self.assertNotIn("_grafana_h", panels[0])
+
+    def test_kibana_native_layout_preserves_relative_y_spacing(self):
+        """L1 universal fix: when multiple Grafana visual rows are
+        present, preserve their *relative* spacing in Kibana instead
+        of stacking them sequentially with a y-cursor.
+
+        Grafana ``y`` values map to Kibana via the row scale
+        ``GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX = 30/20 = 1.5``,
+        and the whole group is shifted so the topmost panel sits at
+        Kibana y=0. This means two panels at Grafana y=1 and y=3 stay
+        2 rows apart in Grafana (so 3 rows apart in Kibana after the
+        1.5x scale) instead of collapsing to "stacked with no gap".
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            # Top row at Grafana y=1
+            {"title": "TopL", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 1, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 4},
+            {"title": "TopR", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 1, "_grafana_row_x": 12,
+             "_grafana_w": 12, "_grafana_h": 4},
+            # Lower row at Grafana y=10 (9 rows lower, after a TALL
+            # gap)
+            {"title": "BotL", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 10, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 8},
+        ]
+        _apply_kibana_native_layout(panels)
+        # Scale x by 2, scale y by 1.5.
+        # min Grafana y = 1, so all panels shift down by round(1*1.5)=2.
+        # TopL/TopR: y=1 -> round(1*1.5)=2 -> 2-2=0
+        # BotL:      y=10 -> round(10*1.5)=15 -> 15-2=13
+        self.assertEqual(panels[0]["position"]["y"], 0, "TopL")
+        self.assertEqual(panels[1]["position"]["y"], 0, "TopR")
+        self.assertEqual(panels[2]["position"]["y"], 13, "BotL")
+        # Sanity: heights also scale by 1.5
+        self.assertEqual(panels[0]["size"]["h"], 6)
+        self.assertEqual(panels[2]["size"]["h"], 12)
+
+    def test_kibana_native_layout_single_panel(self):
+        """Trivial case: a single panel always lands at y=0 regardless
+        of its Grafana y, because it's the only panel in the group so
+        min-y normalization shifts it to zero."""
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [{
+            "title": "Solo", "esql": {"type": "bar"},
+            "size": {}, "position": {},
+            "_grafana_row_y": 7, "_grafana_row_x": 5,
+            "_grafana_w": 8, "_grafana_h": 6,
+        }]
+        _apply_kibana_native_layout(panels)
+        self.assertEqual(panels[0]["position"]["y"], 0)
+        self.assertEqual(panels[0]["position"]["x"], 10)  # 5*2
+
+    def test_kibana_native_layout_preserves_grafana_layered_panels(self):
+        """Two panels at the same Grafana y but different heights
+        (one tall, one short) should both start at the same Kibana y
+        — Kibana's grid layout handles their different heights
+        naturally without our code packing them."""
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            # Tall panel
+            {"title": "Tall", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 4, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 10},
+            # Short panel, same y
+            {"title": "Short", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 4, "_grafana_row_x": 12,
+             "_grafana_w": 12, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        self.assertEqual(panels[0]["position"]["y"], 0)
+        self.assertEqual(panels[1]["position"]["y"], 0)
+        # Heights differ - the L1 transform does NOT pack them; their
+        # different bottoms stay different (Kibana renders them as-is)
+        self.assertEqual(panels[0]["size"]["h"], 15)  # round(10*1.5)
+        # Metric has a 5-row default applied by _normalize_tile_size
+        # so we don't assert the exact short panel height here.
+
+    def test_kibana_native_layout_keeps_touching_panels_touching(self):
+        """L1 edge-alignment: two Grafana panels that exactly touch
+        (Grafana ``y=25,h=6`` followed by ``y=31``) must remain
+        exactly touching in Kibana — not overlapping, not gapped.
+
+        Without edge alignment (independently scaling y and h with
+        banker's rounding), this case used to produce a 1-row
+        overlap which the downstream ``kb-dashboard-cli`` compile
+        step rejects.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Top", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 25, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 6},
+            {"title": "Bottom", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 31, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        top_bottom = panels[0]["position"]["y"] + panels[0]["size"]["h"]
+        bot_top = panels[1]["position"]["y"]
+        self.assertEqual(
+            top_bottom, bot_top,
+            f"touching panels must remain touching after L1 scaling "
+            f"(top bottom={top_bottom}, bottom top={bot_top})",
+        )
+
+    def test_kibana_native_layout_preserves_grafana_vertical_gaps(self):
+        """L1 universal layout: when the Grafana author left a gap
+        between two rows (eg. y=0..4 row, then y=10 row), that gap
+        is preserved (proportionally) in Kibana instead of being
+        collapsed by a y-cursor.
+
+        Compare to the legacy y-cursor behaviour where two rows
+        always stacked immediately regardless of the source spacing.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "TopRow", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 4},
+            # Big gap: y=4 to y=10 is empty in Grafana
+            {"title": "BotRow", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 10, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        top_bottom = panels[0]["position"]["y"] + panels[0]["size"]["h"]
+        bot_top = panels[1]["position"]["y"]
+        gap = bot_top - top_bottom
+        # Grafana gap is from y=4 to y=10 = 6 rows. Scaled by 1.5,
+        # the Kibana gap should be 9 rows. The legacy y-cursor
+        # behaviour would produce gap=0 (immediate stacking).
+        self.assertEqual(
+            gap, 9,
+            f"Grafana 6-row vertical gap should scale to a 9-row "
+            f"Kibana gap (got {gap}); a gap of 0 means the y-cursor "
+            f"regression has returned.",
+        )
 
 
 class NativePromqlTests(unittest.TestCase):
