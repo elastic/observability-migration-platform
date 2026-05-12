@@ -46,6 +46,22 @@ scrape_configs:
           instance: ksm-1:8080
           job: kube-state-metrics
 
+  - job_name: producer-synth-node-extras
+    # /metrics-node-extras exposes the node-exporter metrics the
+    # producer's container kernel can't expose itself (hwmon, thermal,
+    # schedstat with CONFIG_SCHEDSTATS, /proc/meminfo lines like
+    # HardwareCorrupted / DirectMap1G, systemd unit states, custom
+    # textfile exports). Scraped under the same node-exporter job
+    # label so the Node Exporter Full dashboard's `job="node-exporter"`
+    # filters pass through.
+    metrics_path: /metrics-node-extras
+    static_configs:
+      - targets:
+          - producer:3000
+        labels:
+          instance: node-1:9100
+          job: node-exporter
+
 # Native Elastic /_prometheus remote_write receiver: lands docs in
 # metrics-{dataset}.prometheus-{namespace} with a layout the ES|QL PROMQL
 # command can resolve directly. The placeholder secrets are filled in at

@@ -1236,6 +1236,60 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("AVG(ambiguous_gauge)", translated.esql_query)
         self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
 
+    def test_same_metric_collapse_handles_regex_and_negated_matchers(self):
+        """The Node Exporter Full "CPU Basic" panel has 6 targets that all
+        wrap ``node_cpu_seconds_total`` with different ``mode`` matchers,
+        mixing equality (``mode="system"``), regex (``mode=~".*irq"``),
+        and negation (``mode!="idle"``). The translator used to refuse
+        the collapse because of the non-equality matchers, dropping 5
+        of 6 targets silently. After the fix, every target's matchers
+        contribute a clause to a single combined ``WHERE`` and ``mode``
+        is added to ``BY`` so the panel renders one series per resulting
+        mode (matching what Grafana shows)."""
+        self.seed_field_caps(
+            {
+                "node_cpu_seconds_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 200,
+            "type": "timeseries",
+            "title": "CPU Basic",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'sum(irate(node_cpu_seconds_total{mode="system"}[5m]))', "refId": "A"},
+                {"expr": 'sum(irate(node_cpu_seconds_total{mode="user"}[5m]))', "refId": "B"},
+                {"expr": 'sum(irate(node_cpu_seconds_total{mode=~".*irq"}[5m]))', "refId": "C"},
+                {"expr": 'sum(irate(node_cpu_seconds_total{mode!="idle"}[5m]))', "refId": "D"},
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        # All four matcher values must contribute to the unified WHERE.
+        self.assertIn('"system"', query)
+        self.assertIn('"user"', query)
+        self.assertIn('".*irq"', query)
+        # The negated matcher should appear with a negation operator.
+        self.assertIn('"idle"', query)
+        # `mode` must be in the BY clause to keep one series per matching
+        # mode value (matching the dashboard's intent).
+        stats_lines = [ln for ln in query.splitlines() if ln.lstrip().startswith("| STATS")]
+        self.assertTrue(stats_lines, f"no STATS line in:\n{query}")
+        joined_stats = "\n".join(stats_lines)
+        self.assertIn("mode", joined_stats)
+        # No "only N could be migrated" warning should appear.
+        self.assertFalse(
+            any("could be migrated" in r for r in result.reasons),
+            f"unexpected drop-target warning in: {result.reasons!r}",
+        )
+
     def test_same_metric_collapse_rebuilds_valid_query(self):
         self.seed_field_caps(
             {

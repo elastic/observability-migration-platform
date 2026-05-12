@@ -417,6 +417,190 @@ def render_kube_state_metrics() -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Synthetic node-exporter "extras" — metrics that depend on host kernel
+# features or hardware sysfs paths the producer's Docker container can't
+# expose (hwmon/thermal sysfs, /proc/schedstat with CONFIG_SCHEDSTATS,
+# /proc/meminfo lines like HardwareCorrupted / DirectMap1G that aren't
+# in macOS Docker Desktop's VM, systemd dbus, custom textfile exports).
+#
+# Surfaced by validating the canonical Node Exporter Full (id 1860)
+# dashboard against the rig: after enabling every applicable node-exporter
+# collector, 10 metrics remained absent because the container simply
+# can't see them. Emitting them deterministically lets the corresponding
+# panels render against real numbers rather than reporting "Unknown
+# column".
+def render_node_extras_metrics() -> str:
+    now = time.time()
+    elapsed = max(0.0, now - REGISTRY._reset_time)
+    lines: list[str] = []
+
+    # /proc/meminfo lines that macOS Docker Desktop's VM kernel doesn't
+    # export. Stable numbers; the dashboard uses them as gauges in
+    # informational panels.
+    lines.append("# HELP node_memory_HardwareCorrupted_bytes /proc/meminfo HardwareCorrupted")
+    lines.append("# TYPE node_memory_HardwareCorrupted_bytes gauge")
+    lines.append('node_memory_HardwareCorrupted_bytes{instance="node-1:9100"} 0')
+
+    lines.append("# HELP node_memory_DirectMap1G_bytes /proc/meminfo DirectMap1G")
+    lines.append("# TYPE node_memory_DirectMap1G_bytes gauge")
+    lines.append(f'node_memory_DirectMap1G_bytes{{instance="node-1:9100"}} {2 * 1024 * 1024 * 1024}')
+    lines.append("# HELP node_memory_DirectMap2M_bytes /proc/meminfo DirectMap2M")
+    lines.append("# TYPE node_memory_DirectMap2M_bytes gauge")
+    lines.append(f'node_memory_DirectMap2M_bytes{{instance="node-1:9100"}} {6 * 1024 * 1024 * 1024}')
+    lines.append("# HELP node_memory_DirectMap4k_bytes /proc/meminfo DirectMap4k")
+    lines.append("# TYPE node_memory_DirectMap4k_bytes gauge")
+    lines.append(f'node_memory_DirectMap4k_bytes{{instance="node-1:9100"}} {128 * 1024 * 1024}')
+
+    # CPU frequency scaling. cpufreq sysfs is absent on macOS Docker
+    # Desktop's VM but every cloud Linux node will have it.
+    lines.append("# HELP node_cpu_scaling_frequency_hertz CPU current scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_hertz gauge")
+    lines.append("# HELP node_cpu_scaling_frequency_max_hertz CPU max scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_max_hertz gauge")
+    lines.append("# HELP node_cpu_scaling_frequency_min_hertz CPU min scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_min_hertz gauge")
+    for cpu in (0, 1, 2, 3):
+        # 2 GHz base, varying around ±200 MHz per core deterministically.
+        cur = 2_000_000_000 + (cpu * 50_000_000) + int(100_000_000 * ((elapsed % 30) / 30))
+        lines.append(f'node_cpu_scaling_frequency_hertz{{instance="node-1:9100",cpu="{cpu}"}} {cur}')
+        lines.append(f'node_cpu_scaling_frequency_max_hertz{{instance="node-1:9100",cpu="{cpu}"}} 3000000000')
+        lines.append(f'node_cpu_scaling_frequency_min_hertz{{instance="node-1:9100",cpu="{cpu}"}} 1000000000')
+
+    # /proc/schedstat (requires CONFIG_SCHEDSTATS). Cumulative cpu-time
+    # spent waiting on the run queue, per cpu.
+    lines.append("# HELP node_schedstat_waiting_seconds_total /proc/schedstat waiting")
+    lines.append("# TYPE node_schedstat_waiting_seconds_total counter")
+    lines.append("# HELP node_schedstat_running_seconds_total /proc/schedstat running")
+    lines.append("# TYPE node_schedstat_running_seconds_total counter")
+    lines.append("# HELP node_schedstat_timeslices_total /proc/schedstat timeslices")
+    lines.append("# TYPE node_schedstat_timeslices_total counter")
+    for cpu in (0, 1, 2, 3):
+        lines.append(f'node_schedstat_waiting_seconds_total{{instance="node-1:9100",cpu="{cpu}"}} {elapsed * (0.001 + 0.0002 * cpu)}')
+        lines.append(f'node_schedstat_running_seconds_total{{instance="node-1:9100",cpu="{cpu}"}} {elapsed * (0.02 + 0.005 * cpu)}')
+        lines.append(f'node_schedstat_timeslices_total{{instance="node-1:9100",cpu="{cpu}"}} {int(elapsed * (100 + 10 * cpu))}')
+
+    # Hardware sensors. lm-sensors / hwmon sysfs isn't available inside
+    # a generic container; cloud Linux hosts expose it via
+    # /sys/class/hwmon/*.
+    lines.append("# HELP node_hwmon_temp_celsius Hardware monitor temperature")
+    lines.append("# TYPE node_hwmon_temp_celsius gauge")
+    lines.append("# HELP node_hwmon_fan_rpm Hardware monitor fan RPM")
+    lines.append("# TYPE node_hwmon_fan_rpm gauge")
+    lines.append("# HELP node_hwmon_temp_max_celsius Hardware monitor max temperature")
+    lines.append("# TYPE node_hwmon_temp_max_celsius gauge")
+    for sensor, base in (("Core 0", 45.0), ("Core 1", 47.0), ("Package id 0", 50.0)):
+        cycle = 5.0 * ((elapsed % 60) / 60)
+        lines.append(
+            f'node_hwmon_temp_celsius{{instance="node-1:9100",chip="coretemp-isa-0000",'
+            f'sensor="temp1",chip_name="coretemp",label="{sensor}"}} {base + cycle:.2f}'
+        )
+        lines.append(
+            f'node_hwmon_temp_max_celsius{{instance="node-1:9100",chip="coretemp-isa-0000",'
+            f'sensor="temp1",chip_name="coretemp",label="{sensor}"}} 90.0'
+        )
+    for fan, rpm_base in (("fan1", 1500), ("fan2", 1700)):
+        rpm = rpm_base + int(50 * ((elapsed % 30) / 30))
+        lines.append(
+            f'node_hwmon_fan_rpm{{instance="node-1:9100",chip="nct6775-isa-0290",'
+            f'sensor="{fan}",chip_name="nct6775"}} {rpm}'
+        )
+
+    # Thermal zones.
+    lines.append("# HELP node_cooling_device_cur_state Linux thermal_zone cur_state")
+    lines.append("# TYPE node_cooling_device_cur_state gauge")
+    lines.append("# HELP node_cooling_device_max_state Linux thermal_zone max_state")
+    lines.append("# TYPE node_cooling_device_max_state gauge")
+    for tz in (0, 1):
+        lines.append(f'node_cooling_device_cur_state{{instance="node-1:9100",name="thermal_zone{tz}",type="Processor"}} {tz}')
+        lines.append(f'node_cooling_device_max_state{{instance="node-1:9100",name="thermal_zone{tz}",type="Processor"}} 4')
+
+    # systemd unit states. Requires systemd dbus in a real install.
+    lines.append("# HELP node_systemd_units Number of systemd units")
+    lines.append("# TYPE node_systemd_units gauge")
+    for state, count in (("active", 92), ("inactive", 14), ("failed", 0)):
+        lines.append(f'node_systemd_units{{instance="node-1:9100",state="{state}"}} {count}')
+    lines.append("# HELP node_systemd_unit_state Systemd unit state")
+    lines.append("# TYPE node_systemd_unit_state gauge")
+    for name in ("ssh.service", "cron.service", "rsyslog.service"):
+        for state in ("active", "inactive", "failed", "activating", "deactivating"):
+            v = 1 if state == "active" else 0
+            lines.append(
+                f'node_systemd_unit_state{{instance="node-1:9100",name="{name}",state="{state}"}} {v}'
+            )
+
+    # netstat lines that some kernels don't expose. The translated ESQL
+    # references these directly so a single sample per metric is enough
+    # to flip the field from "Unknown column" to "valid".
+    lines.append("# HELP node_netstat_TcpExt_TCPRcvQDrop /proc/net/netstat TCPRcvQDrop")
+    lines.append("# TYPE node_netstat_TcpExt_TCPRcvQDrop counter")
+    lines.append(
+        f'node_netstat_TcpExt_TCPRcvQDrop{{instance="node-1:9100"}} {int(elapsed * 0.001)}'
+    )
+    lines.append("# HELP node_netstat_Tcp_MaxConn /proc/net/netstat Tcp MaxConn")
+    lines.append("# TYPE node_netstat_Tcp_MaxConn gauge")
+    lines.append('node_netstat_Tcp_MaxConn{instance="node-1:9100"} -1')
+
+    # Custom textfile metric some operators add; not stock node-exporter.
+    lines.append("# HELP node_tcp_connection_states TCP connection state counts")
+    lines.append("# TYPE node_tcp_connection_states gauge")
+    for state, n in (
+        ("established", 80),
+        ("listen", 22),
+        ("time_wait", 14),
+        ("close_wait", 2),
+        ("syn_sent", 0),
+    ):
+        lines.append(
+            f'node_tcp_connection_states{{instance="node-1:9100",state="{state}"}} {n}'
+        )
+
+    # IRQ PSI metric added in node-exporter 1.9+. v1.8 doesn't have it
+    # even with --collector.pressure enabled. The Node Exporter Full
+    # dashboard's "Pressure" / "Pressure Stall Information" panels reference
+    # it directly, so we emit a deterministic ramp so the panel renders.
+    lines.append("# HELP node_pressure_irq_stalled_seconds_total IRQ pressure stall")
+    lines.append("# TYPE node_pressure_irq_stalled_seconds_total counter")
+    lines.append(
+        f'node_pressure_irq_stalled_seconds_total{{instance="node-1:9100"}} '
+        f'{elapsed * 0.0005:.6f}'
+    )
+    lines.append("# HELP node_pressure_io_stalled_seconds_total I/O pressure stall")
+    lines.append("# TYPE node_pressure_io_stalled_seconds_total counter")
+    lines.append(
+        f'node_pressure_io_stalled_seconds_total{{instance="node-1:9100"}} '
+        f'{elapsed * 0.0015:.6f}'
+    )
+    lines.append("# HELP node_pressure_memory_stalled_seconds_total Memory pressure stall")
+    lines.append("# TYPE node_pressure_memory_stalled_seconds_total counter")
+    lines.append(
+        f'node_pressure_memory_stalled_seconds_total{{instance="node-1:9100"}} '
+        f'{elapsed * 0.0002:.6f}'
+    )
+
+    # node-exporter's textfile collector signal. Some panels reference
+    # it directly to highlight stale or malformed textfile exports.
+    lines.append("# HELP node_textfile_scrape_error Textfile scrape error indicator")
+    lines.append("# TYPE node_textfile_scrape_error gauge")
+    lines.append('node_textfile_scrape_error{instance="node-1:9100"} 0')
+
+    # /proc/net/udp + /proc/net/udp6 queue sizes (rx/tx) per protocol
+    # family. node-exporter exposes this via --collector.udp_queues but
+    # the container's /proc/net/udp doesn't show realistic values; the
+    # NEF dashboard uses ip="v4" / ip="v6" labels on this metric, so we
+    # emit a deterministic synthetic version that includes those labels.
+    lines.append("# HELP node_udp_queues UDP queue size per protocol family")
+    lines.append("# TYPE node_udp_queues gauge")
+    for ip in ("v4", "v6"):
+        for q, base in (("rx", 32), ("tx", 8)):
+            v = base + int(8 * ((elapsed % 30) / 30))
+            lines.append(
+                f'node_udp_queues{{instance="node-1:9100",ip="{ip}",queue="{q}"}} {v}'
+            )
+
+    return "\n".join(lines) + "\n"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: Any) -> None:  # silence default access log
         return
@@ -432,6 +616,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/metrics-k8s":
             body = render_kube_state_metrics().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/metrics-node-extras":
+            body = render_node_extras_metrics().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))

@@ -36,6 +36,22 @@ services:
       - --collector.time
       - --collector.stat
       - --collector.hwmon
+      # Extra collectors enabled to feed Node Exporter Full panels that
+      # used to fail with ``Unknown column [...]`` against the rig. Each
+      # one reads a /proc or sysfs path that Docker Desktop's macOS VM
+      # exposes inside the container.
+      - --collector.processes
+      - --collector.entropy
+      - --collector.filefd
+      - --collector.sockstat
+      - --collector.softnet
+      - --collector.netclass
+      - --collector.conntrack
+      - --collector.schedstat
+      - --collector.pressure
+      - --collector.cpufreq
+      - --collector.thermal_zone
+      - --collector.timex
     networks:
       - rig
     restart: unless-stopped

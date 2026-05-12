@@ -65,6 +65,7 @@ from .promql import (
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
     _format_scalar_value,
+    _matcher_to_esql,
     _parse_fragment,
     _split_top_level_csv,
     _summary_mode_from_metadata,
@@ -1847,14 +1848,25 @@ def _try_collapse_same_metric_targets(translations):
     for ms in matchers_per[1:]:
         shared = shared & ms
     diffs = [ms - shared for ms in matchers_per]
+    # Permit any matcher operator (=, ==, =~, !=, !~) in the diffs. The
+    # legacy implementation only allowed equality and bailed otherwise,
+    # which silently dropped 5 of 6 targets on common Grafana panels like
+    # Node Exporter Full's "CPU Basic" (mixed equality / regex / negated
+    # ``mode`` matchers). For non-equality ops we add a unified
+    # ``WHERE (op1 OR op2 OR ...)`` clause to the generated query below.
     diff_labels = set()
+    nonequality_present = False
     for d in diffs:
         for label, op, _val in d:
-            if op in ("=", "=="):
-                diff_labels.add(label)
-            else:
-                return None
+            diff_labels.add(label)
+            if op not in ("=", "=="):
+                nonequality_present = True
     if len(diff_labels) != 1:
+        return None
+    # Refuse if any target has no distinguishing matcher (would mean
+    # "match everything for this label", which can't be OR-folded with
+    # the other targets' filters safely).
+    if any(not d for d in diffs):
         return None
 
     collapse_label = diff_labels.pop()
@@ -1888,6 +1900,47 @@ def _try_collapse_same_metric_targets(translations):
     if not shared:
         return None
     parts, output_group_fields, metric_fields = shared
+
+    # When the diffs include non-equality matchers, insert a unified
+    # WHERE clause built from each target's distinguishing matchers
+    # OR'd together. ``=`` collapses naturally because the BY column
+    # alone splits series; ``=~`` / ``!=`` / ``!~`` need an explicit
+    # filter to bound the result set.
+    if nonequality_present:
+        per_target_clauses = []
+        seen_clauses: set[str] = set()
+        for diff_set in diffs:
+            collect = [
+                _matcher_to_esql(
+                    {"label": label, "op": op, "value": value},
+                    collapsed.resolver,
+                )
+                for label, op, value in diff_set
+                if label == collapse_label
+            ]
+            collect = [c for c in collect if c]
+            if not collect:
+                continue
+            clause = collect[0] if len(collect) == 1 else "(" + " AND ".join(collect) + ")"
+            if clause not in seen_clauses:
+                seen_clauses.add(clause)
+                per_target_clauses.append(clause)
+        if per_target_clauses:
+            if len(per_target_clauses) == 1:
+                unified_where = f"| WHERE {per_target_clauses[0]}"
+            else:
+                unified_where = "| WHERE " + " OR ".join(per_target_clauses)
+            # Insert the unified WHERE right after the source command
+            # (line 0). Order is the same as other generated WHEREs:
+            # source / time-filter / unified matcher OR / IS NOT NULL /
+            # STATS.
+            insert_at = 1
+            for idx, part in enumerate(parts):
+                if part.lstrip().startswith("| WHERE @timestamp"):
+                    insert_at = idx + 1
+                    break
+            parts.insert(insert_at, unified_where)
+
     collapsed.source_type = plan.specs[0].source_type
     collapsed_summary = None
     if _summary_mode_from_metadata(collapsed.metadata):
