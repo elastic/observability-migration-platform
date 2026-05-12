@@ -117,7 +117,8 @@ class TestListGrafanaPanels:
             "Top-level panel",
         }
 
-    def test_skips_panels_without_id(self):
+    def test_synthesizes_id_for_single_idless_panel(self):
+        """Single-panel idless dashboard: pid synthesizes to 1."""
         fake_response = mock.Mock()
         fake_response.raise_for_status = mock.Mock()
         fake_response.json = mock.Mock(
@@ -131,20 +132,27 @@ class TestListGrafanaPanels:
         panels = vr.list_grafana_panels(
             "http://localhost:23000", "uid", session=session
         )
-        assert panels == []
+        assert panels == [{"id": 1, "title": "no id panel", "type": "stat"}]
 
-    def test_skips_panels_with_id_none(self):
-        """Grafana strips ``id`` from the JSON when it is null, but if
-        a caller hand-constructs JSON with ``id: null`` we must still
-        skip those panels — ``d-solo?panelId=None`` is invalid."""
+    def test_synthesizes_ids_for_idless_panels(self):
+        """Universal fix: when Grafana JSON panels have ``id: null``
+        (or omit the field entirely), the verifier must synthesize
+        the runtime panel IDs Grafana would assign in document order.
+
+        Empirically Grafana's frontend assigns missing IDs at render
+        time as ``max(existing_ids_so_far) + 1``. For an all-idless
+        dashboard this reduces to ``1, 2, 3, ..., N`` so every panel
+        becomes capture-able via ``/d-solo?panelId=N``.
+        """
         fake_response = mock.Mock()
         fake_response.raise_for_status = mock.Mock()
         fake_response.json = mock.Mock(
             return_value={
                 "dashboard": {
                     "panels": [
-                        {"id": None, "title": "skip me", "type": "stat"},
-                        {"id": 7, "title": "keep me", "type": "stat"},
+                        {"id": None, "title": "a", "type": "stat"},
+                        {"id": None, "title": "b", "type": "stat"},
+                        {"title": "c", "type": "stat"},
                     ]
                 }
             }
@@ -153,7 +161,72 @@ class TestListGrafanaPanels:
         panels = vr.list_grafana_panels(
             "http://localhost:23000", "uid", session=session
         )
-        assert [p["id"] for p in panels] == [7]
+        assert [p["id"] for p in panels] == [1, 2, 3]
+        assert [p["title"] for p in panels] == ["a", "b", "c"]
+
+    def test_synthesizes_ids_in_mixed_case(self):
+        """When some panels have explicit IDs and others are missing,
+        Grafana assigns missing ones ``max(existing_so_far) + 1``.
+
+        Empirical evidence from /d-solo probing (Grafana 11.3.1):
+            JSON ids = [10, None, None, 5, None]
+            Runtime  = [10, 11,   12,   5, 13]
+        """
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [
+                        {"id": 10, "title": "P10", "type": "stat"},
+                        {"id": None, "title": "PM1", "type": "stat"},
+                        {"title": "PM2", "type": "stat"},
+                        {"id": 5, "title": "P5", "type": "stat"},
+                        {"title": "PM3", "type": "stat"},
+                    ]
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels(
+            "http://localhost:23000", "uid", session=session
+        )
+        assert [p["id"] for p in panels] == [10, 11, 12, 5, 13]
+        assert [p["title"] for p in panels] == ["P10", "PM1", "PM2", "P5", "PM3"]
+
+    def test_synthesizes_ids_for_schema_v14_rows(self):
+        """The synthesis must traverse the schemaVersion 14 rows[]
+        shape too, in the same document order."""
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "schemaVersion": 14,
+                    "rows": [
+                        {
+                            "title": "row 1",
+                            "panels": [
+                                {"title": "M1", "type": "graph"},
+                                {"id": 7, "title": "P7", "type": "graph"},
+                            ],
+                        },
+                        {
+                            "title": "row 2",
+                            "panels": [
+                                {"title": "M2", "type": "graph"},
+                            ],
+                        },
+                    ],
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels(
+            "http://localhost:23000", "uid", session=session
+        )
+        assert [p["id"] for p in panels] == [1, 7, 8]
+        assert [p["title"] for p in panels] == ["M1", "P7", "M2"]
 
     def test_handles_schema_v14_rows(self):
         """Schema v14 dashboards (eg. Grafana 4 era, prometheus-all)

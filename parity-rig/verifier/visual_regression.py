@@ -179,9 +179,9 @@ def list_grafana_panels(
 ) -> list[dict[str, Any]]:
     """Return the panels of a Grafana dashboard via its REST API.
 
-    Each returned dict has at least ``id`` (int), ``title`` (str),
-    ``type`` (str). Row panels (``type == "row"``) are skipped because
-    they are containers, not chart instances.
+    Each returned dict has ``id`` (int), ``title`` (str), and ``type``
+    (str). Row panels are skipped because they're containers, not
+    chart instances.
 
     Handles two dashboard layout shapes:
 
@@ -191,14 +191,27 @@ def list_grafana_panels(
     * **Legacy (schemaVersion 14)** -- ``dashboard.rows[]`` is the
       top-level layout, each row carries its own ``panels[]``. We fall
       back to walking ``rows[*].panels[*]`` when ``dashboard.panels``
-      is absent or empty (so a hand-mixed dashboard prefers the
-      modern shape).
+      is absent or empty.
 
-    Panels without a numeric ``id`` are dropped because Grafana's
-    ``/d-solo/<uid>/<slug>?panelId=<N>`` capture URL is the only way
-    to fetch an isolated panel and it requires the integer panel id.
-    A dropped count is emitted at INFO level so the operator can spot
-    silently-skipped panels (eg. hand-authored dashboards without IDs).
+    Panels without a numeric ``id`` in JSON get one **synthesized**
+    here using Grafana's own runtime rule. Empirically, Grafana's
+    frontend assigns missing IDs at render time as
+    ``max(existing_ids_so_far) + 1``, walked in JSON document order
+    (verified against Grafana 11.3.1 with explicit, missing, and
+    mixed-id dashboards):
+
+    ::
+
+        JSON ids       Runtime panelIds (used by /d-solo)
+        [None, None]   [1, 2]                            (all-idless: 1..N)
+        [10, None, 5]  [10, 11, 5]                       (mixed)
+        [None, 7]      [1, 7]                            (mixed)
+
+    This makes every panel capture-able via
+    ``/d-solo/<uid>/<slug>?panelId=<N>`` regardless of whether the
+    source JSON has IDs -- so dashboards exported from grafana.com
+    or hand-authored without IDs work universally without requiring
+    operator intervention.
 
     Raises:
         requests.HTTPError: on a non-2xx response from Grafana.
@@ -228,24 +241,53 @@ def list_grafana_panels(
                 if child.get("type") != "row":
                     flat.append(child)
 
+    return _assign_runtime_ids(flat, dashboard_uid)
+
+
+def _assign_runtime_ids(
+    flat_panels: list[dict[str, Any]],
+    dashboard_uid: str,
+) -> list[dict[str, Any]]:
+    """Materialise Grafana's runtime panel-id assignment rule.
+
+    Walks ``flat_panels`` in document order. For each panel:
+
+    * If it has a numeric ``id`` in JSON, use it verbatim.
+    * Otherwise synthesize ``max(seen_ids) + 1`` (using the running
+      max of every numeric id observed so far, JSON-explicit or
+      previously synthesized).
+
+    This mirrors the assignment Grafana's frontend does at render
+    time, so probing ``/d-solo?panelId=<synthesized>`` will hit the
+    real panel.
+    """
     kept: list[dict[str, Any]] = []
-    dropped_no_id = 0
-    for p in flat:
+    max_seen = 0
+    synthesized_count = 0
+    for p in flat_panels:
         pid = p.get("id")
-        if pid is None:
-            dropped_no_id += 1
-            continue
+        if isinstance(pid, int) and pid > 0:
+            assigned = pid
+        else:
+            assigned = max_seen + 1
+            synthesized_count += 1
+        if assigned > max_seen:
+            max_seen = assigned
         kept.append(
-            {"id": pid, "title": (p.get("title") or "").strip(), "type": p.get("type")}
+            {
+                "id": assigned,
+                "title": (p.get("title") or "").strip(),
+                "type": p.get("type"),
+            }
         )
 
-    if dropped_no_id:
+    if synthesized_count:
         LOG.info(
-            "list_grafana_panels(%s): dropped %d panel(s) with no numeric id "
-            "(Grafana /d-solo requires panelId=<int>; these panels will not "
-            "appear in the visual-regression report)",
+            "list_grafana_panels(%s): synthesized %d panel id(s) using "
+            "Grafana's runtime rule (max+1 in document order); these "
+            "will be probed via /d-solo at capture time",
             dashboard_uid,
-            dropped_no_id,
+            synthesized_count,
         )
     return kept
 
