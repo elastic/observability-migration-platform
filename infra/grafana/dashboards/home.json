@@ -7,6 +7,7 @@
   "links": [],
   "panels": [
     {
+      "id": 1,
       "type": "text",
       "title": "",
       "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
@@ -16,6 +17,7 @@
       }
     },
     {
+      "id": 2,
       "type": "stat",
       "title": "Prometheus Targets Up",
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 4 },
@@ -28,6 +30,7 @@
       }
     },
     {
+      "id": 3,
       "type": "timeseries",
       "title": "Scrape Duration by Job",
       "gridPos": { "h": 10, "w": 16, "x": 8, "y": 4 },
@@ -37,6 +40,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
+      "id": 4,
       "type": "gauge",
       "title": "Memory Usage %",
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 10 },
@@ -52,6 +56,7 @@
       }
     },
     {
+      "id": 5,
       "type": "bargauge",
       "title": "Top Metrics by Series Count",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
@@ -61,6 +66,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
+      "id": 6,
       "type": "table",
       "title": "Target Health Status",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },

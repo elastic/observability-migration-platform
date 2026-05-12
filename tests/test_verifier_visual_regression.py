@@ -133,6 +133,94 @@ class TestListGrafanaPanels:
         )
         assert panels == []
 
+    def test_skips_panels_with_id_none(self):
+        """Grafana strips ``id`` from the JSON when it is null, but if
+        a caller hand-constructs JSON with ``id: null`` we must still
+        skip those panels — ``d-solo?panelId=None`` is invalid."""
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [
+                        {"id": None, "title": "skip me", "type": "stat"},
+                        {"id": 7, "title": "keep me", "type": "stat"},
+                    ]
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels(
+            "http://localhost:23000", "uid", session=session
+        )
+        assert [p["id"] for p in panels] == [7]
+
+    def test_handles_schema_v14_rows(self):
+        """Schema v14 dashboards (eg. Grafana 4 era, prometheus-all)
+        nest panels inside top-level ``rows[]``, not ``panels[]``.
+        The harness must traverse ``rows[*].panels[*]`` so these
+        dashboards are not silently empty."""
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "schemaVersion": 14,
+                    "rows": [
+                        {
+                            "title": "row 1",
+                            "panels": [
+                                {"id": 41, "title": "Uptime", "type": "singlestat"},
+                                {"id": 42, "title": "Series count", "type": "singlestat"},
+                            ],
+                        },
+                        {
+                            "title": "row 2",
+                            "panels": [
+                                {"id": 15, "title": "Query elapsed", "type": "graph"},
+                            ],
+                        },
+                    ],
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels(
+            "http://localhost:23000", "uid", session=session
+        )
+        assert {p["id"] for p in panels} == {41, 42, 15}
+        assert {p["title"] for p in panels} == {
+            "Uptime",
+            "Series count",
+            "Query elapsed",
+        }
+
+    def test_prefers_top_level_panels_over_rows_when_both_present(self):
+        """Mixed schema dashboards (rare but possible) should prefer
+        the modern ``panels[]`` and only fall back to ``rows[]`` when
+        ``panels[]`` is empty. Avoids double-counting."""
+        fake_response = mock.Mock()
+        fake_response.raise_for_status = mock.Mock()
+        fake_response.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [{"id": 99, "title": "modern", "type": "stat"}],
+                    "rows": [
+                        {
+                            "panels": [
+                                {"id": 41, "title": "old", "type": "singlestat"},
+                            ]
+                        }
+                    ],
+                }
+            }
+        )
+        session = mock.Mock(get=mock.Mock(return_value=fake_response))
+        panels = vr.list_grafana_panels(
+            "http://localhost:23000", "uid", session=session
+        )
+        assert [p["id"] for p in panels] == [99]
+
 
 # --------------------------------------------------------------------- #
 #  Kibana panel discovery from migration YAML                           #

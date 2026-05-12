@@ -183,6 +183,23 @@ def list_grafana_panels(
     ``type`` (str). Row panels (``type == "row"``) are skipped because
     they are containers, not chart instances.
 
+    Handles two dashboard layout shapes:
+
+    * **Modern (schemaVersion >= 17)** -- ``dashboard.panels`` is the
+      flat panel list; row-typed entries wrap their children in
+      ``panels[]``. We flatten those.
+    * **Legacy (schemaVersion 14)** -- ``dashboard.rows[]`` is the
+      top-level layout, each row carries its own ``panels[]``. We fall
+      back to walking ``rows[*].panels[*]`` when ``dashboard.panels``
+      is absent or empty (so a hand-mixed dashboard prefers the
+      modern shape).
+
+    Panels without a numeric ``id`` are dropped because Grafana's
+    ``/d-solo/<uid>/<slug>?panelId=<N>`` capture URL is the only way
+    to fetch an isolated panel and it requires the integer panel id.
+    A dropped count is emitted at INFO level so the operator can spot
+    silently-skipped panels (eg. hand-authored dashboards without IDs).
+
     Raises:
         requests.HTTPError: on a non-2xx response from Grafana.
     """
@@ -193,20 +210,44 @@ def list_grafana_panels(
     )
     resp.raise_for_status()
     payload = resp.json()
-    raw_panels = payload.get("dashboard", {}).get("panels", []) or []
+    dashboard = payload.get("dashboard", {}) or {}
+
+    raw_panels = dashboard.get("panels", []) or []
     flat: list[dict[str, Any]] = []
-    for panel in raw_panels:
-        if panel.get("type") == "row":
-            for child in panel.get("panels", []) or []:
+    if raw_panels:
+        for panel in raw_panels:
+            if panel.get("type") == "row":
+                for child in panel.get("panels", []) or []:
+                    if child.get("type") != "row":
+                        flat.append(child)
+                continue
+            flat.append(panel)
+    else:
+        for row in dashboard.get("rows", []) or []:
+            for child in row.get("panels", []) or []:
                 if child.get("type") != "row":
                     flat.append(child)
+
+    kept: list[dict[str, Any]] = []
+    dropped_no_id = 0
+    for p in flat:
+        pid = p.get("id")
+        if pid is None:
+            dropped_no_id += 1
             continue
-        flat.append(panel)
-    return [
-        {"id": p["id"], "title": (p.get("title") or "").strip(), "type": p.get("type")}
-        for p in flat
-        if "id" in p
-    ]
+        kept.append(
+            {"id": pid, "title": (p.get("title") or "").strip(), "type": p.get("type")}
+        )
+
+    if dropped_no_id:
+        LOG.info(
+            "list_grafana_panels(%s): dropped %d panel(s) with no numeric id "
+            "(Grafana /d-solo requires panelId=<int>; these panels will not "
+            "appear in the visual-regression report)",
+            dashboard_uid,
+            dropped_no_id,
+        )
+    return kept
 
 
 def list_kibana_panels_from_migration(
