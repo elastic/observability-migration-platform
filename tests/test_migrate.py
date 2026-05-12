@@ -2986,20 +2986,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertGreater(panels[1]["position"]["y"], 0, "second panel should be below first")
         self.assertEqual(result.inventory["panels"], 2)
 
-    def test_dashboard_translation_preserves_overlapping_positions(self):
-        """L1 universal layout: when the source Grafana dashboard has
-        overlapping panels (a real-world quirk in some hand-authored
-        dashboards), the migration **faithfully** transmits the
-        original relative positions (Grafana y=0 and y=4 become
-        Kibana y=0 and y=6 after the 30/20 row scale) and trusts
-        Kibana's grid layout to resolve the overlap visually.
-
-        Before L1 this used to be a "we resolve overlaps in Python"
-        contract, which broke relative spacing for every legitimate
-        non-overlapping layout (Grafana y=1 and y=10 collapsed to a
-        single y-cursor stack instead of preserving the gap).
-        Trusting Kibana is the universal fix because it works the
-        same way for overlapping AND non-overlapping inputs.
+    def test_dashboard_translation_resolves_overlapping_positions(self):
+        """L1 starts from the faithful coord transform (Grafana
+        ``y=4`` -> Kibana ``y=round(4*1.5)=6``), but the downstream
+        ``kb-dashboard-cli`` compile step refuses any panel overlap
+        in the YAML. So after L1+L2+style-guide post-processing, a
+        final ``_resolve_panel_overlaps`` pass pushes overlapping
+        panels' y values down to the bottom of their conflicting
+        neighbour. That keeps the migration compile-clean for source
+        dashboards that have overlapping or "stacked" panels.
         """
         dashboard = {
             "title": "Overlap",
@@ -3034,10 +3029,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         panels = payload["dashboards"][0]["panels"]
         # Grafana y=0 -> Kibana y=0 (after min-y normalisation)
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
-        # Grafana y=4 -> Kibana y = round(4*1.5)=6. Faithfully
-        # transmitted; the panels visually overlap by 6 rows in
-        # Kibana, just as they overlapped in Grafana.
-        self.assertEqual(panels[1]["position"]["y"], 6)
+        # Top has h=12 (after L1 scale 8*1.5=12), so Bottom is pushed
+        # down to y=12 to avoid overlap. The Grafana 4-row stacking
+        # intent is preserved in spirit (Bottom is below Top), just
+        # without the literal pixel-level overlap that compile would
+        # reject.
+        top_h = panels[0]["size"]["h"]
+        self.assertGreaterEqual(panels[1]["position"]["y"], top_h)
 
     def test_metric_tile_width_is_normalized_to_minimum(self):
         dashboard = {

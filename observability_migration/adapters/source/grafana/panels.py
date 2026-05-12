@@ -3956,6 +3956,44 @@ def _panels_overlap(left, right):
     return lx < rx + rw and lx + lw > rx and ly < ry + rh and ly + lh > ry
 
 
+def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:
+    """Walk the panel tree, calling :func:`_resolve_panel_overlaps` on
+    every section's leaf-panel list (and on the top-level non-section
+    panels) in place.
+
+    Each section's coordinate space is independent (panels inside a
+    section are positioned relative to that section in Kibana), so we
+    resolve overlaps **within** each section, not across sections.
+    """
+    section_groups: list[list[dict]] = []
+    top_leaves: list[dict] = []
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            inner = section.get("panels")
+            if isinstance(inner, list) and inner:
+                section_groups.append(inner)
+        else:
+            top_leaves.append(panel)
+
+    for group in section_groups:
+        resolved = _resolve_panel_overlaps(group)
+        # ``_resolve_panel_overlaps`` returns a new list of dicts in
+        # the original order, but the dicts themselves are shallow
+        # copies. Patch position/size back into the originals so the
+        # caller's list (which is the actual YAML doc tree) sees the
+        # change.
+        for src, dst in zip(resolved, group):
+            dst["position"] = src["position"]
+            dst["size"] = src["size"]
+
+    if top_leaves:
+        resolved = _resolve_panel_overlaps(top_leaves)
+        for src, dst in zip(resolved, top_leaves):
+            dst["position"] = src["position"]
+            dst["size"] = src["size"]
+
+
 def _resolve_panel_overlaps(yaml_panels):
     placed = []
     for original_index, panel in sorted(
@@ -4202,6 +4240,19 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         yaml_doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(yaml_doc)
+
+    # Safety net: ``apply_style_guide_layout`` (specifically
+    # ``_fill_simple_row``) can rescale a row's widths to total
+    # exactly 48 columns, which sometimes nudges panels by 1-2 cols
+    # and pushes them into a neighbouring 2D-grid panel below.
+    # ``_resolve_panel_overlaps`` walks the post-layout panel list
+    # in (y, x) order and bumps any overlapping panel's y down to
+    # the bottom of its conflicting neighbours. This keeps L2's
+    # per-type minimums (which sometimes widen panels) from being
+    # punished by the downstream ``kb-dashboard-cli`` compile step,
+    # which rejects any overlap.
+    for dashboard in yaml_doc.get("dashboards") or []:
+        _resolve_section_overlaps_recursively(dashboard.get("panels") or [])
 
     safe_name = _dashboard_output_stem(title)
     output_path = Path(output_dir) / f"{safe_name}.yaml"
