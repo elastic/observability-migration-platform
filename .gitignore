@@ -13,6 +13,9 @@ build/
 venv/
 env/
 
+# Local agent scratch
+.tmp/
+
 # IDE / Editor
 .vscode/
 .idea/
