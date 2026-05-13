@@ -218,7 +218,7 @@ for entry in "${DASHBOARDS[@]}"; do
     migrate_cmd+=(--kibana-api-key "$KIBANA_API_KEY")
   fi
 
-  printf '--- [%s] %s\n' "$slug" "$src_rel"
+  printf '%s\n' "--- [$slug] $src_rel"
 
   if [[ $DRY_RUN -eq 1 ]]; then
     printf '    DRY-RUN: %s\n\n' "${migrate_cmd[*]}"
