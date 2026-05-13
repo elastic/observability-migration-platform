@@ -27,3 +27,8 @@ repos:
         language: system
         pass_filenames: false
         files: ^(observability_migration/|tests/|scripts/|pyproject\.toml|uv\.lock)
+      - id: no-local-paths
+        name: No hardcoded local machine paths
+        entry: python3 scripts/check_local_paths.py
+        language: system
+        pass_filenames: false

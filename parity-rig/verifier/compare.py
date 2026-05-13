@@ -24,7 +24,9 @@ _WHITESPACE = re.compile(r"\s+")
 # right-side-only differences match one of these patterns the drift is
 # downgraded to PASS rather than DRIFT.
 _KNOWN_T1_T2_RIGHT_ONLY_PATTERNS = (
-    re.compile(r"\|\s*EVAL\s+legend\s*=\s*CONCAT\(", re.IGNORECASE),
+    # Strip the full pipe-clause including all CONCAT arguments so the
+    # remainder can be compared with exact equality against the left side.
+    re.compile(r"\|\s*EVAL\s+legend\s*=\s*CONCAT\([^|]*\)", re.IGNORECASE),
     re.compile(r",\s*legend\b"),  # extended KEEP that includes synthetic legend
     # gauge panels: YAML emitter appends synthetic min/max/goal constants
     # so Lens can render the gauge with the user's expected bounds.
@@ -147,7 +149,7 @@ def _is_known_t1_t2_drift(left: str, right: str) -> bool:
     for pattern in _KNOWN_T1_T2_RIGHT_ONLY_PATTERNS:
         stripped_right = pattern.sub("", stripped_right)
     stripped_right = _WHITESPACE.sub(" ", stripped_right).strip()
-    return stripped_right.replace(" ", "").startswith(left.replace(" ", "")[: len(left)//2])
+    return stripped_right == _WHITESPACE.sub(" ", left).strip()
 
 
 def _preview(s: str, limit: int = 80) -> str:

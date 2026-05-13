@@ -405,6 +405,34 @@ class TestCompare:
 
 
 # --------------------------------------------------------------------- #
+# _is_known_t1_t2_drift — middle-splice false-negative regression
+# --------------------------------------------------------------------- #
+
+
+def test_middle_splice_different_metric_is_not_known():
+    left = "TS metrics-* | STATS val = AVG(foo)"
+    right = "TS metrics-* | STATS val = AVG(bar) | WHERE region = 'us-west'"
+    assert not compare._is_known_t1_t2_drift(left, right)
+
+
+def test_middle_splice_gauge_min_constant_is_known():
+    left = "TS metrics-* | STATS val = AVG(foo)"
+    right = left + " | EVAL _gauge_min = 0"
+    assert compare._is_known_t1_t2_drift(left, right)
+
+
+def test_suffix_only_legend_splice_is_known():
+    left = "TS metrics-* | STATS val = AVG(foo)"
+    right = left + " | EVAL legend = CONCAT(val, '')"
+    assert compare._is_known_t1_t2_drift(left, right)
+
+
+def test_identical_queries_are_known():
+    q = "TS metrics-* | STATS val = AVG(foo)"
+    assert compare._is_known_t1_t2_drift(q, q)
+
+
+# --------------------------------------------------------------------- #
 # Aggregation helpers
 # --------------------------------------------------------------------- #
 
