@@ -3054,11 +3054,6 @@ def _normalize_tile_size(panel, kibana_type):
             height = min_h
         if max_h is not None and height > max_h:
             height = max_h
-    elif effective_type == "metric" and 0 < width < MIN_PANEL_WIDTH:
-        # Defensive: in case "metric" got dropped from the table.
-        width = MIN_PANEL_WIDTH
-    elif effective_type == "datatable" and 0 < height < MIN_DATATABLE_HEIGHT:
-        height = MIN_DATATABLE_HEIGHT
 
     if width > 0:
         size["w"] = width
