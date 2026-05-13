@@ -504,21 +504,66 @@ def _extract_metrics(query: str) -> dict[str, str]:
                 metrics[field_name] = _classify_metric(field_name) if aggregation.lower() != "rate" else "counter"
         return metrics
     if query.startswith("PROMQL "):
+        promql_line = query.split("\n", 1)[0]
+        # Metrics wrapped in rate()/increase()/irate() are counters by Prometheus convention.
+        counter_wrapped = set()
+        for m in re.finditer(r"\b(?:rate|increase|irate)\(([^)]+)\)", promql_line, re.IGNORECASE):
+            inner = m.group(1)
+            for name_m in re.finditer(r"\b([A-Za-z_:][\w:.]+)(?=\s*(?:\{|\[|$))", inner):
+                counter_wrapped.add(_normalize_field(name_m.group(1)))
         for field_name in _extract_promql_metric_names(query):
-            metrics[field_name] = _classify_metric(field_name)
+            if field_name in counter_wrapped:
+                # rate()/increase() semantics imply counter; later ES|QL MAX_OVER_TIME
+                # can still downgrade to gauge via _merge_field counter→gauge override.
+                metrics[field_name] = "counter"
+            else:
+                metrics[field_name] = _classify_metric(field_name)
         return metrics
+    # FROM queries can only aggregate regular double or gauge_double fields — counter_double
+    # is forbidden with AVG/SUM/etc. in FROM mode. Any field found in a FROM query must be
+    # gauge (or plain double), never counter.
+    is_from_query = query.startswith("FROM ")
+
+    # Single-arg aggregations: SUM(field), AVG(field), ...
     pattern = re.compile(
         rf"\b(SUM|AVG|AVERAGE|MAX|MIN|MEDIAN|RATE|IRATE)\(\s*({_IDENT_RE})\s*\)"
-        rf"|\bCOUNT_DISTINCT\(\s*({_IDENT_RE})\s*\)"
         rf"|PERCENTILE\(\s*({_IDENT_RE})\s*,",
         re.IGNORECASE,
     )
     for match in pattern.finditer(query):
-        function_name = (match.group(1) or "COUNT_DISTINCT").upper()
-        field_name = _normalize_field(match.group(2) or match.group(3) or match.group(4) or "")
+        function_name = (match.group(1) or "").upper()
+        field_name = _normalize_field(match.group(2) or match.group(3) or "")
         if _should_skip_field(field_name):
             continue
-        metrics[field_name] = "counter" if function_name in {"RATE", "IRATE"} else _classify_metric(field_name)
+        if is_from_query:
+            # counter_double cannot be used with standard aggregations in FROM mode.
+            metrics[field_name] = "gauge"
+        else:
+            metrics[field_name] = "counter" if function_name in {"RATE", "IRATE"} else _classify_metric(field_name)
+
+    # Two-arg TSDB functions: IRATE(field, duration), RATE(field, dur), INCREASE(field, dur)
+    # classify their first argument as counter.
+    for m in re.finditer(
+        rf"\b(?:IRATE|RATE|INCREASE)\(\s*({_IDENT_RE})\s*,",
+        query,
+        re.IGNORECASE,
+    ):
+        field_name = _normalize_field(m.group(1))
+        if not _should_skip_field(field_name):
+            metrics[field_name] = "counter"
+
+    # MAX_OVER_TIME(field, dur) and AVG_OVER_TIME(field, dur) require gauge_double; mark as
+    # gauge, overriding any counter classification from PROMQL verification packets that
+    # misuse increase() on what are actually gauge metrics (e.g. node_netstat_*, node_vmstat_*).
+    for m in re.finditer(
+        rf"\b(?:MAX_OVER_TIME|AVG_OVER_TIME)\(\s*({_IDENT_RE})\s*,",
+        query,
+        re.IGNORECASE,
+    ):
+        field_name = _normalize_field(m.group(1))
+        if not _should_skip_field(field_name):
+            metrics[field_name] = "gauge"
+
     return metrics
 
 
@@ -541,6 +586,11 @@ def _extract_dimensions(query: str) -> set[str]:
 
     for match in where_pattern.finditer(query):
         _add_dimension(dimensions, match.group(1), metrics)
+
+    # COUNT_DISTINCT arguments are dimension fields being counted, not numeric metrics.
+    for match in re.finditer(rf"\bCOUNT_DISTINCT\(\s*({_IDENT_RE})\s*\)", query, re.IGNORECASE):
+        _add_dimension(dimensions, _normalize_field(match.group(1)), metrics)
+
     if query.startswith("PROMQL "):
         for field_name in _extract_promql_label_fields(query):
             _add_dimension(dimensions, field_name, metrics)
@@ -558,7 +608,8 @@ def _extract_group_fields(query: str) -> list[str]:
             _append_unique(fields, _normalize_field(field_name))
         return [field for field in fields if not _should_skip_field(field)]
     if query.startswith("PROMQL "):
-        for group_expr in re.findall(r"\bby\s*\(([^)]*)\)", query, flags=re.IGNORECASE):
+        promql_line = query.split("\n", 1)[0]
+        for group_expr in re.findall(r"\bby\s*\(([^)]*)\)", promql_line, flags=re.IGNORECASE):
             for field_name in _split_top_level(group_expr):
                 normalized = _normalize_field(field_name)
                 if not _should_skip_field(normalized):
@@ -659,28 +710,42 @@ def _classify_metric(field_name: str) -> str:
 
 
 def _extract_promql_metric_names(query: str) -> set[str]:
+    # Only scan the PROMQL expression itself; subsequent "| EVAL …" pipe stages contain
+    # ES|QL computed aliases (e.g. "device", "cpu") that are not real index metric fields.
+    promql_line = query.split("\n", 1)[0]
     names: set[str] = set()
-    excluded_fields = set(_extract_group_fields(query)) | _extract_promql_label_fields(query)
-    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", query):
+    excluded_fields = set(_extract_group_fields(promql_line)) | _extract_promql_label_fields(promql_line)
+    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", promql_line):
         field_name = _normalize_field(match.group(1))
         if not _should_skip_field(field_name) and field_name not in excluded_fields:
             names.add(field_name)
-    expr = query.split("value=", 1)[-1] if "value=" in query else query
+    expr = promql_line.split("value=", 1)[-1] if "value=" in promql_line else promql_line
     expr = re.sub(r"\{[^}]*\}", "", expr)
     expr = re.sub(r'"[^"]*"', "", expr)
     expr = re.sub(r"\[[^\]]*\]", "", expr)
     reserved = {
+        "and",
         "avg",
+        "bool",
         "by",
         "count",
+        "count_values",
+        "group",
         "increase",
         "irate",
+        "label_join",
+        "label_replace",
         "max",
         "min",
+        "offset",
+        "or",
         "rate",
         "scalar",
+        "stddev",
+        "stdvar",
         "sum",
         "topk",
+        "unless",
         "without",
         "on",
         "ignoring",
@@ -710,12 +775,15 @@ _PROMQL_VECTOR_MATCHING_RE = re.compile(
 
 def _extract_promql_label_fields(query: str) -> set[str]:
     fields: set[str] = set()
-    for matcher_block in re.findall(r"\{([^}]*)\}", query):
+    # Restrict to the PROMQL expression line; EVAL/KEEP pipe stages follow "\n|" and
+    # contain regex patterns with {…} that must not be treated as label selectors.
+    search_text = query.split("\n", 1)[0] if query.startswith("PROMQL ") else query
+    for matcher_block in re.findall(r"\{([^}]*)\}", search_text):
         for field_name in re.findall(r"([A-Za-z_][\w:.]*)\s*(?:=~|=|!=|!~)", matcher_block):
             normalized = _normalize_field(field_name)
             if not _should_skip_field(normalized):
                 fields.add(normalized)
-    for match in _PROMQL_VECTOR_MATCHING_RE.finditer(query):
+    for match in _PROMQL_VECTOR_MATCHING_RE.finditer(search_text):
         for part in _split_top_level(match.group(1)):
             normalized = _normalize_field(part)
             if normalized and not _should_skip_field(normalized):
@@ -806,6 +874,10 @@ def _merge_field(
         current["role"] = "metric" if "metric" in {current["role"], role} else role
     if metric_kind and not current.get("metric_kind"):
         current["metric_kind"] = metric_kind
+    elif metric_kind == "gauge" and current.get("metric_kind") == "counter":
+        # ES|QL MAX_OVER_TIME(field) requires gauge_double and takes priority over a
+        # PROMQL increase()-based counter classification from verification packets.
+        current["metric_kind"] = "gauge"
     if requires_native_promql:
         current["requires_native_promql"] = True
     _append_unique(current["sources"], source)
