@@ -50,33 +50,31 @@ if [ -z "${ELASTICSEARCH_ENDPOINT:-}" ] || [ -z "${KEY:-}" ]; then
   exit 1
 fi
 
-# Collect artifact dirs: look for output-*/dashboards under both grafana and
-# datadog source trees. The dashboards/ subdirectory is where the migration
-# CLI writes yaml/ and verification_packets.json.
+# Collect artifact dirs: search all slug-named subdirectories under the
+# Grafana E2E root and the in-repo Datadog output dir. Both migrations write
+# <run-root>/<slug>/dashboards/ with a yaml/ sub-directory inside.
 ARTIFACT_DIRS=()
-for source_type in grafana datadog; do
-  pattern="$E2E_ROOT/$source_type/output-*"
-  for output_dir in $pattern; do
-    [ -d "$output_dir" ] || continue
-    dashboards_dir="$output_dir/dashboards"
-    if [ -d "$dashboards_dir/yaml" ]; then
-      ARTIFACT_DIRS+=("$dashboards_dir")
-    elif [ -d "$dashboards_dir" ]; then
-      # dashboards/ exists but no yaml/ inside — skip with a warning
-      echo "WARN: $dashboards_dir has no yaml/ subdirectory, skipping." >&2
-    else
-      # Older layout: yaml/ is directly inside the output dir
-      if [ -d "$output_dir/yaml" ]; then
-        ARTIFACT_DIRS+=("$output_dir")
-      fi
-    fi
-  done
+
+# Grafana: /tmp/mig-to-kbn-e2e/grafana/<slug>/dashboards/
+for dashboards_dir in "$E2E_ROOT/grafana"/*/dashboards; do
+  [ -d "$dashboards_dir/yaml" ] || continue
+  ARTIFACT_DIRS+=("$dashboards_dir")
 done
 
+# Datadog: <repo>/e2e_datadog_run/<slug>/dashboards/
+DD_OUT_ROOT="$PROJECT_ROOT/e2e_datadog_run"
+if [ -d "$DD_OUT_ROOT" ]; then
+  for dashboards_dir in "$DD_OUT_ROOT"/*/dashboards; do
+    [ -d "$dashboards_dir/yaml" ] || continue
+    ARTIFACT_DIRS+=("$dashboards_dir")
+  done
+fi
+
 if [ ${#ARTIFACT_DIRS[@]} -eq 0 ]; then
-  echo "ERROR: No artifact directories found under $E2E_ROOT/{grafana,datadog}/output-*." >&2
-  echo "  Run the migration first (e.g. bash scripts/run_migration.sh) and ensure" >&2
-  echo "  output lives under $E2E_ROOT." >&2
+  echo "ERROR: No artifact directories found." >&2
+  echo "  Expected:" >&2
+  echo "    $E2E_ROOT/grafana/<slug>/dashboards/yaml/ (run scripts/run_e2e_grafana.sh first)" >&2
+  echo "    $DD_OUT_ROOT/<slug>/dashboards/yaml/      (run scripts/run_e2e_datadog.sh first)" >&2
   exit 1
 fi
 
