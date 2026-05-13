@@ -97,6 +97,7 @@ _COUNTER_HINTS = (
     "_total",
     "_count",
     "_sum",
+    "_bucket",
     "bytes_sent",
     "bytes_rcvd",
     "requests",

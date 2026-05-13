@@ -64,7 +64,7 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
             continue  # skip flat field whose name is also a dotted-child prefix
         if info.get("role") == "metric":
             props[field_name] = {"type": "double"}
-            if is_metrics and info.get("requires_native_promql"):
+            if is_metrics:
                 props[field_name]["time_series_metric"] = (
                     "counter" if info.get("metric_kind") == "counter" else "gauge"
                 )
