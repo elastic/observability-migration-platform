@@ -414,3 +414,42 @@ class TestVisualDiffCLI:
                     "--report", str(tmp_path / "r.json"),
                 ]
             )
+
+
+# --------------------------------------------------------------------- #
+# diff_screenshots — paths with spaces
+# --------------------------------------------------------------------- #
+
+
+class TestDiffScreenshotsPathsWithSpaces:
+    def test_batch_command_quotes_paths_containing_spaces(self, tmp_path):
+        """Paths with spaces must be double-quoted in the batch command string
+        so that agent-browser's own argument parser does not split on the space."""
+        # Use a directory name that contains a space.
+        spaced_dir = tmp_path / "my baseline"
+        baseline = _png(spaced_dir / "b.png")
+        candidate = _png(tmp_path / "c.png")
+        out = tmp_path / "my output" / "d.png"
+        captured: dict[str, Any] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _completed(stdout=json.dumps({"score": 0.0}))
+
+        with patch.object(shutil, "which", return_value="/usr/bin/agent-browser"), \
+             patch.object(subprocess, "run", side_effect=fake_run):
+            visual_diff.diff_screenshots(baseline, candidate, out, threshold=0.15)
+
+        cmd = captured["cmd"]
+        diff_step = next(
+            (s for s in cmd if isinstance(s, str) and s.startswith("diff screenshot")),
+            "",
+        )
+        # The baseline path (which contains a space) must appear in double-quotes.
+        assert f'"{baseline}"' in diff_step, (
+            f"baseline path not quoted in diff step: {diff_step!r}"
+        )
+        # The output path (which also contains a space) must appear in double-quotes.
+        assert f'"{out}"' in diff_step, (
+            f"output path not quoted in diff step: {diff_step!r}"
+        )

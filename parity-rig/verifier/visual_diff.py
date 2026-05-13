@@ -140,7 +140,7 @@ def diff_screenshots(
         "--json",
         "--bail",
         f"open {candidate_url}",
-        f"diff screenshot --baseline {baseline_path} -o {output_path} -t {threshold}",
+        f'diff screenshot --baseline "{baseline_path}" -o "{output_path}" -t {threshold}',
     ]
     LOG.debug("invoking: %s", " ".join(cmd))
     completed = subprocess.run(
