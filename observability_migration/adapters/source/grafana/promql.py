@@ -101,7 +101,13 @@ def _gauge_fallback_for_counter_range_func(range_func):
     applied to a field that the target cluster has typed as a gauge.
     The warning template contains a ``{metric}`` placeholder for the
     caller to substitute the source metric name."""
-    return _COUNTER_TO_GAUGE_FALLBACK[range_func]
+    result = _COUNTER_TO_GAUGE_FALLBACK.get(range_func)
+    if result is None:
+        raise ValueError(
+            f"no gauge fallback for range function {range_func!r}; "
+            f"expected one of {sorted(_COUNTER_TO_GAUGE_FALLBACK)}"
+        )
+    return result
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
