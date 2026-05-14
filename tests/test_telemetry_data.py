@@ -104,7 +104,7 @@ class TelemetryDataTests(unittest.TestCase):
 
         self.assertEqual(
             template["template"]["settings"]["index"]["look_back_time"],
-            "7d",
+            "14d",
         )
 
     def test_generate_documents_does_not_treat_metric_names_as_dimensions(self):
@@ -296,7 +296,7 @@ class TelemetryDataTests(unittest.TestCase):
             ["http.response.status_code", "service.name"],
         )
 
-    def test_plan_index_template_keeps_non_promql_metrics_plain_numeric(self):
+    def test_plan_index_template_tags_all_metrics_with_tsdb_type(self):
         stream = {
             "fields": {
                 "trace_http_request_errors": {"role": "metric", "metric_kind": "counter"},
@@ -307,9 +307,14 @@ class TelemetryDataTests(unittest.TestCase):
         template = plan_index_template("metrics-*", stream)
         props = template["template"]["mappings"]["properties"]
 
-        self.assertEqual(props["trace_http_request_errors"], {"type": "double"})
+        # All metrics in a TSDB stream get time_series_metric so the engine
+        # can enforce counter/gauge semantics at query time.
+        self.assertEqual(
+            props["trace_http_request_errors"],
+            {"type": "double", "time_series_metric": "counter"},
+        )
 
-    def test_plan_index_template_only_marks_promql_metrics_as_time_series_metrics(self):
+    def test_plan_index_template_types_all_metrics_in_mixed_stream(self):
         stream = {
             "requires_native_promql": True,
             "fields": {
@@ -329,8 +334,9 @@ class TelemetryDataTests(unittest.TestCase):
         template = plan_index_template("metrics-generic-*", stream)
         props = template["template"]["mappings"]["properties"]
 
+        # Both PROMQL-native and non-PROMQL metrics get time_series_metric typed.
         self.assertEqual(props["http_requests_total"]["time_series_metric"], "counter")
-        self.assertEqual(props["trace_http_request_errors"], {"type": "double"})
+        self.assertEqual(props["trace_http_request_errors"]["time_series_metric"], "counter")
 
     def test_generate_documents_satisfies_literals_patterns_groups_and_metric_kinds(self):
         contract = {

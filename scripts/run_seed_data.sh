@@ -90,6 +90,11 @@ echo "" | tee -a "$LOG_FILE"
 DATA_HOURS="${DATA_HOURS:-4}"
 INTERVAL_SEC="${INTERVAL_SEC:-30}"
 
+# ---------------------------------------------------------------------------
+# Phase 1: dense recent seed (last DATA_HOURS at INTERVAL_SEC cadence)
+# ---------------------------------------------------------------------------
+echo "Phase 1: dense recent seed (${DATA_HOURS}h at ${INTERVAL_SEC}s intervals)" | tee -a "$LOG_FILE"
+
 "$VENV" "$SCRIPT_DIR/setup_telemetry_data.py" \
   "${ARTIFACT_DIRS[@]}" \
   --es-endpoint "$ELASTICSEARCH_ENDPOINT" \
@@ -102,7 +107,36 @@ STATUS=${PIPESTATUS[0]}
 
 if [ "$STATUS" -ne 0 ]; then
   echo "" | tee -a "$LOG_FILE"
-  echo "ERROR: setup_telemetry_data.py exited with status $STATUS." | tee -a "$LOG_FILE"
+  echo "ERROR: Phase 1 setup_telemetry_data.py exited with status $STATUS." | tee -a "$LOG_FILE"
+  echo "  See $LOG_FILE for details." >&2
+  exit "$STATUS"
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 2: sparse historical seed (14 days at 1h intervals, no template reset)
+# Required for week-over-week panels (e.g. NOW()-14d vs NOW()-7d comparisons).
+# Uses --no-recreate so the templates and streams from Phase 1 are preserved.
+# ---------------------------------------------------------------------------
+HIST_DATA_HOURS="${HIST_DATA_HOURS:-336}"   # 14 days
+HIST_INTERVAL_SEC="${HIST_INTERVAL_SEC:-3600}"  # 1 hour
+
+echo "" | tee -a "$LOG_FILE"
+echo "Phase 2: sparse historical seed (${HIST_DATA_HOURS}h at ${HIST_INTERVAL_SEC}s intervals, no recreate)" | tee -a "$LOG_FILE"
+
+"$VENV" "$SCRIPT_DIR/setup_telemetry_data.py" \
+  "${ARTIFACT_DIRS[@]}" \
+  --es-endpoint "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --data-hours "$HIST_DATA_HOURS" \
+  --interval-sec "$HIST_INTERVAL_SEC" \
+  --no-recreate \
+  2>&1 | tee -a "$LOG_FILE"
+
+STATUS=${PIPESTATUS[0]}
+
+if [ "$STATUS" -ne 0 ]; then
+  echo "" | tee -a "$LOG_FILE"
+  echo "ERROR: Phase 2 setup_telemetry_data.py exited with status $STATUS." | tee -a "$LOG_FILE"
   echo "  See $LOG_FILE for details." >&2
   exit "$STATUS"
 fi

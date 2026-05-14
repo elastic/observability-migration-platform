@@ -447,7 +447,9 @@ def _look_back_time(stream: dict[str, Any]) -> str:
         int(stream.get("_lookback_seconds") or 0),
         _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
     )
-    seconds = min(seconds, 7 * 24 * 60 * 60)
+    # Allow up to 15 days so week-over-week query patterns (e.g. NOW()-14d vs
+    # NOW()-7d) can be satisfied with a historical seed pass.
+    seconds = min(seconds, 15 * 24 * 60 * 60)
     days = max(1, math.ceil(seconds / (24 * 60 * 60)))
     return f"{days}d"
 
