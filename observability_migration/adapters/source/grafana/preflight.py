@@ -394,6 +394,16 @@ _PROMQL_KEYWORDS = {
     "vector",
     "without",
 }
+_PROMQL_SET_OPERATORS = frozenset({
+    "or",
+    "and",
+    "unless",
+    "bool",
+    "on",
+    "ignoring",
+    "group_left",
+    "group_right",
+})
 _COUNTER_SUFFIXES = ("_total", "_count", "_sum")
 _GAUGE_RESOURCE_TOKENS = ("resource_limit", "resource_limits", "resource_request", "resource_requests")
 
@@ -420,17 +430,41 @@ def _metric_candidates(query_ir: dict[str, Any]) -> set[str]:
 
     expression = str(query_ir.get("clean_expression", "") or query_ir.get("source_expression", "") or "")
     candidates.update(match.group(1) for match in _FIELD_TOKEN_RE.finditer(expression))
-    expression_without_labels = re.sub(r"\{[^{}]*\}", "", expression)
+    # Strip non-metric token regions before the bare-identifier scan: labels
+    # inside `by(...)` / `without(...)` aggregation clauses and inside PromQL
+    # vector-match modifiers `on(...)` / `ignoring(...)` /
+    # `group_left(...)` / `group_right(...)`, Grafana interpolation tokens
+    # like `$__rate_interval` / `$cluster`, and the contents of bracketed
+    # time ranges like `[$__rate_interval]`. These can otherwise be picked
+    # up as metric names.
+    expression_stripped = re.sub(
+        r"\b(?:by|without)\s*\(([^()]*)\)",
+        "",
+        expression,
+        flags=re.IGNORECASE,
+    )
+    expression_stripped = re.sub(
+        r"\b(?:on|ignoring|group_left|group_right)\s*\(([^()]*)\)",
+        "",
+        expression_stripped,
+        flags=re.IGNORECASE,
+    )
+    expression_stripped = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]*", "", expression_stripped)
+    expression_stripped = re.sub(r"\[[^\]]*\]", "", expression_stripped)
+    expression_without_labels = re.sub(r"\{[^{}]*\}", "", expression_stripped)
     expression_without_literals = re.sub(r'"[^"]*"', '""', expression_without_labels)
     candidates.update(
         match.group(1)
         for match in _BARE_FIELD_TOKEN_RE.finditer(expression_without_literals)
-        if match.group(1) not in _PROMQL_KEYWORDS
+        if match.group(1).lower() not in _PROMQL_KEYWORDS
+        and match.group(1).lower() not in _PROMQL_SET_OPERATORS
     )
     return {
         item
         for item in candidates
-        if item and item not in {"scalar", "vector"}
+        if item
+        and item not in {"scalar", "vector"}
+        and item.lower() not in _PROMQL_SET_OPERATORS
     }
 
 
@@ -602,12 +636,37 @@ def build_target_schema_contract(
     }
 
 
+def build_target_contract_summary(results: list[Any]) -> dict[str, Any]:
+    """Summarize target query contract outcomes across all translated panels."""
+    status_counter: Counter = Counter()
+    action_kinds: Counter = Counter()
+
+    for result in results:
+        for panel in getattr(result, "panel_results", []) or []:
+            evaluation = getattr(panel, "contract_evaluation", {}) or {}
+            status = str(evaluation.get("status", "") or "")
+            if status:
+                status_counter[status] += 1
+
+            plan = getattr(panel, "fulfillment_plan", {}) or {}
+            for action in plan.get("actions", []) or []:
+                kind = str(action.get("kind", "") or "")
+                if kind:
+                    action_kinds[kind] += 1
+
+    return {
+        "totals": dict(status_counter),
+        "action_kinds": dict(action_kinds),
+    }
+
+
 def build_preflight_report(
     results: list[Any],
     validation_summary: dict[str, Any],
     validation_records: list[dict[str, Any]],
     verification_payload: dict[str, Any],
     schema_contract: dict[str, Any],
+    target_contract_summary: dict[str, Any] | None = None,
     *,
     source_urls_configured: bool = False,
     target_url_configured: bool = False,
@@ -621,6 +680,7 @@ def build_preflight_report(
     target_readiness = target_readiness or {}
     datasource_audit = datasource_audit or {}
     complexity_scores = complexity_scores or []
+    target_contract_summary = target_contract_summary or {}
 
     total_panels = sum(r.total_panels for r in results)
     green = sum(
@@ -818,6 +878,7 @@ def build_preflight_report(
             },
             "target_validation": validation_summary.get("counts", {}),
             "schema_contract_totals": totals,
+            "target_contract_totals": target_contract_summary.get("totals", {}),
         },
         "source_metric_inventory": {
             "status": source_inventory.get("status", "not_configured"),
@@ -832,10 +893,16 @@ def build_preflight_report(
         "datasource_audit": datasource_audit,
         "complexity_scores": complexity_scores,
         "schema_contract": schema_contract,
+        "target_contract_summary": target_contract_summary,
         "blockers": blockers,
         "actions": actions,
         "customer_action_summary": _build_action_summary(
-            results, blockers, actions, evidence_level, schema_contract,
+            results,
+            blockers,
+            actions,
+            evidence_level,
+            schema_contract,
+            target_contract_summary=target_contract_summary,
             source_inventory=source_inventory,
             target_readiness=target_readiness,
             datasource_audit=datasource_audit,
@@ -849,6 +916,7 @@ def _build_action_summary(
     actions: list[str],
     evidence_level: str,
     schema_contract: dict[str, Any],
+    target_contract_summary: dict[str, Any] | None = None,
     *,
     source_inventory: dict[str, Any] | None = None,
     target_readiness: dict[str, Any] | None = None,
@@ -857,6 +925,7 @@ def _build_action_summary(
     source_inventory = source_inventory or {}
     target_readiness = target_readiness or {}
     datasource_audit = datasource_audit or {}
+    target_contract_summary = target_contract_summary or {}
 
     lines = ["PREFLIGHT VALIDATION SUMMARY", "=" * 40, ""]
 
@@ -933,7 +1002,29 @@ def _build_action_summary(
         )
         lines.append("")
 
-    if not blockers and not actions:
+    contract_totals = target_contract_summary.get("totals", {})
+    action_kinds = target_contract_summary.get("action_kinds", {})
+    nonzero_statuses = [
+        (status, count)
+        for status, count in sorted(contract_totals.items())
+        if count
+    ]
+    risky_contract_statuses = {
+        "blocked",
+        "degraded_if_forced",
+        "exact_after_fulfillment",
+    }
+    has_risky_contract_totals = any(
+        contract_totals.get(status, 0) for status in risky_contract_statuses
+    )
+    if nonzero_statuses or action_kinds:
+        for status, count in nonzero_statuses:
+            lines.append(f"CONTRACT STATUS {status}: {count}")
+        for kind, count in sorted(action_kinds.items()):
+            lines.append(f"  - {kind}: {count}")
+        lines.append("")
+
+    if not blockers and not actions and not has_risky_contract_totals:
         lines.append(
             "All preflight checks passed. "
             "Ready for target ingest and deployment testing."
@@ -950,7 +1041,7 @@ def save_preflight_report(
         json.dump(report, fh, indent=2)
 
 
-def save_schema_contract(
+def save_preflight_json(
     contract: dict[str, Any], output_path: str | Path,
 ) -> None:
     output_path = Path(output_path)
@@ -962,9 +1053,10 @@ __all__ = [
     "build_dashboard_complexity",
     "build_datasource_audit",
     "build_preflight_report",
+    "build_target_contract_summary",
     "build_target_schema_contract",
     "probe_source_metric_inventory",
     "probe_target_readiness",
+    "save_preflight_json",
     "save_preflight_report",
-    "save_schema_contract",
 ]

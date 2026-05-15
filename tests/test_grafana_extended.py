@@ -1610,11 +1610,16 @@ class TestBinaryExpressions(unittest.TestCase):
         self.assertGreaterEqual(where_count, 2,
                                 "Should have time filter WHERE and comparison WHERE")
 
-    def test_unless_warns_about_approximation(self):
+    def test_unless_is_marked_not_feasible(self):
+        """PromQL ``unless`` (set difference) has no honest single-stage
+        ES|QL equivalent. The translator used to silently emit an
+        approximation; it now refuses, surfacing a clear ``not_feasible``
+        marker so the panel is reported rather than rendered with a
+        dropped operand. See parity-rig RESULTS.md."""
         ctx = _translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
-        has_approx_warning = any("left side" in w.lower() or "approximat" in w.lower()
-                                 for w in ctx.warnings)
-        self.assertTrue(has_approx_warning)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        reasons = " ".join(getattr(ctx, "warnings", []) or [])
+        self.assertRegex(reasons, r"(?i)set operator|unless|set difference")
 
 
 # =========================================================================
@@ -1683,7 +1688,13 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "sum by (job) (rate(foo_total[5m]))", panel_type="piechart")
         yaml_panel, result = _translate_panel(panel)
         self.assertEqual(yaml_panel["esql"]["type"], "pie")
-        self.assertIn("LAST(foo_total, time_bucket)", result.esql_query)
+        # The per-group collapse now uses ``MAX`` instead of ``LAST`` so
+        # multi-target TS queries with per-series nulls inside a bucket
+        # don't render as all-null (see
+        # ``test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts``).
+        # For a single-series query like this one the behaviour is
+        # identical, but the emitted token is now ``MAX``.
+        self.assertIn("MAX(foo_total)", result.esql_query)
         self.assertIn("service.name", result.esql_query)
 
     def test_legacy_range_false_summary_keeps_latest_bucket(self):
@@ -1692,8 +1703,12 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         _yaml_panel, result = _translate_panel(panel)
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
         self.assertIn("| SORT time_bucket ASC", result.esql_query)
+        # ``MAX(node_load1)`` replaces the previous
+        # ``LAST(node_load1, time_bucket)`` so the collapse is null-safe
+        # across multi-target TS queries; behaviour for this
+        # single-series case is identical.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_load1 = LAST(node_load1, time_bucket)",
+            "| STATS time_bucket = MAX(time_bucket), node_load1 = MAX(node_load1)",
             result.esql_query,
         )
         self.assertNotIn("| SORT time_bucket DESC", result.esql_query)

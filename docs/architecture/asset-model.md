@@ -27,15 +27,22 @@ All migrated assets use the unified `AssetStatus` enum:
 The top-level container. Every source adapter produces a `DashboardIR`
 containing panels, controls, alerts, annotations, links, and transforms.
 
-## QueryIR vs TargetQueryPlan
+## QueryIR vs TargetQueryContract vs TargetQueryPlan
 
-The query representation is split into two contracts:
+The query representation is split into three contracts:
 
 - **QueryIR**: Source-agnostic semantic intent (what the query means).
+- **TargetQueryContract**: Conditions required for an exact target translation.
 - **TargetQueryPlan**: Target-specific rendering (how the query runs on Kibana/ES).
 
 This separation exists because the same semantic intent may render differently
 on different targets (e.g. PROMQL vs ES|QL on Elastic Serverless).
+
+## TargetQueryContract
+
+`TargetQueryContract` records the target requirements for an exact translation.
+It sits between `QueryIR` and `TargetQueryPlan` and is evaluated before the
+runtime query is considered final.
 
 ## Source Extensions
 

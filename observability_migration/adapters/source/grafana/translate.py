@@ -16,8 +16,21 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from observability_migration.core.assets.query import QueryIR, build_query_ir
+from observability_migration.core.assets.target_query_contract import (
+    FieldRequirement,
+    TargetEnvironmentSnapshot,
+    TargetQueryContract,
+)
+from observability_migration.core.verification.field_capabilities import FieldCapability
 
+from .contract_evaluator import evaluate_target_query_contract
+from .fulfillment_planner import plan_contract_fulfillment
 from .llm_translate import attempt_llm_translation
+from .preflight import (
+    _DERIVED_METRIC_NAMES,
+    _looks_like_counter_metric,
+    _metric_candidates,
+)
 from .promql import (
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
@@ -36,10 +49,12 @@ from .promql import (
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
+    _gauge_fallback_for_counter_range_func,
     _grouping_parts,
     _is_counter_fallback,
     _parse_fragment,
     _parse_logql_search,
+    _resolve_metric_field,
     _summary_mode_from_metadata,
     classify_promql_complexity,
     preprocess_grafana_macros,
@@ -53,6 +68,7 @@ from .rules import (
     RulePackConfig,
     _append_unique,
 )
+from .semantic_planner import RuntimeCapabilities, plan_grafana_metric_contract
 
 
 def _default_instance_field(rp):
@@ -94,6 +110,209 @@ class TranslationContext:
     datasource_name: str = ""
     query_language: str = ""
     query_ir: QueryIR | None = None
+    target_query_contract: Any = field(default_factory=dict)
+    contract_evaluation: Any = field(default_factory=dict)
+    fulfillment_plan: Any = field(default_factory=dict)
+
+
+def _artifact_to_dict(value):
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None):
+    if not query_ir:
+        return {}, {}, {}
+
+    metadata = (
+        query_ir.get("metadata", {})
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metadata", {})
+    ) or {}
+    multi_series_metric_fields = []
+    for field_name in (metadata.get("multi_series_metric_fields", []) or []):
+        normalized = str(field_name or "").strip()
+        if normalized and normalized not in multi_series_metric_fields:
+            multi_series_metric_fields.append(normalized)
+
+    source_language = str(
+        query_ir.get("source_language", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "source_language", "")
+        or ""
+    ).strip().lower()
+    family = str(
+        query_ir.get("family", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "family", "")
+        or ""
+    ).strip().lower()
+    metric_name = str(
+        query_ir.get("metric", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metric", "")
+        or ""
+    ).strip()
+    range_function = str(
+        query_ir.get("range_function", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "range_function", "")
+        or ""
+    ).strip().lower()
+    if source_language != "promql":
+        return {}, {}, {}
+
+    if metric_name in _DERIVED_METRIC_NAMES:
+        metric_name = ""
+
+    # Prefer real source metric names from the source expression when one is
+    # available. This handles two cases:
+    #   1. The translator rewrote the panel to a synthetic alias like
+    #      `computed_value` or `constant_value` and the IR's `metric` field no
+    #      longer points at a real target field.
+    #   2. Panel-level fusion populated `multi_series_metric_fields` with the
+    #      output column aliases emitted in the ES|QL `STATS` clause (e.g.
+    #      `Namespaces`, `Linux_Packets_dropped_receive`); those are not source
+    #      field names and should never reach the contract.
+    query_ir_dict = (
+        query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
+    )
+    has_source_expression = bool(
+        str(query_ir_dict.get("source_expression", "") or "").strip()
+        or str(query_ir_dict.get("clean_expression", "") or "").strip()
+    )
+    if has_source_expression:
+        derived_candidates = _metric_candidates(query_ir_dict) - _DERIVED_METRIC_NAMES
+        if derived_candidates:
+            multi_series_metric_fields = sorted(derived_candidates)
+
+    runtime_capabilities = RuntimeCapabilities(promql=bool((rule_pack or RulePackConfig()).native_promql))
+    index_pattern = str(
+        query_ir.get("target_index", "")
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "target_index", "")
+        or ""
+    ) or "metrics-*"
+    planner_metric_name = metric_name or (multi_series_metric_fields[0] if multi_series_metric_fields else "")
+    if family == "native_promql" and runtime_capabilities.promql and not (planner_metric_name or range_function):
+        contract = TargetQueryContract(
+            canonical_target="promql",
+            exactness_class="exact_if_contract_met",
+            target_shape={"required_index_patterns": [index_pattern]},
+            runtime_requirements={"source_command": "PROMQL"},
+            degradation_policy={"fallback": "explicit_only"},
+        )
+    else:
+        if not (planner_metric_name or range_function):
+            return {}, {}, {}
+        contract = plan_grafana_metric_contract(
+            QueryIR(
+                source_language=source_language,
+                panel_type=str(
+                    query_ir.get("panel_type", "")
+                    if isinstance(query_ir, dict)
+                    else getattr(query_ir, "panel_type", "")
+                    or ""
+                ),
+                metric=planner_metric_name,
+                range_function=range_function,
+                outer_agg=str(
+                    query_ir.get("outer_agg", "")
+                    if isinstance(query_ir, dict)
+                    else getattr(query_ir, "outer_agg", "")
+                    or ""
+                ),
+                target_index=index_pattern,
+            ),
+            runtime_capabilities=runtime_capabilities,
+        )
+
+    if multi_series_metric_fields:
+        field_names = list(multi_series_metric_fields)
+    elif planner_metric_name:
+        field_names = [planner_metric_name]
+    else:
+        field_names = []
+    if field_names:
+        template = (
+            contract.field_requirements[0]
+            if contract.field_requirements
+            else FieldRequirement(name=field_names[0], role="metric")
+        )
+        resolved_field_names = []
+        for field_name in field_names:
+            metric_kind = (
+                "counter"
+                if template.metric_kind and _looks_like_counter_metric(field_name)
+                else template.metric_kind
+            )
+            if resolver is not None and hasattr(resolver, "resolve_metric_field"):
+                prefer = "counter" if metric_kind == "counter" else "gauge"
+                resolved_name = resolver.resolve_metric_field(field_name, prefer=prefer)
+            else:
+                resolved_name = field_name
+            resolved_field_names.append((resolved_name, metric_kind))
+        contract.field_requirements = [
+            FieldRequirement(
+                name=resolved_name,
+                role=template.role,
+                type_family=template.type_family,
+                metric_kind=metric_kind,
+                context=template.context,
+            )
+            for resolved_name, metric_kind in resolved_field_names
+        ]
+
+    field_capabilities = {}
+    for requirement in contract.field_requirements:
+        if not requirement.name:
+            continue
+        capability = resolver.field_capability(requirement.name) if resolver else None
+        if capability is None and contract.canonical_target == "promql":
+            capability = FieldCapability(name=requirement.name)
+        if capability is not None:
+            field_capabilities[requirement.name] = capability
+
+    if resolver is not None and hasattr(resolver, "concrete_index_candidates"):
+        concrete_indexes = list(resolver.concrete_index_candidates() or [])
+    else:
+        concrete_indexes = []
+    # When `field_capabilities` is empty (e.g. every required field is missing
+    # from the target), we have no information about the index mode and must
+    # not emit a misleading "not all-TSDS" reason on top of the genuine
+    # "missing field" reasons. Treat all-TSDS as unknown-but-true in that case
+    # so the evaluator stays silent on index mode.
+    all_tsds = True
+    if len(concrete_indexes) == 1 and field_capabilities:
+        all_tsds = all(
+            bool(getattr(capability, "time_series_metric_kind", "") or "")
+            for capability in field_capabilities.values()
+        )
+    elif len(concrete_indexes) > 1:
+        all_tsds = False
+    snapshot = TargetEnvironmentSnapshot(
+        target_patterns={
+            index_pattern: {
+                "all_tsds": all_tsds,
+            }
+        },
+        field_capabilities=field_capabilities,
+        runtime_capabilities={
+            "PROMQL": runtime_capabilities.promql,
+            "TS": True,
+            "FROM": True,
+            "TBUCKET": True,
+            "RATE": True,
+            "IRATE": True,
+            "INCREASE": True,
+        },
+    )
+    evaluation = evaluate_target_query_contract(contract, snapshot)
+    fulfillment = plan_contract_fulfillment(contract, evaluation)
+    return contract, evaluation, fulfillment
 
 
 def _field_is_available(resolver, field_name):
@@ -370,15 +589,21 @@ def uptime_family_rule(context):
     filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{start_metric}_uptime_seconds")
+    physical_metric = _resolve_metric_field(resolver, start_metric, prefer="gauge")
 
     context.parser_backend = "fragment"
     context.source_type = "FROM"
     context.metric_name = start_metric
     context.output_metric_field = result_alias
     context.output_group_fields = group_fields
-    stats_line = f"| STATS start_time_ms = MAX({start_metric} * 1000)"
+    stats_line = f"| STATS start_time_ms = MAX({physical_metric} * 1000)"
     if group_fields:
         stats_line += f" BY {', '.join(group_fields)}"
     context.esql_query = "\n".join(
@@ -386,7 +611,7 @@ def uptime_family_rule(context):
             f"FROM {context.index}",
             f"| WHERE {rp.from_time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {start_metric} IS NOT NULL",
+            f"| WHERE {physical_metric} IS NOT NULL",
             stats_line,
             f'| EVAL {result_alias} = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())',
             f"| KEEP {', '.join(group_fields + [result_alias]) if group_fields else result_alias}",
@@ -434,6 +659,10 @@ def join_family_rule(context):
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
             output_group = ["time_bucket"] + join_labels
             group_by_parts = [rp.ts_bucket] + join_labels
+            left_prefer = "counter" if left_frag.range_func in {"rate", "irate", "increase"} else "gauge"
+            right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} else "gauge"
+            left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
+            right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -446,8 +675,8 @@ def join_family_rule(context):
                     f"| WHERE {rp.ts_time_filter}",
                     *common_filters,
                     "| STATS "
-                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_frag.metric, left_info['range_window'])}, "
-                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_frag.metric, right_info['range_window'])} "
+                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])}, "
+                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])} "
                     f"BY {', '.join(group_by_parts)}",
                     f"| EVAL {result_alias} = numerator / denominator",
                     f"| KEEP {', '.join(output_group + [result_alias])}",
@@ -476,6 +705,9 @@ def join_family_rule(context):
         source = "TS" if is_counter else "FROM"
         time_filter = rp.ts_time_filter if is_counter else rp.from_time_filter
         bucket = rp.ts_bucket if is_counter else rp.from_bucket
+        physical_metric = _resolve_metric_field(
+            resolver, metric_name, prefer="counter" if is_counter else "gauge"
+        )
 
         context.parser_backend = "fragment"
         context.source_type = source
@@ -488,8 +720,8 @@ def join_family_rule(context):
                 f"{source} {context.index}",
                 f"| WHERE {time_filter}",
                 *_build_where_lines(filters),
-                f"| WHERE {metric_name} IS NOT NULL",
-                f"| STATS {metric_alias} = {default_agg}({metric_name}) BY {by_clause}",
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS {metric_alias} = {default_agg}({physical_metric}) BY {by_clause}",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -519,15 +751,28 @@ def join_family_rule(context):
         source = "TS" if (is_counter or left_frag.range_func in AGG_FUNCTION_MAP) else "FROM"
         time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
         bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+        if left_frag.range_func in {"rate", "irate", "increase"} or is_counter:
+            prefer = "counter"
+        else:
+            prefer = "gauge"
+        physical_metric = _resolve_metric_field(resolver, left_frag.metric, prefer=prefer)
 
         if left_frag.range_func and left_frag.range_func in AGG_FUNCTION_MAP:
             esql_inner = AGG_FUNCTION_MAP[left_frag.range_func]
             w = left_frag.range_window or rp.default_rate_window
-            inner_expr = f"{esql_inner}({left_frag.metric}, {w})"
+            # Same gauge-fallback story as range_agg_family_rule: emitting
+            # RATE/IRATE/INCREASE on a gauge-typed field hard-fails.
+            if (
+                not is_counter
+                and left_frag.range_func in {"rate", "irate", "increase"}
+            ):
+                esql_inner, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
+                _append_unique(context.warnings, warning.format(metric=left_frag.metric))
+            inner_expr = f"{esql_inner}({physical_metric}, {w})"
         elif is_counter:
-            inner_expr = f"RATE({left_frag.metric}, {rp.default_rate_window})"
+            inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
-            inner_expr = left_frag.metric
+            inner_expr = physical_metric
 
         outer = OUTER_AGG_MAP.get(left_frag.outer_agg or "avg", "AVG")
         stats_expr = f"{outer}({inner_expr})"
@@ -577,11 +822,12 @@ def _build_ts_rate_over_count_distinct_pipeline(index, plan):
     expr = str(plan.expr)
     expr = expr.replace(numerator.alias, "numerator")
     expr = expr.replace(denominator.alias, "denominator")
+    presence_field = str(numerator.metric_field or numerator.metric_name).strip()
     parts = [
         f"TS {index}",
         f"| WHERE {numerator.time_filter}",
         *_build_where_lines(numerator.filters),
-        f"| WHERE {numerator.metric_name} IS NOT NULL",
+        f"| WHERE {presence_field} IS NOT NULL",
         f"| STATS _per_series_value = {numerator.stats_expr} BY {numerator.bucket_expr}, {count_field}",
         "| STATS numerator = SUM(_per_series_value), denominator = COUNT(*) BY time_bucket",
         f"| EVAL {result_alias} = {expr}",
@@ -605,8 +851,25 @@ def binary_expr_family_rule(context):
         rp,
         summary_mode=_summary_mode_from_metadata(context.metadata),
         preferred_group_labels=context.metadata.get("preferred_group_labels"),
+        preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
+        # Set operators ``and`` / ``unless`` (and ``or`` between different
+        # metrics or different aggregations) have no honest single-stage
+        # ES|QL equivalent. Surface a clear ``not_feasible`` instead of
+        # falling through to a silent drop of one operand or every
+        # breakdown label.
+        op_lower = (frag.binary_op or "").lower()
+        if op_lower in {"or", "and", "unless"}:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            _append_unique(
+                context.warnings,
+                f"PromQL set operator '{op_lower}' between distinct metrics or aggregations "
+                "has no honest ES|QL translation; marked not_feasible",
+            )
+            return "set operator not feasible"
         return None
 
     if plan.specs:
@@ -670,7 +933,12 @@ def topk_family_rule(context):
     filters, had_vars = _frag_filters(frag, resolver)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     if not group_fields:
         return None
 
@@ -678,15 +946,20 @@ def topk_family_rule(context):
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
     inner_func = frag.range_func or ("rate" if _is_counter_fallback(frag.metric, rp) else "")
+    if inner_func in {"rate", "irate", "increase"}:
+        prefer = "counter"
+    else:
+        prefer = "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
     if inner_func:
         stats_expr = _build_stats_call(
             frag.outer_agg or "avg",
             inner_func,
-            frag.metric,
+            physical_metric,
             frag.range_window or rp.default_rate_window,
         )
     else:
-        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({frag.metric})"
+        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({physical_metric})"
     limit = int(frag.extra.get("topk_limit") or 10)
 
     context.parser_backend = "fragment"
@@ -699,7 +972,7 @@ def topk_family_rule(context):
             f"{source} {context.index}",
             f"| WHERE {time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {frag.metric} IS NOT NULL",
+            f"| WHERE {physical_metric} IS NOT NULL",
             f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
             "| SORT time_bucket ASC",
             f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
@@ -727,7 +1000,12 @@ def scaled_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     bucket = rp.ts_bucket
     group_by_parts, output_group = _grouping_parts(bucket, group_fields)
@@ -735,6 +1013,15 @@ def scaled_agg_family_rule(context):
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
     eval_line, final_alias = _frag_eval_line(alias, frag)
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    if (
+        not is_counter
+        and frag.range_func in {"rate", "irate", "increase"}
+    ):
+        esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+        _append_unique(context.warnings, warning.format(metric=frag.metric))
+    prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
     context.parser_backend = "fragment"
     context.source_type = "TS"
@@ -745,9 +1032,9 @@ def scaled_agg_family_rule(context):
         f"TS {context.index}",
         f"| WHERE {rp.ts_time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({frag.metric}, {frag.range_window}))"
+    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({physical_metric}, {frag.range_window}))"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -790,7 +1077,8 @@ def nested_agg_family_rule(context):
     inner_agg_name = frag.extra.get("inner_agg", "count")
     esql_inner_agg = OUTER_AGG_MAP.get(inner_agg_name, "COUNT")
     inner_alias = "inner_val"
-    count_presence_filter = f"| WHERE {frag.metric} IS NOT NULL" if inner_agg_name == "count" else ""
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    count_presence_filter = f"| WHERE {physical_metric} IS NOT NULL" if inner_agg_name == "count" else ""
     metric_like_panels = {"stat", "singlestat", "gauge", "bargauge"}
 
     if frag.outer_agg == "count" and inner_agg_name == "count" and len(inner_group) == 1:
@@ -819,7 +1107,7 @@ def nested_agg_family_rule(context):
         return "translated nested count(count()) expression"
 
     first_stats_expr = (
-        f"{inner_alias} = {esql_inner_agg}({frag.metric})"
+        f"{inner_alias} = {esql_inner_agg}({physical_metric})"
         if inner_agg_name != "count"
         else f"{inner_alias} = COUNT(*)"
     )
@@ -880,18 +1168,39 @@ def range_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     esql_inner_name = AGG_FUNCTION_MAP.get(frag.range_func)
     if not esql_inner_name:
         return None
 
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    # ES|QL's RATE / IRATE / INCREASE require a ``counter_*`` typed
+    # field. Some Prometheus counters don't end in ``_total`` (kernel
+    # vmstat / netstat / softnet); Elastic's ``/_prometheus/api/v1/write``
+    # ingest types those as ``gauge`` based on the metric-name
+    # heuristic, and the resulting ES|QL panel hard-fails with
+    # ``first argument of [RATE(...)] must be counter``. Degrade the
+    # query to a gauge-equivalent so the panel still renders honest
+    # numbers and surface a warning.
+    if (
+        not is_counter
+        and frag.range_func in {"rate", "irate", "increase"}
+    ):
+        esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+        _append_unique(context.warnings, warning.format(metric=frag.metric))
     needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
     source = "TS" if needs_ts else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+    prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({frag.metric}, {frag.range_window})"
+    inner_expr = f"{esql_inner_name}({physical_metric}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
@@ -916,7 +1225,7 @@ def range_agg_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -954,9 +1263,22 @@ def simple_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
+    physical_metric = _resolve_metric_field(
+        resolver, frag.metric, prefer="counter" if is_counter else "gauge"
+    )
+    gauge_physical_metric = (
+        physical_metric
+        if not is_counter
+        else _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    )
 
     if pre_agg_filter:
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
@@ -966,18 +1288,18 @@ def simple_agg_family_rule(context):
             f"FROM {context.index}",
             f"| WHERE {rp.from_time_filter}",
             *_build_where_lines(filters),
-            f"| WHERE {frag.metric} {pre_agg_filter['op']} {filter_value}",
+            f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})")
+            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [rp.from_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({frag.metric})"
+            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -1004,7 +1326,7 @@ def simple_agg_family_rule(context):
                     f"FROM {context.index}",
                     f"| WHERE {rp.from_time_filter}",
                     *_build_where_lines(filters),
-                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| WHERE {physical_metric} IS NOT NULL",
                     f"| STATS series_present = COUNT(*) BY {by_clause}",
                     f"| STATS {alias} = COUNT(*)",
                 ]
@@ -1017,7 +1339,7 @@ def simple_agg_family_rule(context):
                     f"FROM {context.index}",
                     f"| WHERE {rp.from_time_filter}",
                     *_build_where_lines(filters),
-                    f"| WHERE {frag.metric} IS NOT NULL",
+                    f"| WHERE {physical_metric} IS NOT NULL",
                     f"| STATS series_present = COUNT(*) BY {by_clause}",
                     f"| STATS {alias} = COUNT(*) BY time_bucket",
                     "| SORT time_bucket ASC",
@@ -1035,10 +1357,10 @@ def simple_agg_family_rule(context):
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
     if is_counter and frag.outer_agg != "count":
-        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
     else:
-        inner_expr = frag.metric
+        inner_expr = physical_metric
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = f"{outer}({inner_expr})"
@@ -1055,7 +1377,7 @@ def simple_agg_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -1100,7 +1422,12 @@ def simple_metric_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    group_fields = _frag_group_labels(frag, resolver, context.metadata.get("preferred_group_labels"))
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
 
@@ -1108,20 +1435,23 @@ def simple_metric_family_rule(context):
         source = "TS"
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
-        inner_expr = f"RATE({frag.metric}, {rp.default_rate_window})"
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
         stats_expr = f"AVG({inner_expr})"
     elif can_use_direct_ts_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
-        stats_expr = frag.metric
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = physical_metric
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
         bucket = rp.from_bucket
         default_agg = rp.default_gauge_agg.upper()
-        stats_expr = f"{default_agg}({frag.metric})"
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = f"{default_agg}({physical_metric})"
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
@@ -1140,7 +1470,7 @@ def simple_metric_family_rule(context):
         f"{source} {context.index}",
         f"| WHERE {time_filter}",
         *_build_where_lines(filters),
-        f"| WHERE {frag.metric} IS NOT NULL",
+        f"| WHERE {physical_metric} IS NOT NULL",
     ]
     stats_line = f"| STATS {alias} = {stats_expr}"
     if group_by_parts:
@@ -1286,11 +1616,13 @@ def stats_expression_rule(context):
     if not context.metric_name:
         return None
 
-    inner_expr = context.metric_name
+    prefer = "counter" if context.inner_func in {"rate", "irate", "increase"} else "gauge"
+    physical_metric = _resolve_metric_field(context.resolver, context.metric_name, prefer=prefer)
+    inner_expr = physical_metric
     if context.inner_func in AGG_FUNCTION_MAP:
         esql_func = AGG_FUNCTION_MAP[context.inner_func]
         window_arg = f", {context.range_window}" if context.range_window else ""
-        inner_expr = f"{esql_func}({context.metric_name}{window_arg})"
+        inner_expr = f"{esql_func}({physical_metric}{window_arg})"
 
     if context.outer_agg in OUTER_AGG_MAP:
         context.stats_expr = f"{OUTER_AGG_MAP[context.outer_agg]}({inner_expr})"
@@ -1301,7 +1633,7 @@ def stats_expression_rule(context):
         return f"built stats expression {context.stats_expr}"
 
     default_agg = context.rule_pack.default_gauge_agg.upper()
-    context.stats_expr = f"{default_agg}({context.metric_name})"
+    context.stats_expr = f"{default_agg}({physical_metric})"
     if context.inner_func:
         _append_unique(
             context.warnings,
@@ -1465,6 +1797,14 @@ def translate_promql_to_esql(
     else:
         context.confidence = 0.85 if not context.warnings else 0.6
     context.query_ir = build_query_ir(context)
+    contract, evaluation, fulfillment = _build_metric_contract_artifacts(
+        context.query_ir,
+        resolver=context.resolver,
+        rule_pack=context.rule_pack,
+    )
+    context.target_query_contract = _artifact_to_dict(contract)
+    context.contract_evaluation = _artifact_to_dict(evaluation)
+    context.fulfillment_plan = _artifact_to_dict(fulfillment)
     return context
 
 

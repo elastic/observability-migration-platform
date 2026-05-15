@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from dataclasses import dataclass, field
@@ -20,6 +21,22 @@ def _is_counter_fallback(metric_name, rule_pack):
         return False
     suffixes = getattr(rule_pack, "counter_suffixes", ["_total"])
     return any(metric_name.endswith(s) for s in suffixes)
+
+
+def _resolve_metric_field(resolver, metric_name, *, prefer=None):
+    """Resolve a PromQL metric name to its physical target field.
+
+    Passes through to ``resolver.resolve_metric_field`` when a resolver is
+    available, otherwise returns ``metric_name`` unchanged so callers without
+    a resolver (offline / fallback paths) still emit the source-faithful
+    field reference.
+    """
+    if resolver is None or not metric_name:
+        return metric_name
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if resolve is None:
+        return metric_name
+    return resolve(metric_name, prefer=prefer)
 
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
@@ -39,6 +56,52 @@ AGG_FUNCTION_MAP = {
     "deriv": "DERIV",
     "histogram_quantile": "PERCENTILE_OVER_TIME",
 }
+
+
+# Degradations applied when the source PromQL asks for a counter-style
+# range function but the resolved field is typed ``gauge`` (e.g. an
+# Elastic ``/_prometheus/api/v1/write`` ingest that didn't detect a
+# counter by name). ES|QL's RATE/IRATE/INCREASE require ``counter_*``
+# typing; emitting them against a gauge produces a hard 400 in Kibana.
+# The chosen gauge analogues let the panel still render real numbers
+# while a warning explains the swap.
+_COUNTER_TO_GAUGE_FALLBACK = {
+    # ``rate``/``irate`` over a gauge degrades to the value averaged
+    # across the window — not a per-second rate, but the closest honest
+    # measurement available without a proper counter type.
+    "rate": (
+        "AVG_OVER_TIME",
+        "Source PromQL used rate() but {metric} is typed as gauge in the "
+        "target index; rendered as AVG_OVER_TIME instead. Fix the ingest "
+        "mapping to mark this field as a counter to get a true rate.",
+    ),
+    "irate": (
+        "AVG_OVER_TIME",
+        "Source PromQL used irate() but {metric} is typed as gauge in the "
+        "target index; rendered as AVG_OVER_TIME instead. Fix the ingest "
+        "mapping to mark this field as a counter to get a true rate.",
+    ),
+    # ``increase`` is total change over the window; the closest gauge
+    # analogue is MAX - MIN, but ES|QL only allows a single function
+    # call inside STATS so we fall back to ``MAX_OVER_TIME`` (upper
+    # bound of the cumulative value) and warn loudly.
+    "increase": (
+        "MAX_OVER_TIME",
+        "Source PromQL used increase() but {metric} is typed as gauge in "
+        "the target index; rendered as MAX_OVER_TIME (cumulative ceiling) "
+        "instead. Fix the ingest mapping to mark this field as a counter "
+        "to recover the true increase over the window.",
+    ),
+}
+
+
+def _gauge_fallback_for_counter_range_func(range_func):
+    """Return ``(esql_function, warning_template)`` to use when a
+    counter-style range function (``rate``/``irate``/``increase``) is
+    applied to a field that the target cluster has typed as a gauge.
+    The warning template contains a ``{metric}`` placeholder for the
+    caller to substitute the source metric name."""
+    return _COUNTER_TO_GAUGE_FALLBACK[range_func]
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
@@ -61,6 +124,9 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "rate",
     "sum_over_time",
 }
+
+_SET_OPERATORS = frozenset({"or", "and", "unless"})
+
 
 HARD_UNSUPPORTED_AST_REASONS = {
     "__name__": "PromQL metric-name introspection via __name__ requires manual redesign",
@@ -117,6 +183,7 @@ class MeasureSpec:
     final_alias: str
     eval_expr: str = ""
     metric_name: str = ""
+    metric_field: str = ""
     warnings: list = field(default_factory=list)
 
 
@@ -893,6 +960,21 @@ def _ast_binary_fragment(node, expr):
         return frag
 
     modifier = getattr(node, "modifier", None)
+
+    # Set operators (``or``/``and``/``unless``) are not joins; they have
+    # set-union/intersection/difference semantics that preserve operands'
+    # label sets. Even though the parser models them with a ManyToMany
+    # cardinality modifier, mig-to-kbn's join translation path is wrong
+    # for them. Route them to the binary_expr family so the formula plan
+    # builder can either apply the safe same-metric ``or`` rewrite or
+    # refuse the translation honestly.
+    if op.lower() in _SET_OPERATORS:
+        frag = _make_binary_fragment(expr, left, op.lower(), right)
+        frag.extra.setdefault("parser_backend", "ast")
+        if modifier:
+            frag.extra["vector_matching"] = _ast_binary_matching(modifier)
+        return frag
+
     if modifier:
         matching = _ast_binary_matching(modifier)
         if matching["cardinality"] in {"ManyToOne", "OneToMany", "ManyToMany"}:
@@ -1152,7 +1234,9 @@ def _summary_mode_from_metadata(metadata):
     return bool((metadata or {}).get("summary_mode"))
 
 
-def _merge_group_fields(explicit_fields, preferred_fields):
+def _merge_group_fields(explicit_fields, preferred_fields, preferred_origin=None):
+    if preferred_origin == "legend" and explicit_fields:
+        return explicit_fields
     if not preferred_fields:
         return explicit_fields
     merged = list(preferred_fields)
@@ -1162,11 +1246,11 @@ def _merge_group_fields(explicit_fields, preferred_fields):
     return merged
 
 
-def _frag_group_labels(frag, resolver, preferred_labels=None):
+def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
     """Resolve fragment group labels through the resolver."""
     explicit = resolver.resolve_labels(frag.group_labels) if resolver else list(frag.group_labels or [])
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
-    return _merge_group_fields(explicit, preferred)
+    return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
 
 
 def _grouping_parts(bucket_expr, group_fields):
@@ -1184,8 +1268,18 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
         return None
     group_fields = list(output_group_fields[1:])
+    # Use ``MAX(field)`` instead of ``LAST(field, time_bucket)`` so the
+    # collapse is null-safe across multi-target TS queries. When the
+    # upstream STATS aggregates several metrics with implicit
+    # ``_timeseries`` grouping, each per-series row has one non-null
+    # column and nulls for the other series. ``LAST`` may pick any of
+    # those rows and return null. ``MAX`` ignores nulls, so it returns
+    # the actual measurement. The semantics are identical to ``LAST``
+    # for monotonically-bucketed gauges and stats; this was surfaced by
+    # reviewing the Node Exporter Full "Pressure" bar chart, which had
+    # data in every bucket but rendered all-null bars.
     reduced = ", ".join(
-        f"{field} = LAST({field}, time_bucket)" for field in keep_fields
+        f"{field} = MAX({field})" for field in keep_fields
     )
     if group_fields:
         parts.append("| SORT time_bucket ASC")
@@ -1268,6 +1362,10 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
     if frag and frag.extra.get("wrapped_scalar"):
         return False
     capability = resolver.field_capability(metric_name)
+    if capability is None:
+        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+        if resolved and resolved != metric_name:
+            capability = resolver.field_capability(resolved)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -1285,6 +1383,7 @@ def _build_measure_spec(
     summary_mode=False,
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
+    preferred_group_labels_origin=None,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
@@ -1293,7 +1392,12 @@ def _build_measure_spec(
     warnings = []
     if had_vars:
         warnings.append("Dropped variable-driven label filters during migration")
-    group_fields = _frag_group_labels(frag, resolver, preferred_group_labels)
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        preferred_group_labels,
+        preferred_origin=preferred_group_labels_origin,
+    )
     if alias_hint:
         suffix = alias_hint
     else:
@@ -1301,6 +1405,8 @@ def _build_measure_spec(
     alias = _safe_alias(frag.metric, suffix)
     final_alias = None
     eval_expr = ""
+
+    metric_field = frag.metric
 
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
@@ -1311,19 +1417,22 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            stats_expr = f"AVG(RATE({frag.metric}, {rule_pack.default_rate_window}))"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            stats_expr = f"AVG(RATE({metric_field}, {rule_pack.default_rate_window}))"
             warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
         elif can_use_direct_ts_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            stats_expr = frag.metric
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            stats_expr = metric_field
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
             bucket_expr = rule_pack.from_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            stats_expr = f"{default_agg}({frag.metric})"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            stats_expr = f"{default_agg}({metric_field})"
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
@@ -1336,10 +1445,12 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         if is_counter and frag.outer_agg != "count":
-            inner_expr = f"RATE({frag.metric}, {rule_pack.default_rate_window})"
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            inner_expr = f"RATE({metric_field}, {rule_pack.default_rate_window})"
             warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
         else:
-            inner_expr = frag.metric
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            inner_expr = metric_field
         outer = OUTER_AGG_MAP.get(frag.outer_agg, rule_pack.default_gauge_agg.upper())
         stats_expr = f"{outer}({inner_expr})"
     elif frag.family == "range_agg":
@@ -1347,11 +1458,27 @@ def _build_measure_spec(
         if not esql_inner:
             return None
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        # ES|QL's RATE / IRATE / INCREASE require a ``counter_*`` typed
+        # field. Some Prometheus counters don't end in ``_total`` (kernel
+        # vmstat / netstat / softnet); Elastic's ``/_prometheus/api/v1/write``
+        # ingest types those as ``gauge`` based on the metric-name
+        # heuristic, and the resulting ES|QL panel hard-fails with
+        # ``first argument of [RATE(...)] must be counter``. Degrade the
+        # query to a gauge-equivalent so the panel still renders honest
+        # numbers and surface a warning.
+        if (
+            not is_counter
+            and frag.range_func in {"rate", "irate", "increase"}
+        ):
+            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+            warnings.append(warning.format(metric=frag.metric))
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
-        inner_expr = f"{esql_inner}({frag.metric}, {frag.range_window})"
+        prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
+        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        inner_expr = f"{esql_inner}({metric_field}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -1368,8 +1495,17 @@ def _build_measure_spec(
         source = "TS"
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
+        is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        if (
+            not is_counter
+            and frag.range_func in {"rate", "irate", "increase"}
+        ):
+            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+            warnings.append(warning.format(metric=frag.metric))
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
-        stats_expr = f"{esql_outer}({esql_inner}({frag.metric}, {frag.range_window}))"
+        prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
+        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        stats_expr = f"{esql_outer}({esql_inner}({metric_field}, {frag.range_window}))"
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
@@ -1401,7 +1537,8 @@ def _build_measure_spec(
         source = "FROM"
         time_filter = rule_pack.from_time_filter
         bucket_expr = rule_pack.from_bucket if summary_mode else ""
-        stats_expr = f"MAX({start_metric} * 1000)"
+        metric_field = _resolve_metric_field(resolver, start_metric, prefer="gauge")
+        stats_expr = f"MAX({metric_field} * 1000)"
         eval_expr = f'DATE_DIFF("seconds", TO_DATETIME({alias}), NOW())'
     else:
         return None
@@ -1419,6 +1556,7 @@ def _build_measure_spec(
         final_alias=final_alias,
         eval_expr=eval_expr,
         metric_name=frag.metric,
+        metric_field=metric_field,
         warnings=warnings,
     )
 
@@ -1515,9 +1653,9 @@ def _build_shared_measure_pipeline(index, specs):
     ]
     presence_metrics = []
     for spec in specs:
-        metric_name = str(spec.metric_name or "").strip()
-        if metric_name and metric_name not in presence_metrics:
-            presence_metrics.append(metric_name)
+        physical_field = str(spec.metric_field or spec.metric_name or "").strip()
+        if physical_field and physical_field not in presence_metrics:
+            presence_metrics.append(physical_field)
     if presence_metrics:
         parts.append("| WHERE " + " OR ".join(f"{metric} IS NOT NULL" for metric in presence_metrics))
     stats_line = "| STATS " + ", ".join(stats_terms)
@@ -1532,6 +1670,214 @@ def _build_shared_measure_pipeline(index, specs):
     return parts, group_fields, metric_fields
 
 
+def _try_rewrite_set_or_same_metric(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    allow_direct_ts_gauge=False,
+    preferred_group_labels_origin=None,
+):
+    """Rewrite ``A{f1} or A{f2}`` (and longer chains of same-metric ``or``)
+    as a single MeasureSpec whose filters union the operands' matchers.
+
+    This is the one set-operator case that has an honest single-stage
+    ES|QL equivalent: PromQL's ``or`` of same-metric instant vectors is
+    set union over distinct matcher tuples, which is the same as a
+    single fetch of the metric with an ``OR`` over the matcher filter
+    sets. Each operand must:
+
+    - Be a leaf metric reference (``simple_metric`` family) — no inner
+      rate/aggregation, since rate over a unioned filter still produces
+      the right rate per resulting series.
+    - Reference the **same** metric name on both sides.
+    - Resolve to the **same** non-filter matcher structure (same
+      grouping labels, same range/agg shape if any).
+
+    For anything else we return ``None`` so the caller refuses the
+    translation.
+    """
+    op_lower = (frag.binary_op or "").lower()
+    if op_lower != "or":
+        return None
+
+    left_frag = frag.extra.get("left_frag")
+    right_frag = frag.extra.get("right_frag")
+    if not left_frag or not right_frag:
+        return None
+
+    # Recurse first into a left-leaning ``or`` chain so ``A or A or A``
+    # works.
+    operand_frags = []
+    for child in (left_frag, right_frag):
+        if child.family == "binary_expr" and (child.binary_op or "").lower() == "or":
+            sub = _try_rewrite_set_or_same_metric(
+                child,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+            )
+            if sub is None:
+                return None
+            if len(sub.specs) != 1:
+                return None
+            # Re-extract the operand fragments out of the nested ``or``
+            # chain so the unified filter logic below sees a flat list.
+            stack = [child]
+            while stack:
+                cur = stack.pop()
+                if cur.family == "binary_expr" and (cur.binary_op or "").lower() == "or":
+                    stack.append(cur.extra.get("left_frag"))
+                    stack.append(cur.extra.get("right_frag"))
+                else:
+                    operand_frags.append(cur)
+        else:
+            operand_frags.append(child)
+
+    if not operand_frags:
+        return None
+
+    # All operands must be simple metric references against the same
+    # metric. Range functions, outer aggregations, joins etc. all have
+    # set-union semantics that differ from a plain matcher OR.
+    metrics = {f.metric for f in operand_frags}
+    if len(metrics) != 1 or "" in metrics:
+        return None
+    if any(f.family != "simple_metric" for f in operand_frags):
+        return None
+    if any(f.binary_op for f in operand_frags):
+        return None
+    if any(f.outer_agg or f.range_func for f in operand_frags):
+        return None
+
+    # Build a single MeasureSpec from the first operand, then OR-fold
+    # the other operands' filter strings into its WHERE clause.
+    base = _build_measure_spec(
+        operand_frags[0],
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+    )
+    if base is None:
+        return None
+
+    per_operand_filters = [list(base.filters)]
+    for other in operand_frags[1:]:
+        spec = _build_measure_spec(
+            other,
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=allow_direct_ts_gauge,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+        )
+        if spec is None:
+            return None
+        # The non-filter parts of each MeasureSpec (source_type, stats,
+        # grouping) must agree for the union to be safe.
+        if (
+            spec.source_type != base.source_type
+            or spec.stats_expr != base.stats_expr
+            or spec.bucket_expr != base.bucket_expr
+            or spec.group_fields != base.group_fields
+        ):
+            return None
+        per_operand_filters.append(list(spec.filters))
+
+    # Compute the AND-intersection of filter clauses that are identical
+    # across every operand (those become unconditional WHERE clauses).
+    # The remaining per-operand filter clauses are OR'd together inside
+    # a single combined WHERE.
+    if all(filt_list == per_operand_filters[0] for filt_list in per_operand_filters):
+        unified_filters = per_operand_filters[0]
+    else:
+        common = []
+        for filt in per_operand_filters[0]:
+            if all(filt in other for other in per_operand_filters[1:]):
+                common.append(filt)
+        remainders = []
+        for filt_list in per_operand_filters:
+            rest = [f for f in filt_list if f not in common]
+            if not rest:
+                # An operand with no distinguishing filter means "match
+                # everything"; the union is therefore unfiltered.
+                remainders = []
+                break
+            if len(rest) == 1:
+                remainders.append(rest[0])
+            else:
+                remainders.append("(" + " AND ".join(rest) + ")")
+        if remainders:
+            common.append("(" + " OR ".join(remainders) + ")")
+        unified_filters = common
+
+    # The labels that differ across operands (e.g. ``status`` in
+    # ``A{status=~"4.."} or A{status=~"5.."}``) are the dimensions
+    # PromQL's set-or uses to keep operand series separate. The
+    # straightforward unified WHERE we just built would otherwise
+    # average them together and lose the operands' distinguishing
+    # dimensions. Promote any such labels to additional BY columns so
+    # the rate is computed per-(method, path, status, …) tuple, which
+    # matches PromQL's per-series output. Labels that the resolver
+    # cannot map to a known field are skipped.
+    distinguishing_labels = _set_or_distinguishing_labels(operand_frags)
+    if distinguishing_labels:
+        resolved = []
+        for label in distinguishing_labels:
+            field = resolver.resolve_label(label) if resolver else label
+            if field and field not in base.group_fields and field not in resolved:
+                resolved.append(field)
+        if resolved:
+            new_group_fields = list(base.group_fields) + resolved
+        else:
+            new_group_fields = base.group_fields
+    else:
+        new_group_fields = base.group_fields
+
+    new_spec = dataclasses.replace(
+        base,
+        filters=unified_filters,
+        group_fields=new_group_fields,
+        warnings=list(base.warnings)
+        + [
+            "Rewrote PromQL set-or between same metric as a unified WHERE OR clause"
+        ],
+    )
+    return FormulaPlan(
+        specs=[new_spec],
+        expr=new_spec.final_alias,
+        warnings=list(new_spec.warnings),
+    )
+
+
+def _set_or_distinguishing_labels(operand_frags):
+    """Return the matcher labels that differ across operands of an
+    ``A{...} or A{...}`` (or longer chain) so the rewrite can promote
+    them to BY columns and preserve the union's distinguishing dimensions.
+    """
+    by_label_values = {}
+    for frag in operand_frags:
+        for matcher in frag.matchers:
+            label = matcher.get("label")
+            if not label:
+                continue
+            by_label_values.setdefault(label, set()).add(
+                (matcher.get("op", "="), matcher.get("value", ""))
+            )
+    return [label for label, values in by_label_values.items() if len(values) > 1]
+
+
 def _build_formula_plan(
     frag,
     resolver,
@@ -1540,12 +1886,39 @@ def _build_formula_plan(
     summary_mode=False,
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
+    preferred_group_labels_origin=None,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
         return FormulaPlan(specs=[], expr=scalar_expr)
 
     if frag and frag.family == "binary_expr":
+        # Set operators (``or`` / ``and`` / ``unless``) are not arithmetic
+        # and cannot be composed by interpolating the operands into a single
+        # EVAL expression. PromQL's ``or`` is set union, ``and`` is set
+        # intersection, ``unless`` is set difference — all preserve the
+        # operands' label set and have no honest single-stage ES|QL
+        # equivalent. We handle one common, safe rewrite below
+        # (``A{f1} or A{f2}`` → ``A WHERE f1 OR f2``) and refuse everything
+        # else so the rule layer can mark the panel ``not_feasible``
+        # instead of silently dropping one operand or every breakdown
+        # label.
+        op_lower = (frag.binary_op or "").lower()
+        if op_lower in _SET_OPERATORS:
+            rewritten = _try_rewrite_set_or_same_metric(
+                frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                allow_direct_ts_gauge=False,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+            )
+            if rewritten is not None:
+                return rewritten
+            return None
+
         left_plan = _build_formula_plan(
             frag.extra.get("left_frag"),
             resolver,
@@ -1554,6 +1927,7 @@ def _build_formula_plan(
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=preferred_group_labels_origin,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -1563,6 +1937,7 @@ def _build_formula_plan(
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=preferred_group_labels_origin,
         )
         if not left_plan or not right_plan:
             return None
@@ -1584,6 +1959,7 @@ def _build_formula_plan(
         summary_mode=summary_mode,
         preferred_group_labels=preferred_group_labels,
         allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
     )
     if not spec:
         return None
