@@ -898,6 +898,28 @@ def _ast_call_fragment(node, expr):
     return frag
 
 
+def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
+    """Push an outer aggregation down to a leaf fragment.
+
+    Used to apply linearity when rewriting ``sum(A ± B)`` as
+    ``sum(A) ± sum(B)``.  Returns ``None`` when the fragment family
+    cannot accept a pushed aggregation.
+    """
+    new_family = frag.family
+    if frag.family == "simple_metric":
+        new_family = "simple_agg"
+    elif frag.family not in {"range_agg", "simple_agg"}:
+        return None
+    return dataclasses.replace(
+        frag,
+        family=new_family,
+        outer_agg=outer_agg,
+        group_labels=list(group_labels),
+        group_mode=group_mode,
+        extra=dict(frag.extra),
+    )
+
+
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
@@ -955,6 +977,37 @@ def _ast_aggregate_fragment(node, expr):
         frag.extra["inner_agg"] = child.outer_agg
         frag.extra["inner_group"] = list(child.group_labels)
         return frag
+
+    # Handle aggregation over a binary expression between two time-series.
+    # SUM is linear so sum(A ± B) = sum(A) ± sum(B); push the aggregation
+    # down to each operand and return a binary_expr the pipeline can handle.
+    # Division and multiplication are not linear: sum(A/B) ≠ sum(A)/sum(B),
+    # so those patterns are marked not_feasible rather than silently dropped.
+    if child.family == "binary_expr":
+        inner_left = child.extra.get("left_frag")
+        inner_right = child.extra.get("right_frag")
+        if (
+            child.binary_op in {"+", "-"}
+            and frag.outer_agg == "sum"
+            and inner_left
+            and inner_right
+            and not inner_left.extra.get("not_feasible_reasons")
+            and not inner_right.extra.get("not_feasible_reasons")
+        ):
+            new_left = _push_outer_agg(inner_left, "sum", frag.group_labels, frag.group_mode)
+            new_right = _push_outer_agg(inner_right, "sum", frag.group_labels, frag.group_mode)
+            if new_left and new_right:
+                new_binary = _make_binary_fragment(expr, new_left, child.binary_op, new_right)
+                new_binary.group_labels = list(frag.group_labels)
+                new_binary.group_mode = frag.group_mode
+                return new_binary
+        elif child.binary_op in {"/", "*"}:
+            _append_not_feasible_reason(
+                frag,
+                f"Aggregating over a per-element {child.binary_op} between two time-series "
+                f"({frag.outer_agg}(A {child.binary_op} B)) cannot be expressed accurately in ES|QL; "
+                "rewrite as a ratio of aggregates if the series are label-aligned",
+            )
 
     return frag
 
@@ -2030,6 +2083,7 @@ __all__ = [
     "_frag_filters",
     "_frag_group_labels",
     "_grouping_parts",
+    "_inline_filters_into_stats_expr",
     "_matcher_alias_suffix",
     "_parse_fragment",
     "_parse_logql_search",

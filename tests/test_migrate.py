@@ -1852,15 +1852,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| EVAL computed_value =", translated.esql_query)
         self.assertIn("| KEEP time_bucket, computed_value", translated.esql_query)
 
-    def test_complex_binary_expr_inside_agg_translates(self):
+    def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
+        # sum(increase(A) / increase(B)) computes a per-element ratio then
+        # aggregates — semantically distinct from sum(A)/sum(B) and cannot
+        # be expressed accurately in ES|QL.
         expr = (
             'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) '
             '/ increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)'
         )
         translated = self.translate(expr, panel_type="graph")
+        self.assertEqual(translated.feasibility, "not_feasible")
+
+    def test_sum_over_metric_subtraction_applies_linearity(self):
+        # Bug A fix: sum(A - B) = sum(A) - sum(B) by linearity of SUM.
+        # Previously both metrics were collapsed to only the left operand.
+        expr = (
+            "sum(node_memory_MemTotal_bytes{cluster=\"$cluster\", job=\"$job\"} "
+            "- node_memory_MemAvailable_bytes{cluster=\"$cluster\", job=\"$job\"})"
+        )
+        translated = self.translate(expr, panel_type="timeseries")
         self.assertEqual(translated.feasibility, "feasible")
-        self.assertTrue(translated.metric_name, "Should have a metric name")
-        self.assertIn("INCREASE", translated.esql_query)
+        q = translated.esql_query or ""
+        self.assertIn("node_memory_MemTotal_bytes", q)
+        self.assertIn("node_memory_MemAvailable_bytes", q)
+
+    def test_nested_agg_preserves_label_filter(self):
+        # Bug B fix: avg(sum by(cpu)(rate(metric{mode!~"idle"}[5m]))) should
+        # retain the mode filter in the generated WHERE clause.
+        expr = 'avg(sum by (cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal"}[5m])))'
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertIn("RLIKE", q)
+        self.assertIn("idle", q)
 
     def test_rule_catalog_exposes_binary_expr_rule(self):
         catalog = migrate.build_rule_catalog(self.rule_pack)

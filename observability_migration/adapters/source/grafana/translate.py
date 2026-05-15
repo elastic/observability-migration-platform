@@ -44,13 +44,13 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
-    _common_matchers,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
     _gauge_fallback_for_counter_range_func,
     _grouping_parts,
+    _inline_filters_into_stats_expr,
     _is_counter_fallback,
     _parse_fragment,
     _parse_logql_search,
@@ -652,9 +652,14 @@ def join_family_rule(context):
         left_info = _try_agg_range_info(left_frag)
         right_info = _try_agg_range_info(right_frag)
         if left_info and right_info:
-            common_filters = _build_where_lines(_frag_filters(PromQLFragment(matchers=_common_matchers(left_frag.matchers, right_frag.matchers)), resolver)[0])
-            if any("$" in m["value"] for m in left_frag.matchers + right_frag.matchers):
+            left_filters, left_had_vars = _frag_filters(left_frag, resolver)
+            right_filters, right_had_vars = _frag_filters(right_frag, resolver)
+            if left_had_vars or right_had_vars:
                 _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+            common_filter_exprs = [f for f in left_filters if f in right_filters]
+            common_filters = _build_where_lines(common_filter_exprs)
+            left_only = [f for f in left_filters if f not in common_filter_exprs]
+            right_only = [f for f in right_filters if f not in common_filter_exprs]
 
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
             output_group = ["time_bucket"] + join_labels
@@ -663,6 +668,24 @@ def join_family_rule(context):
             right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} else "gauge"
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
+
+            left_stats_call = _build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])
+            right_stats_call = _build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])
+            # Apply per-side exclusive filters via CASE() so that label
+            # selectors which appear on only one operand (e.g. mode="user" on
+            # the numerator) are not silently dropped.
+            if left_only:
+                inlined = _inline_filters_into_stats_expr(left_stats_call, left_only)
+                if inlined:
+                    left_stats_call = inlined
+                else:
+                    _append_unique(context.warnings, f"Numerator-only filter(s) could not be inlined and were dropped: {left_only}")
+            if right_only:
+                inlined = _inline_filters_into_stats_expr(right_stats_call, right_only)
+                if inlined:
+                    right_stats_call = inlined
+                else:
+                    _append_unique(context.warnings, f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}")
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -674,10 +697,7 @@ def join_family_rule(context):
                     f"TS {context.index}",
                     f"| WHERE {rp.ts_time_filter}",
                     *common_filters,
-                    "| STATS "
-                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])}, "
-                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])} "
-                    f"BY {', '.join(group_by_parts)}",
+                    f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call} BY {', '.join(group_by_parts)}",
                     f"| EVAL {result_alias} = numerator / denominator",
                     f"| KEEP {', '.join(output_group + [result_alias])}",
                     "| SORT time_bucket ASC",
@@ -1532,6 +1552,38 @@ def fragment_extract_rule(context):
     return f"extracted fragment fields via {context.parser_backend or 'fragment'}"
 
 
+@QUERY_TRANSLATORS.register("extract_label_filters", priority=25)
+def extract_label_filters_rule(context):
+    """Populate ``context.label_filters`` from the parsed fragment matchers.
+
+    The fallback translation path (fragment_extract → stats_expression →
+    render_esql) builds queries via ``_build_esql(context)`` which uses
+    ``context.label_filters`` for WHERE clauses.  Without this step the
+    fallback path silently drops all label selectors from the source PromQL
+    expression — for example ``mode!~"idle|iowait|steal"`` on a nested-agg
+    query such as ``avg(sum by(cpu)(rate(node_cpu_seconds_total{mode!~...})))``.
+    Specific family rules (binary_expr, join, simple_agg, range_agg, …) handle
+    their own filters directly, so we only fill in here when
+    translation_complete is still False and label_filters is still empty.
+    """
+    if context.translation_complete:
+        return None
+    if not context.metric_name:
+        return None
+    if context.label_filters:
+        return None
+    frag = context.fragment
+    if not frag:
+        return None
+    filters, had_vars = _frag_filters(frag, context.resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    if filters:
+        context.label_filters = filters
+        return f"extracted {len(filters)} label filter(s) from fragment matchers"
+    return None
+
+
 @QUERY_TRANSLATORS.register("scalar_outer_agg", priority=40)
 def scalar_outer_agg_rule(context):
     if context.translation_complete:
@@ -1819,6 +1871,7 @@ __all__ = [
     "TranslationContext",
     "binary_expr_family_rule",
     "counter_detection_rule",
+    "extract_label_filters_rule",
     "fragment_extract_rule",
     "fragment_guardrails_rule",
     "grafana_macro_rule",
