@@ -1357,8 +1357,11 @@ def simple_agg_family_rule(context):
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
     if is_counter and frag.outer_agg != "count":
-        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
-        _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
+        # Bare counter aggregation: source PromQL applies an aggregator (sum/avg/min/max)
+        # directly to a counter field without rate(). Use LAST_OVER_TIME as the inner
+        # function to get the raw cumulative value, then apply the outer aggregation.
+        inner_expr = f"LAST_OVER_TIME({physical_metric})"
+        _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
     else:
         inner_expr = physical_metric
 
@@ -1436,9 +1439,13 @@ def simple_metric_family_rule(context):
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="counter")
-        inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
-        _append_unique(context.warnings, f"Detected counter metric; defaulting to RATE over {rp.default_rate_window}")
-        stats_expr = f"AVG({inner_expr})"
+        # Bare counter reference: the source PromQL asks for the raw cumulative value
+        # (no rate()/irate()/increase() applied). LAST_OVER_TIME returns the counter's
+        # final value within each TBUCKET window, faithfully mirroring Prometheus's
+        # instant-vector semantics. RATE would change the panel's meaning entirely.
+        inner_expr = f"LAST_OVER_TIME({physical_metric})"
+        _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+        stats_expr = f"MAX({inner_expr})"
     elif can_use_direct_ts_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter

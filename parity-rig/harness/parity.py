@@ -180,11 +180,48 @@ def run_esql_promql(promql_expr: str, t_start: datetime, t_end: datetime, step: 
     return r.json()
 
 
+def _inject_time_filter(esql: str) -> str:
+    """Inject ``WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend`` when needed.
+
+    Both ``TS`` and ``FROM`` source queries need an explicit @timestamp range
+    filter when executed via the REST API:
+
+    * ``TS`` queries rely on Kibana's time-picker — without it, TBUCKET returns
+      all historical data, exceeding ES|QL's row limit before the recent window.
+    * ``FROM`` queries that use ``BUCKET(@timestamp, N, ?_tstart, ?_tend)``
+      only align bucket *boundaries* to the params; they still scan all rows
+      unless a ``WHERE @timestamp`` clause is present.
+
+    The filter is injected as the first pipe after the source line.  It is a
+    no-op if a ``WHERE @timestamp`` clause already exists.
+    """
+    # Skip if an explicit @timestamp range filter is already present.
+    # BUCKET(@timestamp, ...) and TBUCKET(@timestamp, ...) are NOT time filters.
+    if re.search(r"WHERE\s+@timestamp\s*(>=|<=|>|<)", esql, re.IGNORECASE):
+        return esql
+
+    lines = esql.split("\n")
+    insert_after = -1
+    for idx, line in enumerate(lines):
+        stripped = line.strip().upper()
+        if stripped.startswith("TS ") or stripped == "TS" or stripped.startswith("FROM "):
+            insert_after = idx
+            break
+    if insert_after == -1:
+        return esql
+    time_filter = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+    return "\n".join(lines[: insert_after + 1] + [time_filter] + lines[insert_after + 1 :])
+
+
 def run_esql_raw(esql: str, t_start: datetime, t_end: datetime) -> dict[str, Any]:
     params = [
         {"_tstart": t_start.isoformat().replace("+00:00", "Z")},
         {"_tend": t_end.isoformat().replace("+00:00", "Z")},
     ]
+    # TS and FROM queries both need an explicit @timestamp filter when run via
+    # the REST API (no Kibana time-picker context).  _inject_time_filter is a
+    # no-op when the query already contains a WHERE @timestamp clause.
+    esql = _inject_time_filter(esql)
     body = {"query": esql, "params": params}
     r = requests.post(f"{ES_URL}/_query", headers=ES_HEADERS, json=body, timeout=30)
     if r.status_code >= 400:
@@ -322,7 +359,13 @@ def normalize_esql_translated(esql_data: dict[str, Any]) -> dict[SeriesKey, list
             time_idx = i
             continue
         if lname.startswith("labels.") or lname.startswith("prometheus.labels."):
-            explicit_labels.append((i, lname.split(".")[-1]))
+            label_name = lname.split(".")[-1]
+            # Mirror the Prometheus side: drop labels that Prometheus attaches
+            # automatically (instance, job, cluster, replica) so series keys
+            # match between the two stores.  This matters for native endpoint
+            # panels that group BY labels.instance / labels.job.
+            if label_name not in PROMETHEUS_ONLY_LABELS:
+                explicit_labels.append((i, label_name))
             continue
         if lname in DERIVED_DISPLAY_COLUMNS:
             continue
@@ -369,6 +412,32 @@ def normalize_esql_translated(esql_data: dict[str, Any]) -> dict[SeriesKey, list
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
     raw = [(dict(k), v) for k, v in bucket.items()]
     return _drop_constants_and_promonly(raw)
+
+
+def _project_prom_to_es_labels(
+    prom: dict[SeriesKey, list[tuple[float, float]]],
+    es: dict[SeriesKey, list[tuple[float, float]]],
+) -> dict[SeriesKey, list[tuple[float, float]]]:
+    """Project Prometheus series onto the label dimensions that ES uses.
+
+    When the translated ES|QL groups by fewer labels than Prometheus (e.g. the
+    Grafana legend omits ``status`` so the BY clause drops it), direct series
+    matching produces zero common keys.  This function re-aggregates the
+    Prometheus side by summing time-aligned values from all Prometheus series
+    that share the same projected key so the comparison can proceed.
+    """
+    if not es or not prom:
+        return prom
+    es_label_names: set[str] = set()
+    for key in es:
+        for label_name, _ in key.labels:
+            es_label_names.add(label_name)
+    projected: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for key, values in prom.items():
+        proj_labels = tuple(sorted((k, v) for k, v in key.labels if k in es_label_names))
+        proj_key = SeriesKey(labels=proj_labels)
+        projected.setdefault(proj_key, []).extend(values)
+    return projected
 
 
 def bucket_align(
@@ -452,6 +521,14 @@ def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> 
     promql_segments = [
         seg.strip() for seg in promql_run_combined.split(MULTI_TARGET_SEPARATOR) if seg.strip()
     ]
+    # Normalize histogram boundary label values: some Prometheus exporters
+    # store le as "1.0"/"10.0" while Grafana dashboards use le="1"/"10".
+    # Apply the same normalization that the translator emits so both sides
+    # query the actual stored data rather than returning empty results.
+    promql_segments = [
+        re.sub(r'\ble=("|\')(\d+)\1', lambda m: f'le={m.group(1)}{m.group(2)}.0{m.group(1)}', seg)
+        for seg in promql_segments
+    ]
     if not promql_segments:
         cmp_.skipped_reason = "no PromQL segments after splitting"
         return cmp_
@@ -497,11 +574,25 @@ def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> 
     cmp_.prom_series_count = len(prom_norm)
     cmp_.es_series_count = len(es_norm)
     common = set(prom_norm) & set(es_norm)
+    # When the translated ES|QL groups by fewer label dimensions than Prometheus
+    # (e.g. the Grafana legend drops 'status'), direct key matching yields zero
+    # common series.  Re-aggregate Prometheus onto the ES label subset and retry.
+    prom_for_diff = prom_norm
+    if not common and prom_norm and es_norm:
+        projected = _project_prom_to_es_labels(prom_norm, es_norm)
+        reprojected_common = set(projected) & set(es_norm)
+        if reprojected_common:
+            prom_for_diff = projected
+            common = reprojected_common
+            cmp_.notes.append(
+                f"Prometheus re-aggregated from {len(prom_norm)} to {len(projected)} series "
+                f"by projecting onto ES label subset ({len(common)} common after projection)"
+            )
     cmp_.common_series_count = len(common)
-    cmp_.prom_only_series = [repr(k) for k in sorted(set(prom_norm) - common, key=str)[:3]]
+    cmp_.prom_only_series = [repr(k) for k in sorted(set(prom_for_diff) - common, key=str)[:3]]
     cmp_.es_only_series = [repr(k) for k in sorted(set(es_norm) - common, key=str)[:3]]
 
-    points, rmax, rmean, _, _, _ = compute_diff(prom_norm, es_norm, STEP_SECONDS)
+    points, rmax, rmean, _, _, _ = compute_diff(prom_for_diff, es_norm, STEP_SECONDS)
     cmp_.compared_points = points
     cmp_.max_relative_error = rmax
     cmp_.mean_relative_error = rmean

@@ -779,7 +779,7 @@ def _collect_lens_form_based_queries(attrs: dict) -> list[str]:
         by_fields = [f"time_bucket = BUCKET({date_field}, 50, ?_tstart, ?_tend)", *breakdown_fields]
         query_lines = [
             f"FROM {_lens_layer_index(attrs, str(layer_id))}",
-            f"| WHERE {date_field} >= ?_tstart AND {date_field} < ?_tend",
+            f"| WHERE {date_field} >= ?_tstart AND {date_field} <= ?_tend",
             f"| STATS {', '.join(stats_parts)} BY {', '.join(by_fields)}",
             "| SORT time_bucket",
         ]

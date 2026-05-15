@@ -46,7 +46,12 @@ from observability_migration.targets.kibana.emit.esql_utils import (
 from observability_migration.targets.kibana.emit.esql_utils import (
     split_top_level_keyword as _split_top_level_keyword_canonical,
 )
-from observability_migration.targets.kibana.emit.layout import apply_style_guide_layout
+from observability_migration.targets.kibana.emit.layout import (
+    PANEL_SIZE_CONSTRAINTS as _TYPE_SIZE_CONSTRAINTS,
+)
+from observability_migration.targets.kibana.emit.layout import (
+    apply_style_guide_layout,
+)
 
 from .extract import _normalize_text_panel_content
 from .manifest import (
@@ -101,9 +106,9 @@ MINIMUM_KIBANA_VERSION = "9.1.0"
 MIN_PANEL_WIDTH = 4
 
 KIBANA_TYPE_HEIGHT = {
-    "metric": 5,
-    "gauge": 6,
-    "bargauge": 5,
+    "metric": 6,    # aligned to _TYPE_SIZE_CONSTRAINTS min_h=6
+    "gauge": 8,     # aligned to _TYPE_SIZE_CONSTRAINTS min_h=8
+    "bargauge": 6,  # aligned to _TYPE_SIZE_CONSTRAINTS min_h=6
     "line": 12,
     "area": 12,
     "bar": 12,
@@ -680,6 +685,12 @@ def _clean_promql_for_native_with_state(expr):
     expr = _GRAFANA_VAR_BRACED_RE.sub("1", expr)
     expr = _GRAFANA_VAR_PLAIN_RE.sub("1", expr)
     expr = _GRAFANA_VAR_BRACKET_RE.sub("1", expr)
+
+    # Normalize histogram boundary label values: some Prometheus exporters
+    # store le as "1.0" / "10.0" while Grafana dashboards write le="1" / "10".
+    # Rewrite bare-integer le matchers to the float form so the native PROMQL
+    # engine finds the data that was actually scraped.
+    expr = re.sub(r'\ble=("|\')(\d+)\1', lambda m: f'le={m.group(1)}{m.group(2)}.0{m.group(1)}', expr)
 
     expr = re.sub(r"\s+", " ", expr).strip()
 
@@ -2983,43 +2994,8 @@ def _field_control_type(field_name, resolver):
 MIN_DATATABLE_HEIGHT = 5
 
 
-# L2: per-panel-type min/max width and height.
-#
-# Each entry is ``(min_w, min_h, max_h | None)``. ``None`` means
-# "do not clamp the upper bound" (used for long-form markdown).
-#
-# Rationale (from the layout-redesign plan + survey of every parity
-# dashboard's emitted YAML on 2026-05-12):
-#
-# - ``metric`` (stat / single-value): h=3 is unreadable on Kibana's
-#   20px row height (60px tall); bump to 6 (~120px). Beyond ~12 rows
-#   the value is just whitespace -- cap there.
-# - ``gauge``: need ~8 rows for the dial; cap at 16 to avoid stretching
-#   the dial to fill an absurd vertical strip.
-# - ``bar`` / ``line`` / ``area`` / ``xy``: a 12+ column chart with
-#   h<6 has no room for axis labels + legend. Cap at 24 so anemic
-#   heatmap-to-bar degradations don't stretch the full viewport.
-# - ``datatable``: min w=12 (one column is unreadable below); min
-#   h=8 (header + ~3 rows visible); cap at 24 for the same reason.
-# - ``pie`` / ``heatmap`` / ``treemap`` / ``bargauge``: chart-shaped,
-#   apply chart-shaped minimums.
-# - ``markdown``: w=4 / h=2 is the absolute floor (text fits); we
-#   deliberately don't clamp the max because long-form notes/runbooks
-#   need to be tall by design.
-_TYPE_SIZE_CONSTRAINTS: dict[str, tuple[int, int, int | None]] = {
-    "metric": (4, 6, 12),
-    "gauge": (6, 8, 16),
-    "bargauge": (6, 6, 16),
-    "bar": (8, 6, 24),
-    "line": (8, 6, 24),
-    "area": (8, 6, 24),
-    "xy": (8, 6, 24),
-    "datatable": (12, 8, 24),
-    "pie": (8, 8, 24),
-    "treemap": (8, 8, 24),
-    "heatmap": (8, 8, 24),
-    "markdown": (4, 2, None),
-}
+# _TYPE_SIZE_CONSTRAINTS is imported from layout.py as _TYPE_SIZE_CONSTRAINTS
+# via the PANEL_SIZE_CONSTRAINTS alias at the top of this file.
 
 
 def _normalize_tile_size(panel, kibana_type):

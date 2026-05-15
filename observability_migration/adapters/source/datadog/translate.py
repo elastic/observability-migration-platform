@@ -48,7 +48,7 @@ DD_AGG_TO_ESQL: dict[str, str] = {
 }
 
 TIME_BUCKET_EXPR = "BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
-TIME_FILTER = "@timestamp >= ?_tstart AND @timestamp < ?_tend"
+TIME_FILTER = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
 DEFAULT_RATE_WINDOW = "5m"
 DEFAULT_RATE_WINDOW_SECONDS = 300.0
 _CHANGE_WIDGET_COMPARE_TO_SECONDS = {
