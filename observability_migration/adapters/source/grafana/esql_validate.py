@@ -509,12 +509,12 @@ def _try_fix_esql_field_error(query, error_msg, resolver):
         fixed = re.sub(r"^TS\b", "FROM", query, count=1)
         fixed = re.sub(
             r"@timestamp\s*>=\s*NOW\(\)\s*-\s*1 hour(?:\s*AND\s*@timestamp\s*<\s*NOW\(\))?",
-            "@timestamp >= ?_tstart AND @timestamp < ?_tend",
+            "@timestamp >= ?_tstart AND @timestamp <= ?_tend",
             fixed,
         )
         fixed = re.sub(
             r"\bTRANGE\([^)]+\)",
-            "@timestamp >= ?_tstart AND @timestamp < ?_tend",
+            "@timestamp >= ?_tstart AND @timestamp <= ?_tend",
             fixed,
         )
         fixed = re.sub(r"TBUCKET\([^)]+\)", "BUCKET(@timestamp, 50, ?_tstart, ?_tend)", fixed)

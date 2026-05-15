@@ -1,0 +1,65 @@
+{
+  "grafana_uid": "migration-home",
+  "kibana_dashboard_id": "bfc442f2-5389-cd3e-962a-dfe269e00753",
+  "panels": [
+    {
+      "title": "Memory Usage %",
+      "grafana_panel_id": 4,
+      "kibana_panel_id": "57a37590-80d8-8dcd-af4c-892496d2a533",
+      "grafana_screenshot": "/tmp/visual-rig-uni-home/grafana/memory-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig-uni-home/kibana/memory-usage.png",
+      "diff_screenshot": "/tmp/visual-rig-uni-home/diffs/memory-usage.png",
+      "diff_score": 0.29726630199306764,
+      "notes": []
+    },
+    {
+      "title": "Prometheus Targets Up",
+      "grafana_panel_id": 2,
+      "kibana_panel_id": "6510fb9f-08e5-4603-33b6-7a3969963af1",
+      "grafana_screenshot": "/tmp/visual-rig-uni-home/grafana/prometheus-targets-up.png",
+      "kibana_screenshot": "/tmp/visual-rig-uni-home/kibana/prometheus-targets-up.png",
+      "diff_screenshot": "/tmp/visual-rig-uni-home/diffs/prometheus-targets-up.png",
+      "diff_score": 0.25764189774696705,
+      "notes": []
+    },
+    {
+      "title": "Scrape Duration by Job",
+      "grafana_panel_id": 3,
+      "kibana_panel_id": "b8a73b6b-8218-511d-1982-dba02842a590",
+      "grafana_screenshot": "/tmp/visual-rig-uni-home/grafana/scrape-duration-by-job.png",
+      "kibana_screenshot": "/tmp/visual-rig-uni-home/kibana/scrape-duration-by-job.png",
+      "diff_screenshot": "/tmp/visual-rig-uni-home/diffs/scrape-duration-by-job.png",
+      "diff_score": 0.2934697248700173,
+      "notes": []
+    },
+    {
+      "title": "Target Health Status",
+      "grafana_panel_id": 6,
+      "kibana_panel_id": "910688af-ddf6-72e9-bbc0-82cffe3d2be9",
+      "grafana_screenshot": "/tmp/visual-rig-uni-home/grafana/target-health-status.png",
+      "kibana_screenshot": "/tmp/visual-rig-uni-home/kibana/target-health-status.png",
+      "diff_screenshot": "/tmp/visual-rig-uni-home/diffs/target-health-status.png",
+      "diff_score": 0.26181217504332754,
+      "notes": []
+    },
+    {
+      "title": "Top Metrics by Series Count",
+      "grafana_panel_id": 5,
+      "kibana_panel_id": "7dfcf2d9-d46b-7ff2-87ec-9e6310c7d282",
+      "grafana_screenshot": "/tmp/visual-rig-uni-home/grafana/top-metrics-by-series-count.png",
+      "kibana_screenshot": "/tmp/visual-rig-uni-home/kibana/top-metrics-by-series-count.png",
+      "diff_screenshot": "/tmp/visual-rig-uni-home/diffs/top-metrics-by-series-count.png",
+      "diff_score": 0.36614493067590986,
+      "notes": []
+    }
+  ],
+  "unpaired_grafana": [],
+  "unpaired_kibana": [
+    "Untitled"
+  ],
+  "median_score": 0.2934697248700173,
+  "p95_score": 0.36614493067590986,
+  "max_score": 0.36614493067590986,
+  "captured_pairs": 5,
+  "skipped_pairs": 0
+}

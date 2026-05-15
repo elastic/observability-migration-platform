@@ -305,6 +305,142 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("prometheus.labels.instance", translated.esql_query)
         self.assertNotIn("prometheus.http_requests_total", translated.esql_query)
 
+    # --- prometheus_native profile (/_prometheus/api/v1/write endpoint) ---
+
+    def test_resolver_detects_prometheus_native_profile(self):
+        """Profile detection: `metrics.*` + `labels.*` fields trigger the
+        `prometheus_native` profile (native /_prometheus endpoint layout)."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.process_cpu_seconds_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_native")
+
+    def test_prometheus_native_profile_requires_both_metrics_and_labels(self):
+        """Native profile is NOT triggered by `metrics.*` alone — `labels.*` is
+        also required to avoid false-positives from arbitrary custom indices."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+
+    def test_prometheus_remote_write_profile_wins_over_native_when_both_present(self):
+        """Fleet profile takes priority when both Fleet and native patterns coexist."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
+
+    def test_resolve_metric_field_prefixes_metrics_dot_for_native_profile(self):
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            "metrics.http_requests_total",
+        )
+        # prefer is irrelevant for native layout (no suffix variants) — always prefixed
+        self.assertEqual(
+            self.resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
+            "metrics.process_cpu_seconds_total",
+        )
+
+    def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(self.resolver.resolve_label("job"), "labels.job")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "labels.instance")
+
+    def test_is_counter_uses_metrics_prefix_field_cap_for_native_profile(self):
+        """is_counter() must check `metrics.<name>` capability, not bare name."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertTrue(self.resolver.is_counter("http_requests_total"))
+        self.assertFalse(self.resolver.is_counter("process_resident_memory_bytes"))
+
+    def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
+        """End-to-end: counter rate against a native /_prometheus endpoint target
+        must produce ES|QL referencing `metrics.*` metric fields and `labels.*`
+        dimension fields, never bare names or prometheus.* nesting."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        translated = self.translate(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+        )
+        self.assertIn("metrics.http_requests_total", translated.esql_query)
+        self.assertIn('labels.instance == "i-1"', translated.esql_query)
+        self.assertIn("labels.instance", translated.esql_query)
+        self.assertIn("labels.method", translated.esql_query)
+        self.assertNotIn("prometheus.labels.", translated.esql_query)
+        self.assertNotIn("prometheus.http_requests_total", translated.esql_query)
+
+    def test_resolve_label_returns_labels_prefix_even_when_label_not_in_cache(self):
+        """For native profile: labels not yet observed in the field cache must
+        still resolve to `labels.<name>`, not fall through to wrong OTel candidates
+        (e.g. service.instance.id) which don't exist in this layout."""
+        self.seed_field_caps({
+            # Only one metric field — enough to trigger native profile detection
+            # once a labels.* field is also present.
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            # NOTE: labels.instance deliberately NOT present in cache.
+        })
+        # Must return labels.instance, not service.instance.id or bare 'instance'.
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(self.resolver.resolve_label("namespace"), "labels.namespace")
+        self.assertEqual(self.resolver.resolve_label("unknown_label"), "labels.unknown_label")
+
+    def test_build_discovered_mappings_skipped_for_native_profile(self):
+        """_build_discovered_mappings must not populate OTel entries for native
+        profile — native indices have no OTel fields and scanning them is wasted
+        work that could also produce stale fallbacks."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            # Simulate an OTel field that happens to be in the cache (edge case):
+            # even if present, it must NOT be recorded as a discovered mapping.
+            "service.instance.id": {"keyword": {"aggregatable": True}},
+        })
+        # Explicitly invoke _build_discovered_mappings the way _discover_fields does.
+        self.resolver._build_discovered_mappings()
+        # No OTel candidates should have been mapped.
+        self.assertEqual(self.resolver._discovered_mappings, {})
+        # resolve_label must still return the namespaced form, not the OTel field.
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+
+    def test_translator_gauge_metric_uses_from_with_metrics_prefix_for_native_profile(self):
+        """Gauge metrics in native profile must use FROM (not TS) and still
+        reference the `metrics.` prefixed field name."""
+        self.seed_field_caps({
+            "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        translated = self.translate(
+            'avg(process_resident_memory_bytes) by (instance)'
+        )
+        self.assertIn("metrics.process_resident_memory_bytes", translated.esql_query)
+        self.assertIn("FROM", translated.esql_query)
+        # TS source command uses TBUCKET; FROM uses BUCKET — absence of TBUCKET
+        # confirms the gauge metric correctly stayed on the FROM path.
+        self.assertNotIn("TBUCKET", translated.esql_query)
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",
@@ -3026,6 +3162,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result.inventory["panels"], 2)
 
     def test_dashboard_translation_resolves_overlapping_positions(self):
+        """L1 starts from the faithful coord transform (Grafana
+        ``y=4`` -> Kibana ``y=round(4*1.5)=6``), but the downstream
+        ``kb-dashboard-cli`` compile step refuses any panel overlap
+        in the YAML. So after L1+L2+style-guide post-processing, a
+        final ``_resolve_panel_overlaps`` pass pushes overlapping
+        panels' y values down to the bottom of their conflicting
+        neighbour. That keeps the migration compile-clean for source
+        dashboards that have overlapping or "stacked" panels.
+        """
         dashboard = {
             "title": "Overlap",
             "uid": "overlap-1",
@@ -3057,8 +3202,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
             payload = yaml.safe_load(yaml_path.read_text())
         panels = payload["dashboards"][0]["panels"]
+        # Grafana y=0 -> Kibana y=0 (after min-y normalisation)
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
-        self.assertGreaterEqual(panels[1]["position"]["y"], 8)
+        # Top has h=12 (after L1 scale 8*1.5=12), so Bottom is pushed
+        # down to y=12 to avoid overlap. The Grafana 4-row stacking
+        # intent is preserved in spirit (Bottom is below Top), just
+        # without the literal pixel-level overlap that compile would
+        # reject.
+        top_h = panels[0]["size"]["h"]
+        self.assertGreaterEqual(panels[1]["position"]["y"], top_h)
 
     def test_metric_tile_width_is_normalized_to_minimum(self):
         dashboard = {
@@ -5310,7 +5462,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         }
         groups = panels._build_section_groups(dashboard)
         self.assertEqual(len(groups), 1)
-        _, group_panels = groups[0]
+        _, group_panels, _is_row = groups[0]
         self.assertEqual(len(group_panels), 2)
 
         left = group_panels[0]
@@ -5336,7 +5488,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             ],
         }
         groups = panels._build_section_groups(dashboard)
-        _, group_panels = groups[0]
+        _, group_panels, _is_row = groups[0]
         grid_h = group_panels[0]["gridPos"]["h"]
         self.assertEqual(grid_h, 10, "300px / 30 = 10 grid units")
 
@@ -5752,7 +5904,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(yaml_panel["size"]["w"], 48)
 
     def test_kibana_native_layout_sets_type_based_height(self):
-        """After Kibana-native layout, height is determined by panel type."""
+        """After Kibana-native layout (the no-geometry fallback path),
+        height is determined by panel type via ``KIBANA_TYPE_HEIGHT``
+        and then clamped to the L2 per-type minimum (so a ``metric``
+        gets ``max(KIBANA_TYPE_HEIGHT['metric']=5, L2 min h=6) = 6``)."""
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
         panels = [
             {"title": "Chart", "esql": {"type": "line"}, "size": {"w": 48, "h": 8}, "position": {"x": 0, "y": 0}, "_grafana_row_y": 0, "_grafana_row_x": 0},
@@ -5760,7 +5915,8 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         ]
         result = _apply_kibana_native_layout(panels)
         self.assertEqual(result[0]["size"]["h"], 12, "line chart should be h=12")
-        self.assertEqual(result[1]["size"]["h"], 5, "metric should be h=5")
+        # Metric: KIBANA_TYPE_HEIGHT=5 -> L2 clamp -> 6
+        self.assertEqual(result[1]["size"]["h"], 6, "metric should be h=6 (L2 min)")
 
     # ------------------------------------------------------------------
     # Text panel handling
@@ -6613,7 +6769,8 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         self.assertEqual(panels[0]["position"]["y"], 0)
         self.assertEqual(panels[0]["size"]["h"], 12)
         self.assertEqual(panels[1]["position"]["y"], 12)
-        self.assertEqual(panels[1]["size"]["h"], 5)
+        # metric: KIBANA_TYPE_HEIGHT=5 -> L2 min_h=6 -> 6
+        self.assertEqual(panels[1]["size"]["h"], 6)
 
     def test_row_height_is_max_of_types(self):
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
@@ -6659,6 +6816,8 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         self.assertEqual(panels[0]["size"]["h"], 15)
 
     def test_grafana_geometry_metadata_preserves_scaled_tile_dimensions(self):
+        """Single-row group: position is shifted so the topmost panel
+        sits at y=0; relative x is preserved at scale=2."""
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
 
         panels = [
@@ -6686,12 +6845,930 @@ class KibanaNativeLayoutTests(unittest.TestCase):
 
         _apply_kibana_native_layout(panels)
 
-        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6})
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 6})
+        # bar's L2 min_w=8 *would* bump Pressure's right edge to
+        # x=8, but CPU Busy sits at x=6..12 -- collision-aware L2
+        # keeps Pressure at w=6 to preserve the side-by-side layout
+        # the author chose. Height bumps are independent: gauge h=6
+        # has no vertical neighbour to collide with so it bumps to
+        # L2 gauge min_h=8.
+        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6}, "bar w stays at 6 (collision with CPU Busy)")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge h bumps to L2 min_h=8")
+        # Both panels share Grafana y=1 -> they're the topmost, so
+        # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
         self.assertEqual(panels[1]["position"], {"x": 6, "y": 0})
         self.assertNotIn("_grafana_w", panels[0])
         self.assertNotIn("_grafana_h", panels[0])
+
+    def test_style_guide_does_not_stretch_2d_grid_rows(self):
+        """``apply_style_guide_layout._fill_simple_row`` must not
+        rescale a row that is part of a 2D grid (panels below sharing
+        the same x-range). Otherwise the row's right-edge panels get
+        pushed further right, colliding with the rows below.
+
+        Reproduces the bug in node-exporter-full pre-fix: the wide
+        top row was 30 cols, scaled to 48 cols by ``_fill_simple_row``,
+        which moved CPU Cores from x=18 to x=37 and broke alignment
+        with RootFS Total at x=18 below it.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Top row: 5 panels totalling 30 cols (less than 48)
+                {"title": "A", "position": {"x": 0,  "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "B", "position": {"x": 6,  "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "C", "position": {"x": 12, "y": 0}, "size": {"w": 6, "h": 6}},
+                {"title": "D", "position": {"x": 18, "y": 0}, "size": {"w": 4, "h": 3}},
+                {"title": "E", "position": {"x": 22, "y": 0}, "size": {"w": 8, "h": 3}},
+                # Below-row: stat tiles at the right share x with D/E
+                {"title": "D2", "position": {"x": 18, "y": 3}, "size": {"w": 4, "h": 3}},
+                {"title": "E2", "position": {"x": 22, "y": 3}, "size": {"w": 8, "h": 3}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+
+        # D must stay at x=18 (not pushed by row-stretch); D2 below
+        # must still align at x=18 underneath it.
+        self.assertEqual(panels["D"]["position"]["x"], 18,
+                         "row stretch must not move D out from under D2")
+        self.assertEqual(panels["D2"]["position"]["x"], 18,
+                         "D2 keeps its source x position")
+        # And the source widths are preserved (no stretch).
+        self.assertEqual(panels["A"]["size"]["w"], 6,
+                         "row width must not be stretched -- 2D grid below should suppress _fill_simple_row")
+
+    def test_style_guide_still_stretches_pure_1d_row(self):
+        """When there is no 2D grid below it, the row IS stretched to
+        the full 48 cols (the original purpose of
+        ``_fill_simple_row``). This is the negative control for the
+        2D-grid check.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                {"title": "A", "position": {"x": 0,  "y": 0}, "size": {"w": 12, "h": 6}},
+                {"title": "B", "position": {"x": 12, "y": 0}, "size": {"w": 12, "h": 6}},
+                # No below-row panels -> still a pure 1D row
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        # Both widths scaled up to fill 48 cols (24+24).
+        total_w = panels["A"]["size"]["w"] + panels["B"]["size"]["w"]
+        self.assertEqual(total_w, 48, "pure 1D row should still be stretched to 48 cols")
+
+    def test_style_guide_stretches_row_with_full_width_panel_above(self):
+        """A full-width panel ABOVE a simple 1D row must NOT suppress the
+        fill.  Previously, _row_has_overlapping_x_neighbours checked above
+        panels too, so a full-width header caused false positives.  After
+        the fix only panels strictly BELOW the row are checked.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Full-width chart at y=0
+                {"title": "Header", "position": {"x": 0, "y": 0}, "size": {"w": 48, "h": 8}},
+                # Simple 1D row at y=8 — total=24, should be stretched to 48
+                {"title": "A", "position": {"x": 0,  "y": 8}, "size": {"w": 12, "h": 6}},
+                {"title": "B", "position": {"x": 12, "y": 8}, "size": {"w": 12, "h": 6}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        total_w = panels["A"]["size"]["w"] + panels["B"]["size"]["w"]
+        self.assertEqual(
+            total_w, 48,
+            "row below a full-width header should still be stretched (no 2D grid below it)",
+        )
+
+    def test_style_guide_still_blocks_stretch_when_2d_grid_is_below(self):
+        """A full-width header ABOVE plus a 2D grid BELOW: the row must
+        NOT be stretched because the 2D grid below would break.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Full-width chart above
+                {"title": "Header", "position": {"x": 0, "y": 0}, "size": {"w": 48, "h": 8}},
+                # Row to check: 3 panels totalling 30 cols (needs fill)
+                {"title": "A", "position": {"x": 0,  "y": 8}, "size": {"w": 10, "h": 4}},
+                {"title": "B", "position": {"x": 10, "y": 8}, "size": {"w": 10, "h": 4}},
+                {"title": "C", "position": {"x": 20, "y": 8}, "size": {"w": 10, "h": 4}},
+                # 2D grid BELOW: panel at same x as C
+                {"title": "C2", "position": {"x": 20, "y": 12}, "size": {"w": 10, "h": 4}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        self.assertEqual(
+            panels["A"]["size"]["w"], 10,
+            "2D grid below must suppress row stretch even when full-width header is above",
+        )
+
+    def test_kibana_native_layout_l2_yields_to_2d_grid(self):
+        """L2 per-type minimums must NOT break the 2D grid the
+        source author authored.
+
+        Reproduces the ``node-exporter-full`` "Quick CPU / Mem / Disk"
+        section: 6 wide gauges along the top, with two short stat
+        tiles in the corner that the author *deliberately* sized to
+        h=3 so they could stack two-deep beside a tall neighbour.
+        Before the collision-aware fix, L2's metric ``min_h=6``
+        bumped each short tile to h=6, blowing through the gauge
+        below it and forcing the overlap resolver to cascade panels
+        to y=8/y=6 -- producing the ugly "right-side dangling stat
+        tile cluster" layout in the screenshot at 2026-05-13 01:24.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _apply_kibana_native_layout,
+        )
+
+        # Tall gauge on the left + two stacked short stats on its
+        # right. Heights 8 and (3 + 3) tile to the same 8 rows.
+        panels = [
+            {"title": "GaugeLeft", "esql": {"type": "gauge"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 6},
+            {"title": "StatTop", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 12,
+             "_grafana_w": 8, "_grafana_h": 3},
+            {"title": "StatBottom", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 3, "_grafana_row_x": 12,
+             "_grafana_w": 8, "_grafana_h": 3},
+        ]
+        _apply_kibana_native_layout(panels)
+
+        gauge, top, bot = panels
+        # StatTop's min_h=6 *would* push its bottom to y=6,
+        # overlapping StatBottom at y=5..8 (scaled). Collision-
+        # aware L2 keeps the source-author-chosen short height for
+        # StatTop so the 2D grid remains intact.
+        self.assertLessEqual(
+            top["size"]["h"], 5,
+            "StatTop must keep its short height when StatBottom is below it; "
+            f"got h={top['size']['h']} which would clash",
+        )
+        # StatBottom has nothing below in this group so the L2 min_h
+        # can be applied to it.
+        self.assertGreaterEqual(top["position"]["y"] + top["size"]["h"], bot["position"]["y"])
+        # And the gauge keeps its faithful height (no false collision).
+        self.assertGreater(gauge["size"]["h"], 0)
+
+    def test_kibana_native_layout_preserves_relative_y_spacing(self):
+        """L1 universal fix: when multiple Grafana visual rows are
+        present, preserve their *relative* spacing in Kibana instead
+        of stacking them sequentially with a y-cursor.
+
+        Grafana ``y`` values map to Kibana via the row scale
+        ``GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX = 30/20 = 1.5``,
+        and the whole group is shifted so the topmost panel sits at
+        Kibana y=0. This means two panels at Grafana y=1 and y=3 stay
+        2 rows apart in Grafana (so 3 rows apart in Kibana after the
+        1.5x scale) instead of collapsing to "stacked with no gap".
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            # Top row at Grafana y=1
+            {"title": "TopL", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 1, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 4},
+            {"title": "TopR", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 1, "_grafana_row_x": 12,
+             "_grafana_w": 12, "_grafana_h": 4},
+            # Lower row at Grafana y=10 (9 rows lower, after a TALL
+            # gap)
+            {"title": "BotL", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 10, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 8},
+        ]
+        _apply_kibana_native_layout(panels)
+        # Scale x by 2, scale y by 1.5.
+        # min Grafana y = 1, so all panels shift down by round(1*1.5)=2.
+        # TopL/TopR: y=1 -> round(1*1.5)=2 -> 2-2=0
+        # BotL:      y=10 -> round(10*1.5)=15 -> 15-2=13
+        self.assertEqual(panels[0]["position"]["y"], 0, "TopL")
+        self.assertEqual(panels[1]["position"]["y"], 0, "TopR")
+        self.assertEqual(panels[2]["position"]["y"], 13, "BotL")
+        # Sanity: heights also scale by 1.5
+        self.assertEqual(panels[0]["size"]["h"], 6)
+        self.assertEqual(panels[2]["size"]["h"], 12)
+
+    def test_kibana_native_layout_single_panel(self):
+        """Trivial case: a single panel always lands at y=0 regardless
+        of its Grafana y, because it's the only panel in the group so
+        min-y normalization shifts it to zero."""
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [{
+            "title": "Solo", "esql": {"type": "bar"},
+            "size": {}, "position": {},
+            "_grafana_row_y": 7, "_grafana_row_x": 5,
+            "_grafana_w": 8, "_grafana_h": 6,
+        }]
+        _apply_kibana_native_layout(panels)
+        self.assertEqual(panels[0]["position"]["y"], 0)
+        self.assertEqual(panels[0]["position"]["x"], 10)  # 5*2
+
+    def test_kibana_native_layout_preserves_grafana_layered_panels(self):
+        """Two panels at the same Grafana y but different heights
+        (one tall, one short) should both start at the same Kibana y
+        — Kibana's grid layout handles their different heights
+        naturally without our code packing them."""
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            # Tall panel
+            {"title": "Tall", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 4, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 10},
+            # Short panel, same y
+            {"title": "Short", "esql": {"type": "metric"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 4, "_grafana_row_x": 12,
+             "_grafana_w": 12, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        self.assertEqual(panels[0]["position"]["y"], 0)
+        self.assertEqual(panels[1]["position"]["y"], 0)
+        # Heights differ - the L1 transform does NOT pack them; their
+        # different bottoms stay different (Kibana renders them as-is)
+        self.assertEqual(panels[0]["size"]["h"], 15)  # round(10*1.5)
+        # Metric has a 5-row default applied by _normalize_tile_size
+        # so we don't assert the exact short panel height here.
+
+    def test_kibana_native_layout_keeps_touching_panels_touching(self):
+        """L1 edge-alignment: two Grafana panels that exactly touch
+        (Grafana ``y=25,h=6`` followed by ``y=31``) must remain
+        exactly touching in Kibana — not overlapping, not gapped.
+
+        Without edge alignment (independently scaling y and h with
+        banker's rounding), this case used to produce a 1-row
+        overlap which the downstream ``kb-dashboard-cli`` compile
+        step rejects.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Top", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 25, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 6},
+            {"title": "Bottom", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 31, "_grafana_row_x": 0,
+             "_grafana_w": 12, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        top_bottom = panels[0]["position"]["y"] + panels[0]["size"]["h"]
+        bot_top = panels[1]["position"]["y"]
+        self.assertEqual(
+            top_bottom, bot_top,
+            f"touching panels must remain touching after L1 scaling "
+            f"(top bottom={top_bottom}, bottom top={bot_top})",
+        )
+
+    def test_kibana_native_layout_preserves_grafana_vertical_gaps(self):
+        """L1 universal layout: when the Grafana author left a gap
+        between two rows (eg. y=0..4 row, then y=10 row), that gap
+        is preserved (proportionally) in Kibana instead of being
+        collapsed by a y-cursor.
+
+        Compare to the legacy y-cursor behaviour where two rows
+        always stacked immediately regardless of the source spacing.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "TopRow", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 4},
+            # Big gap: y=4 to y=10 is empty in Grafana
+            {"title": "BotRow", "esql": {"type": "bar"},
+             "size": {}, "position": {},
+             "_grafana_row_y": 10, "_grafana_row_x": 0,
+             "_grafana_w": 24, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        top_bottom = panels[0]["position"]["y"] + panels[0]["size"]["h"]
+        bot_top = panels[1]["position"]["y"]
+        gap = bot_top - top_bottom
+        # Grafana gap is from y=4 to y=10 = 6 rows. Scaled by 1.5,
+        # the Kibana gap should be 9 rows. The legacy y-cursor
+        # behaviour would produce gap=0 (immediate stacking).
+        self.assertEqual(
+            gap, 9,
+            f"Grafana 6-row vertical gap should scale to a 9-row "
+            f"Kibana gap (got {gap}); a gap of 0 means the y-cursor "
+            f"regression has returned.",
+        )
+
+
+    def test_fill_simple_row_bails_when_all_panels_at_hard_min(self):
+        """When every panel in the row is already at HARD_MIN_W and the
+        total still exceeds 48, the adjustment loop can't shrink any
+        further.  The function must bail out (leave panels unchanged)
+        instead of writing overflow coordinates.
+
+        13 panels x w=4 = 52 cols.  52 is in [24, 72] so the range
+        guard doesn't catch it; the overflow guard at the end must.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            _fill_simple_row,
+        )
+
+        panels = [
+            {"title": f"P{i}", "position": {"x": i * 4, "y": 0}, "size": {"w": 4, "h": 6}}
+            for i in range(13)
+        ]
+        original_widths = [p["size"]["w"] for p in panels]
+        original_xs = [p["position"]["x"] for p in panels]
+
+        _fill_simple_row(panels)
+
+        # Panels must be unchanged — no overflow written.
+        self.assertEqual([p["size"]["w"] for p in panels], original_widths)
+        self.assertEqual([p["position"]["x"] for p in panels], original_xs)
+
+    def test_fill_simple_row_total_below_range_is_left_unchanged(self):
+        """Row totalling less than 50% of 48 cols (< 24) is left alone."""
+        from observability_migration.targets.kibana.emit.layout import _fill_simple_row
+
+        panels = [
+            {"title": "A", "position": {"x": 0, "y": 0}, "size": {"w": 8, "h": 6}},
+            {"title": "B", "position": {"x": 8, "y": 0}, "size": {"w": 4, "h": 6}},
+        ]
+        _fill_simple_row(panels)
+        # total=12 < 24 (50% of 48) → unchanged
+        self.assertEqual(panels[0]["size"]["w"], 8)
+        self.assertEqual(panels[1]["size"]["w"], 4)
+
+    def test_is_simple_contiguous_row_tolerates_missing_keys(self):
+        """_is_simple_contiguous_row must not raise KeyError when a
+        panel is missing 'position' or 'size' keys."""
+        from observability_migration.targets.kibana.emit.layout import (
+            _is_simple_contiguous_row,
+        )
+
+        panels_no_pos = [
+            {},
+            {"size": {"w": 12}},
+        ]
+        # Should return False (x=0 ≤ 2, but gap check sees missing w → w=0
+        # so prev_end=0, curr=0, gap=0 ≤ 2 → True) — important: must not raise
+        try:
+            result = _is_simple_contiguous_row(panels_no_pos)
+            self.assertIsInstance(result, bool)
+        except (KeyError, TypeError, AttributeError) as exc:
+            self.fail(f"_is_simple_contiguous_row raised {type(exc).__name__}: {exc}")
+
+    def test_kibana_type_height_ge_l2_min_h_for_all_types(self):
+        """KIBANA_TYPE_HEIGHT values must be >= the corresponding
+        _TYPE_SIZE_CONSTRAINTS min_h so the fallback path never produces
+        heights that L2 immediately has to correct.
+
+        If this test fails, update KIBANA_TYPE_HEIGHT to match min_h.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _TYPE_SIZE_CONSTRAINTS,
+            KIBANA_TYPE_HEIGHT,
+        )
+
+        for vtype, (_min_w, min_h, _max_h) in _TYPE_SIZE_CONSTRAINTS.items():
+            height = KIBANA_TYPE_HEIGHT.get(vtype)
+            if height is not None:
+                self.assertGreaterEqual(
+                    height,
+                    min_h,
+                    f"KIBANA_TYPE_HEIGHT['{vtype}']={height} < _TYPE_SIZE_CONSTRAINTS min_h={min_h}; "
+                    "update KIBANA_TYPE_HEIGHT to eliminate the mismatch",
+                )
+
+
+class L4RepeatPanelExpansionTests(unittest.TestCase):
+    """L4 universal fix: expand ``repeat: "$var"`` panels into N
+    concrete clones (one per variable value), with PromQL,
+    title, and ``gridPos`` updated per clone.
+
+    Before L4, repeated Grafana panels were collapsed: the variable
+    became a single-select Kibana control, and only one panel was
+    emitted. The author's "show me one chart per instance" intent
+    was lost entirely.
+
+    L4 resolves variable values from:
+
+    * ``variable["options"]`` (custom vars / explicit lists), then
+    * ``variable["current"]["text"]``  (the last-resolved set
+      Grafana cached when the dashboard was saved).
+
+    Variables that can't be resolved this way (unconfigured query
+    vars) keep the single-panel behaviour and emit a warning. The
+    expansion is capped at 8 panels to prevent dashboard explosion
+    for high-cardinality vars; the rest are dropped with a warning.
+    """
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana import (
+            rules as rules_mod,
+        )
+        from observability_migration.adapters.source.grafana import (
+            schema as schema_mod,
+        )
+        self.rule_pack = rules_mod.RulePackConfig()
+        self.resolver = schema_mod.SchemaResolver(self.rule_pack)
+
+    def _translate(self, dashboard):
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = panels_mod.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            with open(yaml_path) as f:
+                doc = yaml.safe_load(f)
+        return result, doc["dashboards"][0]
+
+    def _walk_leaves(self, panels):
+        for p in panels or []:
+            if isinstance(p, dict) and "section" in p:
+                yield from self._walk_leaves(p["section"].get("panels") or [])
+            elif isinstance(p, dict):
+                yield p
+
+    def test_custom_variable_repeat_fans_out_three_panels(self):
+        """A panel with ``repeat: instance`` against a custom var
+        with 3 options should produce 3 leaf panels with
+        substituted titles."""
+        dashboard = {
+            "title": "Repeat Custom", "uid": "rep-custom-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "query": "alpha, beta, gamma",
+                "options": [
+                    {"text": "alpha", "value": "alpha"},
+                    {"text": "beta", "value": "beta"},
+                    {"text": "gamma", "value": "gamma"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "CPU on $instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "rate(node_cpu{instance=\"$instance\"}[5m])", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(
+            titles,
+            ["CPU on alpha", "CPU on beta", "CPU on gamma"],
+            "Each clone must substitute $instance in the panel title",
+        )
+
+    def test_repeat_substitutes_promql_variable_references(self):
+        """Each clone's PromQL must reference the clone's specific
+        variable value, not the literal ``$instance``."""
+        dashboard = {
+            "title": "T", "uid": "rep-promql-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "options": [
+                    {"text": "a", "value": "a"},
+                    {"text": "b", "value": "b"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "x",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up{instance=\"$instance\"}", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        queries = [
+            (p.get("esql") or {}).get("query", "")
+            for p in leaves
+            if p.get("esql")
+        ]
+        # We can't predict the exact ESQL, but each query should
+        # mention the clone's value and not the literal $instance.
+        a_clone = next((q for q in queries if "service.instance.id" in q and '"a"' in q), None)
+        b_clone = next((q for q in queries if "service.instance.id" in q and '"b"' in q), None)
+        self.assertIsNotNone(a_clone, f"clone for instance=a missing; queries={queries!r}")
+        self.assertIsNotNone(b_clone, f"clone for instance=b missing; queries={queries!r}")
+        # Neither clone should still contain the unresolved variable.
+        for q in queries:
+            self.assertNotIn("$instance", q, "ESQL must not contain the unresolved Grafana variable")
+
+    def test_high_cardinality_cap_at_eight(self):
+        """Variables with >8 values are capped to 8 with a warning."""
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        values = [{"text": f"v{i}", "value": f"v{i}"} for i in range(12)]
+        dashboard = {
+            "title": "T", "uid": "rep-cap-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom", "options": values,
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        result, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(
+            len(titles), panels_mod.L4_REPEAT_EXPANSION_CAP,
+            f"Expected exactly {panels_mod.L4_REPEAT_EXPANSION_CAP} clones, "
+            f"got {len(titles)}: {titles!r}",
+        )
+        # A skip result should record the cap-warning for the
+        # operator.
+        cap_warning_titles = [
+            pr.title for pr in result.panel_results
+            if pr.status == "skipped" and "repeat" in (pr.warnings or [""])[0].lower()
+        ]
+        self.assertTrue(cap_warning_titles, "expected a skip-result mentioning the repeat cap")
+
+    def test_unresolvable_query_var_keeps_single_panel_with_warning(self):
+        """Query vars without resolved current/options stay as a
+        single Kibana panel with an explanatory warning. (We don't
+        hit Elasticsearch from the translator for label values
+        in v1 of L4.)"""
+        dashboard = {
+            "title": "T", "uid": "rep-unresolvable-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "query",
+                "query": "label_values(up, instance)",
+                # No options, no current value resolved.
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "u: $instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        result, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        # Single panel preserved (legacy behaviour for this case)
+        self.assertEqual(len(leaves), 1)
+        # A skip warning was recorded
+        unresolvable_warnings = [
+            pr for pr in result.panel_results
+            if pr.status == "skipped"
+            and any("unresolvable" in w.lower() or "could not resolve" in w.lower()
+                    for w in (pr.warnings or []))
+        ]
+        self.assertTrue(
+            unresolvable_warnings,
+            "expected a skipped PanelResult mentioning the unresolvable variable",
+        )
+
+    def test_repeat_uses_current_text_when_options_missing(self):
+        """For query vars that have a cached ``current`` set
+        (multi-value), we fall back to those values."""
+        dashboard = {
+            "title": "T", "uid": "rep-current-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "query",
+                "query": "label_values(up, instance)",
+                "current": {
+                    "text": ["host-1", "host-2"],
+                    "value": ["host-1", "host-2"],
+                },
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        titles = [p.get("title") for p in leaves]
+        self.assertEqual(titles, ["host-1", "host-2"])
+
+    def test_horizontal_repeat_lays_out_left_to_right(self):
+        """``repeatDirection: h`` clones get laid out
+        left-to-right wrapping at the Grafana 24-col width;
+        downstream L1 scales them to the Kibana 48-col grid."""
+        dashboard = {
+            "title": "T", "uid": "rep-h-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "options": [
+                    {"text": "a", "value": "a"},
+                    {"text": "b", "value": "b"},
+                    {"text": "c", "value": "c"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "repeatDirection": "h",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        xs = sorted(p["position"]["x"] for p in leaves)
+        # Three panels of w=8 (Grafana cols) -> w=16 (Kibana cols
+        # after the 2x scale). Laid out horizontally they should
+        # occupy x=0, 16, 32 in Kibana coordinates.
+        self.assertEqual(xs, [0, 16, 32], f"horizontal lay-out fan-out, got x={xs}")
+
+
+class L3RowAwareSectioningTests(unittest.TestCase):
+    """L3 universal fix: every explicit Grafana ``type: row`` panel
+    (modern schema) and every legacy ``rows[]`` entry (schemaVersion
+    14) becomes a Kibana ``section`` in the emitted YAML, even when
+    the source row has an empty/missing title.
+
+    Before L3 the emitter only created a section when the row title
+    was truthy; otherwise the panels were flattened into the top
+    level with a ``_offset_yaml_panels`` y shift. That silently
+    discarded the author's grouping intent for any dashboard that
+    organises panels into untitled rows (a real-world quirk in
+    auto-generated dashboards from Helm charts, Prometheus
+    rule-driven dashboards, etc.).
+    """
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana import (
+            rules as rules_mod,
+        )
+        from observability_migration.adapters.source.grafana import (
+            schema as schema_mod,
+        )
+        self.rule_pack = rules_mod.RulePackConfig()
+        self.resolver = schema_mod.SchemaResolver(self.rule_pack)
+
+    def _translate(self, dashboard):
+        from observability_migration.adapters.source.grafana import (
+            panels as panels_mod,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, yaml_path = panels_mod.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            with open(yaml_path) as f:
+                doc = yaml.safe_load(f)
+        return doc["dashboards"][0]["panels"]
+
+    def test_titled_row_becomes_section(self):
+        """Baseline (was already working): a titled row produces a
+        section entry with the row's title."""
+        dashboard = {
+            "title": "T", "uid": "titled-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "Health",
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+                {"id": 2, "type": "stat", "title": "Up",
+                 "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Health")
+        self.assertEqual(len(sections[0]["section"]["panels"]), 1)
+
+    def test_untitled_explicit_row_still_becomes_section(self):
+        """Untitled row (``title: ""``) used to silently flatten its
+        children into the top level. L3: it now produces a section
+        with a fallback title so the grouping is preserved."""
+        dashboard = {
+            "title": "T", "uid": "untitled-row-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "stat", "title": "Outside",
+                 "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+                {"id": 2, "type": "row", "title": "",
+                 "gridPos": {"x": 0, "y": 4, "w": 24, "h": 1}},
+                {"id": 3, "type": "stat", "title": "Inside",
+                 "gridPos": {"x": 0, "y": 5, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        flat = [n for n in top if isinstance(n, dict) and "section" not in n]
+        # "Outside" is before any row -> stays flat.
+        self.assertEqual(len(flat), 1)
+        self.assertEqual(flat[0]["title"], "Outside")
+        # "Inside" was under the untitled row -> goes into a section
+        # with a synthesised title (not the empty string).
+        self.assertEqual(len(sections), 1)
+        self.assertTrue(
+            bool(sections[0].get("title", "").strip()),
+            "Synthesised section title must not be empty",
+        )
+        self.assertEqual(len(sections[0]["section"]["panels"]), 1)
+        self.assertEqual(sections[0]["section"]["panels"][0]["title"], "Inside")
+
+    def test_collapsed_row_with_empty_title_becomes_section(self):
+        """Collapsed rows with empty titles (children nested in
+        ``panels[]``) follow the same rule."""
+        dashboard = {
+            "title": "T", "uid": "collapsed-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "",
+                 "collapsed": True,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                 "panels": [
+                     {"id": 2, "type": "stat", "title": "Inner",
+                      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertTrue(bool(sections[0].get("title", "").strip()))
+
+    def test_panels_before_any_row_stay_flat(self):
+        """Panels that genuinely precede every row (the author chose
+        to put them at the top of the dashboard, not in a row) stay
+        as flat top-level panels. L3 only wraps panels that belong to
+        an explicit row container."""
+        dashboard = {
+            "title": "T", "uid": "no-row-1", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "stat", "title": "Header",
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        # No row -> no section
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 0)
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]["title"], "Header")
+
+
+class L2PerTypeMinimumsTests(unittest.TestCase):
+    """L2 universal fix: every panel type gets per-type
+    width/height minimums (and a max where one makes sense) enforced
+    by :func:`_normalize_tile_size`, regardless of what the L1
+    coordinate transform produced.
+
+    The current floor of "metric width >= 4" and "datatable height >=
+    5" is far too sparse: ``node-exporter-full`` has 11 metric tiles
+    at h=3 (60px tall on Kibana's 20px row height — unreadable).
+    """
+
+    def _normalize(self, esql_type, w, h, **extra):
+        from observability_migration.adapters.source.grafana.panels import (
+            _normalize_tile_size,
+        )
+        panel = {
+            "title": "T",
+            "size": {"w": w, "h": h},
+            "position": {"x": 0, "y": 0},
+            **extra,
+        }
+        if esql_type == "markdown":
+            panel["markdown"] = {"content": "x"}
+        else:
+            panel["esql"] = {"type": esql_type}
+        _normalize_tile_size(panel, esql_type)
+        return panel["size"]
+
+    # --- metric ----------------------------------------------------
+
+    def test_metric_h3_bumped_to_min_6(self):
+        """The most common L2 defect: stat tiles with h=3 (60px)
+        render unreadably small. Bump to the per-type min of 6."""
+        self.assertEqual(self._normalize("metric", 4, 3)["h"], 6)
+
+    def test_metric_h_above_min_is_unchanged(self):
+        self.assertEqual(self._normalize("metric", 6, 8)["h"], 8)
+
+    def test_metric_h_above_max_is_clamped(self):
+        """Metrics don't benefit from going beyond ~12 rows tall;
+        they show one value plus a sparkline at most."""
+        self.assertEqual(self._normalize("metric", 6, 30)["h"], 12)
+
+    def test_metric_w_below_min_is_bumped(self):
+        """Pre-existing MIN_PANEL_WIDTH=4 enforcement is preserved."""
+        self.assertEqual(self._normalize("metric", 2, 6)["w"], 4)
+
+    # --- gauge -----------------------------------------------------
+
+    def test_gauge_min_size(self):
+        """Gauges need room for the dial; min_w=6, min_h=8."""
+        size = self._normalize("gauge", 4, 4)
+        self.assertEqual(size["w"], 6)
+        self.assertEqual(size["h"], 8)
+
+    def test_gauge_max_h(self):
+        self.assertEqual(self._normalize("gauge", 12, 30)["h"], 16)
+
+    # --- datatable -------------------------------------------------
+
+    def test_datatable_min_w_bumped(self):
+        """Datatables need at least ~12 cols to show columns."""
+        self.assertEqual(self._normalize("datatable", 6, 10)["w"], 12)
+
+    def test_datatable_min_h_bumped(self):
+        self.assertEqual(self._normalize("datatable", 24, 4)["h"], 8)
+
+    def test_datatable_max_h(self):
+        self.assertEqual(self._normalize("datatable", 24, 30)["h"], 24)
+
+    # --- bar / xy / line / area ------------------------------------
+
+    def test_chart_types_min_h(self):
+        """Charts (bar/xy/line/area) need at least h=6 to show
+        their data clearly."""
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 12, 4)["h"], 6, t)
+
+    def test_chart_types_min_w(self):
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 6, 12)["w"], 8, t)
+
+    def test_chart_types_max_h(self):
+        for t in ("bar", "line", "area", "xy"):
+            with self.subTest(panel_type=t):
+                self.assertEqual(self._normalize(t, 12, 30)["h"], 24, t)
+
+    # --- markdown / text ------------------------------------------
+
+    def test_markdown_min_size(self):
+        size = self._normalize("markdown", 2, 1)
+        self.assertEqual(size["w"], 4)
+        self.assertEqual(size["h"], 2)
+
+    def test_markdown_unbounded_max_h(self):
+        """Long-form markdown can be tall by design; we don't clamp."""
+        self.assertEqual(self._normalize("markdown", 48, 30)["h"], 30)
+
+    # --- pie / heatmap / treemap ----------------------------------
+
+    def test_pie_min_h(self):
+        self.assertEqual(self._normalize("pie", 12, 4)["h"], 8)
 
 
 class NativePromqlTests(unittest.TestCase):

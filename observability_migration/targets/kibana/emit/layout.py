@@ -25,6 +25,24 @@ from typing import Any
 GRID_COLUMNS = 48
 HARD_MIN_W = 4
 
+# Per-type (min_w, min_h, max_h) constraints.
+# Shared by the Grafana and Datadog layout paths so both sources produce
+# panels that are readable in Kibana.  None means "no cap".
+PANEL_SIZE_CONSTRAINTS: dict[str, tuple[int, int, int | None]] = {
+    "metric":    (4,  6,  12),
+    "gauge":     (6,  8,  16),
+    "bargauge":  (6,  6,  16),
+    "bar":       (8,  6,  24),
+    "line":      (8,  6,  24),
+    "area":      (8,  6,  24),
+    "xy":        (8,  6,  24),
+    "datatable": (12, 8,  24),
+    "pie":       (8,  8,  24),
+    "treemap":   (8,  8,  24),
+    "heatmap":   (8,  8,  24),
+    "markdown":  (4,  2,  None),
+}
+
 
 def apply_style_guide_layout(yaml_doc: dict[str, Any]) -> dict[str, Any]:
     """Post-process dashboard YAML: fix overflow, fill simple rows."""
@@ -59,8 +77,59 @@ def _fix_panel_group(panels: list[dict[str, Any]]) -> None:
 
     rows = _collect_rows(panels)
     for row in rows:
-        if len(row) > 1 and _is_simple_contiguous_row(row):
+        if (
+            len(row) > 1
+            and _is_simple_contiguous_row(row)
+            and not _row_has_overlapping_x_neighbours(row, panels)
+        ):
             _fill_simple_row(row)
+
+
+def _row_has_overlapping_x_neighbours(
+    row: list[dict[str, Any]],
+    all_panels: list[dict[str, Any]],
+) -> bool:
+    """Detect when a row is the top stripe of a 2D grid.
+
+    ``_fill_simple_row`` stretches a row's panels to span the full 48
+    columns. That's correct for true 1D rows but **wrong** when panels
+    below the row share x-ranges with it — stretching pushes the row's
+    right-edge panels further right, breaking vertical alignment with
+    the panels below.
+
+    Only panels **strictly below** (y > row_y) are checked.  Panels
+    above (full-width headers, earlier rows) are intentionally ignored:
+    their presence does not indicate a 2D grid, and checking them caused
+    false positives where a full-width chart above a simple row
+    suppressed the fill.
+
+    Top-stripes of 2D grids are exactly this pattern: the right-edge
+    stat tiles in ``node-exporter-full``'s "Quick CPU" section sit at
+    x=36..48 at both y=0 and y=3, so the y=0 row has below-neighbours
+    at overlapping x and should NOT be stretched.
+    """
+    if not row:
+        return False
+    row_ids = {id(p) for p in row}
+    row_y = int((row[0].get("position") or {}).get("y", 0) or 0)
+    row_min_x = min(int((p.get("position") or {}).get("x", 0) or 0) for p in row)
+    row_max_x = max(
+        int((p.get("position") or {}).get("x", 0) or 0)
+        + int((p.get("size") or {}).get("w", 0) or 0)
+        for p in row
+    )
+    for other in all_panels:
+        if id(other) in row_ids:
+            continue
+        oy = int((other.get("position") or {}).get("y", 0) or 0)
+        if oy <= row_y:
+            continue  # above or same row — not a 2D-grid signal
+        ox = int((other.get("position") or {}).get("x", 0) or 0)
+        ow = int((other.get("size") or {}).get("w", 0) or 0)
+        # Strict x-overlap (touching is fine)
+        if ox < row_max_x and ox + ow > row_min_x:
+            return True
+    return False
 
 
 def _clamp_single_panel(panel: dict[str, Any]) -> None:
@@ -105,13 +174,14 @@ def _is_simple_contiguous_row(row: list[dict[str, Any]]) -> bool:
     Rows that start far from x=0 are likely the right-side portion of a 2D
     grid and should NOT be rearranged.
     """
-    sorted_row = sorted(row, key=lambda p: p["position"]["x"])
-    if sorted_row[0]["position"]["x"] > 2:
+    sorted_row = sorted(row, key=lambda p: int((p.get("position") or {}).get("x", 0) or 0))
+    if int((sorted_row[0].get("position") or {}).get("x", 0) or 0) > 2:
         return False
     for i in range(1, len(sorted_row)):
-        prev_end = sorted_row[i - 1]["position"]["x"] + sorted_row[i - 1]["size"]["w"]
-        curr_start = sorted_row[i]["position"]["x"]
-        if curr_start - prev_end > 2:
+        prev_x = int((sorted_row[i - 1].get("position") or {}).get("x", 0) or 0)
+        prev_w = int((sorted_row[i - 1].get("size") or {}).get("w", 0) or 0)
+        curr_x = int((sorted_row[i].get("position") or {}).get("x", 0) or 0)
+        if curr_x - (prev_x + prev_w) > 2:
             return False
     return True
 
@@ -161,6 +231,13 @@ def _fill_simple_row(row: list[dict[str, Any]]) -> None:
                 changed = True
         if not changed:
             break
+
+    # If all panels are pinned at HARD_MIN_W and the sum still exceeds
+    # GRID_COLUMNS, the loop exits early without converging.  In that case
+    # bail out and leave the panels unchanged rather than writing
+    # coordinates that overflow the grid.
+    if sum(new_widths) != GRID_COLUMNS:
+        return
 
     x = 0
     for p, w in zip(sorted_row, new_widths):

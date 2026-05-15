@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import copy
 import json
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,7 +46,12 @@ from observability_migration.targets.kibana.emit.esql_utils import (
 from observability_migration.targets.kibana.emit.esql_utils import (
     split_top_level_keyword as _split_top_level_keyword_canonical,
 )
-from observability_migration.targets.kibana.emit.layout import apply_style_guide_layout
+from observability_migration.targets.kibana.emit.layout import (
+    PANEL_SIZE_CONSTRAINTS as _TYPE_SIZE_CONSTRAINTS,
+)
+from observability_migration.targets.kibana.emit.layout import (
+    apply_style_guide_layout,
+)
 
 from .extract import _normalize_text_panel_content
 from .manifest import (
@@ -101,9 +106,9 @@ MINIMUM_KIBANA_VERSION = "9.1.0"
 MIN_PANEL_WIDTH = 4
 
 KIBANA_TYPE_HEIGHT = {
-    "metric": 5,
-    "gauge": 6,
-    "bargauge": 5,
+    "metric": 6,    # aligned to _TYPE_SIZE_CONSTRAINTS min_h=6
+    "gauge": 8,     # aligned to _TYPE_SIZE_CONSTRAINTS min_h=8
+    "bargauge": 6,  # aligned to _TYPE_SIZE_CONSTRAINTS min_h=6
     "line": 12,
     "area": 12,
     "bar": 12,
@@ -151,6 +156,13 @@ class NormalizedPanelGroup:
     title: str | None
     panels: list[dict]
     skipped_panel_results: list[PanelResult] = field(default_factory=list)
+    # L3: set when the normaliser decided this group should NOT be
+    # emitted as a section even though it came from an explicit row
+    # (eg. legacy single-panel rows where a 1-panel section would be
+    # visual clutter; placeholder titles like "New Row" / "Row").
+    # Defaults to False so callers default to the L3 "always section
+    # for explicit rows" behaviour unless this overrides it.
+    force_flatten: bool = False
 
 
 _PLACEHOLDER_SECTION_TITLES = frozenset({"title", "new row", "row"})
@@ -673,6 +685,12 @@ def _clean_promql_for_native_with_state(expr):
     expr = _GRAFANA_VAR_BRACED_RE.sub("1", expr)
     expr = _GRAFANA_VAR_PLAIN_RE.sub("1", expr)
     expr = _GRAFANA_VAR_BRACKET_RE.sub("1", expr)
+
+    # Normalize histogram boundary label values: some Prometheus exporters
+    # store le as "1.0" / "10.0" while Grafana dashboards write le="1" / "10".
+    # Rewrite bare-integer le matchers to the float form so the native PROMQL
+    # engine finds the data that was actually scraped.
+    expr = re.sub(r'\ble=("|\')(\d+)\1', lambda m: f'le={m.group(1)}{m.group(2)}.0{m.group(1)}', expr)
 
     expr = re.sub(r"\s+", " ", expr).strip()
 
@@ -2976,16 +2994,49 @@ def _field_control_type(field_name, resolver):
 MIN_DATATABLE_HEIGHT = 5
 
 
+# _TYPE_SIZE_CONSTRAINTS is imported from layout.py as _TYPE_SIZE_CONSTRAINTS
+# via the PANEL_SIZE_CONSTRAINTS alias at the top of this file.
+
+
 def _normalize_tile_size(panel, kibana_type):
+    """Apply per-type width/height min and max clamps (L2).
+
+    Resolves the effective panel type from the panel's
+    ``esql.type`` if present (this is the actual Kibana
+    visualization), falling back to the caller-supplied
+    ``kibana_type``, then ``markdown`` if the panel is a plain
+    markdown tile. Unknown types pass through with no clamping,
+    preserving the legacy behaviour for any future visualization
+    type that doesn't have an entry in the constraint table.
+    """
     size = dict(panel.get("size", {}))
     width = int(size.get("w", 0) or 0)
     height = int(size.get("h", 0) or 0)
-    actual_type = (panel.get("esql") or {}).get("type", kibana_type)
-    if kibana_type == "metric" and 0 < width < MIN_PANEL_WIDTH:
-        size["w"] = MIN_PANEL_WIDTH
-    if actual_type == "datatable" and 0 < height < MIN_DATATABLE_HEIGHT:
-        size["h"] = MIN_DATATABLE_HEIGHT
+
+    esql_cfg = panel.get("esql")
+    if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+        effective_type = str(esql_cfg["type"])
+    elif "markdown" in panel:
+        effective_type = "markdown"
+    else:
+        effective_type = str(kibana_type or "")
+
+    constraints = _TYPE_SIZE_CONSTRAINTS.get(effective_type)
+    if constraints is not None:
+        min_w, min_h, max_h = constraints
+        if 0 < width < min_w:
+            width = min_w
+        if 0 < height < min_h:
+            height = min_h
+        if max_h is not None and height > max_h:
+            height = max_h
+
+    if width > 0:
+        size["w"] = width
+    if height > 0:
+        size["h"] = height
     panel["size"] = size
+
     position = dict(panel.get("position", {}))
     max_x = KIBANA_GRID_COLS - int(size.get("w", 0) or 0)
     if max_x < 0:
@@ -3145,21 +3196,35 @@ def _flatten_dashboard_panels(dashboard):
 def _build_section_groups(dashboard):
     """Group Grafana panels by their parent row.
 
-    Returns a list of ``(row_title | None, [panel, ...])``.
-    Panels before the first row form a group with ``row_title=None``.
-    Collapsed rows carry their children in ``panel["panels"]``.
+    Returns a list of ``(row_title | None, [panel, ...], is_explicit_row)``.
+
+    * ``row_title`` is the source row's title (``None`` when the row
+      had an empty/missing title).
+    * ``is_explicit_row`` is True iff the group came from a real
+      Grafana row container (modern ``type: row`` or legacy
+      ``rows[]``). False marks panels that genuinely live at the
+      top level, before any row.
+
+    Downstream, :func:`translate_dashboard` uses ``is_explicit_row``
+    to decide whether to emit a Kibana section (L3): every explicit
+    row becomes a section, even when the source row had no title.
+    Top-level panels stay flat. This preserves the author's
+    grouping intent and keeps the section-emit path the single
+    source of truth for the "always emit a section for a row" rule.
     """
-    groups: list[tuple[str | None, list[dict]]] = []
+    groups: list[tuple[str | None, list[dict], bool]] = []
     current_title: str | None = None
     current_panels: list[dict] = []
+    current_is_row: bool = False
 
     top_level = dashboard.get("panels", [])
     for panel in sorted(top_level, key=_panel_sort_key):
         if panel.get("type") == "row":
             if current_panels or groups:
-                groups.append((current_title, current_panels))
+                groups.append((current_title, current_panels, current_is_row))
             current_title = str(panel.get("title") or "").strip() or None
             current_panels = list(panel.get("panels", []))
+            current_is_row = True
         else:
             current_panels.append(panel)
 
@@ -3188,10 +3253,10 @@ def _build_section_groups(dashboard):
             if x_cursor >= GRAFANA_GRID_COLS:
                 x_cursor = 0
             patched.append(enriched)
-        groups.append((row_title, patched))
+        groups.append((row_title, patched, True))
 
     if current_panels or not groups:
-        groups.append((current_title, current_panels))
+        groups.append((current_title, current_panels, current_is_row))
 
     return groups
 
@@ -3200,6 +3265,278 @@ def _repeat_variable_name(value):
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+# L4: maximum number of fan-out clones produced per repeating panel.
+# Beyond this, we emit a warning and keep the first N. The cap stops
+# a single ``repeat: instance`` on a 50-node cluster from ballooning
+# the dashboard into 50 separate Lens panels.
+L4_REPEAT_EXPANSION_CAP = 8
+
+
+_VARIABLE_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _resolve_variable_values(variable: dict) -> tuple[list[str], str]:
+    """Return ``(values, source)`` for a Grafana templating variable.
+
+    Resolution order:
+
+    * ``variable["options"]`` -- present for custom vars (always) and
+      cached for query vars when the dashboard JSON has been saved
+      with a "current" snapshot. Each option is ``{text, value}``.
+    * ``variable["current"]["text"]`` / ``["value"]`` -- the last
+      multi-select snapshot the Grafana UI cached.
+
+    ``source`` is one of ``"options"``, ``"current"``, or ``""`` when
+    no values could be resolved (most often: a fresh query var that
+    has never been evaluated, or a query var pointing at a metric
+    series we can't enumerate without hitting the live Elasticsearch).
+    """
+    options = variable.get("options")
+    if isinstance(options, list) and options:
+        out: list[str] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            value = opt.get("value")
+            if value is None:
+                value = opt.get("text")
+            if value in ("$__all", "$__all_value", "All"):
+                # Skip the "All" sentinel; we expand its constituents.
+                continue
+            if isinstance(value, str) and value:
+                out.append(value)
+            elif isinstance(value, list):
+                out.extend(str(v) for v in value if v)
+        if out:
+            return out, "options"
+
+    current = variable.get("current") or {}
+    if isinstance(current, dict):
+        text = current.get("text")
+        value = current.get("value")
+        for candidate in (text, value):
+            if isinstance(candidate, list) and candidate:
+                vals = [str(v) for v in candidate if v and v != "All"]
+                if vals:
+                    return vals, "current"
+            if isinstance(candidate, str) and candidate and candidate != "All":
+                return [candidate], "current"
+
+    return [], ""
+
+
+def _substitute_grafana_variables(text: str, substitutions: dict[str, str]) -> str:
+    """Replace ``$var`` and ``${var}`` (and ``${var:fmt}``) in ``text``
+    with ``substitutions[var]``. Variables not in the dict are left
+    untouched so a downstream pass still sees them.
+    """
+    if not isinstance(text, str) or not substitutions:
+        return text
+
+    def _repl(match: re.Match) -> str:
+        name = match.group(1) or match.group(2)
+        return substitutions.get(name, match.group(0))
+
+    return _VARIABLE_REFERENCE_RE.sub(_repl, text)
+
+
+def _clone_panel_with_substitutions(
+    panel: dict,
+    substitutions: dict[str, str],
+    new_id: int,
+) -> dict:
+    """Deep-copy a panel and substitute ``$var`` references in its
+    title and target expressions. ``gridPos`` is preserved verbatim
+    here; the caller is responsible for repositioning the clones."""
+    clone = copy.deepcopy(panel)
+    clone["id"] = new_id
+    clone.pop("repeat", None)
+    clone.pop("repeatDirection", None)
+    clone.pop("repeatPanelId", None)
+
+    if "title" in clone:
+        clone["title"] = _substitute_grafana_variables(
+            str(clone.get("title") or ""), substitutions
+        )
+
+    targets = clone.get("targets")
+    if isinstance(targets, list):
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            if "expr" in target and isinstance(target["expr"], str):
+                target["expr"] = _substitute_grafana_variables(
+                    target["expr"], substitutions
+                )
+            if "query" in target and isinstance(target["query"], str):
+                target["query"] = _substitute_grafana_variables(
+                    target["query"], substitutions
+                )
+    return clone
+
+
+def _expand_repeat_panels(
+    dashboard: dict,
+    result: MigrationResult,
+) -> dict:
+    """L4: fan out ``repeat: $var`` panels into one clone per resolved
+    variable value, returning a new dashboard with the expansion in
+    place of the templates.
+
+    The pass runs before :func:`_build_section_groups`, so downstream
+    layout / translation logic sees ordinary, distinct panels rather
+    than the original templates. Sections / rows / legacy
+    ``dashboard.rows[]`` panel arrays are all handled by walking the
+    same shape recursively.
+
+    Cap behaviour: panels whose variable resolves to more than
+    :data:`L4_REPEAT_EXPANSION_CAP` values produce the first
+    ``L4_REPEAT_EXPANSION_CAP`` clones and a ``skipped`` PanelResult
+    warning so the operator can spot the dropped dimension.
+
+    Unresolvable variables (query vars without cached options /
+    current) leave the original panel in place and record a
+    ``skipped`` warning so the lost ``repeat`` dimension is visible.
+    """
+    variables = {
+        v.get("name", ""): v
+        for v in (dashboard.get("templating", {}).get("list") or [])
+        if isinstance(v, dict) and v.get("name")
+    }
+    if not variables:
+        # No variables -> no repeats can resolve; cheap-skip.
+        return dashboard
+
+    # Find the maximum existing panel id so synthesised ids never
+    # collide with author-supplied ids.
+    max_id = 0
+    for panel in _flatten_dashboard_panels(dashboard):
+        pid = panel.get("id")
+        if isinstance(pid, int) and pid > max_id:
+            max_id = pid
+
+    next_id = [max_id + 1]
+
+    def expand_panels(panel_list: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for panel in panel_list:
+            if not isinstance(panel, dict):
+                out.append(panel)
+                continue
+
+            # Recurse into row containers first so any repeats nested
+            # in a collapsed row are also expanded.
+            if panel.get("type") == "row" and panel.get("panels"):
+                new_panel = dict(panel)
+                new_panel["panels"] = expand_panels(panel["panels"])
+                out.append(new_panel)
+                continue
+
+            repeat_name = _repeat_variable_name(panel.get("repeat"))
+            if not repeat_name or repeat_name not in variables:
+                out.append(panel)
+                continue
+
+            values, _source = _resolve_variable_values(variables[repeat_name])
+            if not values:
+                # Variable can't be resolved at translation time;
+                # keep the original single panel (downstream control
+                # logic in ``translate_variables`` will collapse the
+                # repeat dimension into a single-select control as a
+                # best-effort fallback) and emit a warning so the
+                # operator knows the repeat dimension wasn't fanned
+                # out.
+                warn_result = PanelResult(
+                    str(panel.get("title") or panel.get("type") or "panel"),
+                    str(panel.get("type") or ""),
+                    "skipped",
+                    "skipped",
+                    1.0,
+                )
+                warn_result.warnings = [
+                    f"Could not resolve repeat variable ${repeat_name}; "
+                    f"the dashboard's templating doesn't expose its values "
+                    f"(no options[] or current cached). The repeat "
+                    f"dimension is lost; consider adding explicit options "
+                    f"to the variable definition.",
+                ]
+                result.panel_results.append(warn_result)
+                result.skipped += 1
+                # Preserve the original panel unchanged so the
+                # existing decorative-header / control-collapse paths
+                # downstream still recognise it.
+                out.append(panel)
+                continue
+
+            capped_values = values[:L4_REPEAT_EXPANSION_CAP]
+            if len(values) > L4_REPEAT_EXPANSION_CAP:
+                warn_result = PanelResult(
+                    str(panel.get("title") or panel.get("type") or "panel"),
+                    str(panel.get("type") or ""),
+                    "skipped",
+                    "skipped",
+                    1.0,
+                )
+                warn_result.warnings = [
+                    f"Repeat variable ${repeat_name} has {len(values)} "
+                    f"values; capped expansion to the first "
+                    f"{L4_REPEAT_EXPANSION_CAP} to prevent dashboard "
+                    f"explosion. Add a dashboard control filter to "
+                    f"select among the remaining "
+                    f"{len(values) - L4_REPEAT_EXPANSION_CAP} values.",
+                ]
+                result.panel_results.append(warn_result)
+                result.skipped += 1
+
+            direction = str(panel.get("repeatDirection") or "v").lower()
+            origin = panel.get("gridPos") or {}
+            base_x = int(origin.get("x", 0) or 0)
+            base_y = int(origin.get("y", 0) or 0)
+            base_w = int(origin.get("w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS)
+            base_h = int(origin.get("h", 4) or 4)
+
+            for idx, value in enumerate(capped_values):
+                subs = {repeat_name: str(value)}
+                clone = _clone_panel_with_substitutions(panel, subs, next_id[0])
+                next_id[0] += 1
+                if direction == "h":
+                    # Lay out horizontally, wrapping at the 24-col
+                    # Grafana grid. Each clone keeps the source
+                    # gridPos width and height.
+                    cols_per_row = max(1, GRAFANA_GRID_COLS // base_w)
+                    row_offset = idx // cols_per_row
+                    col_offset = idx % cols_per_row
+                    gpos = {
+                        "x": base_x + col_offset * base_w,
+                        "y": base_y + row_offset * base_h,
+                        "w": base_w,
+                        "h": base_h,
+                    }
+                else:
+                    # Vertical (default): stack top-to-bottom.
+                    gpos = {
+                        "x": base_x,
+                        "y": base_y + idx * base_h,
+                        "w": base_w,
+                        "h": base_h,
+                    }
+                clone["gridPos"] = gpos
+                out.append(clone)
+        return out
+
+    expanded = dict(dashboard)
+    if dashboard.get("panels"):
+        expanded["panels"] = expand_panels(dashboard["panels"])
+    if dashboard.get("rows"):
+        new_rows = []
+        for row in dashboard["rows"]:
+            new_row = dict(row)
+            new_row["panels"] = expand_panels(row.get("panels") or [])
+            new_rows.append(new_row)
+        expanded["rows"] = new_rows
+    return expanded
 
 
 def _collect_repeat_variable_names(dashboard):
@@ -3292,9 +3629,18 @@ def _is_decorative_repeat_header_panel(panel):
 
 
 def _is_placeholder_section_title(title):
+    """True for Grafana's stock "untitled row" placeholders.
+
+    L3 deliberately *excludes* the truly-empty case from this check:
+    an empty row title means "the author didn't bother labelling
+    this row", which L3 handles by synthesising a numbered section
+    title rather than flattening. The stock placeholder strings
+    (``Title``, ``New Row``, ``Row``) DO indicate "this is just
+    Grafana's default, please flatten".
+    """
     cleaned = clean_template_variables(str(title or "")).strip()
     if not cleaned:
-        return True
+        return False
     return cleaned.casefold() in _PLACEHOLDER_SECTION_TITLES
 
 
@@ -3336,20 +3682,31 @@ def _normalize_panel_group(row_title, group_panels):
 
     cleaned_title = clean_template_variables(str(row_title or "")).strip() or None
     legacy_row = any(bool(panel.get("_legacy_row")) for panel in group_panels)
-    should_flatten = cleaned_title is None
+
+    # ``force_flatten`` is only True when there is a positive reason
+    # to drop the section wrapper (placeholder row title, legacy
+    # single-panel row, or a section whose only child has the same
+    # title as the section). A *missing* row title alone is NOT a
+    # reason -- L3 wants to wrap untitled explicit rows in
+    # synthesised-title sections, not flatten them.
+    force_flatten = False
     if _is_placeholder_section_title(row_title) or (legacy_row and len(retained_panels) <= 1):
-        should_flatten = True
+        force_flatten = True
     elif len(retained_panels) == 1 and cleaned_title:
         child_title = clean_template_variables(str(retained_panels[0].get("title") or "")).strip()
         if not child_title:
             child_title = str(retained_panels[0].get("title") or "").strip()
         if child_title and child_title.casefold() == cleaned_title.casefold():
-            should_flatten = True
+            force_flatten = True
 
+    # ``title is None`` still signals "no source title" to callers
+    # that don't read force_flatten; they decide whether to synthesise
+    # one based on whether the group came from an explicit row.
     return NormalizedPanelGroup(
-        title=None if should_flatten else cleaned_title,
+        title=None if force_flatten else cleaned_title,
         panels=retained_panels,
         skipped_panel_results=skipped_panel_results,
+        force_flatten=force_flatten,
     )
 
 
@@ -3409,12 +3766,230 @@ def _apply_kibana_native_layout(yaml_panels):
 
     Uses the ``_grafana_row_y`` / ``_grafana_row_x`` metadata tags set during
     translation to detect which panels belong to the same visual row, then
-    distributes them evenly across the 48-column Kibana grid with
+    distributes them across the 48-column Kibana grid with
     type-appropriate heights.
+
+    **L1 universal layout (the "faithful coordinate transform")**: when
+    every panel carries the original Grafana geometry
+    (``_grafana_w`` and ``_grafana_h`` are both set) we scale each
+    panel's ``(x, y, w, h)`` independently and shift the whole group
+    so the topmost panel sits at Kibana y=0. This preserves the
+    *relative* vertical spacing that the Grafana author chose
+    (a 9-row gap stays a ~14-row gap in Kibana after the 30/20 row
+    scale), instead of stacking every Grafana y-band sequentially
+    with a cumulative y-cursor.
+
+    Scale factors:
+
+    * Column scale = ``KIBANA_GRID_COLS / GRAFANA_GRID_COLS = 48/24 = 2``
+    * Row scale    = ``GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX = 30/20 = 1.5``
+
+    When some panels lack original geometry (legacy schema 14 row
+    panels, dashboards built before this metadata was tagged) we fall
+    back to the even-distribution path which keeps panels sequential
+    with a y-cursor. This is the "best effort" branch and will go
+    away with L3 (row-aware sectioning).
     """
     if not yaml_panels:
         return yaml_panels
 
+    has_original_geometry = all(
+        panel.get("_grafana_w") is not None
+        and panel.get("_grafana_h") is not None
+        for panel in yaml_panels
+    )
+
+    if has_original_geometry:
+        _apply_faithful_coordinate_transform(yaml_panels)
+    else:
+        _apply_even_distribution_fallback(yaml_panels)
+
+    for panel in yaml_panels:
+        panel.pop("_grafana_row_y", None)
+        panel.pop("_grafana_row_x", None)
+        panel.pop("_grafana_w", None)
+        panel.pop("_grafana_h", None)
+
+    # L2 (collision-aware): apply per-type minimums **without**
+    # breaking the 2D grid the source author authored. If bumping a
+    # panel's w or h to its L2 minimum would overlap another panel
+    # in this group, prefer the smaller dimension (the author's
+    # intent) over the readability floor.
+    _apply_collision_aware_minimums(yaml_panels)
+
+    return yaml_panels
+
+
+def _rect(panel: dict) -> tuple[int, int, int, int]:
+    """Return ``(x, y, w, h)`` from a panel's position/size dicts.
+
+    Defaults to (0, 0, 0, 0) for missing fields so callers can
+    short-circuit on zero-sized panels.
+    """
+    pos = panel.get("position", {}) or {}
+    sz = panel.get("size", {}) or {}
+    return (
+        int(pos.get("x", 0) or 0),
+        int(pos.get("y", 0) or 0),
+        int(sz.get("w", 0) or 0),
+        int(sz.get("h", 0) or 0),
+    )
+
+
+def _rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+
+
+def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
+    """L2 with a 2D-grid safety guard.
+
+    For each panel we compute its current ``(x, y, w, h)`` (post-L1)
+    plus the L2 per-type ``(min_w, min_h, max_h)``. We try to grow
+    the panel to those minimums **only when** doing so does not
+    collide with another panel in the same group. If a bump would
+    overlap a neighbour we keep the smaller dimension -- the source
+    author chose those dimensions for a reason (typically because
+    the panel sits in a 2D grid beside taller panels).
+
+    Specifically the algorithm walks panels in **document order**
+    (so earlier panels get the first crack at the readability bump)
+    and treats already-bumped neighbours as fixed obstacles.
+
+    ``max_h`` clamps always apply because shrinking a panel cannot
+    create new overlaps.
+    """
+    for idx, panel in enumerate(yaml_panels):
+        kibana_type = _kibana_panel_type(panel)
+        esql_cfg = panel.get("esql")
+        if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+            effective_type = str(esql_cfg["type"])
+        elif "markdown" in panel:
+            effective_type = "markdown"
+        else:
+            effective_type = str(kibana_type or "")
+
+        constraints = _TYPE_SIZE_CONSTRAINTS.get(effective_type)
+        if constraints is None:
+            # Apply legacy single-rule clamps and the position-clamp
+            # via the standard helper for unknown types.
+            _normalize_tile_size(panel, kibana_type)
+            continue
+
+        min_w, min_h, max_h = constraints
+        x, y, w, h = _rect(panel)
+        if w <= 0 or h <= 0:
+            _normalize_tile_size(panel, kibana_type)
+            continue
+
+        # Max-h always applies (shrinking never creates overlap).
+        if max_h is not None and h > max_h:
+            h = max_h
+
+        # Try to bump width to min_w. Reject if it would overlap any
+        # other panel in this group.
+        if w < min_w:
+            candidate = (x, y, min_w, h)
+            collides = any(
+                i != idx and _rects_overlap(candidate, _rect(other))
+                for i, other in enumerate(yaml_panels)
+            )
+            if not collides:
+                w = min_w
+
+        # Try to bump height to min_h. Same collision check.
+        if h < min_h:
+            candidate = (x, y, w, min_h)
+            collides = any(
+                i != idx and _rects_overlap(candidate, _rect(other))
+                for i, other in enumerate(yaml_panels)
+            )
+            if not collides:
+                h = min_h
+
+        panel["size"] = {"w": w, "h": h}
+        # Re-apply the legacy x-clamp + grid-overflow guard.
+        position = dict(panel.get("position", {}))
+        max_x = KIBANA_GRID_COLS - w
+        if max_x < 0:
+            max_x = 0
+        position["x"] = min(int(position.get("x", 0) or 0), max_x)
+        panel["position"] = position
+
+
+def _apply_faithful_coordinate_transform(yaml_panels):
+    """L1: scale each panel's Grafana coords independently and shift
+    the group so the topmost panel sits at Kibana y=0.
+
+    See :func:`_apply_kibana_native_layout` for the rationale and
+    scale factors. This function assumes every panel has
+    ``_grafana_w`` and ``_grafana_h``; callers route to
+    :func:`_apply_even_distribution_fallback` otherwise.
+
+    Edge alignment: rather than scaling ``y`` and ``h`` independently
+    (which lets rounding errors introduce 1-row overlaps between
+    panels that are exactly touching in Grafana, eg.
+    ``y=25,h=6`` immediately followed by ``y=31,h=4``), we scale
+    the *top* and the *bottom* of each panel and derive the height
+    from their difference. This guarantees that touching Grafana
+    panels remain touching (not overlapping) in Kibana, which the
+    downstream ``kb-dashboard-cli`` compile step refuses.
+
+    We use round-half-up (``int(x + 0.5)``) instead of Python's
+    default banker's rounding (``round(0.5) == 0``). Banker's rounding
+    silently strips half-rows from panel heights when the scaled
+    bottom edge lands on ``.5``, which over time eats into the
+    minimum tile heights downstream code assumes.
+    """
+    col_scale = KIBANA_GRID_COLS / GRAFANA_GRID_COLS
+    row_scale = GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX
+
+    def half_up(value: float) -> int:
+        return int(value + 0.5)
+
+    # First pass: compute every panel's absolute Kibana coords and
+    # remember the minimum scaled y so we can normalise.
+    scaled: list[tuple[dict, int, int, int, int]] = []
+    min_y = None
+    for panel in yaml_panels:
+        gy = int(panel.get("_grafana_row_y", 0) or 0)
+        gx = int(panel.get("_grafana_row_x", 0) or 0)
+        raw_w = int(
+            panel.get("_grafana_w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS
+        )
+        raw_h = int(
+            panel.get("_grafana_h", KIBANA_DEFAULT_HEIGHT)
+            or KIBANA_DEFAULT_HEIGHT
+        )
+        # Scale the right and bottom edges, then derive width/height
+        # from the difference so adjacent panels stay adjacent.
+        kx = half_up(gx * col_scale)
+        kx_right = half_up((gx + raw_w) * col_scale)
+        ky = half_up(gy * row_scale)
+        ky_bottom = half_up((gy + raw_h) * row_scale)
+        kw = max(1, kx_right - kx)
+        kh = max(1, ky_bottom - ky)
+        scaled.append((panel, kx, ky, kw, kh))
+        if min_y is None or ky < min_y:
+            min_y = ky
+
+    shift_y = -(min_y or 0)
+    for panel, kx, ky, kw, kh in scaled:
+        panel["size"] = {"w": kw, "h": kh}
+        panel["position"] = {"x": kx, "y": ky + shift_y}
+
+
+def _apply_even_distribution_fallback(yaml_panels):
+    """Best-effort layout for panels without original Grafana
+    geometry. Groups by ``_grafana_row_y`` and distributes each band's
+    panels evenly across the 48-col grid, stacking bands with a
+    y-cursor.
+
+    This is the only path that still uses cumulative y-cursor banding;
+    L3 (row-aware sectioning) is expected to eliminate the need for
+    this branch by always tagging panels with original geometry.
+    """
     rows: dict[int, list[dict]] = {}
     for panel in yaml_panels:
         gy = panel.get("_grafana_row_y", 0)
@@ -3424,48 +3999,20 @@ def _apply_kibana_native_layout(yaml_panels):
     for grafana_y in sorted(rows):
         row_panels = rows[grafana_y]
         row_panels.sort(key=lambda p: p.get("_grafana_row_x", 0))
-        has_original_geometry = all(
-            panel.get("_grafana_w") is not None and panel.get("_grafana_h") is not None
-            for panel in row_panels
+        n = len(row_panels)
+        row_height = max(
+            KIBANA_TYPE_HEIGHT.get(_kibana_panel_type(p), KIBANA_DEFAULT_HEIGHT)
+            for p in row_panels
         )
-
-        if has_original_geometry:
-            col_scale = KIBANA_GRID_COLS / GRAFANA_GRID_COLS
-            row_scale = GRAFANA_ROW_HEIGHT_PX / KIBANA_ROW_HEIGHT_PX
-            row_height = 0
-            for panel in row_panels:
-                raw_w = int(panel.get("_grafana_w", GRAFANA_GRID_COLS) or GRAFANA_GRID_COLS)
-                raw_h = int(panel.get("_grafana_h", KIBANA_DEFAULT_HEIGHT) or KIBANA_DEFAULT_HEIGHT)
-                pw = max(1, round(raw_w * col_scale))
-                ph = max(1, math.ceil(raw_h * row_scale))
-                px = round(int(panel.get("_grafana_row_x", 0) or 0) * col_scale)
-                panel["size"] = {"w": pw, "h": ph}
-                panel["position"] = {"x": px, "y": y_cursor}
-                row_height = max(row_height, ph)
-        else:
-            n = len(row_panels)
-            row_height = max(
-                KIBANA_TYPE_HEIGHT.get(_kibana_panel_type(p), KIBANA_DEFAULT_HEIGHT)
-                for p in row_panels
-            )
-            base_w = KIBANA_GRID_COLS // n
-            remainder = KIBANA_GRID_COLS - base_w * n
-            x_cursor = 0
-            for i, panel in enumerate(row_panels):
-                pw = base_w + (1 if i < remainder else 0)
-                panel["size"] = {"w": pw, "h": row_height}
-                panel["position"] = {"x": x_cursor, "y": y_cursor}
-                x_cursor += pw
+        base_w = KIBANA_GRID_COLS // n
+        remainder = KIBANA_GRID_COLS - base_w * n
+        x_cursor = 0
+        for i, panel in enumerate(row_panels):
+            pw = base_w + (1 if i < remainder else 0)
+            panel["size"] = {"w": pw, "h": row_height}
+            panel["position"] = {"x": x_cursor, "y": y_cursor}
+            x_cursor += pw
         y_cursor += row_height
-
-    for panel in yaml_panels:
-        panel.pop("_grafana_row_y", None)
-        panel.pop("_grafana_row_x", None)
-        panel.pop("_grafana_w", None)
-        panel.pop("_grafana_h", None)
-        _normalize_tile_size(panel, _kibana_panel_type(panel))
-
-    return yaml_panels
 
 
 def _panel_bounds(yaml_panel):
@@ -3482,6 +4029,44 @@ def _panels_overlap(left, right):
     lx, ly, lw, lh = _panel_bounds(left)
     rx, ry, rw, rh = _panel_bounds(right)
     return lx < rx + rw and lx + lw > rx and ly < ry + rh and ly + lh > ry
+
+
+def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:
+    """Walk the panel tree, calling :func:`_resolve_panel_overlaps` on
+    every section's leaf-panel list (and on the top-level non-section
+    panels) in place.
+
+    Each section's coordinate space is independent (panels inside a
+    section are positioned relative to that section in Kibana), so we
+    resolve overlaps **within** each section, not across sections.
+    """
+    section_groups: list[list[dict]] = []
+    top_leaves: list[dict] = []
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            inner = section.get("panels")
+            if isinstance(inner, list) and inner:
+                section_groups.append(inner)
+        else:
+            top_leaves.append(panel)
+
+    for group in section_groups:
+        resolved = _resolve_panel_overlaps(group)
+        # ``_resolve_panel_overlaps`` returns a new list of dicts in
+        # the original order, but the dicts themselves are shallow
+        # copies. Patch position/size back into the originals so the
+        # caller's list (which is the actual YAML doc tree) sees the
+        # change.
+        for src, dst in zip(resolved, group):
+            dst["position"] = src["position"]
+            dst["size"] = src["size"]
+
+    if top_leaves:
+        resolved = _resolve_panel_overlaps(top_leaves)
+        for src, dst in zip(resolved, top_leaves):
+            dst["position"] = src["position"]
+            dst["size"] = src["size"]
 
 
 def _resolve_panel_overlaps(yaml_panels):
@@ -3589,6 +4174,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         inventory=build_dashboard_inventory(dashboard),
     )
 
+    # L4: expand ``repeat: $var`` panels into one concrete clone per
+    # resolved variable value BEFORE any downstream logic walks the
+    # panels. From here on every panel in ``dashboard`` is a regular
+    # (non-templated) panel and the rest of the pipeline can stay
+    # ignorant of the fan-out.
+    dashboard = _expand_repeat_panels(dashboard, result)
+
     all_panels = _flatten_dashboard_panels(dashboard)
     result.total_panels = len(all_panels)
 
@@ -3609,7 +4201,8 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             result.skipped += 1
 
     used_section_titles: dict[str, int] = {}
-    for row_title, group_panels in section_groups:
+    untitled_section_counter = 0
+    for row_title, group_panels, is_explicit_row in section_groups:
         normalized_group = _normalize_panel_group(row_title, group_panels)
         legacy_group = any(bool(panel.get("_legacy_row")) for panel in group_panels)
         for panel_result in normalized_group.skipped_panel_results:
@@ -3644,8 +4237,29 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         if legacy_group and normalized_group.title is None:
             _restore_flattened_legacy_panel_titles(translated)
         group_height = _panel_group_height(translated)
-        if normalized_group.title:
-            cleaned = clean_template_variables(normalized_group.title) or normalized_group.title
+
+        # L3: every explicit Grafana row container becomes a Kibana
+        # section, even when the source row had no title. Synthesise
+        # a fallback title in that case so each section gets a
+        # unique, human-readable label. Panels before any row stay
+        # flat at the top level.
+        #
+        # The pre-existing ``_normalize_panel_group`` flattening
+        # heuristic (legacy single-panel rows, placeholder titles
+        # like "New Row") wins over L3 -- it knows when a section
+        # would be visual clutter, and we don't want to undo that.
+        should_emit_section = (
+            bool(normalized_group.title) or is_explicit_row
+        ) and not normalized_group.force_flatten
+        if should_emit_section:
+            if normalized_group.title:
+                cleaned = (
+                    clean_template_variables(normalized_group.title)
+                    or normalized_group.title
+                )
+            else:
+                untitled_section_counter += 1
+                cleaned = f"Section {untitled_section_counter}"
             count = used_section_titles.get(cleaned, 0) + 1
             used_section_titles[cleaned] = count
             unique_title = f"{cleaned} ({count})" if count > 1 else cleaned
@@ -3701,6 +4315,19 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         yaml_doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(yaml_doc)
+
+    # Safety net: ``apply_style_guide_layout`` (specifically
+    # ``_fill_simple_row``) can rescale a row's widths to total
+    # exactly 48 columns, which sometimes nudges panels by 1-2 cols
+    # and pushes them into a neighbouring 2D-grid panel below.
+    # ``_resolve_panel_overlaps`` walks the post-layout panel list
+    # in (y, x) order and bumps any overlapping panel's y down to
+    # the bottom of its conflicting neighbours. This keeps L2's
+    # per-type minimums (which sometimes widen panels) from being
+    # punished by the downstream ``kb-dashboard-cli`` compile step,
+    # which rejects any overlap.
+    for dashboard in yaml_doc.get("dashboards") or []:
+        _resolve_section_overlaps_recursively(dashboard.get("panels") or [])
 
     safe_name = _dashboard_output_stem(title)
     output_path = Path(output_dir) / f"{safe_name}.yaml"

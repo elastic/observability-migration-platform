@@ -12,7 +12,7 @@ import json
 import math
 import random
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 RequestFn = Callable[[str, str, Any | None, str], dict[str, Any]]
@@ -56,12 +56,15 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     routing_path: list[str] = []
 
     fields = stream.get("fields") or {}
+    _dotted_prefixes = _dotted_field_prefixes(fields)
     for field_name, info in sorted(fields.items()):
         if field_name.startswith("data_stream.") or field_name in props:
             continue
+        if "." not in field_name and field_name in _dotted_prefixes:
+            continue  # skip flat field whose name is also a dotted-child prefix
         if info.get("role") == "metric":
             props[field_name] = {"type": "double"}
-            if is_metrics and info.get("requires_native_promql"):
+            if is_metrics:
                 props[field_name]["time_series_metric"] = (
                     "counter" if info.get("metric_kind") == "counter" else "gauge"
                 )
@@ -74,6 +77,8 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     for field_name in _generated_dimension_fields(stream):
         if field_name.startswith("data_stream.") or field_name in props:
             continue
+        if "." not in field_name and field_name in _dotted_prefixes:
+            continue  # skip flat field that conflicts with dotted children
         if is_metrics:
             props[field_name] = {"type": "keyword", "time_series_dimension": True}
             routing_path.append(field_name)
@@ -205,6 +210,15 @@ def ingest_documents(
     return summary
 
 
+def _dotted_field_prefixes(field_names: Iterable[str]) -> set[str]:
+    """Return the set of bare-name prefixes that have at least one dotted child."""
+    return {
+        name.split(".", 1)[0]
+        for name in field_names
+        if "." in name and not name.startswith("data_stream.")
+    }
+
+
 def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) -> list[dict[str, str]]:
     fields = {
         field_name: info
@@ -221,14 +235,22 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
     control_fields = stream.get("control_fields") or []
     group_fields = stream.get("group_fields") or []
     value_options: dict[str, list[str]] = {}
-    dimension_names = (
+    all_names = (
         set(fields)
         | set(required_values)
         | set(required_patterns)
         | set(control_fields)
         | set(group_fields)
     ) - metric_fields
-    dimension_names = {field_name for field_name in dimension_names if not field_name.startswith("data_stream.")}
+    # Exclude flat names that have dotted children — they would conflict with
+    # the object mapping created by the dotted field (e.g. "container" conflicts
+    # with "container.name").
+    dotted_prefixes = _dotted_field_prefixes(all_names)
+    dimension_names = {
+        n for n in all_names
+        if not n.startswith("data_stream.")
+        and not ("." not in n and n in dotted_prefixes)
+    }
     for field_name in sorted(dimension_names):
         values = list(required_values.get(field_name) or [])
         values.extend(_expand_patterns(field_name, required_patterns.get(field_name) or []))
@@ -425,6 +447,8 @@ def _look_back_time(stream: dict[str, Any]) -> str:
         int(stream.get("_lookback_seconds") or 0),
         _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
     )
+    # ES hard cap: index.look_back_time max is 7d (docs.elastic.co/reference/elasticsearch/index-settings/time-series).
+    # Anything above 7d is rejected by Elasticsearch at index creation time.
     seconds = min(seconds, 7 * 24 * 60 * 60)
     days = max(1, math.ceil(seconds / (24 * 60 * 60)))
     return f"{days}d"

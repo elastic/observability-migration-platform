@@ -1,0 +1,113 @@
+{
+  "grafana_uid": "diverse-panel-test",
+  "kibana_dashboard_id": "83c04e9f-1921-4474-1b12-88a7f91b3977",
+  "panels": [
+    {
+      "title": "Active Alerts",
+      "grafana_panel_id": 9,
+      "kibana_panel_id": "65c8b0ae-b0f3-92f8-7f3e-be66008cf306",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/active-alerts.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/active-alerts.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/active-alerts.png",
+      "diff_score": 0.5078734293760832,
+      "notes": []
+    },
+    {
+      "title": "Application Logs",
+      "grafana_panel_id": 11,
+      "kibana_panel_id": "548561de-bcee-8605-6a5c-196bb512f820",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/application-logs.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/application-logs.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/application-logs.png",
+      "diff_score": 0.5078734293760832,
+      "notes": []
+    },
+    {
+      "title": "CPU Usage",
+      "grafana_panel_id": 5,
+      "kibana_panel_id": "531d7598-44aa-cfa9-94fa-c6ae11a34660",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/cpu-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/cpu-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/cpu-usage.png",
+      "diff_score": 0.5209055459272097,
+      "notes": []
+    },
+    {
+      "title": "Disk Usage per Mount",
+      "grafana_panel_id": 8,
+      "kibana_panel_id": "5339c4b5-c507-ffae-c36e-911c0376da9f",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/disk-usage-per-mount.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/disk-usage-per-mount.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/disk-usage-per-mount.png",
+      "diff_score": 0.5749620883882149,
+      "notes": []
+    },
+    {
+      "title": "Memory Usage",
+      "grafana_panel_id": 6,
+      "kibana_panel_id": "f683e944-91e1-a57e-c47f-7a89c8c96c82",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/memory-usage.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/memory-usage.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/memory-usage.png",
+      "diff_score": 0.5413981260831889,
+      "notes": []
+    },
+    {
+      "title": "Notes",
+      "grafana_panel_id": 10,
+      "kibana_panel_id": "9cda61ad-077d-a289-121f-86071c66a30f",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/notes.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/notes.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/notes.png",
+      "diff_score": 0.5149006174176777,
+      "notes": []
+    },
+    {
+      "title": "Request Latency Heatmap",
+      "grafana_panel_id": 1,
+      "kibana_panel_id": "d2254e9c-e12b-4421-4913-95d67870cfe1",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/request-latency-heatmap.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/request-latency-heatmap.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/request-latency-heatmap.png",
+      "diff_score": 0.7408402837954939,
+      "notes": []
+    },
+    {
+      "title": "Top Endpoints",
+      "grafana_panel_id": 3,
+      "kibana_panel_id": "addee594-d560-f75f-3ece-d3763d0c3adc",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/top-endpoints.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/top-endpoints.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/top-endpoints.png",
+      "diff_score": 0.7879562933275563,
+      "notes": []
+    },
+    {
+      "title": "Traffic Distribution",
+      "grafana_panel_id": 2,
+      "kibana_panel_id": "36a24c85-268f-3124-4f61-94859fce60fd",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/traffic-distribution.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/traffic-distribution.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/traffic-distribution.png",
+      "diff_score": 0.5674312175043328,
+      "notes": []
+    },
+    {
+      "title": "Uptime",
+      "grafana_panel_id": 7,
+      "kibana_panel_id": "1bcbc28e-ecc7-1f6c-a398-21430b04bdd1",
+      "grafana_screenshot": "/tmp/visual-rig/diverse-panels-test/grafana/uptime.png",
+      "kibana_screenshot": "/tmp/visual-rig/diverse-panels-test/kibana/uptime.png",
+      "diff_screenshot": "/tmp/visual-rig/diverse-panels-test/diffs/uptime.png",
+      "diff_score": 0.8616280329289429,
+      "notes": []
+    }
+  ],
+  "unpaired_grafana": [],
+  "unpaired_kibana": [],
+  "median_score": 0.5544146717937608,
+  "p95_score": 0.8616280329289429,
+  "max_score": 0.8616280329289429,
+  "captured_pairs": 10,
+  "skipped_pairs": 0
+}

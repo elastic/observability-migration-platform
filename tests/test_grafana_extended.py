@@ -998,7 +998,7 @@ class TestRuleEngine(unittest.TestCase):
         }
         self.assertTrue(resolver.is_counter("node_scrape_collector_duration_seconds"))
 
-    def test_schema_marked_counter_uses_rate_for_simple_metric(self):
+    def test_schema_marked_counter_uses_last_over_time_for_simple_metric(self):
         rp = rules.RulePackConfig()
         resolver = schema.SchemaResolver(rp)
         resolver._discovery_attempted = True
@@ -1012,8 +1012,9 @@ class TestRuleEngine(unittest.TestCase):
         }
         ctx = _translate("node_scrape_collector_duration_seconds", resolver=resolver)
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("RATE(node_scrape_collector_duration_seconds", ctx.esql_query)
-        self.assertTrue(any("Detected counter metric" in warning for warning in ctx.warnings))
+        self.assertIn("LAST_OVER_TIME(node_scrape_collector_duration_seconds", ctx.esql_query)
+        self.assertNotIn("RATE(node_scrape_collector_duration_seconds", ctx.esql_query)
+        self.assertTrue(any("LAST_OVER_TIME" in warning for warning in ctx.warnings))
 
 
 # =========================================================================

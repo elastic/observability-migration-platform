@@ -3,6 +3,11 @@
 
 import unittest
 
+import pytest
+
+from observability_migration.adapters.source.grafana.promql import (
+    _gauge_fallback_for_counter_range_func,
+)
 from observability_migration.adapters.source.grafana.semantic_planner import (
     RuntimeCapabilities,
     plan_grafana_metric_contract,
@@ -94,3 +99,14 @@ class TestGrafanaSemanticPlanner(unittest.TestCase):
         )
 
         self.assertEqual(contract.canonical_target, "from")
+
+
+def test_gauge_fallback_known_funcs():
+    for fn in ("rate", "irate", "increase"):
+        result = _gauge_fallback_for_counter_range_func(fn)
+        assert isinstance(result, tuple) and len(result) == 2
+
+
+def test_gauge_fallback_unknown_func_raises_value_error():
+    with pytest.raises(ValueError, match="no gauge fallback"):
+        _gauge_fallback_for_counter_range_func("delta")

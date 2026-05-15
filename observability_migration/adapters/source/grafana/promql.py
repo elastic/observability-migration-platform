@@ -101,7 +101,13 @@ def _gauge_fallback_for_counter_range_func(range_func):
     applied to a field that the target cluster has typed as a gauge.
     The warning template contains a ``{metric}`` placeholder for the
     caller to substitute the source metric name."""
-    return _COUNTER_TO_GAUGE_FALLBACK[range_func]
+    result = _COUNTER_TO_GAUGE_FALLBACK.get(range_func)
+    if result is None:
+        raise ValueError(
+            f"no gauge fallback for range function {range_func!r}; "
+            f"expected one of {sorted(_COUNTER_TO_GAUGE_FALLBACK)}"
+        )
+    return result
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
@@ -525,6 +531,30 @@ def _sanitize_promql_labels_for_ast(expr):
     return sanitized, {safe: original for original, safe in replacements.items()}
 
 
+def _le_float_alt(value: str) -> str | None:
+    """Return the ".0" float alternative for an integer-string histogram boundary.
+
+    Some Prometheus exporters (e.g. express-prometheus-middleware) store the
+    histogram `le` label as "1.0" / "10.0" while Grafana dashboards reference
+    them as "1" / "10".  When the value has no decimal point and parses as a
+    non-negative integer we return the float form so callers can emit an OR
+    clause covering both representations.
+    """
+    if "." in value or "e" in value.lower():
+        return None
+    try:
+        f = float(value)
+    except ValueError:
+        return None
+    if not (0 <= f < 1e15) or f != int(f):
+        return None
+    return f"{int(f)}.0"
+
+
+# Labels that use floating-point storage in some Prometheus exporters.
+_FLOAT_LABEL_NAMES = frozenset({"le"})
+
+
 def _matcher_to_esql(matcher, resolver):
     label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
     op = matcher["op"]
@@ -534,6 +564,13 @@ def _matcher_to_esql(matcher, resolver):
     if "$" in value or value.startswith("label_"):
         return None
     if op == "=":
+        if matcher["label"] in _FLOAT_LABEL_NAMES:
+            alt = _le_float_alt(value)
+            if alt is not None:
+                return (
+                    f"({label} == {_quote_esql_string(value)}"
+                    f" OR {label} == {_quote_esql_string(alt)})"
+                )
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
         return f"{label} != {_quote_esql_string(value)}"
@@ -1418,8 +1455,10 @@ def _build_measure_spec(
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
-            stats_expr = f"AVG(RATE({metric_field}, {rule_pack.default_rate_window}))"
-            warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
+            # Bare counter reference: use LAST_OVER_TIME to return the raw cumulative
+            # value per TBUCKET window, matching PromQL instant-vector semantics.
+            stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
+            warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
         elif can_use_direct_ts_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
@@ -1446,8 +1485,10 @@ def _build_measure_spec(
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         if is_counter and frag.outer_agg != "count":
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
-            inner_expr = f"RATE({metric_field}, {rule_pack.default_rate_window})"
-            warnings.append(f"Detected counter metric; defaulting to RATE over {rule_pack.default_rate_window}")
+            # Bare counter aggregation: use LAST_OVER_TIME as inner function so the
+            # outer aggregation operates on raw cumulative values, not rates.
+            inner_expr = f"LAST_OVER_TIME({metric_field})"
+            warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
         else:
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             inner_expr = metric_field

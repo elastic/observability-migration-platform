@@ -104,8 +104,8 @@ class RulePackConfig:
     counter_suffixes: list = field(default_factory=lambda: list(DEFAULT_COUNTER_SUFFIXES))
     default_rate_window: str = "5m"
     default_gauge_agg: str = "AVG"
-    ts_time_filter: str = "@timestamp >= ?_tstart AND @timestamp < ?_tend"
-    from_time_filter: str = "@timestamp >= ?_tstart AND @timestamp < ?_tend"
+    ts_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
+    from_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
     ts_bucket: str = "time_bucket = TBUCKET(5 minute)"
     from_bucket: str = "time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
     logs_index: str = "logs-*"
