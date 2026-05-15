@@ -604,6 +604,54 @@ def render_node_extras_metrics() -> str:
             f'node_arp_entries{{instance="node-1:9100",device="{device}"}} {n}'
         )
 
+    # Synthetic root filesystem mount so the Node Exporter Full
+    # ``Root FS Used`` gauge and ``RootFS Total`` stat render. The
+    # producer's node-exporter container only sees its bind-mounted
+    # overlay paths (``/etc/resolv.conf`` etc.) — not the host's actual
+    # ``/`` mountpoint — so the dashboard's ``mountpoint="/"`` filter
+    # matches nothing. Emit a stable ext4 root mountpoint with realistic
+    # size/avail values; other panels filter on bind-mount paths so
+    # they're unaffected.
+    lines.append("# HELP node_filesystem_size_bytes Filesystem size in bytes")
+    lines.append("# TYPE node_filesystem_size_bytes gauge")
+    lines.append("# HELP node_filesystem_avail_bytes Filesystem space available to non-root users in bytes")
+    lines.append("# TYPE node_filesystem_avail_bytes gauge")
+    lines.append("# HELP node_filesystem_free_bytes Filesystem free space in bytes")
+    lines.append("# TYPE node_filesystem_free_bytes gauge")
+    lines.append("# HELP node_filesystem_files Filesystem total file nodes")
+    lines.append("# TYPE node_filesystem_files gauge")
+    lines.append("# HELP node_filesystem_files_free Filesystem total free file nodes")
+    lines.append("# TYPE node_filesystem_files_free gauge")
+    lines.append("# HELP node_filesystem_readonly Filesystem read-only state")
+    lines.append("# TYPE node_filesystem_readonly gauge")
+    lines.append("# HELP node_filesystem_device_error Filesystem device error indicator")
+    lines.append("# TYPE node_filesystem_device_error gauge")
+    rootfs_total = 256 * 1024 * 1024 * 1024  # 256 GB root partition
+    rootfs_used = 134 * 1024 * 1024 * 1024  # ~52% used
+    rootfs_avail = rootfs_total - rootfs_used
+    rootfs_labels = (
+        'instance="node-1:9100",device="/dev/sda1",fstype="ext4",'
+        'mountpoint="/"'
+    )
+    lines.append(f"node_filesystem_size_bytes{{{rootfs_labels}}} {rootfs_total}")
+    lines.append(f"node_filesystem_avail_bytes{{{rootfs_labels}}} {rootfs_avail}")
+    lines.append(f"node_filesystem_free_bytes{{{rootfs_labels}}} {rootfs_avail}")
+    lines.append(f"node_filesystem_files{{{rootfs_labels}}} 16777216")
+    lines.append(f"node_filesystem_files_free{{{rootfs_labels}}} 16500000")
+    lines.append(f"node_filesystem_readonly{{{rootfs_labels}}} 0")
+    lines.append(f"node_filesystem_device_error{{{rootfs_labels}}} 0")
+    # And a /boot partition for the "Filesystem fill up time" panels
+    # that want a non-root mount too.
+    boot_labels = (
+        'instance="node-1:9100",device="/dev/sda2",fstype="ext4",'
+        'mountpoint="/boot"'
+    )
+    lines.append(f"node_filesystem_size_bytes{{{boot_labels}}} {1024 * 1024 * 1024}")
+    lines.append(f"node_filesystem_avail_bytes{{{boot_labels}}} {800 * 1024 * 1024}")
+    lines.append(f"node_filesystem_free_bytes{{{boot_labels}}} {800 * 1024 * 1024}")
+    lines.append(f"node_filesystem_readonly{{{boot_labels}}} 0")
+    lines.append(f"node_filesystem_device_error{{{boot_labels}}} 0")
+
     # Per-socket current connections. Synthetic but stable; the panel
     # uses these as gauges and shows one bar per socket name.
     lines.append("# HELP node_systemd_socket_current_connections Current systemd socket connections")

@@ -1236,6 +1236,40 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("AVG(ambiguous_gauge)", translated.esql_query)
         self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
 
+    def test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts(self):
+        """When the translator generates a multi-target TS query and then
+        collapses it down to a single per-bucket row for a gauge/stat
+        panel, it must use a null-safe aggregate (not ``LAST``) so values
+        that come from different per-series rows in the same bucket are
+        all captured.
+
+        Surfaced by reviewing the Node Exporter Full "Pressure" bar
+        chart: the panel's three IRATE(...) computations each only emit
+        non-null values on their own metric's row inside a bucket. The
+        previous ``STATS ... = LAST(field, time_bucket)`` collapse
+        picked an arbitrary row, frequently one where the requested
+        field was null, leaving the panel rendering all-null bars."""
+        from observability_migration.adapters.source.grafana.promql import (
+            _collapse_summary_ts_query,
+        )
+        parts = [
+            "TS metrics-*",
+            "| WHERE A IS NOT NULL OR B IS NOT NULL OR C IS NOT NULL",
+            "| STATS A = IRATE(A, 5m), B = IRATE(B, 5m), C = IRATE(C, 5m) "
+            "BY time_bucket = TBUCKET(5 minute)",
+        ]
+        out = _collapse_summary_ts_query(parts, ["time_bucket"], ["A", "B", "C"])
+        self.assertEqual(out, [])
+        collapsed = "\n".join(parts)
+        # Must not use ``LAST(field, time_bucket)`` here because the
+        # upstream rows have one non-null column each. Use a null-safe
+        # aggregate instead.
+        self.assertNotIn("LAST(A, time_bucket)", collapsed)
+        self.assertNotIn("LAST(B, time_bucket)", collapsed)
+        self.assertNotIn("LAST(C, time_bucket)", collapsed)
+        # Must still collapse to one row per time_bucket.
+        self.assertIn("time_bucket = MAX(time_bucket)", collapsed)
+
     def test_native_promql_empty_legendformat_does_not_dump_ts_tuple(self):
         """When a Grafana panel uses native PROMQL and has no
         ``legendFormat`` (or one with no ``{{label}}`` placeholders), the
@@ -2542,7 +2576,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(metric_fields, ["computed_value"])
         breakdown_fields = [b["field"] for b in yaml_panel["esql"]["breakdowns"]]
         self.assertEqual(breakdown_fields, ["service.instance.id"])
-        self.assertIn("LAST(computed_value, time_bucket)", yaml_panel["esql"]["query"])
+        # Null-safe MAX collapse (previously LAST(computed_value, time_bucket));
+        # see ``test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts``.
+        self.assertIn("MAX(computed_value)", yaml_panel["esql"]["query"])
         self.assertNotIn("Hostname", yaml_panel["esql"]["query"])
         self.assertIn("node_memory_MemTotal_bytes", yaml_panel["esql"]["query"])
         self.assertEqual(result.status, "migrated_with_warnings")
@@ -2581,8 +2617,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             ["Uptime", "Memory"],
         )
         self.assertIn('DATE_DIFF("seconds"', yaml_panel["esql"]["query"])
-        self.assertIn("LAST(Uptime, time_bucket)", yaml_panel["esql"]["query"])
-        self.assertIn("LAST(Memory, time_bucket)", yaml_panel["esql"]["query"])
+        # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
+        self.assertIn("MAX(Uptime)", yaml_panel["esql"]["query"])
+        self.assertIn("MAX(Memory)", yaml_panel["esql"]["query"])
 
     def test_table_old_summary_inlines_filter_specific_metrics(self):
         panel = {
@@ -2733,8 +2770,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertIn("BY time_bucket = TBUCKET(5 minute)", translated.esql_query)
         self.assertIn("| SORT time_bucket ASC", translated.esql_query)
+        # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), computed_value = LAST(computed_value, time_bucket)",
+            "| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)",
             translated.esql_query,
         )
         self.assertNotIn("| SORT time_bucket DESC", translated.esql_query)
@@ -2856,8 +2894,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("BY time_bucket = TBUCKET(5 minute)", query)
         self.assertIn("| SORT time_bucket ASC", query)
+        # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_cpu_seconds_total = LAST(node_cpu_seconds_total, time_bucket)",
+            "| STATS time_bucket = MAX(time_bucket), node_cpu_seconds_total = MAX(node_cpu_seconds_total)",
             query,
         )
         self.assertNotIn("| SORT time_bucket DESC", query)

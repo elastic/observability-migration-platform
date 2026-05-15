@@ -1268,8 +1268,18 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
         return None
     group_fields = list(output_group_fields[1:])
+    # Use ``MAX(field)`` instead of ``LAST(field, time_bucket)`` so the
+    # collapse is null-safe across multi-target TS queries. When the
+    # upstream STATS aggregates several metrics with implicit
+    # ``_timeseries`` grouping, each per-series row has one non-null
+    # column and nulls for the other series. ``LAST`` may pick any of
+    # those rows and return null. ``MAX`` ignores nulls, so it returns
+    # the actual measurement. The semantics are identical to ``LAST``
+    # for monotonically-bucketed gauges and stats; this was surfaced by
+    # reviewing the Node Exporter Full "Pressure" bar chart, which had
+    # data in every bucket but rendered all-null bars.
     reduced = ", ".join(
-        f"{field} = LAST({field}, time_bucket)" for field in keep_fields
+        f"{field} = MAX({field})" for field in keep_fields
     )
     if group_fields:
         parts.append("| SORT time_bucket ASC")
