@@ -20,7 +20,10 @@ from typing import Any
 import yaml
 
 from observability_migration.core.reporting.report import _panel_query_index
-from observability_migration.targets.kibana.emit.layout import apply_style_guide_layout
+from observability_migration.targets.kibana.emit.layout import (
+    PANEL_SIZE_CONSTRAINTS,
+    apply_style_guide_layout,
+)
 
 from .display import enrich_panel_display
 from .field_map import FieldMapProfile
@@ -938,26 +941,38 @@ def _estimate_markdown_lines(content: str, width: int) -> int:
 
 
 def _normalize_tile_sizes(panels: list[dict[str, Any]]) -> None:
-    """Enforce minimum sizes per panel type, matching Grafana tool conventions."""
+    """Enforce per-type min/max sizes, matching the shared PANEL_SIZE_CONSTRAINTS table.
+
+    Descends into sections so nested panels get the same treatment.
+    """
     for panel in panels:
-        size = panel.get("size", {})
-        position = panel.get("position", {})
+        section = panel.get("section")
+        if isinstance(section, dict):
+            inner = section.get("panels")
+            if isinstance(inner, list):
+                _normalize_tile_sizes(inner)
+
+        size = panel.setdefault("size", {})
+        position = panel.setdefault("position", {})
         chart_type = _kibana_panel_type(panel)
 
-        h = size.get("h", 12)
+        constraints = PANEL_SIZE_CONSTRAINTS.get(chart_type)
+        if constraints is not None:
+            min_w, min_h, max_h = constraints
+            w = int(size.get("w", 0) or 0)
+            h = int(size.get("h", 0) or 0)
+            if w > 0 and w < min_w:
+                size["w"] = min_w
+            if h > 0 and h < min_h:
+                size["h"] = min_h
+            if max_h is not None and h > max_h:
+                size["h"] = max_h
 
-        if chart_type == "datatable" and h < 12:
-            size["h"] = 12
-
-        max_x = GRID_COLUMNS - size.get("w", 8)
-        if max_x < 0:
-            max_x = 0
-        x = position.get("x", 0)
+        w = int(size.get("w", 8) or 8)
+        max_x = max(0, GRID_COLUMNS - w)
+        x = int(position.get("x", 0) or 0)
         if x > max_x:
             position["x"] = max_x
-
-        panel["size"] = size
-        panel["position"] = position
 
 
 # ---------------------------------------------------------------------------

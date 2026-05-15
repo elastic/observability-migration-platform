@@ -1652,7 +1652,8 @@ class TestYAMLGeneration(unittest.TestCase):
         ]
         dash = self._render_dashboard(widgets)
         left, right = dash["panels"]
-        self.assertEqual(left["size"], {"w": 16, "h": 5})
+        # metric (query_value) min_h=6; line (timeseries) default h=12
+        self.assertEqual(left["size"], {"w": 16, "h": 6})
         self.assertEqual(right["size"], {"w": 32, "h": 12})
         self.assertEqual(left["position"]["y"], right["position"]["y"])
 
@@ -3657,6 +3658,86 @@ class DatadogAssetIsolationTests(unittest.TestCase):
             self.assertEqual(run_summary["alerts"]["artifacts_dir"], str(alerts_dir))
             self.assertTrue((dashboards_dir / "yaml" / "dashboard.yaml").exists())
             self.assertTrue((alerts_dir / "monitor_migration_results.json").exists())
+
+
+class DatadogNormalizeTileSizesTests(unittest.TestCase):
+    """Tests for _normalize_tile_sizes in datadog/generate.py."""
+
+    def _make_panel(self, chart_type: str, w: int, h: int, x: int = 0) -> dict:
+        panel: dict = {"position": {"x": x, "y": 0}, "size": {"w": w, "h": h}}
+        if chart_type == "datatable":
+            panel["lens"] = {"type": "datatable"}
+        elif chart_type == "markdown":
+            panel["markdown"] = {"content": "note"}
+        else:
+            panel["esql"] = {"type": chart_type, "query": "FROM x"}
+        return panel
+
+    def _run(self, panels):
+        from observability_migration.adapters.source.datadog.generate import (
+            _normalize_tile_sizes,
+        )
+        _normalize_tile_sizes(panels)
+
+    def test_gauge_gets_min_height(self):
+        panel = self._make_panel("gauge", w=12, h=4)
+        self._run([panel])
+        self.assertGreaterEqual(panel["size"]["h"], 8)
+
+    def test_metric_gets_min_height(self):
+        panel = self._make_panel("metric", w=12, h=3)
+        self._run([panel])
+        self.assertGreaterEqual(panel["size"]["h"], 6)
+
+    def test_line_gets_min_height(self):
+        panel = self._make_panel("line", w=12, h=2)
+        self._run([panel])
+        self.assertGreaterEqual(panel["size"]["h"], 6)
+
+    def test_datatable_gets_min_width_and_height(self):
+        panel = self._make_panel("datatable", w=6, h=4)
+        self._run([panel])
+        self.assertGreaterEqual(panel["size"]["w"], 12)
+        self.assertGreaterEqual(panel["size"]["h"], 8)
+
+    def test_max_h_capped_for_metric(self):
+        panel = self._make_panel("metric", w=12, h=20)
+        self._run([panel])
+        self.assertLessEqual(panel["size"]["h"], 12)
+
+    def test_panel_already_above_min_unchanged(self):
+        panel = self._make_panel("gauge", w=24, h=16)
+        self._run([panel])
+        self.assertEqual(panel["size"]["w"], 24)
+        self.assertEqual(panel["size"]["h"], 16)
+
+    def test_x_clamped_when_panel_overflows(self):
+        panel = self._make_panel("line", w=24, h=8, x=30)
+        self._run([panel])
+        self.assertLessEqual(panel["position"]["x"] + panel["size"]["w"], 48)
+
+    def test_descends_into_sections(self):
+        inner = self._make_panel("gauge", w=12, h=3)
+        section_panel = {
+            "section": {"title": "S", "panels": [inner]},
+            "position": {},
+            "size": {},
+        }
+        self._run([section_panel])
+        self.assertGreaterEqual(inner["size"]["h"], 8, "section panels must also be normalized")
+
+    def test_all_constrained_types_meet_min_h(self):
+        """Every type in PANEL_SIZE_CONSTRAINTS gets its min_h applied."""
+        from observability_migration.targets.kibana.emit.layout import PANEL_SIZE_CONSTRAINTS
+
+        for vtype, (min_w, min_h, _max_h) in PANEL_SIZE_CONSTRAINTS.items():
+            panel = self._make_panel(vtype, w=max(min_w, 8), h=1)
+            self._run([panel])
+            self.assertGreaterEqual(
+                panel["size"]["h"],
+                min_h,
+                f"type '{vtype}': expected h >= {min_h}, got {panel['size']['h']}",
+            )
 
 
 if __name__ == "__main__":

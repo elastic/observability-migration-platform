@@ -68,6 +68,10 @@ class SchemaResolver:
 
     _PROMETHEUS_LABEL_RE = re.compile(r"^prometheus\.labels\.[A-Za-z_][A-Za-z0-9_]*$")
     _PROMETHEUS_METRIC_LEAF_RE = re.compile(r"^prometheus\.[A-Za-z_][A-Za-z0-9_]*\.(counter|value)$")
+    # Native Elastic /_prometheus/api/v1/write endpoint: metrics land under
+    # `metrics.<name>` and Prometheus labels land under `labels.<name>`.
+    _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
+    _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
 
     def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None):
         self._rule_pack = rule_pack
@@ -138,19 +142,34 @@ class SchemaResolver:
     def _compute_schema_profile(cls, field_cache):
         """Identify well-known target layouts from `field_cache`.
 
-        Currently recognizes the Elastic Fleet `prometheus.remote_write` data
-        stream layout, where labels live under `prometheus.labels.<name>` and
-        metrics under `prometheus.<metric>.{counter,value}`.
+        Recognises two layouts:
+
+        ``prometheus_remote_write`` — Elastic Fleet integration: labels under
+        ``prometheus.labels.<name>``, metrics under
+        ``prometheus.<metric>.{counter,value}``.  Fleet takes priority and
+        short-circuits the loop as soon as both signals are found.
+
+        ``prometheus_native`` — native ``/_prometheus/api/v1/write`` endpoint:
+        metrics under ``metrics.<name>``, labels under ``labels.<name>``.
+        Detected after a full scan when Fleet patterns are absent.
         """
         has_prom_label = False
         has_prom_metric_leaf = False
+        has_native_metric = False
+        has_native_label = False
         for field_name in field_cache:
             if not has_prom_label and cls._PROMETHEUS_LABEL_RE.match(field_name):
                 has_prom_label = True
             if not has_prom_metric_leaf and cls._PROMETHEUS_METRIC_LEAF_RE.match(field_name):
                 has_prom_metric_leaf = True
+            if not has_native_metric and cls._NATIVE_METRIC_RE.match(field_name):
+                has_native_metric = True
+            if not has_native_label and cls._NATIVE_LABEL_RE.match(field_name):
+                has_native_label = True
             if has_prom_label and has_prom_metric_leaf:
                 return "prometheus_remote_write"
+        if has_native_metric and has_native_label:
+            return "prometheus_native"
         return None
 
     def schema_profile(self):
@@ -163,6 +182,9 @@ class SchemaResolver:
         return self._current_schema_profile()
 
     def _build_discovered_mappings(self):
+        # Native endpoint indices have no OTel fields at all — skip the scan.
+        if self._compute_schema_profile(self._field_cache or {}) == "prometheus_native":
+            return
         known_fields = set((self._field_cache or {}).keys())
         for prom_label in set(self.PROM_TO_OTEL_CANDIDATES) | set(self._rule_pack.label_candidates):
             if prom_label in self._rule_pack.label_rewrites:
@@ -216,10 +238,17 @@ class SchemaResolver:
         # profile is active and the namespaced field exists, prefer it over
         # the OTEL candidates below — the namespaced form is the actual stored
         # field and OTEL fields are not present at all in this layout.
-        if self._current_schema_profile() == "prometheus_remote_write":
+        profile = self._current_schema_profile()
+        if profile == "prometheus_remote_write":
             namespaced = f"prometheus.labels.{label}"
             if namespaced in self._field_cache:
                 return namespaced
+        # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
+        # Return the namespaced form unconditionally — OTel candidates do not exist
+        # in this layout, so falling through to them would emit wrong field names.
+        # Missing labels surface through preflight rather than silently reverting.
+        if profile == "prometheus_native":
+            return f"labels.{label}"
         # Otherwise, fall back to OTEL/Prometheus normalization candidates.
         if label in self._discovered_mappings:
             return self._discovered_mappings[label]
@@ -246,7 +275,13 @@ class SchemaResolver:
         so the contract layer can surface the missing field via preflight.
         """
         self._discover_fields()
-        if self._current_schema_profile() != "prometheus_remote_write":
+        profile = self._current_schema_profile()
+        if profile == "prometheus_native":
+            # Native endpoint stores metrics as `metrics.<name>` directly — no
+            # suffix variants.  Return the prefixed form unconditionally so the
+            # contract layer can surface missing fields via preflight.
+            return f"metrics.{metric_name}"
+        if profile != "prometheus_remote_write":
             return metric_name
         if self._field_cache and metric_name in self._field_cache:
             return metric_name
@@ -311,13 +346,17 @@ class SchemaResolver:
             return True
         if is_counter_metric_field(self.field_capability(metric_name)):
             return True
-        # In the Fleet `prometheus.remote_write` layout the metric leaf is
-        # `prometheus.<metric>.counter`; consult that capability when the bare
-        # name isn't directly cached.
-        if self._current_schema_profile() == "prometheus_remote_write":
+        profile = self._current_schema_profile()
+        # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
+        if profile == "prometheus_remote_write":
             counter_field = f"prometheus.{metric_name}.counter"
             if self._field_cache and counter_field in self._field_cache:
                 return is_counter_metric_field(self.field_capability(counter_field))
+        # Native endpoint layout: metric is stored as `metrics.<name>` with
+        # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
+        if profile == "prometheus_native":
+            if is_counter_metric_field(self.field_capability(f"metrics.{metric_name}")):
+                return True
         return False
 
     def resolve_control_field(self, variable_name):

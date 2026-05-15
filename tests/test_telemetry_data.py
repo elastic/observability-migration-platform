@@ -92,6 +92,8 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertTrue(props["http.route"]["time_series_dimension"])
 
     def test_plan_index_template_caps_tsdb_lookback_at_serverless_limit(self):
+        # index.look_back_time max is 7d per ES docs; anything above is capped.
+        # ref: elastic.co/docs/reference/elasticsearch/index-settings/time-series
         stream = {
             "minimum_lookback": "14 days",
             "fields": {
@@ -104,7 +106,7 @@ class TelemetryDataTests(unittest.TestCase):
 
         self.assertEqual(
             template["template"]["settings"]["index"]["look_back_time"],
-            "14d",
+            "7d",
         )
 
     def test_generate_documents_does_not_treat_metric_names_as_dimensions(self):

@@ -305,6 +305,142 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("prometheus.labels.instance", translated.esql_query)
         self.assertNotIn("prometheus.http_requests_total", translated.esql_query)
 
+    # --- prometheus_native profile (/_prometheus/api/v1/write endpoint) ---
+
+    def test_resolver_detects_prometheus_native_profile(self):
+        """Profile detection: `metrics.*` + `labels.*` fields trigger the
+        `prometheus_native` profile (native /_prometheus endpoint layout)."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.process_cpu_seconds_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_native")
+
+    def test_prometheus_native_profile_requires_both_metrics_and_labels(self):
+        """Native profile is NOT triggered by `metrics.*` alone — `labels.*` is
+        also required to avoid false-positives from arbitrary custom indices."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+
+    def test_prometheus_remote_write_profile_wins_over_native_when_both_present(self):
+        """Fleet profile takes priority when both Fleet and native patterns coexist."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
+
+    def test_resolve_metric_field_prefixes_metrics_dot_for_native_profile(self):
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            "metrics.http_requests_total",
+        )
+        # prefer is irrelevant for native layout (no suffix variants) — always prefixed
+        self.assertEqual(
+            self.resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
+            "metrics.process_cpu_seconds_total",
+        )
+
+    def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(self.resolver.resolve_label("job"), "labels.job")
+        self.assertEqual(self.resolver.resolve_control_field("instance"), "labels.instance")
+
+    def test_is_counter_uses_metrics_prefix_field_cap_for_native_profile(self):
+        """is_counter() must check `metrics.<name>` capability, not bare name."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertTrue(self.resolver.is_counter("http_requests_total"))
+        self.assertFalse(self.resolver.is_counter("process_resident_memory_bytes"))
+
+    def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
+        """End-to-end: counter rate against a native /_prometheus endpoint target
+        must produce ES|QL referencing `metrics.*` metric fields and `labels.*`
+        dimension fields, never bare names or prometheus.* nesting."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            "labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        translated = self.translate(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+        )
+        self.assertIn("metrics.http_requests_total", translated.esql_query)
+        self.assertIn('labels.instance == "i-1"', translated.esql_query)
+        self.assertIn("labels.instance", translated.esql_query)
+        self.assertIn("labels.method", translated.esql_query)
+        self.assertNotIn("prometheus.labels.", translated.esql_query)
+        self.assertNotIn("prometheus.http_requests_total", translated.esql_query)
+
+    def test_resolve_label_returns_labels_prefix_even_when_label_not_in_cache(self):
+        """For native profile: labels not yet observed in the field cache must
+        still resolve to `labels.<name>`, not fall through to wrong OTel candidates
+        (e.g. service.instance.id) which don't exist in this layout."""
+        self.seed_field_caps({
+            # Only one metric field — enough to trigger native profile detection
+            # once a labels.* field is also present.
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            # NOTE: labels.instance deliberately NOT present in cache.
+        })
+        # Must return labels.instance, not service.instance.id or bare 'instance'.
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(self.resolver.resolve_label("namespace"), "labels.namespace")
+        self.assertEqual(self.resolver.resolve_label("unknown_label"), "labels.unknown_label")
+
+    def test_build_discovered_mappings_skipped_for_native_profile(self):
+        """_build_discovered_mappings must not populate OTel entries for native
+        profile — native indices have no OTel fields and scanning them is wasted
+        work that could also produce stale fallbacks."""
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+            # Simulate an OTel field that happens to be in the cache (edge case):
+            # even if present, it must NOT be recorded as a discovered mapping.
+            "service.instance.id": {"keyword": {"aggregatable": True}},
+        })
+        # Explicitly invoke _build_discovered_mappings the way _discover_fields does.
+        self.resolver._build_discovered_mappings()
+        # No OTel candidates should have been mapped.
+        self.assertEqual(self.resolver._discovered_mappings, {})
+        # resolve_label must still return the namespaced form, not the OTel field.
+        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+
+    def test_translator_gauge_metric_uses_from_with_metrics_prefix_for_native_profile(self):
+        """Gauge metrics in native profile must use FROM (not TS) and still
+        reference the `metrics.` prefixed field name."""
+        self.seed_field_caps({
+            "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        translated = self.translate(
+            'avg(process_resident_memory_bytes) by (instance)'
+        )
+        self.assertIn("metrics.process_resident_memory_bytes", translated.esql_query)
+        self.assertIn("FROM", translated.esql_query)
+        # TS source command uses TBUCKET; FROM uses BUCKET — absence of TBUCKET
+        # confirms the gauge metric correctly stayed on the FROM path.
+        self.assertNotIn("TBUCKET", translated.esql_query)
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",
@@ -6751,6 +6887,62 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         total_w = panels["A"]["size"]["w"] + panels["B"]["size"]["w"]
         self.assertEqual(total_w, 48, "pure 1D row should still be stretched to 48 cols")
 
+    def test_style_guide_stretches_row_with_full_width_panel_above(self):
+        """A full-width panel ABOVE a simple 1D row must NOT suppress the
+        fill.  Previously, _row_has_overlapping_x_neighbours checked above
+        panels too, so a full-width header caused false positives.  After
+        the fix only panels strictly BELOW the row are checked.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Full-width chart at y=0
+                {"title": "Header", "position": {"x": 0, "y": 0}, "size": {"w": 48, "h": 8}},
+                # Simple 1D row at y=8 — total=24, should be stretched to 48
+                {"title": "A", "position": {"x": 0,  "y": 8}, "size": {"w": 12, "h": 6}},
+                {"title": "B", "position": {"x": 12, "y": 8}, "size": {"w": 12, "h": 6}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        total_w = panels["A"]["size"]["w"] + panels["B"]["size"]["w"]
+        self.assertEqual(
+            total_w, 48,
+            "row below a full-width header should still be stretched (no 2D grid below it)",
+        )
+
+    def test_style_guide_still_blocks_stretch_when_2d_grid_is_below(self):
+        """A full-width header ABOVE plus a 2D grid BELOW: the row must
+        NOT be stretched because the 2D grid below would break.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            apply_style_guide_layout,
+        )
+
+        doc = {"dashboards": [{
+            "panels": [
+                # Full-width chart above
+                {"title": "Header", "position": {"x": 0, "y": 0}, "size": {"w": 48, "h": 8}},
+                # Row to check: 3 panels totalling 30 cols (needs fill)
+                {"title": "A", "position": {"x": 0,  "y": 8}, "size": {"w": 10, "h": 4}},
+                {"title": "B", "position": {"x": 10, "y": 8}, "size": {"w": 10, "h": 4}},
+                {"title": "C", "position": {"x": 20, "y": 8}, "size": {"w": 10, "h": 4}},
+                # 2D grid BELOW: panel at same x as C
+                {"title": "C2", "position": {"x": 20, "y": 12}, "size": {"w": 10, "h": 4}},
+            ],
+        }]}
+
+        apply_style_guide_layout(doc)
+        panels = {p["title"]: p for p in doc["dashboards"][0]["panels"]}
+        self.assertEqual(
+            panels["A"]["size"]["w"], 10,
+            "2D grid below must suppress row stretch even when full-width header is above",
+        )
+
     def test_kibana_native_layout_l2_yields_to_2d_grid(self):
         """L2 per-type minimums must NOT break the 2D grid the
         source author authored.
@@ -6956,6 +7148,87 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             f"Kibana gap (got {gap}); a gap of 0 means the y-cursor "
             f"regression has returned.",
         )
+
+
+    def test_fill_simple_row_bails_when_all_panels_at_hard_min(self):
+        """When every panel in the row is already at HARD_MIN_W and the
+        total still exceeds 48, the adjustment loop can't shrink any
+        further.  The function must bail out (leave panels unchanged)
+        instead of writing overflow coordinates.
+
+        13 panels x w=4 = 52 cols.  52 is in [24, 72] so the range
+        guard doesn't catch it; the overflow guard at the end must.
+        """
+        from observability_migration.targets.kibana.emit.layout import (
+            _fill_simple_row,
+        )
+
+        panels = [
+            {"title": f"P{i}", "position": {"x": i * 4, "y": 0}, "size": {"w": 4, "h": 6}}
+            for i in range(13)
+        ]
+        original_widths = [p["size"]["w"] for p in panels]
+        original_xs = [p["position"]["x"] for p in panels]
+
+        _fill_simple_row(panels)
+
+        # Panels must be unchanged — no overflow written.
+        self.assertEqual([p["size"]["w"] for p in panels], original_widths)
+        self.assertEqual([p["position"]["x"] for p in panels], original_xs)
+
+    def test_fill_simple_row_total_below_range_is_left_unchanged(self):
+        """Row totalling less than 50% of 48 cols (< 24) is left alone."""
+        from observability_migration.targets.kibana.emit.layout import _fill_simple_row
+
+        panels = [
+            {"title": "A", "position": {"x": 0, "y": 0}, "size": {"w": 8, "h": 6}},
+            {"title": "B", "position": {"x": 8, "y": 0}, "size": {"w": 4, "h": 6}},
+        ]
+        _fill_simple_row(panels)
+        # total=12 < 24 (50% of 48) → unchanged
+        self.assertEqual(panels[0]["size"]["w"], 8)
+        self.assertEqual(panels[1]["size"]["w"], 4)
+
+    def test_is_simple_contiguous_row_tolerates_missing_keys(self):
+        """_is_simple_contiguous_row must not raise KeyError when a
+        panel is missing 'position' or 'size' keys."""
+        from observability_migration.targets.kibana.emit.layout import (
+            _is_simple_contiguous_row,
+        )
+
+        panels_no_pos = [
+            {},
+            {"size": {"w": 12}},
+        ]
+        # Should return False (x=0 ≤ 2, but gap check sees missing w → w=0
+        # so prev_end=0, curr=0, gap=0 ≤ 2 → True) — important: must not raise
+        try:
+            result = _is_simple_contiguous_row(panels_no_pos)
+            self.assertIsInstance(result, bool)
+        except (KeyError, TypeError, AttributeError) as exc:
+            self.fail(f"_is_simple_contiguous_row raised {type(exc).__name__}: {exc}")
+
+    def test_kibana_type_height_ge_l2_min_h_for_all_types(self):
+        """KIBANA_TYPE_HEIGHT values must be >= the corresponding
+        _TYPE_SIZE_CONSTRAINTS min_h so the fallback path never produces
+        heights that L2 immediately has to correct.
+
+        If this test fails, update KIBANA_TYPE_HEIGHT to match min_h.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _TYPE_SIZE_CONSTRAINTS,
+            KIBANA_TYPE_HEIGHT,
+        )
+
+        for vtype, (_min_w, min_h, _max_h) in _TYPE_SIZE_CONSTRAINTS.items():
+            height = KIBANA_TYPE_HEIGHT.get(vtype)
+            if height is not None:
+                self.assertGreaterEqual(
+                    height,
+                    min_h,
+                    f"KIBANA_TYPE_HEIGHT['{vtype}']={height} < _TYPE_SIZE_CONSTRAINTS min_h={min_h}; "
+                    "update KIBANA_TYPE_HEIGHT to eliminate the mismatch",
+                )
 
 
 class L4RepeatPanelExpansionTests(unittest.TestCase):
