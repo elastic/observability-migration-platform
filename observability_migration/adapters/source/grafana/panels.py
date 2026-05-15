@@ -65,13 +65,15 @@ from .promql import (
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
     _format_scalar_value,
+    _matcher_to_esql,
+    _parse_fragment,
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .schema import SchemaResolver
-from .translate import TranslationContext, translate_promql_to_esql
+from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
 PANEL_TYPE_MAP = {
     "timeseries": "line",
@@ -283,14 +285,24 @@ def _target_translation_hints(panel, panel_type, target):
         "series_alias": _target_series_alias(panel, target),
     }
     preferred_group_labels = []
+    style_labels = []
     if panel_type in {"table", "table-old"}:
-        preferred_group_labels.extend(_panel_group_label_patterns(panel))
+        style_labels = _panel_group_label_patterns(panel)
+        preferred_group_labels.extend(style_labels)
     legend_labels = _extract_legend_labels(target.get("legendFormat", ""))
+    legend_contributed = False
     if not summary_mode or panel_type == "bargauge":
-        if legend_labels and legend_labels[0] not in preferred_group_labels:
-            preferred_group_labels.append(legend_labels[0])
+        for lbl in legend_labels:
+            if lbl not in preferred_group_labels:
+                preferred_group_labels.append(lbl)
+                legend_contributed = True
     if preferred_group_labels:
         hints["preferred_group_labels"] = preferred_group_labels
+    if legend_contributed and not style_labels:
+        hints["preferred_group_labels_origin"] = "legend"
+    legend_template = target.get("legendFormat", "")
+    if isinstance(legend_template, str) and len(legend_labels) >= 2:
+        hints["legend_format_template"] = legend_template
     return hints
 
 
@@ -429,7 +441,8 @@ _select_xy_dimension_fields = _select_xy_dimension_fields_canonical
 
 
 def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
-                            override_group_cols=None, mode=None):
+                            override_group_cols=None, mode=None,
+                            legend_format_template=None, legend_labels=None):
     metric_col = None
     metric_fields = None
     xy_by_cols = None
@@ -477,9 +490,18 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
                 by_cols=xy_by_cols,
                 time_fields=time_fields,
                 mode=mode,
+                legend_format_template=legend_format_template,
+                legend_labels=legend_labels,
             )
-        return _build_esql_xy_panel(query, kibana_type, metric_col=metric_col,
-                                    by_cols=xy_by_cols, time_fields=time_fields, mode=mode)
+        return _build_esql_xy_panel(
+            query, kibana_type,
+            metric_col=metric_col,
+            by_cols=xy_by_cols,
+            time_fields=time_fields,
+            mode=mode,
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     if kibana_type == "datatable":
         if metric_fields and len(metric_fields) > 1:
             return _build_esql_datatable_panel(query, metric_fields=metric_fields, by_cols=table_by_cols)
@@ -701,7 +723,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 
 
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
-                              legend_labels=None, kibana_type=None):
+                              legend_labels=None, kibana_type=None,
+                              legend_format=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -711,6 +734,14 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     When the PROMQL result includes ``_timeseries`` (no explicit ``by`` clause)
     and *legend_labels* are provided, appends ``EVAL`` pipes to extract those
     labels from the ``_timeseries`` JSON string, producing clean named columns.
+
+    When *legend_labels* is empty but *legend_format* is a non-empty literal
+    string with no placeholders, emits ``EVAL label = "<text>"`` so Lens
+    renders the author's chosen series name instead of the raw label tuple.
+    When both are absent, no synthetic label column is added: Lens renders a
+    single unlabeled series, which matches what Grafana shows for an empty
+    ``legendFormat`` and avoids dumping the stringified ``_timeseries`` JSON
+    as the legend entry.
 
     For single-value panel types (metric, gauge) the ``_timeseries`` extraction
     is skipped because aggregated scalars don't have that column.
@@ -749,12 +780,24 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         keep = ["step", "value"] + list(legend_labels)
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
-    return (
-        base
-        + '\n| EVAL _ts = COALESCE(_timeseries, "")'
-        + '\n| EVAL label = CASE(_ts == "", "series", REPLACE(REPLACE(_ts, """[{}"]""", ""), ",", ", "))'
-        + '\n| KEEP step, value, label'
-    )
+    static_label = (legend_format or "").strip()
+    if static_label:
+        # Static legend text (no placeholders) — emit it verbatim as the
+        # series label so Lens uses the author's chosen name.
+        escaped = _escape_esql_double_quoted_literal(static_label)
+        return (
+            base
+            + f'\n| EVAL label = "{escaped}"'
+            + "\n| KEEP step, value, label"
+        )
+
+    # Neither placeholders nor static legend text — drop the synthetic
+    # label column entirely. Lens then renders one unlabeled series,
+    # matching Grafana's behaviour for an empty legendFormat. Previously
+    # we emitted ``EVAL label = CASE(_ts == "", "series", REPLACE(...))``
+    # which dumped the stringified label tuple as the legend, an ugly
+    # regression spotted in NEF screenshots.
+    return base
 
 
 def can_use_native_promql(promql_expr):
@@ -771,10 +814,159 @@ def can_use_native_promql(promql_expr):
     return True
 
 
+_COUNTER_RANGE_FUNC_PATTERN = re.compile(
+    r"\b(?P<func>rate|irate|increase)\s*\(\s*(?P<metric>[A-Za-z_:][A-Za-z0-9_:]*)\b",
+    re.IGNORECASE,
+)
+
+
+_METRIC_REF_PATTERN = re.compile(
+    r"\b(?P<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\s*(?:\{|\[|\(|$|\s|/|\*|\+|-)",
+)
+
+# PromQL function / aggregator / keyword tokens that look like metric
+# selectors but aren't.
+_PROMQL_KEYWORDS = frozenset({
+    "by", "without", "on", "ignoring", "group_left", "group_right",
+    "and", "or", "unless", "bool", "offset", "atan2",
+    # Aggregators
+    "sum", "avg", "min", "max", "count", "stddev", "stdvar",
+    "topk", "bottomk", "quantile", "group", "count_values",
+    # Range/instant functions
+    "rate", "irate", "increase", "delta", "deriv", "predict_linear",
+    "changes", "resets", "idelta",
+    "avg_over_time", "sum_over_time", "min_over_time", "max_over_time",
+    "stddev_over_time", "stdvar_over_time", "count_over_time",
+    "last_over_time", "quantile_over_time", "present_over_time",
+    "histogram_quantile", "histogram_count", "histogram_sum",
+    "histogram_avg", "histogram_fraction", "histogram_stddev",
+    "histogram_stdvar",
+    # Math / time functions
+    "abs", "absent", "absent_over_time", "ceil", "exp", "floor",
+    "ln", "log2", "log10", "round", "scalar", "sgn", "sort", "sort_desc",
+    "sqrt", "time", "year", "month", "day_of_month", "day_of_week",
+    "day_of_year", "days_in_month", "hour", "minute", "timestamp",
+    "vector", "pi", "label_replace", "label_join", "clamp", "clamp_max",
+    "clamp_min", "acos", "acosh", "asin", "asinh", "atan", "atanh",
+    "cos", "cosh", "sin", "sinh", "tan", "tanh", "deg", "rad",
+    "nan", "inf",
+})
+
+
+def _extract_promql_metric_names(promql_expr):
+    """Return the distinct metric names referenced by *promql_expr*.
+
+    Strips string literals and label-set bodies first, then walks the
+    remaining text picking up tokens that look like metric identifiers.
+    PromQL keywords and function names are filtered against a curated
+    list so they don't show up as fake metric references.
+    """
+    if not promql_expr:
+        return []
+    sanitized = _strip_promql_string_literals(promql_expr)
+    # Replace ``{...}`` label-set bodies with empty braces so the inside
+    # doesn't leak label names as metric tokens.
+    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
+    seen: list[str] = []
+    for match in _METRIC_REF_PATTERN.finditer(sanitized):
+        name = match.group("metric")
+        if not name or name.lower() in _PROMQL_KEYWORDS:
+            continue
+        # Skip bare numbers picked up as identifiers (the pattern
+        # already filters them out, but be safe).
+        if name[0].isdigit():
+            continue
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _native_promql_has_distinct_metric_arithmetic(promql_expr):
+    """Return True if *promql_expr* contains an arithmetic binary op
+    (``+``/``-``/``*``/``/``/``%``/``^``) between two operands that
+    reference different metric names.
+
+    Elastic's PROMQL preview can't infer the implicit 1:1 label-set
+    match Prometheus uses for such expressions and returns an empty
+    result or 400. The translator should detect this and fall through
+    to ES|QL translation, which performs the arithmetic at the bucket
+    level with explicit groupings.
+
+    Explicit ``ignoring(...)`` / ``on(...)`` modifiers are already
+    rejected by ``can_use_native_promql``; here we catch the
+    implicit-match case where the user just wrote ``A / B``. Grafana
+    template variables (``$var`` / ``${var}`` / ``[[var]]``) are
+    excluded from the metric-name extraction so panels like
+    ``up * $scale`` still route through native PROMQL.
+    """
+    if not promql_expr:
+        return False
+    sanitized = _strip_promql_string_literals(promql_expr)
+    # Replace label-set bodies so their contents don't leak operators.
+    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
+    # Remove Grafana template variable tokens so they don't get
+    # mistaken for metric references.
+    sanitized_no_vars = sanitized
+    for pattern in (
+        _GRAFANA_VAR_BRACED_RE,
+        _GRAFANA_VAR_BRACKET_RE,
+        _GRAFANA_VAR_PLAIN_RE,
+    ):
+        sanitized_no_vars = pattern.sub(" ", sanitized_no_vars)
+    metrics = _extract_promql_metric_names(sanitized_no_vars)
+    if len(metrics) < 2:
+        return False
+    # If the expression contains any arithmetic operator AND references
+    # two or more distinct metric names, treat it as distinct-metric
+    # arithmetic that Elastic's PROMQL preview can't safely evaluate.
+    if re.search(r"[+\-*/%^]", sanitized_no_vars):
+        return True
+    return False
+
+
+def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
+    """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
+    to a metric that the resolver has *positively* identified as
+    gauge-typed in the target index.
+
+    Used as a pre-flight gate before emitting native PROMQL: Elastic's
+    PROMQL command rejects counter-style range functions on gauge-typed
+    fields at render time with ``first argument of [RATE(...)] must be
+    counter``. Falling through to ES|QL translation lets the gauge
+    fallback emit a degraded query the cluster can actually serve.
+
+    The gate requires positive evidence (the field is present in the
+    target index AND is typed gauge). Unknown fields or fields without
+    a recorded ``time_series_metric`` are left alone so existing
+    coverage of expressions like ``rate(foo[5m]) offset 1h`` against a
+    bare/empty schema isn't disturbed.
+    """
+    if resolver is None or not promql_expr:
+        return False
+    sanitized = _strip_promql_string_literals(promql_expr)
+    for match in _COUNTER_RANGE_FUNC_PATTERN.finditer(sanitized):
+        metric = match.group("metric")
+        if not metric:
+            continue
+        try:
+            cap = resolver.field_capability(metric)
+        except Exception:
+            continue
+        if cap is None:
+            continue
+        # Only act when the cluster has explicitly typed this field as
+        # something other than ``counter``. ``None`` / unknown means
+        # "no evidence either way" — leave the native PROMQL path alone.
+        kind = getattr(cap, "time_series_metric_kind", None)
+        if kind and kind != "counter":
+            return True
+    return False
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
-    query_language, visible_targets,
+    query_language, visible_targets, resolver=None,
 ):
     """Attempt native PROMQL translation for single or multi-target panels.
 
@@ -796,6 +988,26 @@ def _translate_panel_native_promql(
     expr = target.get("expr", "")
     if not can_use_native_promql(expr):
         return None
+    # Pre-flight type check: if the source PromQL applies a counter-style
+    # range function (``rate``/``irate``/``increase``) to a metric that
+    # the target index has typed as gauge, the native PROMQL command will
+    # 400 with ``first argument of [RATE(...)] must be counter`` at
+    # render time. Fall through to ES|QL translation, which knows how to
+    # degrade to a gauge-equivalent. Surfaced by validating uploaded
+    # Node Exporter Full panels referencing node_vmstat_* / node_netstat_*
+    # counters that don't end in ``_total`` (Elastic's auto-mapping
+    # treats them as gauges).
+    if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
+        return None
+    # Gate: Elastic's PROMQL preview can't perform implicit label-set
+    # match for arithmetic between two distinct instant vectors (e.g.
+    # ``A / B`` without ``on()``). Fall through to ES|QL translation,
+    # which does the math at the bucket level. Surfaced by reviewing
+    # uploaded NEF panels like ``Disk Space Used Basic`` that rendered
+    # "No results found" because the native PROMQL command rejected
+    # the query.
+    if _native_promql_has_distinct_metric_arithmetic(expr):
+        return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
 
@@ -806,19 +1018,31 @@ def _translate_panel_native_promql(
         return None
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
-                                             kibana_type=kibana_type)
+                                             kibana_type=kibana_type,
+                                             legend_format=legend_format)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
+    static_legend_label = (legend_format or "").strip() and not legend_labels
     if "_timeseries" in group_cols:
-        effective_group_cols = legend_labels if legend_labels else ["label"]
+        if legend_labels:
+            effective_group_cols = legend_labels
+        elif static_legend_label:
+            # Single static label per series.
+            effective_group_cols = ["label"]
+        else:
+            # No legend dimension; the query keeps just step+value.
+            effective_group_cols = []
     else:
         effective_group_cols = group_cols
 
     xy_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
+    composite_legend_template = legend_format if len(legend_labels) >= 2 else None
     native_panel = _native_esql_panel_spec(
         promql_query, kibana_type, promql_expr=expr, panel=panel,
         override_group_cols=effective_group_cols, mode=xy_mode,
+        legend_format_template=composite_legend_template,
+        legend_labels=legend_labels if composite_legend_template else None,
     )
     if not native_panel:
         return None
@@ -838,6 +1062,13 @@ def _translate_panel_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
+    native_fragment = _parse_fragment(cleaned_expr or expr)
+    query_ir.metric = str(getattr(native_fragment, "metric", "") or "")
+    query_ir.range_function = str(getattr(native_fragment, "range_func", "") or "")
+    query_ir.range_window = str(getattr(native_fragment, "range_window", "") or "")
+    query_ir.outer_agg = str(getattr(native_fragment, "outer_agg", "") or "")
+    query_ir.group_labels = list(getattr(native_fragment, "group_labels", []) or [])
+    query_ir.group_mode = str(getattr(native_fragment, "group_mode", "") or "by")
     if kibana_type in ("line", "bar", "area"):
         query_ir.output_group_fields = ["step"] + list(effective_group_cols)
     elif kibana_type == "datatable" or kibana_type == "pie":
@@ -867,6 +1098,7 @@ def _translate_panel_native_promql(
         inventory=panel_inventory,
         query_ir=query_ir,
         yaml_panel=yaml_panel,
+        rule_pack=rule_pack,
     )
 
 
@@ -887,6 +1119,7 @@ def _translate_multi_target_native_promql(
     index = datasource_index or "metrics-prometheus-*"
     had_bare_variable = False
     parts: list[str] = []
+    target_fragments = []
 
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
@@ -894,6 +1127,7 @@ def _translate_multi_target_native_promql(
             return None
         cleaned, bare = _clean_promql_for_native_with_state(expr)
         had_bare_variable = had_bare_variable or bare
+        target_fragments.append(_parse_fragment(cleaned or expr))
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -936,6 +1170,54 @@ def _translate_multi_target_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
+    metric_names = []
+    for frag in target_fragments:
+        metric_name = str(getattr(frag, "metric", "") or "").strip()
+        if metric_name and metric_name not in metric_names:
+            metric_names.append(metric_name)
+    if len(metric_names) == 1:
+        query_ir.metric = metric_names[0]
+    elif len(metric_names) > 1:
+        query_ir.metadata["multi_series_metric_fields"] = list(metric_names)
+    range_functions = {
+        str(getattr(frag, "range_func", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    range_functions.discard("")
+    if len(range_functions) == 1:
+        query_ir.range_function = next(iter(range_functions))
+    range_windows = {
+        str(getattr(frag, "range_window", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    range_windows.discard("")
+    if len(range_windows) == 1:
+        query_ir.range_window = next(iter(range_windows))
+    outer_aggs = {
+        str(getattr(frag, "outer_agg", "") or "").strip()
+        for frag in target_fragments
+        if frag
+    }
+    outer_aggs.discard("")
+    if len(outer_aggs) == 1:
+        query_ir.outer_agg = next(iter(outer_aggs))
+    group_labels = {
+        tuple(getattr(frag, "group_labels", []) or [])
+        for frag in target_fragments
+        if frag
+    }
+    group_labels.discard(())
+    if len(group_labels) == 1:
+        query_ir.group_labels = list(next(iter(group_labels)))
+    group_modes = {
+        str(getattr(frag, "group_mode", "") or "by").strip()
+        for frag in target_fragments
+        if frag
+    }
+    if len(group_modes) == 1:
+        query_ir.group_mode = next(iter(group_modes))
     query_ir.output_group_fields = ["step", "__series"]
     query_ir.output_shape = infer_output_shape(panel_type, query_ir.output_group_fields, "promql")
     query_ir.target_index = index
@@ -954,11 +1236,36 @@ def _translate_multi_target_native_promql(
         inventory=panel_inventory,
         query_ir=query_ir,
         yaml_panel=yaml_panel,
+        rule_pack=rule_pack,
     )
 
 
 def _sync_visual_ir(panel_result, yaml_panel):
     panel_result.visual_ir = refresh_visual_ir(panel_result, yaml_panel)
+
+
+def _artifact_to_dict(value):
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _query_ir_multi_series_metric_fields(query_ir):
+    if not query_ir:
+        return []
+    metadata = (
+        query_ir.get("metadata", {})
+        if isinstance(query_ir, dict)
+        else getattr(query_ir, "metadata", {})
+    ) or {}
+    fields = []
+    for field_name in (metadata.get("multi_series_metric_fields", []) or []):
+        normalized = str(field_name or "").strip()
+        if normalized and normalized not in fields:
+            fields.append(normalized)
+    return fields
 
 
 def _enrich_panel_result(
@@ -970,6 +1277,8 @@ def _enrich_panel_result(
     inventory=None,
     query_ir=None,
     yaml_panel=None,
+    translation=None,
+    rule_pack=None,
 ):
     panel = panel or {}
     datasource = datasource or {}
@@ -987,6 +1296,37 @@ def _enrich_panel_result(
         _append_unique(panel_result.notes, note)
     if query_ir:
         panel_result.query_ir = query_ir.to_dict() if hasattr(query_ir, "to_dict") else dict(query_ir)
+    carrier_query_ir = query_ir or panel_result.query_ir
+    contract = getattr(translation, "target_query_contract", {}) if translation is not None else {}
+    evaluation = getattr(translation, "contract_evaluation", {}) if translation is not None else {}
+    fulfillment = getattr(translation, "fulfillment_plan", {}) if translation is not None else {}
+    if carrier_query_ir and (
+        _query_ir_multi_series_metric_fields(carrier_query_ir)
+        or not any((contract, evaluation, fulfillment))
+    ):
+        rebuilt_contract, rebuilt_evaluation, rebuilt_fulfillment = _build_metric_contract_artifacts(
+            carrier_query_ir,
+            resolver=getattr(translation, "resolver", None),
+            rule_pack=rule_pack or getattr(translation, "rule_pack", None),
+        )
+        if any((rebuilt_contract, rebuilt_evaluation, rebuilt_fulfillment)):
+            contract = rebuilt_contract
+            evaluation = rebuilt_evaluation
+            fulfillment = rebuilt_fulfillment
+    panel_result.target_query_contract = _artifact_to_dict(contract)
+    panel_result.contract_evaluation = _artifact_to_dict(evaluation)
+    panel_result.fulfillment_plan = _artifact_to_dict(fulfillment)
+    final_source_type = str((panel_result.query_ir or {}).get("source_type", "") or "").upper()
+    if final_source_type == "FROM" and panel_result.target_query_contract.get("canonical_target") in {"ts", "promql"}:
+        existing_status = (panel_result.contract_evaluation or {}).get("status")
+        if existing_status != "blocked":
+            if panel_result.contract_evaluation:
+                panel_result.contract_evaluation = dict(panel_result.contract_evaluation)
+                panel_result.contract_evaluation["status"] = "degraded_if_forced"
+            panel_result.fulfillment_plan = {
+                "status": "not_required",
+                "actions": [],
+            }
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
@@ -1087,6 +1427,9 @@ def xy_panel_rule(context):
     primary = context.translation
     mode = _infer_xy_stacking_mode(context.panel) if context.kibana_type in ("bar", "area") else None
     series_fields = primary.metadata.get("multi_series_metric_fields", [])
+    legend_template = primary.metadata.get("legend_format_template") or None
+    legend_labels = _extract_legend_labels(legend_template) if legend_template else []
+    composite_template = legend_template if len(legend_labels) >= 2 else None
     if series_fields:
         context.yaml_panel["esql"] = _build_esql_multi_series_xy(
             primary.esql_query,
@@ -1094,6 +1437,8 @@ def xy_panel_rule(context):
             metric_fields=series_fields,
             by_cols=primary.output_group_fields,
             mode=mode,
+            legend_format_template=composite_template,
+            legend_labels=legend_labels if composite_template else None,
         )
     else:
         context.yaml_panel["esql"] = _build_esql_xy_panel(
@@ -1102,6 +1447,8 @@ def xy_panel_rule(context):
             metric_col=primary.output_metric_field or None,
             by_cols=primary.output_group_fields,
             mode=mode,
+            legend_format_template=composite_template,
+            legend_labels=legend_labels if composite_template else None,
         )
     context.handled = True
     return f"mapped to {context.kibana_type} panel"
@@ -1172,14 +1519,20 @@ def pie_panel_rule(context):
 def fallback_line_panel_rule(context):
     if context.handled:
         return None
+    primary = context.translation
+    legend_template = primary.metadata.get("legend_format_template") or None
+    legend_labels = _extract_legend_labels(legend_template) if legend_template else []
+    composite_template = legend_template if len(legend_labels) >= 2 else None
     context.yaml_panel["esql"] = _build_esql_xy_panel(
-        context.translation.esql_query,
+        primary.esql_query,
         "line",
-        metric_col=context.translation.output_metric_field or None,
-        by_cols=context.translation.output_group_fields,
+        metric_col=primary.output_metric_field or None,
+        by_cols=primary.output_group_fields,
+        legend_format_template=composite_template,
+        legend_labels=legend_labels if composite_template else None,
     )
     _append_unique(
-        context.translation.warnings,
+        primary.warnings,
         f"Approximated as line chart (no direct {context.kibana_type} mapping)",
     )
     context.handled = True
@@ -1354,7 +1707,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         native_result = _translate_panel_native_promql(
             panel, yaml_panel, title, panel_type, kibana_type,
             datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
-            query_language, visible_targets,
+            query_language, visible_targets, resolver=resolver,
         )
         if native_result is not None:
             return native_result
@@ -1530,7 +1883,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             query_language=query_language,
             notes=panel_notes,
             inventory=panel_inventory,
+            query_ir=primary.query_ir,
             yaml_panel=yaml_panel,
+            translation=primary,
+            rule_pack=rule_pack,
         )
 
     panel_context = PanelContext(
@@ -1594,6 +1950,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         inventory=panel_inventory,
         query_ir=primary.query_ir,
         yaml_panel=yaml_panel,
+        translation=primary,
+        rule_pack=rule_pack,
     )
 
 
@@ -1633,14 +1991,25 @@ def _try_collapse_same_metric_targets(translations):
     for ms in matchers_per[1:]:
         shared = shared & ms
     diffs = [ms - shared for ms in matchers_per]
+    # Permit any matcher operator (=, ==, =~, !=, !~) in the diffs. The
+    # legacy implementation only allowed equality and bailed otherwise,
+    # which silently dropped 5 of 6 targets on common Grafana panels like
+    # Node Exporter Full's "CPU Basic" (mixed equality / regex / negated
+    # ``mode`` matchers). For non-equality ops we add a unified
+    # ``WHERE (op1 OR op2 OR ...)`` clause to the generated query below.
     diff_labels = set()
+    nonequality_present = False
     for d in diffs:
         for label, op, _val in d:
-            if op in ("=", "=="):
-                diff_labels.add(label)
-            else:
-                return None
+            diff_labels.add(label)
+            if op not in ("=", "=="):
+                nonequality_present = True
     if len(diff_labels) != 1:
+        return None
+    # Refuse if any target has no distinguishing matcher (would mean
+    # "match everything for this label", which can't be OR-folded with
+    # the other targets' filters safely).
+    if any(not d for d in diffs):
         return None
 
     collapse_label = diff_labels.pop()
@@ -1666,6 +2035,7 @@ def _try_collapse_same_metric_targets(translations):
         alias_hint=collapsed.metadata.get("target_ref_id") or "collapsed",
         summary_mode=_summary_mode_from_metadata(collapsed.metadata),
         preferred_group_labels=collapsed.metadata.get("preferred_group_labels"),
+        preferred_group_labels_origin=collapsed.metadata.get("preferred_group_labels_origin"),
     )
     if not plan or not plan.specs:
         return None
@@ -1673,6 +2043,47 @@ def _try_collapse_same_metric_targets(translations):
     if not shared:
         return None
     parts, output_group_fields, metric_fields = shared
+
+    # When the diffs include non-equality matchers, insert a unified
+    # WHERE clause built from each target's distinguishing matchers
+    # OR'd together. ``=`` collapses naturally because the BY column
+    # alone splits series; ``=~`` / ``!=`` / ``!~`` need an explicit
+    # filter to bound the result set.
+    if nonequality_present:
+        per_target_clauses = []
+        seen_clauses: set[str] = set()
+        for diff_set in diffs:
+            collect = [
+                _matcher_to_esql(
+                    {"label": label, "op": op, "value": value},
+                    collapsed.resolver,
+                )
+                for label, op, value in diff_set
+                if label == collapse_label
+            ]
+            collect = [c for c in collect if c]
+            if not collect:
+                continue
+            clause = collect[0] if len(collect) == 1 else "(" + " AND ".join(collect) + ")"
+            if clause not in seen_clauses:
+                seen_clauses.add(clause)
+                per_target_clauses.append(clause)
+        if per_target_clauses:
+            if len(per_target_clauses) == 1:
+                unified_where = f"| WHERE {per_target_clauses[0]}"
+            else:
+                unified_where = "| WHERE " + " OR ".join(per_target_clauses)
+            # Insert the unified WHERE right after the source command
+            # (line 0). Order is the same as other generated WHEREs:
+            # source / time-filter / unified matcher OR / IS NOT NULL /
+            # STATS.
+            insert_at = 1
+            for idx, part in enumerate(parts):
+                if part.lstrip().startswith("| WHERE @timestamp"):
+                    insert_at = idx + 1
+                    break
+            parts.insert(insert_at, unified_where)
+
     collapsed.source_type = plan.specs[0].source_type
     collapsed_summary = None
     if _summary_mode_from_metadata(collapsed.metadata):
@@ -1740,6 +2151,7 @@ def _build_multi_target_series_query(translations):
             summary_mode=_summary_mode_from_metadata(translation.metadata),
             preferred_group_labels=translation.metadata.get("preferred_group_labels"),
             allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
         )
         if pf is not None:
             translation.fragment.extra["post_filter"] = pf
@@ -2108,8 +2520,236 @@ def _build_esql_metric_panel(esql, metric_col=None):
     }
 
 
+_COMPOSITE_LEGEND_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def _resolve_legend_label_to_column(label, columns):
+    """Map a ``legendFormat`` label name to an actual ES|QL output column.
+
+    Tries the bare label name, then the ``prometheus.labels.<label>`` Fleet
+    layout, then a generic ``labels.<label>`` fallback. Returns ``None`` when
+    no candidate is in *columns*.
+    """
+    if not label:
+        return None
+    candidates = [
+        label,
+        f"prometheus.labels.{label}",
+        f"labels.{label}",
+    ]
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _extract_keep_columns(esql_query):
+    """Return the column names from the **last** ``KEEP …`` pipeline stage.
+
+    Returns ``[]`` when no ``KEEP`` stage is present. Operates on pipeline
+    stages produced by :func:`_split_esql_pipeline` so the parser handles both
+    multi-line (``| KEEP …`` on its own line) and inline single-line queries.
+    """
+    for stage in reversed(_split_esql_pipeline(esql_query)):
+        body = str(stage or "").strip()
+        if not body.lower().startswith("keep "):
+            continue
+        return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
+    return []
+
+
+def _output_columns_for_composite_legend(esql_query):
+    """Return the best-effort set of output column names for the query.
+
+    Combines the canonical shape extractor (which is robust for ``STATS …``
+    queries) with a direct parse of the trailing ``KEEP`` line (which is the
+    canonical XY shape used by the native-PROMQL path).
+    """
+    columns = set()
+    metric_col, by_cols = _extract_esql_columns(esql_query)
+    if metric_col:
+        columns.add(metric_col)
+    columns.update(by_cols or [])
+    columns.update(_extract_keep_columns(esql_query))
+    return columns
+
+
+def _escape_esql_double_quoted_literal(text):
+    """Escape backslashes and double quotes for an ES|QL double-quoted string."""
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _apply_composite_legend_to_xy_panel(yaml_panel, *,
+                                        legend_format_template, legend_labels):
+    """Rewrite an XY panel to break down by a synthetic ``legend`` column.
+
+    Lens ``breakdown.field`` only supports a single column, so a Grafana panel
+    with a multi-label legend like ``"{{ method }} {{ path }} - {{ status }}"``
+    collapses to one series per ``method`` value unless we pre-compute a
+    composite breakdown column. This helper:
+
+    * Bails out when the template has fewer than 2 ``{{ label }}`` placeholders.
+    * Resolves each label to an actual output column (bare, prefixed with
+      ``prometheus.labels.``, or ``labels.``); bails out if any label fails.
+    * Inserts ``| EVAL legend = CONCAT(...)`` before the final ``| KEEP`` and
+      rewrites that ``KEEP`` to drop the now-redundant per-label columns.
+    * Sets ``breakdown.field = "legend"``.
+
+    Returns the panel either way; the panel is mutated in place.
+    """
+    if not legend_format_template:
+        return yaml_panel
+    template_labels = list(legend_labels or [])
+    if len(template_labels) < 2:
+        return yaml_panel
+    esql = yaml_panel.get("esql")
+    if not isinstance(esql, dict):
+        return yaml_panel
+    query = str(esql.get("query") or "")
+    if not query.strip():
+        return yaml_panel
+
+    columns = _output_columns_for_composite_legend(query)
+    resolved = {}
+    for label in template_labels:
+        column = _resolve_legend_label_to_column(label, columns)
+        if column is None:
+            return yaml_panel
+        resolved[label] = column
+
+    segments = _COMPOSITE_LEGEND_PLACEHOLDER_RE.split(legend_format_template)
+    concat_args = []
+    for index, segment in enumerate(segments):
+        is_label = index % 2 == 1
+        if is_label:
+            column = resolved.get(segment)
+            if column is None:
+                return yaml_panel
+            concat_args.append(f'COALESCE({column}, "")')
+        else:
+            if segment == "":
+                continue
+            concat_args.append(f'"{_escape_esql_double_quoted_literal(segment)}"')
+    if not concat_args:
+        return yaml_panel
+    concat_expr = "CONCAT(" + ", ".join(concat_args) + ")"
+    eval_line = f"| EVAL legend = {concat_expr}"
+
+    label_columns = set(resolved.values())
+    new_query = _splice_composite_legend_into_query(
+        query, eval_line=eval_line, label_columns=label_columns,
+    )
+    esql["query"] = new_query
+    esql["breakdown"] = {"field": "legend"}
+    return yaml_panel
+
+
+def _splice_composite_legend_into_query(query, *, eval_line, label_columns):
+    """Insert *eval_line* immediately before the trailing ``KEEP`` and append
+    ``legend`` to that ``KEEP`` while keeping the original per-label columns.
+
+    Lens uses ``breakdown.field = "legend"`` to render one series per
+    composite-label tuple and ignores the per-label columns; downstream
+    consumers (parity harnesses, raw ES|QL drilldowns) still need the
+    underlying labels to distinguish series whose ``legend`` strings
+    collide. The ``label_columns`` parameter is accepted for backward
+    compatibility but no longer drives column removal.
+
+    When the query has no trailing ``KEEP`` stage (the canonical ``STATS …``
+    form used by translated PromQL), the helper appends ``EVAL legend = …``
+    only. No synthetic ``KEEP`` is added because that would silently drop
+    the metric and time-bucket columns required by the XY panel shape.
+
+    Handles both multi-line and inline single-line queries by operating on the
+    pipeline stages.
+    """
+    pipeline_stages = _split_esql_pipeline(query)
+    if not pipeline_stages:
+        return query
+    last_keep_index = None
+    for idx in range(len(pipeline_stages) - 1, -1, -1):
+        stage = pipeline_stages[idx].strip()
+        if stage.lower().startswith("keep "):
+            last_keep_index = idx
+            break
+
+    if last_keep_index is None:
+        return _append_eval_before_trailing_sort(query, eval_line)
+
+    keep_body = pipeline_stages[last_keep_index].strip()[5:].strip()
+    existing = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+    # Keep the original label columns alongside ``legend``. Lens uses
+    # ``breakdown.field = "legend"`` and ignores the other columns when
+    # rendering, but downstream consumers (parity harnesses, raw-ESQL
+    # readers, drilldown link generation) still need the underlying
+    # labels to distinguish series. Previously we removed the per-label
+    # columns and only emitted ``legend``, which made the output
+    # ambiguous when two underlying tuples mapped to the same legend
+    # string (e.g. when a status filter was unified into a WHERE OR).
+    rewritten = list(existing)
+    if "legend" not in rewritten:
+        rewritten.append("legend")
+    new_keep_stage = f"KEEP {', '.join(rewritten)}"
+
+    is_multiline = "\n" in query
+    if is_multiline:
+        lines = query.splitlines()
+        keep_line_index = None
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("keep "):
+                keep_line_index = idx
+                break
+        if keep_line_index is not None:
+            lines.insert(keep_line_index, eval_line)
+            lines[keep_line_index + 1] = "| " + new_keep_stage
+            return "\n".join(lines)
+
+    rebuilt_stages = list(pipeline_stages)
+    rebuilt_stages[last_keep_index] = new_keep_stage
+    rebuilt_stages.insert(last_keep_index, eval_line.lstrip("|").strip())
+    head = rebuilt_stages[0]
+    tail = " | ".join(rebuilt_stages[1:]) if len(rebuilt_stages) > 1 else ""
+    return f"{head} | {tail}" if tail else head
+
+
+def _append_eval_before_trailing_sort(query, eval_line):
+    """Append *eval_line* at the tail of *query*, but BEFORE a trailing ``SORT``.
+
+    The translated ES|QL bodies frequently end with ``| SORT time_bucket ASC``
+    so we want ``EVAL`` to sit before that to (a) keep the SORT semantically
+    last and (b) avoid the downstream ``_ensure_bucket_sort`` appending a
+    duplicate trailing SORT.
+    """
+    is_multiline = "\n" in query
+    if is_multiline:
+        lines = query.splitlines()
+        sort_idx = None
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if not stripped:
+                continue
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("sort "):
+                sort_idx = idx
+            break
+        if sort_idx is not None:
+            lines.insert(sort_idx, eval_line)
+            return "\n".join(lines)
+        if query.endswith("\n"):
+            return query + eval_line + "\n"
+        return query + "\n" + eval_line
+    stages = _split_esql_pipeline(query)
+    if stages and stages[-1].strip().lower().startswith("sort "):
+        stages.insert(len(stages) - 1, eval_line.lstrip("|").strip())
+        head = stages[0]
+        tail = " | ".join(stages[1:])
+        return f"{head} | {tail}" if tail else head
+    return query + " " + eval_line
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
-                         time_fields=None, mode=None):
+                         time_fields=None, mode=None,
+                         legend_format_template=None, legend_labels=None):
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
@@ -2130,11 +2770,18 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    if legend_format_template and legend_labels and len(legend_labels) >= 2:
+        _apply_composite_legend_to_xy_panel(
+            {"esql": panel},
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     return panel
 
 
 def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
-                                time_fields=None, mode=None):
+                                time_fields=None, mode=None,
+                                legend_format_template=None, legend_labels=None):
     """Build an XY panel from a single merged ES|QL query."""
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
@@ -2154,6 +2801,12 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    if legend_format_template and legend_labels and len(legend_labels) >= 2:
+        _apply_composite_legend_to_xy_panel(
+            {"esql": panel},
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+        )
     return panel
 
 
@@ -2255,22 +2908,55 @@ def _infer_controls_data_view(yaml_panels, datasource_index, rule_pack):
     indexes = {_panel_query_index(panel) for panel in yaml_panels if _panel_query_index(panel)}
     if indexes == {rule_pack.logs_index}:
         return rule_pack.logs_index
+    metrics_indexes = {idx for idx in indexes if idx and idx != rule_pack.logs_index}
+    if len(metrics_indexes) == 1:
+        return next(iter(metrics_indexes))
     return datasource_index
 
 
 def _infer_dashboard_filters(yaml_panels, rule_pack):
+    """Decide what dashboard-level filters to emit.
+
+    The historical design auto-added a ``data_stream.dataset`` ``match_phrase``
+    filter (defaulting to the literal ``"prometheus"``) as a safety net when
+    panels queried the broad ``metrics-*`` pattern: it kept the
+    multi-backend ``metrics-*`` view scoped to the Prometheus dataset only.
+
+    That safety net is destructive when:
+
+    * Every panel already targets a narrow concrete index (e.g. the migration
+      ran with ``--esql-index metrics-prometheus.remote_write-express``).
+      Adding a literal-``prometheus`` filter on top of a narrow Fleet
+      ``prometheus.remote_write`` data stream filters out **all** documents
+      because ``data_stream.dataset`` is the constant_keyword
+      ``"prometheus.remote_write"``, not ``"prometheus"``.
+    * The user explicitly disabled the filter via ``--dataset-filter ""`` —
+      already honored.
+
+    Skip the filter when none of the panel ESQL index patterns contain a
+    wildcard, since the index pattern is itself the constraint and adding an
+    unrelated literal filter is strictly harmful.
+    """
     indexes = {_panel_query_index(panel) for panel in yaml_panels if _panel_query_index(panel)}
     if not indexes:
         return []
     if indexes == {rule_pack.logs_index}:
         if not rule_pack.logs_dataset_filter:
             return []
+        if not _has_wildcard_index(indexes):
+            return []
         return [{"field": "data_stream.dataset", "equals": rule_pack.logs_dataset_filter}]
     if rule_pack.logs_index in indexes:
         return []
     if not rule_pack.metrics_dataset_filter:
         return []
+    if not _has_wildcard_index(indexes):
+        return []
     return [{"field": "data_stream.dataset", "equals": rule_pack.metrics_dataset_filter}]
+
+
+def _has_wildcard_index(indexes):
+    return any(any(token in idx for token in ("*", "?", ",")) for idx in indexes if idx)
 
 
 def _field_control_type(field_name, resolver):
@@ -2326,7 +3012,12 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
         cache = {}
         setattr(resolver, "_alternate_resolvers", cache)
     if index_pattern not in cache:
-        cache[index_pattern] = SchemaResolver(rule_pack or RulePackConfig(), es_url=es_url, index_pattern=index_pattern)
+        cache[index_pattern] = SchemaResolver(
+            rule_pack or RulePackConfig(),
+            es_url=es_url,
+            index_pattern=index_pattern,
+            es_api_key=getattr(resolver, "_es_api_key", None),
+        )
     return cache[index_pattern]
 
 

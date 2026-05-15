@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from observability_migration.core.cli_contract import (
     ASSET_CHOICES,
     alert_output_dir,
@@ -74,11 +76,12 @@ from .preflight import (
     build_dashboard_complexity,
     build_datasource_audit,
     build_preflight_report,
+    build_target_contract_summary,
     build_target_schema_contract,
     probe_source_metric_inventory,
     probe_target_readiness,
+    save_preflight_json,
     save_preflight_report,
-    save_schema_contract,
 )
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
@@ -236,11 +239,28 @@ def parse_args(argv: list[str] | None = None):
         default=os.getenv("LOKI_URL", ""),
         help="Loki URL for live source-side query execution during verification",
     )
-    parser.add_argument(
+    native_promql_group = parser.add_mutually_exclusive_group()
+    native_promql_group.add_argument(
         "--native-promql",
-        action="store_true",
-        help="Emit native PROMQL source commands instead of translating to ES|QL (for Elastic Serverless with PromQL support)",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_on",
+        help=(
+            "Force native PROMQL emission regardless of cluster support detection "
+            "(for Elastic clusters with the ES|QL PROMQL command)."
+        ),
     )
+    native_promql_group.add_argument(
+        "--no-native-promql",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_off",
+        help=(
+            "Force ES|QL translation even when the cluster supports the PROMQL command "
+            "(opt out of the auto-detected default)."
+        ),
+    )
+    parser.set_defaults(native_promql_flag="auto")
     parser.add_argument(
         "--dataset-filter", default="",
         help="Explicit data_stream.dataset value for metrics dashboard filter "
@@ -616,19 +636,132 @@ def extract_dashboards_for_alerts(args: argparse.Namespace) -> list[dict[str, An
     return extract_dashboards_from_files(args.input_dir)
 
 
+_PROMQL_DETECTION_PROBE = (
+    'PROMQL index=metrics-* step=1m '
+    'start="2024-01-01T00:00:00Z" end="2024-01-01T01:00:00Z" '
+    "value=(up)"
+)
+
+
+def _detect_promql_support(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> bool | None:
+    """Probe the cluster to see if the ES|QL ``PROMQL`` source command is available.
+
+    Returns ``True`` when the probe is accepted (HTTP 200 with ``columns``),
+    ``False`` when the cluster reports that the command isn't supported, and
+    ``None`` when the result is inconclusive (auth error or transport failure).
+    The probe is best-effort and never raises.
+    """
+    if not es_url:
+        return False
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    url = es_url.rstrip("/") + "/_query"
+    payload = {"query": _PROMQL_DETECTION_PROBE}
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        print(f"  WARNING: PROMQL command detection failed ({exc.__class__.__name__}): {exc}")
+        return None
+
+    status = getattr(response, "status_code", 0)
+    if status == 200:
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
+        columns = body.get("columns") if isinstance(body, dict) else None
+        if isinstance(columns, list) and columns:
+            return True
+        return False
+
+    body_text = ""
+    try:
+        body_text = (response.text or "").lower()
+    except Exception:
+        body_text = ""
+
+    if status in (401, 403):
+        print("  WARNING: PROMQL command detection skipped (auth error from cluster)")
+        return None
+
+    if status == 400:
+        signals = ("no handler", "unknown command", "promql")
+        if any(signal in body_text for signal in signals):
+            return False
+        return False
+
+    return False
+
+
+def _resolve_native_promql(args: argparse.Namespace) -> bool:
+    """Resolve the effective ``native_promql`` setting for this run.
+
+    Precedence:
+      ``--no-native-promql`` (force_off) → False
+      ``--native-promql``    (force_on)  → True
+      otherwise (auto)                   → cluster auto-detection
+    Auto-detection silently falls back to False when no ES URL is configured or
+    when the probe fails for any reason.
+    """
+    mode = getattr(args, "native_promql_flag", "auto")
+    if mode == "force_off":
+        return False
+    if mode == "force_on":
+        return True
+    es_url = getattr(args, "es_url", "") or ""
+    if not es_url:
+        return False
+    es_api_key = getattr(args, "es_api_key", "") or None
+    supported = _detect_promql_support(es_url, es_api_key)
+    if supported is True:
+        print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
+        return True
+    if supported is False:
+        print("  PROMQL ES|QL command not supported on target; falling back to ES|QL translation")
+        return False
+    print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
+    return False
+
+
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
-    if args.native_promql:
-        rule_pack.native_promql = True
-        rule_pack.metrics_dataset_filter = ""
     if args.dataset_filter:
         rule_pack.metrics_dataset_filter = args.dataset_filter
     if args.logs_dataset_filter:
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> None:
+    """Resolve --native-promql/--no-native-promql/auto and apply to the pack.
+
+    Separated from ``_load_configured_rule_pack`` so the offline
+    ``--print-rule-catalog`` command doesn't trigger the cluster probe.
+
+    When the user provided an explicit ``--dataset-filter`` it always wins,
+    even if native PROMQL would otherwise clear the filter to ``""``. That
+    preserves the pre-refactor behavior and respects an explicit user
+    signal over the default-clearing behavior advertised in the
+    ``--dataset-filter`` help text.
+    """
+    native = _resolve_native_promql(args)
+    if native:
+        rule_pack.native_promql = True
+        if not getattr(args, "dataset_filter", ""):
+            rule_pack.metrics_dataset_filter = ""
 
 
 def _build_dashboard_run_summary(
@@ -746,6 +879,128 @@ def _validate_compiled_layout_after_compile(
     return layout_ok, layout_output
 
 
+def _run_preflight_reporting(
+    *,
+    args: argparse.Namespace,
+    results: list[Any],
+    resolver: Any,
+    base_dir: Path,
+    validation_summary: dict[str, Any],
+    validation_records: list[dict[str, Any]],
+    verification_payload: dict[str, Any],
+) -> dict[str, Any]:
+    source_urls_configured = bool(
+        getattr(args, "prometheus_url", "") or getattr(args, "loki_url", ""),
+    )
+
+    print("\n  Preflight probes...")
+    referenced_metrics = _collect_referenced_metrics(results)
+    referenced_labels = _collect_referenced_labels(results)
+
+    source_inventory = probe_source_metric_inventory(
+        getattr(args, "prometheus_url", "") or "",
+        required_metrics=referenced_metrics,
+        required_labels=referenced_labels,
+    )
+    if source_inventory.get("status") == "ok":
+        found = len(source_inventory.get("metrics_found", []))
+        missing = len(source_inventory.get("metrics_missing", []))
+        avail = len(source_inventory.get("available_metrics", []))
+        print(
+            f"    Source inventory: {avail} metrics in Prometheus, "
+            f"{found} referenced found, {missing} referenced missing"
+        )
+    elif source_inventory.get("status") == "error":
+        print(f"    Source inventory: error ({source_inventory.get('error', '')})")
+    else:
+        print("    Source inventory: not configured (pass --prometheus-url)")
+
+    schema_contract = build_target_schema_contract(results, resolver)
+    target_contract_summary = build_target_contract_summary(results)
+    required_index_patterns = list(
+        schema_contract.get("required_indexes", {}).keys(),
+    )
+
+    target_readiness = probe_target_readiness(
+        args.es_url, required_index_patterns,
+        es_api_key=args.es_api_key or None,
+    )
+    if target_readiness.get("cluster_health"):
+        health = target_readiness["cluster_health"]
+        tpl_count = sum(
+            v.get("found", 0)
+            for v in target_readiness.get("index_templates", {}).values()
+        )
+        ds_count = sum(
+            v.get("found", 0)
+            for v in target_readiness.get("data_streams", {}).values()
+        )
+        if health.get("unsupported"):
+            print(
+                f"    Target readiness: cluster {health.get('status', '?').upper()} "
+                f"(cluster health API unavailable), {tpl_count} index templates, "
+                f"{ds_count} data streams"
+            )
+        else:
+            print(
+                f"    Target readiness: cluster {health.get('status', '?').upper()}, "
+                f"{health.get('number_of_data_nodes', '?')} data nodes, "
+                f"{tpl_count} index templates, {ds_count} data streams"
+            )
+    elif target_readiness.get("status") != "not_configured":
+        print(f"    Target readiness: errors ({target_readiness.get('errors', [])})")
+    else:
+        print("    Target readiness: not configured (pass --es-url)")
+
+    datasource_audit = build_datasource_audit(results)
+    ds_types = datasource_audit.get("datasource_types", {})
+    if ds_types:
+        parts = [f"{t}:{c}" for t, c in ds_types.items()]
+        non_mig = datasource_audit.get("non_migratable_panels", 0)
+        extra = f" ({non_mig} non-migratable)" if non_mig else ""
+        print(f"    Datasource audit: {', '.join(parts)}{extra}")
+
+    complexity_scores = build_dashboard_complexity(results)
+    high = sum(1 for s in complexity_scores if s.get("complexity_score", 0) >= 50)
+    if high:
+        print(f"    Complexity: {high} dashboards scored >= 50 (high manual effort)")
+
+    preflight_report = build_preflight_report(
+        results,
+        validation_summary,
+        validation_records,
+        verification_payload,
+        schema_contract,
+        target_contract_summary=target_contract_summary,
+        source_urls_configured=source_urls_configured,
+        target_url_configured=bool(args.es_url),
+        source_inventory=source_inventory,
+        target_readiness=target_readiness,
+        datasource_audit=datasource_audit,
+        complexity_scores=complexity_scores,
+    )
+
+    preflight_path = base_dir / "preflight_report.json"
+    contract_path = base_dir / "required_target_contract.json"
+    target_contract_path = base_dir / "target_query_contract_summary.json"
+    save_preflight_report(preflight_report, preflight_path)
+    save_preflight_json(schema_contract, contract_path)
+    save_preflight_json(target_contract_summary, target_contract_path)
+    print(f"  Preflight report: {preflight_path}")
+    print(f"  Target schema contract: {contract_path}")
+    print(f"  Target contract summary: {target_contract_path}")
+
+    if args.suggest_rule_pack_out and validation_summary:
+        write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
+        print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
+
+    action_summary = preflight_report.get("customer_action_summary", "")
+    if action_summary:
+        print(f"\n{action_summary}")
+
+    return preflight_report
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     _validate_field_profile(args)
@@ -806,6 +1061,7 @@ def main(argv: list[str] | None = None):
         return
 
     rule_pack = _load_configured_rule_pack(args)
+    _apply_native_promql_to_rule_pack(rule_pack, args)
 
     if args.es_api_key:
         configure_es_auth(args.es_api_key)
@@ -1239,109 +1495,15 @@ def main(argv: list[str] | None = None):
     )
 
     if args.preflight:
-        source_urls_configured = bool(
-            getattr(args, "prometheus_url", "") or getattr(args, "loki_url", ""),
+        _run_preflight_reporting(
+            args=args,
+            results=results,
+            resolver=resolver,
+            base_dir=base_dir,
+            validation_summary=validation_summary,
+            validation_records=validation_records,
+            verification_payload=verification_payload,
         )
-
-        print("\n  Preflight probes...")
-        referenced_metrics = _collect_referenced_metrics(results)
-        referenced_labels = _collect_referenced_labels(results)
-
-        source_inventory = probe_source_metric_inventory(
-            getattr(args, "prometheus_url", "") or "",
-            required_metrics=referenced_metrics,
-            required_labels=referenced_labels,
-        )
-        if source_inventory.get("status") == "ok":
-            found = len(source_inventory.get("metrics_found", []))
-            missing = len(source_inventory.get("metrics_missing", []))
-            avail = len(source_inventory.get("available_metrics", []))
-            print(
-                f"    Source inventory: {avail} metrics in Prometheus, "
-                f"{found} referenced found, {missing} referenced missing"
-            )
-        elif source_inventory.get("status") == "error":
-            print(f"    Source inventory: error ({source_inventory.get('error', '')})")
-        else:
-            print("    Source inventory: not configured (pass --prometheus-url)")
-
-        schema_contract = build_target_schema_contract(results, resolver)
-        required_index_patterns = list(
-            schema_contract.get("required_indexes", {}).keys(),
-        )
-
-        target_readiness = probe_target_readiness(
-            args.es_url, required_index_patterns,
-            es_api_key=args.es_api_key or None,
-        )
-        if target_readiness.get("cluster_health"):
-            health = target_readiness["cluster_health"]
-            tpl_count = sum(
-                v.get("found", 0)
-                for v in target_readiness.get("index_templates", {}).values()
-            )
-            ds_count = sum(
-                v.get("found", 0)
-                for v in target_readiness.get("data_streams", {}).values()
-            )
-            if health.get("unsupported"):
-                print(
-                    f"    Target readiness: cluster {health.get('status', '?').upper()} "
-                    f"(cluster health API unavailable), {tpl_count} index templates, "
-                    f"{ds_count} data streams"
-                )
-            else:
-                print(
-                    f"    Target readiness: cluster {health.get('status', '?').upper()}, "
-                    f"{health.get('number_of_data_nodes', '?')} data nodes, "
-                    f"{tpl_count} index templates, {ds_count} data streams"
-                )
-        elif target_readiness.get("status") != "not_configured":
-            print(f"    Target readiness: errors ({target_readiness.get('errors', [])})")
-        else:
-            print("    Target readiness: not configured (pass --es-url)")
-
-        datasource_audit = build_datasource_audit(results)
-        ds_types = datasource_audit.get("datasource_types", {})
-        if ds_types:
-            parts = [f"{t}:{c}" for t, c in ds_types.items()]
-            non_mig = datasource_audit.get("non_migratable_panels", 0)
-            extra = f" ({non_mig} non-migratable)" if non_mig else ""
-            print(f"    Datasource audit: {', '.join(parts)}{extra}")
-
-        complexity_scores = build_dashboard_complexity(results)
-        high = sum(1 for s in complexity_scores if s.get("complexity_score", 0) >= 50)
-        if high:
-            print(f"    Complexity: {high} dashboards scored >= 50 (high manual effort)")
-
-        preflight_report = build_preflight_report(
-            results,
-            validation_summary,
-            validation_records,
-            verification_payload,
-            schema_contract,
-            source_urls_configured=source_urls_configured,
-            target_url_configured=bool(args.es_url),
-            source_inventory=source_inventory,
-            target_readiness=target_readiness,
-            datasource_audit=datasource_audit,
-            complexity_scores=complexity_scores,
-        )
-
-        preflight_path = base_dir / "preflight_report.json"
-        contract_path = base_dir / "required_target_contract.json"
-        save_preflight_report(preflight_report, preflight_path)
-        save_schema_contract(schema_contract, contract_path)
-        print(f"  Preflight report: {preflight_path}")
-        print(f"  Target schema contract: {contract_path}")
-
-        if args.suggest_rule_pack_out and validation_summary:
-            write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
-            print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
-
-        action_summary = preflight_report.get("customer_action_summary", "")
-        if action_summary:
-            print(f"\n{action_summary}")
 
     print("\n[7/7] Rollout plan & feature summaries...")
     rollout_plan = build_rollout_plan(

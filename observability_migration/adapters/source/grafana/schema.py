@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import requests
 
 from observability_migration.core.verification.field_capabilities import (
@@ -64,6 +66,9 @@ class SchemaResolver:
         "mode": ["mode"],
     }
 
+    _PROMETHEUS_LABEL_RE = re.compile(r"^prometheus\.labels\.[A-Za-z_][A-Za-z0-9_]*$")
+    _PROMETHEUS_METRIC_LEAF_RE = re.compile(r"^prometheus\.[A-Za-z_][A-Za-z0-9_]*\.(counter|value)$")
+
     def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None):
         self._rule_pack = rule_pack
         self._es_url = es_url
@@ -73,6 +78,8 @@ class SchemaResolver:
         self._discovered_mappings = {}
         self._discovery_attempted = False
         self._concrete_index_cache = None
+        self._schema_profile = None
+        self._schema_profile_cache_id = None
 
     def _candidate_fields(self, label):
         candidates = []
@@ -110,6 +117,50 @@ class SchemaResolver:
                 self._build_discovered_mappings()
         except Exception:
             pass
+
+    def _current_schema_profile(self):
+        """Return the schema profile for the current `_field_cache`.
+
+        Detection runs lazily and re-runs whenever the cache identity changes,
+        so callers that seed `_field_cache` directly (e.g. tests) still get a
+        correct profile without having to invoke detection manually.
+        """
+        cache = self._field_cache
+        if not cache:
+            return None
+        cache_id = id(cache)
+        if self._schema_profile_cache_id != cache_id:
+            self._schema_profile = self._compute_schema_profile(cache)
+            self._schema_profile_cache_id = cache_id
+        return self._schema_profile
+
+    @classmethod
+    def _compute_schema_profile(cls, field_cache):
+        """Identify well-known target layouts from `field_cache`.
+
+        Currently recognizes the Elastic Fleet `prometheus.remote_write` data
+        stream layout, where labels live under `prometheus.labels.<name>` and
+        metrics under `prometheus.<metric>.{counter,value}`.
+        """
+        has_prom_label = False
+        has_prom_metric_leaf = False
+        for field_name in field_cache:
+            if not has_prom_label and cls._PROMETHEUS_LABEL_RE.match(field_name):
+                has_prom_label = True
+            if not has_prom_metric_leaf and cls._PROMETHEUS_METRIC_LEAF_RE.match(field_name):
+                has_prom_metric_leaf = True
+            if has_prom_label and has_prom_metric_leaf:
+                return "prometheus_remote_write"
+        return None
+
+    def schema_profile(self):
+        """Return the detected schema profile identifier, or `None`.
+
+        Triggers field discovery on first access so callers don't need to
+        sequence `_discover_fields()` manually.
+        """
+        self._discover_fields()
+        return self._current_schema_profile()
 
     def _build_discovered_mappings(self):
         known_fields = set((self._field_cache or {}).keys())
@@ -155,14 +206,62 @@ class SchemaResolver:
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
         self._discover_fields()
-        if label in self._discovered_mappings:
-            return self._discovered_mappings[label]
+        # Source-faithful: if the target advertises the original label as a real
+        # field, use it as-is. This keeps PromQL semantics intact when the target
+        # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
         if self._field_cache and label in self._field_cache:
             return label
+        # Fleet `prometheus.remote_write` data streams store the original
+        # Prometheus label `<name>` under `prometheus.labels.<name>`. When that
+        # profile is active and the namespaced field exists, prefer it over
+        # the OTEL candidates below — the namespaced form is the actual stored
+        # field and OTEL fields are not present at all in this layout.
+        if self._current_schema_profile() == "prometheus_remote_write":
+            namespaced = f"prometheus.labels.{label}"
+            if namespaced in self._field_cache:
+                return namespaced
+        # Otherwise, fall back to OTEL/Prometheus normalization candidates.
+        if label in self._discovered_mappings:
+            return self._discovered_mappings[label]
         candidates = self._candidate_fields(label)
         if candidates:
             return candidates[0]
         return label
+
+    def resolve_metric_field(self, metric_name, *, prefer=None):
+        """Resolve a PromQL metric name to its actual stored field.
+
+        For most layouts this is a passthrough (the metric name is the field
+        name). For the Fleet `prometheus.remote_write` layout, metrics are
+        stored as `prometheus.<metric>.{counter,value,rate}`; this method
+        picks the suffix matching the metric's role.
+
+        The ``prefer`` keyword controls suffix priority:
+        - ``"counter"``: counter → rate → value (for RATE/IRATE/INCREASE)
+        - ``"rate"``: rate → counter → value (when a precomputed rate field exists)
+        - ``"gauge"`` or ``None``: value → counter → rate (default)
+
+        When the profile is active but no matching field exists in the cache,
+        returns the expected default-layout name `prometheus.<metric>.value`
+        so the contract layer can surface the missing field via preflight.
+        """
+        self._discover_fields()
+        if self._current_schema_profile() != "prometheus_remote_write":
+            return metric_name
+        if self._field_cache and metric_name in self._field_cache:
+            return metric_name
+        if prefer == "counter":
+            suffixes = (".counter", ".rate", ".value")
+        elif prefer == "rate":
+            suffixes = (".rate", ".counter", ".value")
+        else:
+            suffixes = (".value", ".counter", ".rate")
+        for suffix in suffixes:
+            candidate = f"prometheus.{metric_name}{suffix}"
+            if self._field_cache and candidate in self._field_cache:
+                return candidate
+        default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
+        return f"prometheus.{metric_name}{default_suffix}"
 
     def resolve_labels(self, labels):
         resolved = []
@@ -210,7 +309,16 @@ class SchemaResolver:
     def is_counter(self, metric_name):
         if any(metric_name.endswith(s) for s in self._rule_pack.counter_suffixes):
             return True
-        return is_counter_metric_field(self.field_capability(metric_name))
+        if is_counter_metric_field(self.field_capability(metric_name)):
+            return True
+        # In the Fleet `prometheus.remote_write` layout the metric leaf is
+        # `prometheus.<metric>.counter`; consult that capability when the bare
+        # name isn't directly cached.
+        if self._current_schema_profile() == "prometheus_remote_write":
+            counter_field = f"prometheus.{metric_name}.counter"
+            if self._field_cache and counter_field in self._field_cache:
+                return is_counter_metric_field(self.field_capability(counter_field))
+        return False
 
     def resolve_control_field(self, variable_name):
         if variable_name in self._rule_pack.control_field_overrides:

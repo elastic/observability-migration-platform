@@ -53,26 +53,69 @@ class ESQLShape:
 
 
 def split_esql_pipeline(esql):
+    """Split an ES|QL pipeline on top-level ``|`` separators.
+
+    The splitter understands three string forms so pipes inside string
+    literals do not accidentally split a stage:
+
+    * ``\"\"\"...\"\"\"`` — ES|QL raw triple-quoted strings. Backslash escapes
+      are *not* processed; the literal terminates at the next ``\"\"\"``.
+    * ``\"...\"`` — regular double-quoted strings.
+    * ``'...'`` — kept for safety even though ES|QL does not officially use
+      single-quoted string literals.
+
+    Without triple-quoted awareness, each individual ``\"`` in a
+    ``\"\"\"...\"\"\"`` literal would flip an in/out-of-quote boundary, which
+    causes pipeline stages following the literal to be merged or dropped
+    whenever the surrounding string contains additional ``\"`` characters
+    (as the native PROMQL emission's ``REPLACE(..., \"\"\"...\"\"\", \"$1\")``
+    calls routinely do).
+    """
+    text = str(esql or "")
     parts = []
     current = []
-    in_quote = None
-    for char in str(esql or ""):
-        if in_quote:
+    mode = "out"
+    quote_char = None
+    i = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if mode == "in_triple":
+            if char == '"' and text.startswith('"""', i):
+                current.append('"""')
+                i += 3
+                mode = "out"
+                continue
             current.append(char)
-            if char == in_quote:
-                in_quote = None
+            i += 1
             continue
-        if char in ("'", '"'):
-            in_quote = char
+        if mode == "in_single":
             current.append(char)
+            if char == quote_char:
+                mode = "out"
+                quote_char = None
+            i += 1
+            continue
+        if char == '"' and text.startswith('"""', i):
+            current.append('"""')
+            i += 3
+            mode = "in_triple"
+            continue
+        if char in ('"', "'"):
+            current.append(char)
+            mode = "in_single"
+            quote_char = char
+            i += 1
             continue
         if char == "|":
             part = "".join(current).strip()
             if part:
                 parts.append(part)
             current = []
+            i += 1
             continue
         current.append(char)
+        i += 1
     tail = "".join(current).strip()
     if tail:
         parts.append(tail)

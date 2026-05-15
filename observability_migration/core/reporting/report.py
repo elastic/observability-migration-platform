@@ -91,6 +91,9 @@ class PanelResult:
     metadata_polish: dict = field(default_factory=dict)
     target_candidates: list = field(default_factory=list)
     verification_packet: dict = field(default_factory=dict)
+    target_query_contract: Any = field(default_factory=dict)
+    contract_evaluation: Any = field(default_factory=dict)
+    fulfillment_plan: Any = field(default_factory=dict)
     review_explanation: dict = field(default_factory=dict)
     runtime_rollups: list = field(default_factory=list)
     link_migrations: list = field(default_factory=list)
@@ -391,6 +394,9 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
                     "metadata_polish": pr.metadata_polish,
                     "target_candidates": pr.target_candidates,
                     "verification_packet": pr.verification_packet,
+                    "target_query_contract": _ir_to_dict(pr.target_query_contract),
+                    "contract_evaluation": _ir_to_dict(pr.contract_evaluation),
+                    "fulfillment_plan": _ir_to_dict(pr.fulfillment_plan),
                     "review_explanation": pr.review_explanation,
                     "runtime_rollups": pr.runtime_rollups,
                     "post_validation_action": pr.post_validation_action,

@@ -58,7 +58,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--esql-index", default="")
     migrate.add_argument("--logs-index", default="")
-    migrate.add_argument("--native-promql", action="store_true")
+    native_promql_group = migrate.add_mutually_exclusive_group()
+    native_promql_group.add_argument(
+        "--native-promql",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_on",
+        help=(
+            "Force native PROMQL emission regardless of cluster support detection "
+            "(for Elastic clusters with the ES|QL PROMQL command). Forwarded to "
+            "the underlying source adapter."
+        ),
+    )
+    native_promql_group.add_argument(
+        "--no-native-promql",
+        dest="native_promql_flag",
+        action="store_const",
+        const="force_off",
+        help=(
+            "Force ES|QL translation even when the cluster supports the PROMQL command "
+            "(opt out of the auto-detected default). Forwarded to the underlying "
+            "source adapter."
+        ),
+    )
+    migrate.set_defaults(native_promql_flag="auto")
     migrate.add_argument(
         "--fetch-alerts",
         action="store_true",
@@ -252,8 +275,11 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--esql-index", args.esql_index])
     if args.logs_index:
         legacy_argv.extend(["--logs-index", args.logs_index])
-    if args.native_promql:
+    mode = getattr(args, "native_promql_flag", "auto")
+    if mode == "force_on":
         legacy_argv.append("--native-promql")
+    elif mode == "force_off":
+        legacy_argv.append("--no-native-promql")
     if args.validate:
         legacy_argv.append("--validate")
     if args.upload:
