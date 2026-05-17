@@ -232,17 +232,52 @@ def build_runtime_summary(result):
     }
 
 
+def _row_count(result):
+    """Number of Grafana ``type=="row"`` containers recorded on a result.
+
+    Rows are structural section dividers, not panels — they're tracked in
+    panel_results with grafana_type=="row" so we can separate them out for
+    reporting without changing the underlying data model.
+    """
+    return sum(1 for pr in result.panel_results if pr.grafana_type == "row")
+
+
 def print_report(results, compile_results):
-    total_panels = sum(r.total_panels for r in results)
+    total_rows = sum(_row_count(r) for r in results)
+    # ``total_panels`` on the MigrationResult includes rows (it's the raw count
+    # from _flatten_dashboard_panels). The user-facing "panels found" number is
+    # panels-only so the breakdown (Migrated/Warn/Man/NF) sums consistently.
+    total_panels = sum(r.total_panels for r in results) - total_rows
     total_migrated = sum(r.migrated for r in results)
     total_warnings = sum(r.migrated_with_warnings for r in results)
     total_manual = sum(r.requires_manual for r in results)
     total_nf = sum(r.not_feasible for r in results)
-    total_skipped = sum(r.skipped for r in results)
+    # r.skipped counts every panel with status=="skipped" — including rows. The
+    # remainder is genuine panel skips (variable-expansion warnings, L4 repeat
+    # caps, non-normalized group panels, etc.) which still deserve a line.
+    total_panel_skipped = sum(r.skipped for r in results) - total_rows
     compiled_ok = sum(1 for _, ok, _ in compile_results if ok)
-    total_green = sum(1 for r in results for pr in r.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Green")
-    total_yellow = sum(1 for r in results for pr in r.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Yellow")
-    total_red = sum(1 for r in results for pr in r.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Red")
+    total_green = sum(
+        1
+        for r in results
+        for pr in r.panel_results
+        if pr.grafana_type != "row"
+        and (pr.verification_packet or {}).get("semantic_gate") == "Green"
+    )
+    total_yellow = sum(
+        1
+        for r in results
+        for pr in r.panel_results
+        if pr.grafana_type != "row"
+        and (pr.verification_packet or {}).get("semantic_gate") == "Yellow"
+    )
+    total_red = sum(
+        1
+        for r in results
+        for pr in r.panel_results
+        if pr.grafana_type != "row"
+        and (pr.verification_packet or {}).get("semantic_gate") == "Red"
+    )
     upload_attempted = sum(1 for r in results if r.upload_attempted)
     uploaded_ok = sum(1 for r in results if r.uploaded)
 
@@ -255,9 +290,12 @@ def print_report(results, compile_results):
     print(f"  With warnings:     {total_warnings} ({pct(total_warnings, total_panels)})")
     print(f"  Requires manual:   {total_manual} ({pct(total_manual, total_panels)})")
     print(f"  Not feasible:      {total_nf} ({pct(total_nf, total_panels)})")
-    print(f"  Skipped (rows):    {total_skipped} ({pct(total_skipped, total_panels)})")
+    if total_panel_skipped:
+        print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
         print(f"  Verification gate: {total_green} Green / {total_yellow} Yellow / {total_red} Red")
+    if total_rows:
+        print(f"  Row containers:    {total_rows} (structural, not migrated)")
     print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
@@ -269,8 +307,9 @@ def print_report(results, compile_results):
 
     for r in results:
         comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "?"
+        panels_for_dashboard = r.total_panels - _row_count(r)
         print(
-            f"{r.dashboard_title[:39]:<40} {r.total_panels:>6} {r.migrated:>5} "
+            f"{r.dashboard_title[:39]:<40} {panels_for_dashboard:>6} {r.migrated:>5} "
             f"{r.migrated_with_warnings:>5} {r.requires_manual:>5} {r.not_feasible:>5} {comp_status:>10}"
         )
 
