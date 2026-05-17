@@ -3196,7 +3196,7 @@ def _flatten_dashboard_panels(dashboard):
 def _build_section_groups(dashboard):
     """Group Grafana panels by their parent row.
 
-    Returns a list of ``(row_title | None, [panel, ...], is_explicit_row)``.
+    Returns a list of ``(row_title | None, [panel, ...], is_explicit_row, collapsed)``.
 
     * ``row_title`` is the source row's title (``None`` when the row
       had an empty/missing title).
@@ -3204,27 +3204,37 @@ def _build_section_groups(dashboard):
       Grafana row container (modern ``type: row`` or legacy
       ``rows[]``). False marks panels that genuinely live at the
       top level, before any row.
+    * ``collapsed`` mirrors the source row's open/closed state:
+      modern ``type: row`` panels carry ``collapsed: bool``, legacy
+      ``rows[]`` entries carry ``collapse: bool`` (note the missing
+      ``-d`` — see prometheus-all.json fixture / Grafana schema v14).
+      Top-level (non-row) groups always have ``collapsed=False``.
 
     Downstream, :func:`translate_dashboard` uses ``is_explicit_row``
     to decide whether to emit a Kibana section (L3): every explicit
     row becomes a section, even when the source row had no title.
-    Top-level panels stay flat. This preserves the author's
-    grouping intent and keeps the section-emit path the single
-    source of truth for the "always emit a section for a row" rule.
+    Top-level panels stay flat. ``collapsed`` is threaded into the
+    emitted ``section.collapsed`` field so the Kibana dashboard
+    opens with the same sections expanded/closed as the source
+    (issue #23).
     """
-    groups: list[tuple[str | None, list[dict], bool]] = []
+    groups: list[tuple[str | None, list[dict], bool, bool]] = []
     current_title: str | None = None
     current_panels: list[dict] = []
     current_is_row: bool = False
+    current_collapsed: bool = False
 
     top_level = dashboard.get("panels", [])
     for panel in sorted(top_level, key=_panel_sort_key):
         if panel.get("type") == "row":
             if current_panels or groups:
-                groups.append((current_title, current_panels, current_is_row))
+                groups.append(
+                    (current_title, current_panels, current_is_row, current_collapsed)
+                )
             current_title = str(panel.get("title") or "").strip() or None
             current_panels = list(panel.get("panels", []))
             current_is_row = True
+            current_collapsed = bool(panel.get("collapsed", False))
         else:
             current_panels.append(panel)
 
@@ -3233,6 +3243,10 @@ def _build_section_groups(dashboard):
         row_panels = row.get("panels", [])
         if not row_panels:
             continue
+        # Legacy (schemaVersion < 14) rows use ``collapse`` (no -d); a
+        # handful of exports also carry ``collapsed`` so accept either
+        # rather than silently ignoring the wrong spelling.
+        row_collapsed = bool(row.get("collapse", row.get("collapsed", False)))
         row_height_px = row.get("height", 250)
         if isinstance(row_height_px, str):
             row_height_px = int("".join(c for c in row_height_px if c.isdigit()) or "250")
@@ -3253,10 +3267,12 @@ def _build_section_groups(dashboard):
             if x_cursor >= GRAFANA_GRID_COLS:
                 x_cursor = 0
             patched.append(enriched)
-        groups.append((row_title, patched, True))
+        groups.append((row_title, patched, True, row_collapsed))
 
     if current_panels or not groups:
-        groups.append((current_title, current_panels, current_is_row))
+        groups.append(
+            (current_title, current_panels, current_is_row, current_collapsed)
+        )
 
     return groups
 
@@ -4202,7 +4218,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
 
     used_section_titles: dict[str, int] = {}
     untitled_section_counter = 0
-    for row_title, group_panels, is_explicit_row in section_groups:
+    for row_title, group_panels, is_explicit_row, source_collapsed in section_groups:
         normalized_group = _normalize_panel_group(row_title, group_panels)
         legacy_group = any(bool(panel.get("_legacy_row")) for panel in group_panels)
         for panel_result in normalized_group.skipped_panel_results:
@@ -4266,7 +4282,12 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             section_panel = {
                 "title": unique_title,
                 "section": {
-                    "collapsed": False,
+                    # Issue #23: mirror the source row's collapsed state so the
+                    # Kibana dashboard opens with the same sections expanded /
+                    # closed as the Grafana original. Modern type=="row" panels
+                    # carry ``collapsed``; legacy rows[] carry ``collapse``
+                    # (both normalised upstream in _build_section_groups).
+                    "collapsed": source_collapsed,
                     "panels": translated,
                 },
             }
