@@ -1444,12 +1444,17 @@ def _matcher_alias_suffix(frag):
     return "_".join(part for part in parts if part)
 
 
-def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
+def _field_is_proven_tsds_gauge(metric_name, resolver):
+    """Return True iff resolver proves the metric field is a TSDS gauge.
+
+    "Proven" means the resolver has a non-empty field capability for the metric
+    (or its resolved physical name) with ``time_series_metric=gauge``, numeric
+    type family, and no conflicting type mappings. This signal lets the
+    translator emit ``TS`` (which has time-series-aware aggregation semantics)
+    instead of ``FROM`` (which sums every per-sample doc) for the field — see
+    issue #8.
+    """
     if not metric_name or not resolver:
-        return False
-    if group_fields:
-        return False
-    if frag and frag.extra.get("wrapped_scalar"):
         return False
     capability = resolver.field_capability(metric_name)
     if capability is None:
@@ -1465,6 +1470,14 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
     return capability.type_family == "numeric"
 
 
+def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
+    if group_fields:
+        return False
+    if frag and frag.extra.get("wrapped_scalar"):
+        return False
+    return _field_is_proven_tsds_gauge(metric_name, resolver)
+
+
 def _build_measure_spec(
     frag,
     resolver,
@@ -1474,6 +1487,7 @@ def _build_measure_spec(
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
+    allow_tsds_gauge_promotion=True,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
@@ -1503,6 +1517,19 @@ def _build_measure_spec(
         can_use_direct_ts_gauge = allow_direct_ts_gauge and _can_use_direct_ts_gauge(
             frag.metric, resolver, group_fields, frag
         )
+        # Issue #8: keep TS for proven TSDS gauges whenever the direct-gauge path
+        # isn't available — either because of group_fields or because the caller
+        # disabled it (multi-target fusion uses ``allow_direct_ts_gauge=False``
+        # since ``STATS field = field`` cannot be CASE-wrapped, but ``AVG(field)``
+        # can). ``FROM`` against a TSDS sums every per-sample doc and inflates the
+        # value, so use ``TS`` with the default aggregator instead.
+        can_use_ts_aggregated_gauge = (
+            allow_tsds_gauge_promotion
+            and (not is_counter)
+            and (not can_use_direct_ts_gauge)
+            and (not (frag.extra.get("wrapped_scalar") if frag else False))
+            and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        )
         if is_counter:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
@@ -1518,6 +1545,14 @@ def _build_measure_spec(
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             stats_expr = metric_field
+        elif can_use_ts_aggregated_gauge:
+            source = "TS"
+            time_filter = rule_pack.ts_time_filter
+            bucket_expr = rule_pack.ts_bucket
+            default_agg = rule_pack.default_gauge_agg.upper()
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            stats_expr = f"{default_agg}({metric_field})"
+            warnings.append(f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
@@ -1533,7 +1568,14 @@ def _build_measure_spec(
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:
             return None
-        source = "TS" if is_counter else "FROM"
+        # Issue #8: gauge aggregations against a proven TSDS must use TS, not FROM —
+        # FROM sums every per-sample doc instead of one value per series per bucket.
+        is_proven_tsds_gauge = (
+            allow_tsds_gauge_promotion
+            and (not is_counter)
+            and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        )
+        source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         if is_counter and frag.outer_agg != "count":
@@ -1668,8 +1710,11 @@ def _measure_specs_mergeable(specs):
         if spec.group_fields != base.group_fields:
             return False
         if sorted(spec.filters) != base_filters:
-            if base.source_type != "FROM":
-                return False
+            # Divergent per-target filters must be CASE-wrapped into the
+            # stats_expr. ``_inline_filters_into_stats_expr`` already verifies
+            # the expression is shaped as ``AGG(field)`` (returns None otherwise)
+            # so the source command (FROM or TS) does not matter — CASE inside
+            # an aggregation works the same in either mode (issue #8 follow-up).
             if _inline_filters_into_stats_expr(base.stats_expr, base.filters) is None:
                 return False
             if _inline_filters_into_stats_expr(spec.stats_expr, spec.filters) is None:
@@ -1981,6 +2026,7 @@ def _build_formula_plan(
     preferred_group_labels=None,
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
+    allow_tsds_gauge_promotion=True,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
@@ -2022,6 +2068,7 @@ def _build_formula_plan(
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
+            allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -2032,9 +2079,31 @@ def _build_formula_plan(
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
+            allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
         )
         if not left_plan or not right_plan:
             return None
+        # If one operand was promoted to TS (proven TSDS gauge) but the other
+        # stayed on FROM (unknown / non-TSDS), rebuild both with promotion
+        # disabled so they share a source command. FROM is the safe common
+        # denominator; promoting unknown operands to TS would risk runtime
+        # errors on non-TSDS fields. Same-source operands skip this rebuild.
+        if allow_tsds_gauge_promotion:
+            left_sources = {spec.source_type for spec in left_plan.specs}
+            right_sources = {spec.source_type for spec in right_plan.specs}
+            all_sources = left_sources | right_sources
+            if len(all_sources) > 1:
+                return _build_formula_plan(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_tsds_gauge_promotion=False,
+                )
         warnings = []
         for warning in left_plan.warnings + right_plan.warnings:
             if warning not in warnings:
@@ -2054,6 +2123,7 @@ def _build_formula_plan(
         preferred_group_labels=preferred_group_labels,
         allow_direct_ts_gauge=allow_direct_ts_gauge,
         preferred_group_labels_origin=preferred_group_labels_origin,
+        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
     )
     if not spec:
         return None

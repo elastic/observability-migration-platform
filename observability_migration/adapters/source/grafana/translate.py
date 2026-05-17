@@ -44,6 +44,7 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
+    _field_is_proven_tsds_gauge,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -1304,9 +1305,16 @@ def simple_agg_family_rule(context):
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
         metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         filter_value = _format_scalar_value(pre_agg_filter["value"])
+        # Issue #8: when the filtered metric is a proven TSDS gauge, the pre-agg
+        # filter must run under TS so that the outer SUM/AVG/MAX aggregates one
+        # value per (series, bucket) instead of every per-sample doc.
+        is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        pre_source = "TS" if is_proven_tsds_gauge else "FROM"
+        pre_time_filter = rp.ts_time_filter if pre_source == "TS" else rp.from_time_filter
+        pre_bucket = rp.ts_bucket if pre_source == "TS" else rp.from_bucket
         lines = [
-            f"FROM {context.index}",
-            f"| WHERE {rp.from_time_filter}",
+            f"{pre_source} {context.index}",
+            f"| WHERE {pre_time_filter}",
             *_build_where_lines(filters),
             f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
@@ -1317,7 +1325,7 @@ def simple_agg_family_rule(context):
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
-                group_by_parts = [rp.from_bucket, *group_by_parts]
+                group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
             stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
             stats_line = f"| STATS {alias} = {stats_expr}"
@@ -1328,7 +1336,7 @@ def simple_agg_family_rule(context):
                 lines.append("| SORT time_bucket ASC")
         context.esql_query = "\n".join(lines)
         context.parser_backend = "fragment"
-        context.source_type = "FROM"
+        context.source_type = pre_source
         context.metric_name = alias
         context.output_metric_field = alias
         frag.extra.pop("post_filter", None)
@@ -1372,7 +1380,8 @@ def simple_agg_family_rule(context):
         context.translation_complete = True
         return "translated count of counter metric"
 
-    source = "TS" if is_counter else "FROM"
+    is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
+    source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
@@ -1453,6 +1462,17 @@ def simple_metric_family_rule(context):
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
+    # Issue #8: when the field is a proven TSDS gauge but ``_can_use_direct_ts_gauge``
+    # rejects it (group_fields present, or caller disabled the path), TS is still
+    # the correct source — ``FROM`` against a TSDS sums every per-sample doc and
+    # inflates the value. Wrap with default AVG so the result collapses cleanly
+    # whether grouping is present or not.
+    can_use_ts_aggregated_gauge = (
+        (not is_counter)
+        and (not can_use_direct_ts_gauge)
+        and (not (frag.extra.get("wrapped_scalar") if frag else False))
+        and _field_is_proven_tsds_gauge(frag.metric, resolver)
+    )
 
     if is_counter:
         source = "TS"
@@ -1472,6 +1492,17 @@ def simple_metric_family_rule(context):
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
         stats_expr = physical_metric
+    elif can_use_ts_aggregated_gauge:
+        source = "TS"
+        time_filter = rp.ts_time_filter
+        bucket = rp.ts_bucket
+        default_agg = rp.default_gauge_agg.upper()
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = f"{default_agg}({physical_metric})"
+        # No explicit PromQL aggregator was given; default to AVG so each
+        # (group_field, bucket) cell collapses cleanly when multiple series
+        # land in the same cell.
+        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
