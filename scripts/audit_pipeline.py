@@ -539,13 +539,17 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
     lines.append("real dashboards through every layer of the migration pipeline.\n")
     lines.append("Each panel shows: source query → translation trace → translated query → verdict.\n")
 
-    # Summary table
+    # Summary table — rows (type=="row") are structural containers, not panels,
+    # so the Panels column and the Skipped column both exclude them. A separate
+    # ``Rows`` column surfaces the count without conflating it with skipped panels.
     lines.append("## Dashboard Summary\n")
-    lines.append("| Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for a in audits:
         c = a.status_counts
-        audited_panels = len(a.panels)
+        row_count = sum(1 for p in a.panels if p.source_panel_type == "row")
+        audited_panels = len(a.panels) - row_count
+        panel_skipped = max(c.get("skipped", 0) - row_count, 0)
         lines.append(
             f"| {a.source} | {_escape_md(a.dashboard_title or a.file_name)} "
             f"| {audited_panels} "
@@ -553,7 +557,8 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
             f"| {c.get('migrated_with_warnings', c.get('warning', 0))} "
             f"| {c.get('requires_manual', 0)} "
             f"| {c.get('not_feasible', 0)} "
-            f"| {c.get('skipped', 0)} |"
+            f"| {panel_skipped} "
+            f"| {row_count} |"
         )
     lines.append("")
 
@@ -766,14 +771,18 @@ DATADOG_DOCS_PATH = ROOT / "docs" / "sources" / "datadog-trace.md"
 
 
 def _section_dashboard_summary(audits: list[DashboardAudit], *, source: str = "all") -> str:
+    # Rows (type=="row") are structural containers, not panels; they're tracked
+    # in a separate ``Rows`` column and excluded from the panel + skipped counts.
     lines = [
-        "| Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped |",
-        "|--------|-----------|--------|----------|----------|--------|--------------|---------|",
+        "| Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |",
+        "|--------|-----------|--------|----------|----------|--------|--------------|---------|------|",
     ]
     total_panels = 0
     for a in audits:
         c = a.status_counts
-        audited_panels = len(a.panels)
+        row_count = sum(1 for p in a.panels if p.source_panel_type == "row")
+        audited_panels = len(a.panels) - row_count
+        panel_skipped = max(c.get("skipped", 0) - row_count, 0)
         total_panels += audited_panels
         lines.append(
             f"| {a.source} | {_escape_md(a.dashboard_title or a.file_name)} "
@@ -782,7 +791,8 @@ def _section_dashboard_summary(audits: list[DashboardAudit], *, source: str = "a
             f"| {c.get('migrated_with_warnings', c.get('warning', 0))} "
             f"| {c.get('requires_manual', 0)} "
             f"| {c.get('not_feasible', 0)} "
-            f"| {c.get('skipped', 0)} |"
+            f"| {panel_skipped} "
+            f"| {row_count} |"
         )
     lines.append("")
     if source == "grafana":
@@ -979,12 +989,27 @@ def _section_appendix_stats(audits: list[DashboardAudit]) -> str:
     for a in audits:
         for k, v in a.status_counts.items():
             totals[k] = totals.get(k, 0) + v
-    total = sum(totals.values())
-    if total == 0:
+    grand_total = sum(totals.values())
+    if grand_total == 0:
         return "No panels audited."
 
+    # Match print_report's accounting: Grafana ``type=="row"`` containers are
+    # structural elements, not panels — pull them out so percentages and the
+    # "renderable panels" number describe migratable content only.
+    total_rows = sum(
+        1 for a in audits for p in a.panels if p.source_panel_type == "row"
+    )
+    total_panel_skipped = max(totals.get("skipped", 0) - total_rows, 0)
+    total = grand_total - total_rows
+
+    if total_rows:
+        elements_line = f"{grand_total} total ({total} panels + {total_rows} rows)"
+    else:
+        elements_line = f"{grand_total} total ({total} panels)"
+
     lines = ["From the latest trace run:", "", "```"]
-    lines.append(f"Total panels found:  {total}")
+    lines.append(f"Elements:            {elements_line}")
+    lines.append(f"Renderable panels:   {total}")
     for key, label in [
         ("migrated", "Migrated"),
         ("migrated_with_warnings", "With warnings"),
@@ -992,12 +1017,13 @@ def _section_appendix_stats(audits: list[DashboardAudit]) -> str:
         ("warning", "Warning"),
         ("requires_manual", "Requires manual"),
         ("not_feasible", "Not feasible"),
-        ("skipped", "Skipped"),
     ]:
         count = totals.get(key, 0)
         if count:
-            pct = count / total * 100
+            pct = count / total * 100 if total > 0 else 0.0
             lines.append(f"  {label + ':':<20s} {count:>4d} ({pct:.1f}%)")
+    pct = total_panel_skipped / total * 100 if total > 0 else 0.0
+    lines.append(f"  {'Skipped:':<20s} {total_panel_skipped:>4d} ({pct:.1f}%)")
     lines.append("```")
 
     verdicts: dict[str, int] = {}
