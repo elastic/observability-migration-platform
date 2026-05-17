@@ -425,8 +425,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         # resolve_label must still return the namespaced form, not the OTel field.
         self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
 
-    def test_translator_gauge_metric_uses_from_with_metrics_prefix_for_native_profile(self):
-        """Gauge metrics in native profile must use FROM (not TS) and still
+    def test_translator_gauge_metric_uses_ts_with_metrics_prefix_for_native_profile(self):
+        """Gauge metrics in native profile must use TS (issue #8: FROM against a
+        TSDS sums every per-sample doc and inflates the value) and still
         reference the `metrics.` prefixed field name."""
         self.seed_field_caps({
             "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
@@ -436,10 +437,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             'avg(process_resident_memory_bytes) by (instance)'
         )
         self.assertIn("metrics.process_resident_memory_bytes", translated.esql_query)
-        self.assertIn("FROM", translated.esql_query)
-        # TS source command uses TBUCKET; FROM uses BUCKET — absence of TBUCKET
-        # confirms the gauge metric correctly stayed on the FROM path.
-        self.assertNotIn("TBUCKET", translated.esql_query)
+        self.assertIn("TS metrics-*", translated.esql_query)
+        # TS source command uses TBUCKET; FROM uses BUCKET — presence of TBUCKET
+        # confirms the gauge metric correctly took the TS path.
+        self.assertIn("TBUCKET", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
 
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
@@ -873,6 +875,167 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
+
+    def test_issue8_simple_sum_gauge_on_proven_tsds_uses_ts(self):
+        # Issue #8: sum(gauge_metric) on a TSDS must emit TS, not FROM. With FROM
+        # against a TSDS, SUM(field) aggregates every per-sample doc in the bucket,
+        # giving inflated results (e.g. ~120 GB on a 8 GB host across one 5-min
+        # bucket). With TS, SUM aggregates one value per series within each bucket.
+        self.seed_field_caps(
+            {
+                "node_memory_MemTotal_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("sum(node_memory_MemTotal_bytes)")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("SUM(node_memory_MemTotal_bytes)", translated.esql_query)
+        self.assertIn("TBUCKET", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    def test_issue8_simple_avg_gauge_grouped_on_proven_tsds_uses_ts(self):
+        # avg by(instance)(gauge_metric) on TSDS must emit TS with grouping.
+        self.seed_field_caps(
+            {
+                "node_memory_MemTotal_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("avg by (instance) (node_memory_MemTotal_bytes)")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("AVG(node_memory_MemTotal_bytes)", translated.esql_query)
+        self.assertIn("instance", translated.esql_query)
+        self.assertIn("TBUCKET", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    def test_issue8_bare_gauge_with_preferred_grouping_on_proven_tsds_uses_ts(self):
+        # Bare gauge selector that picks up panel-level preferred_group_labels
+        # (e.g. from a `{{instance}}` legendFormat) must use TS — PR #19's
+        # ``_can_use_direct_ts_gauge`` returns False as soon as group_fields are
+        # present. The fix relaxes that for proven TSDS gauges since TS supports
+        # ``BY TBUCKET(...), label`` grouping.
+        self.seed_field_caps(
+            {
+                "node_memory_MemTotal_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate(
+            "node_memory_MemTotal_bytes",
+            panel_type="timeseries",
+            translation_hints={"preferred_group_labels": ["instance"]},
+        )
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("instance", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    def test_issue8_multi_target_gauge_fusion_uses_ts(self):
+        # Multi-target gauge fusion (translate.py: _build_multi_target_series_query)
+        # disables ``allow_direct_ts_gauge`` because ``STATS field = field`` cannot
+        # be CASE-wrapped per target. But ``AVG(field)`` can — so proven TSDS
+        # gauges must still take the TS path to avoid per-sample inflation.
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 204,
+            "type": "graph",
+            "title": "Systemd Units",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'node_systemd_units{state="active"}', "refId": "A", "legendFormat": "active"},
+                {"expr": 'node_systemd_units{state="failed"}', "refId": "B", "legendFormat": "failed"},
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        self.assertEqual(result.query_ir["source_type"], "TS")
+        self.assertIn("TS metrics-*", query)
+        self.assertIn("TBUCKET", query)
+        self.assertNotIn("FROM metrics-*", query)
+        # Per-target CASE filters must still appear so each target keeps its series.
+        self.assertIn('CASE((state == "active"', query)
+        self.assertIn('CASE((state == "failed"', query)
+
+    def test_issue8_pre_agg_filter_on_proven_tsds_gauge_uses_ts(self):
+        # Issue #8 (pre_agg_filter path): sum(gauge_metric > threshold) on a
+        # proven TSDS gauge must use TS. Under FROM, the WHERE filter still
+        # admits every per-sample doc, then SUM inflates the result.
+        self.seed_field_caps(
+            {
+                "node_filesystem_size_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("sum(node_filesystem_size_bytes > 1000)")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("SUM(node_filesystem_size_bytes)", translated.esql_query)
+        self.assertIn("node_filesystem_size_bytes > 1000", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    def test_issue8_pre_agg_filter_unknown_gauge_keeps_from(self):
+        # Without field caps proving TSDS, pre_agg_filter still falls back to FROM.
+        translated = self.translate("sum(unknown_metric > 0)")
+
+        self.assertEqual(translated.source_type, "FROM")
+        self.assertIn("FROM metrics-*", translated.esql_query)
+        self.assertIn("SUM(unknown_metric)", translated.esql_query)
+
+    def test_issue8_unknown_gauge_aggregation_keeps_from_fallback(self):
+        # When field caps aren't available, we don't know if the index is TSDS,
+        # so we keep the FROM fallback. This preserves the existing safe-default
+        # behaviour for unproven cases and only flips to TS when we have evidence.
+        translated = self.translate("sum(unknown_gauge_metric)")
+
+        self.assertEqual(translated.source_type, "FROM")
+        self.assertIn("FROM metrics-*", translated.esql_query)
+        self.assertIn("SUM(unknown_gauge_metric)", translated.esql_query)
 
     def test_native_promql_panel_records_promql_contract(self):
         self.rule_pack.native_promql = True
@@ -1567,17 +1730,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("AVG(node_systemd_units)", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), state", query)
+        # Issue #8: proven TSDS gauge takes the TS path (TBUCKET), not FROM (BUCKET).
+        self.assertIn("BY time_bucket = TBUCKET(5 minute), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
         self.assertTrue(any("No explicit aggregation" in r for r in result.reasons))
         self.assertFalse(any("only 1 could be migrated" in r for r in result.reasons))
-        self.assertEqual(result.query_ir["source_type"], "FROM")
+        self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "ts")
-        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
         self.assertEqual(result.fulfillment_plan["status"], "not_required")
         self.assertEqual(result.fulfillment_plan["actions"], [])
-        self.assertIn("FROM metrics-*", result.query_ir["target_query"])
+        self.assertIn("TS metrics-*", result.query_ir["target_query"])
         self.assertEqual(
             result.query_ir["source_expression"],
             'node_systemd_units{instance="$node",job="$job",state="active"} ||| '
@@ -1618,12 +1782,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("failed", metric_fields)
         self.assertIn('CASE((state == "active"', query)
         self.assertIn('CASE((state == "failed"', query)
-        self.assertEqual(result.query_ir["source_type"], "FROM")
+        # Issue #8: multi-target fused gauges on a proven TSDS now take the TS path.
+        self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "ts")
-        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
         self.assertEqual(result.fulfillment_plan["status"], "not_required")
         self.assertEqual(result.fulfillment_plan["actions"], [])
-        self.assertIn("FROM metrics-*", result.query_ir["target_query"])
+        self.assertIn("TS metrics-*", result.query_ir["target_query"])
 
     def test_fused_multi_metric_panel_contract_includes_all_metrics(self):
         self.seed_field_caps(
@@ -1852,15 +2017,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| EVAL computed_value =", translated.esql_query)
         self.assertIn("| KEEP time_bucket, computed_value", translated.esql_query)
 
-    def test_complex_binary_expr_inside_agg_translates(self):
+    def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
+        # sum(increase(A) / increase(B)) computes a per-element ratio then
+        # aggregates — semantically distinct from sum(A)/sum(B) and cannot
+        # be expressed accurately in ES|QL.
         expr = (
             'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) '
             '/ increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)'
         )
         translated = self.translate(expr, panel_type="graph")
+        self.assertEqual(translated.feasibility, "not_feasible")
+
+    def test_sum_over_metric_subtraction_applies_linearity(self):
+        # Bug A fix: sum(A - B) = sum(A) - sum(B) by linearity of SUM.
+        # Previously both metrics were collapsed to only the left operand.
+        expr = (
+            "sum(node_memory_MemTotal_bytes{cluster=\"$cluster\", job=\"$job\"} "
+            "- node_memory_MemAvailable_bytes{cluster=\"$cluster\", job=\"$job\"})"
+        )
+        translated = self.translate(expr, panel_type="timeseries")
         self.assertEqual(translated.feasibility, "feasible")
-        self.assertTrue(translated.metric_name, "Should have a metric name")
-        self.assertIn("INCREASE", translated.esql_query)
+        q = translated.esql_query or ""
+        self.assertIn("node_memory_MemTotal_bytes", q)
+        self.assertIn("node_memory_MemAvailable_bytes", q)
+
+    def test_nested_agg_preserves_label_filter(self):
+        # Bug B fix: avg(sum by(cpu)(rate(metric{mode!~"idle"}[5m]))) should
+        # retain the mode filter in the generated WHERE clause.
+        expr = 'avg(sum by (cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal"}[5m])))'
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertIn("RLIKE", q)
+        self.assertIn("idle", q)
 
     def test_rule_catalog_exposes_binary_expr_rule(self):
         catalog = migrate.build_rule_catalog(self.rule_pack)

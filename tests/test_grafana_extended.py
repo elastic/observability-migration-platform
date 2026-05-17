@@ -554,25 +554,27 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("changes(process_start_time_seconds[1h])")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
-    def test_same_metric_filtered_ratio_is_not_feasible_instead_of_silent_success(self):
+    def test_same_metric_filtered_ratio_uses_case_wrapped_numerator(self):
+        # Same-metric ratio where the numerator carries an extra filter
+        # (e.g. status=~"5.." for an error-rate panel). Issue #8 follow-up: the
+        # shared-measure pipeline now CASE-wraps the divergent filter into the
+        # numerator's stats_expr so both sides share a single TS source while
+        # the numerator is correctly scoped — this used to be refused as
+        # ``not_feasible`` for safety, but CASE-wrapping is the honest fix.
         expr = (
             '(sum(rate(http_requests_total{status=~"5..",service=~"api|worker"}[5m])) by (service) '
             '/ sum(rate(http_requests_total{service=~"api|worker"}[5m])) by (service)) * 100'
         )
         ctx = _translate(expr)
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(
-            any("cannot be translated safely yet" in w.lower() for w in ctx.warnings),
-            f"expected honest failure warning, got: {ctx.warnings}",
-        )
-
-        yaml_panel, result = _translate_panel(_make_panel(1, expr, panel_type="graph", title="Error Rate"))
-        self.assertIn("markdown", yaml_panel)
-        self.assertIn("http_requests_total", yaml_panel["markdown"]["content"])
-        self.assertEqual(result.query_ir.get("source_language"), "promql")
-        self.assertEqual(result.query_ir.get("family"), "binary_expr")
-        self.assertEqual(result.visual_ir.presentation.kind, "markdown")
-        self.assertEqual(result.visual_ir.metadata.get("query_language"), "promql")
+        self.assertEqual(ctx.feasibility, "feasible")
+        query = ctx.esql_query or ""
+        # Numerator scoped via CASE on the extra filter; denominator unscoped.
+        self.assertIn('CASE((status RLIKE "5..")', query)
+        self.assertIn("RATE(http_requests_total, 5m)", query)
+        # Service filter is common to both sides and stays in WHERE.
+        self.assertIn('service RLIKE "api|worker"', query)
+        # Final percentage EVAL composes the two stats columns.
+        self.assertIn("* 100", query)
 
 
 # =========================================================================

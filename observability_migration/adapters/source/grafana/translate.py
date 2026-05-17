@@ -44,13 +44,14 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
-    _common_matchers,
+    _field_is_proven_tsds_gauge,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
     _gauge_fallback_for_counter_range_func,
     _grouping_parts,
+    _inline_filters_into_stats_expr,
     _is_counter_fallback,
     _parse_fragment,
     _parse_logql_search,
@@ -652,9 +653,14 @@ def join_family_rule(context):
         left_info = _try_agg_range_info(left_frag)
         right_info = _try_agg_range_info(right_frag)
         if left_info and right_info:
-            common_filters = _build_where_lines(_frag_filters(PromQLFragment(matchers=_common_matchers(left_frag.matchers, right_frag.matchers)), resolver)[0])
-            if any("$" in m["value"] for m in left_frag.matchers + right_frag.matchers):
+            left_filters, left_had_vars = _frag_filters(left_frag, resolver)
+            right_filters, right_had_vars = _frag_filters(right_frag, resolver)
+            if left_had_vars or right_had_vars:
                 _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+            common_filter_exprs = [f for f in left_filters if f in right_filters]
+            common_filters = _build_where_lines(common_filter_exprs)
+            left_only = [f for f in left_filters if f not in common_filter_exprs]
+            right_only = [f for f in right_filters if f not in common_filter_exprs]
 
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
             output_group = ["time_bucket"] + join_labels
@@ -663,6 +669,24 @@ def join_family_rule(context):
             right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} else "gauge"
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
+
+            left_stats_call = _build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])
+            right_stats_call = _build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])
+            # Apply per-side exclusive filters via CASE() so that label
+            # selectors which appear on only one operand (e.g. mode="user" on
+            # the numerator) are not silently dropped.
+            if left_only:
+                inlined = _inline_filters_into_stats_expr(left_stats_call, left_only)
+                if inlined:
+                    left_stats_call = inlined
+                else:
+                    _append_unique(context.warnings, f"Numerator-only filter(s) could not be inlined and were dropped: {left_only}")
+            if right_only:
+                inlined = _inline_filters_into_stats_expr(right_stats_call, right_only)
+                if inlined:
+                    right_stats_call = inlined
+                else:
+                    _append_unique(context.warnings, f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}")
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -674,10 +698,7 @@ def join_family_rule(context):
                     f"TS {context.index}",
                     f"| WHERE {rp.ts_time_filter}",
                     *common_filters,
-                    "| STATS "
-                    f"numerator = {_build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])}, "
-                    f"denominator = {_build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])} "
-                    f"BY {', '.join(group_by_parts)}",
+                    f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call} BY {', '.join(group_by_parts)}",
                     f"| EVAL {result_alias} = numerator / denominator",
                     f"| KEEP {', '.join(output_group + [result_alias])}",
                     "| SORT time_bucket ASC",
@@ -1284,9 +1305,16 @@ def simple_agg_family_rule(context):
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
         metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         filter_value = _format_scalar_value(pre_agg_filter["value"])
+        # Issue #8: when the filtered metric is a proven TSDS gauge, the pre-agg
+        # filter must run under TS so that the outer SUM/AVG/MAX aggregates one
+        # value per (series, bucket) instead of every per-sample doc.
+        is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        pre_source = "TS" if is_proven_tsds_gauge else "FROM"
+        pre_time_filter = rp.ts_time_filter if pre_source == "TS" else rp.from_time_filter
+        pre_bucket = rp.ts_bucket if pre_source == "TS" else rp.from_bucket
         lines = [
-            f"FROM {context.index}",
-            f"| WHERE {rp.from_time_filter}",
+            f"{pre_source} {context.index}",
+            f"| WHERE {pre_time_filter}",
             *_build_where_lines(filters),
             f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
@@ -1297,7 +1325,7 @@ def simple_agg_family_rule(context):
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
-                group_by_parts = [rp.from_bucket, *group_by_parts]
+                group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
             stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
             stats_line = f"| STATS {alias} = {stats_expr}"
@@ -1308,7 +1336,7 @@ def simple_agg_family_rule(context):
                 lines.append("| SORT time_bucket ASC")
         context.esql_query = "\n".join(lines)
         context.parser_backend = "fragment"
-        context.source_type = "FROM"
+        context.source_type = pre_source
         context.metric_name = alias
         context.output_metric_field = alias
         frag.extra.pop("post_filter", None)
@@ -1352,7 +1380,8 @@ def simple_agg_family_rule(context):
         context.translation_complete = True
         return "translated count of counter metric"
 
-    source = "TS" if is_counter else "FROM"
+    is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
+    source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
@@ -1433,6 +1462,17 @@ def simple_metric_family_rule(context):
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
+    # Issue #8: when the field is a proven TSDS gauge but ``_can_use_direct_ts_gauge``
+    # rejects it (group_fields present, or caller disabled the path), TS is still
+    # the correct source — ``FROM`` against a TSDS sums every per-sample doc and
+    # inflates the value. Wrap with default AVG so the result collapses cleanly
+    # whether grouping is present or not.
+    can_use_ts_aggregated_gauge = (
+        (not is_counter)
+        and (not can_use_direct_ts_gauge)
+        and (not (frag.extra.get("wrapped_scalar") if frag else False))
+        and _field_is_proven_tsds_gauge(frag.metric, resolver)
+    )
 
     if is_counter:
         source = "TS"
@@ -1452,6 +1492,17 @@ def simple_metric_family_rule(context):
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
         stats_expr = physical_metric
+    elif can_use_ts_aggregated_gauge:
+        source = "TS"
+        time_filter = rp.ts_time_filter
+        bucket = rp.ts_bucket
+        default_agg = rp.default_gauge_agg.upper()
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        stats_expr = f"{default_agg}({physical_metric})"
+        # No explicit PromQL aggregator was given; default to AVG so each
+        # (group_field, bucket) cell collapses cleanly when multiple series
+        # land in the same cell.
+        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
@@ -1530,6 +1581,38 @@ def fragment_extract_rule(context):
     if before == after:
         return None
     return f"extracted fragment fields via {context.parser_backend or 'fragment'}"
+
+
+@QUERY_TRANSLATORS.register("extract_label_filters", priority=25)
+def extract_label_filters_rule(context):
+    """Populate ``context.label_filters`` from the parsed fragment matchers.
+
+    The fallback translation path (fragment_extract → stats_expression →
+    render_esql) builds queries via ``_build_esql(context)`` which uses
+    ``context.label_filters`` for WHERE clauses.  Without this step the
+    fallback path silently drops all label selectors from the source PromQL
+    expression — for example ``mode!~"idle|iowait|steal"`` on a nested-agg
+    query such as ``avg(sum by(cpu)(rate(node_cpu_seconds_total{mode!~...})))``.
+    Specific family rules (binary_expr, join, simple_agg, range_agg, …) handle
+    their own filters directly, so we only fill in here when
+    translation_complete is still False and label_filters is still empty.
+    """
+    if context.translation_complete:
+        return None
+    if not context.metric_name:
+        return None
+    if context.label_filters:
+        return None
+    frag = context.fragment
+    if not frag:
+        return None
+    filters, had_vars = _frag_filters(frag, context.resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    if filters:
+        context.label_filters = filters
+        return f"extracted {len(filters)} label filter(s) from fragment matchers"
+    return None
 
 
 @QUERY_TRANSLATORS.register("scalar_outer_agg", priority=40)
@@ -1819,6 +1902,7 @@ __all__ = [
     "TranslationContext",
     "binary_expr_family_rule",
     "counter_detection_rule",
+    "extract_label_filters_rule",
     "fragment_extract_rule",
     "fragment_guardrails_rule",
     "grafana_macro_rule",
