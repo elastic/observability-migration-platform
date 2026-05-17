@@ -5651,7 +5651,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         }
         groups = panels._build_section_groups(dashboard)
         self.assertEqual(len(groups), 1)
-        _, group_panels, _is_row = groups[0]
+        _, group_panels, _is_row, _collapsed = groups[0]
         self.assertEqual(len(group_panels), 2)
 
         left = group_panels[0]
@@ -5677,7 +5677,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             ],
         }
         groups = panels._build_section_groups(dashboard)
-        _, group_panels, _is_row = groups[0]
+        _, group_panels, _is_row, _collapsed = groups[0]
         grid_h = group_panels[0]["gridPos"]["h"]
         self.assertEqual(grid_h, 10, "300px / 30 = 10 grid units")
 
@@ -5844,6 +5844,8 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(len(sections), 1, "Collapsed row should become a section")
         self.assertEqual(sections[0]["title"], "System Metrics")
         self.assertGreaterEqual(len(sections[0]["section"]["panels"]), 1)
+        # Issue #23: source collapsed=true must round-trip to section.collapsed=true.
+        self.assertIs(sections[0]["section"]["collapsed"], True)
 
     # ------------------------------------------------------------------
     # Display integration through translate_panel
@@ -7831,6 +7833,157 @@ class L3RowAwareSectioningTests(unittest.TestCase):
         sections = [n for n in top if isinstance(n, dict) and "section" in n]
         self.assertEqual(len(sections), 1)
         self.assertTrue(bool(sections[0].get("title", "").strip()))
+        # Issue #23: collapsed state must round-trip from Grafana to Kibana.
+        self.assertIs(sections[0]["section"]["collapsed"], True)
+
+    def test_issue23_modern_row_collapsed_true_emits_collapsed_section(self):
+        """Modern (schemaVersion >= 14) ``type: row`` panel with
+        ``collapsed: true`` — its nested children open as a closed
+        section in Kibana, mirroring the source state."""
+        dashboard = {
+            "title": "T", "uid": "issue23-modern-true", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "Closed in source",
+                 "collapsed": True,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                 "panels": [
+                     {"id": 2, "type": "stat", "title": "S",
+                      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Closed in source")
+        self.assertIs(sections[0]["section"]["collapsed"], True)
+
+    def test_issue23_modern_row_collapsed_false_emits_open_section(self):
+        """Modern row with ``collapsed: false`` (the Grafana default for
+        rows whose children sit beside them at top-level) — the section
+        opens expanded."""
+        dashboard = {
+            "title": "T", "uid": "issue23-modern-false", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "Open in source",
+                 "collapsed": False,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+                {"id": 2, "type": "stat", "title": "S",
+                 "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertIs(sections[0]["section"]["collapsed"], False)
+
+    def test_issue23_modern_row_without_collapsed_field_defaults_to_open(self):
+        """Row with no ``collapsed`` key at all — defaults to open
+        (matches Grafana's own default behaviour: ``collapsed`` is an
+        explicit opt-in to the closed state)."""
+        dashboard = {
+            "title": "T", "uid": "issue23-modern-missing", "schemaVersion": 39,
+            "panels": [
+                {"id": 1, "type": "row", "title": "No flag",
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+                {"id": 2, "type": "stat", "title": "S",
+                 "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertIs(sections[0]["section"]["collapsed"], False)
+
+    def test_issue23_legacy_row_collapse_true_emits_collapsed_section(self):
+        """Legacy (schemaVersion < 14) ``rows[]`` entries use the
+        ``collapse`` (singular, no -d) field name — confirmed in the
+        infra/grafana fixture prometheus-all.json. The translator must
+        honour the legacy field too.
+
+        Two-panel row used to bypass the existing single-panel-legacy-row
+        flattening heuristic (``_normalize_panel_group`` force-flattens
+        legacy rows with ≤ 1 panel as visual clutter).
+        """
+        dashboard = {
+            "title": "T", "uid": "issue23-legacy-true", "schemaVersion": 14,
+            "rows": [
+                {"title": "Legacy closed",
+                 "collapse": True,
+                 "panels": [
+                     {"id": 1, "type": "stat", "title": "S1", "span": 6,
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                     {"id": 2, "type": "stat", "title": "S2", "span": 6,
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "B"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Legacy closed")
+        self.assertIs(sections[0]["section"]["collapsed"], True)
+
+    def test_issue23_legacy_row_collapse_false_emits_open_section(self):
+        """Legacy row with ``collapse: false`` — section opens
+        expanded. Matches every row in prometheus-all.json that uses
+        the default open state."""
+        dashboard = {
+            "title": "T", "uid": "issue23-legacy-false", "schemaVersion": 14,
+            "rows": [
+                {"title": "Legacy open",
+                 "collapse": False,
+                 "panels": [
+                     {"id": 1, "type": "stat", "title": "S1", "span": 6,
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                     {"id": 2, "type": "stat", "title": "S2", "span": 6,
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "B"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertIs(sections[0]["section"]["collapsed"], False)
+
+    def test_issue23_repeat_row_expansion_preserves_collapsed_flag(self):
+        """``_expand_repeat_panels`` recurses into row containers via
+        ``dict(panel)`` which preserves all keys including
+        ``collapsed``. This test pins that invariant so future refactors
+        don't accidentally drop the flag on the inner expansion path."""
+        dashboard = {
+            "title": "T", "uid": "issue23-repeat", "schemaVersion": 39,
+            "templating": {"list": [
+                {"name": "env", "type": "custom",
+                 "options": [{"text": "p", "value": "p"}]},
+            ]},
+            "panels": [
+                {"id": 1, "type": "row", "title": "Closed with repeat inside",
+                 "collapsed": True,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                 "panels": [
+                     {"id": 2, "type": "stat", "title": "Inner $env",
+                      "repeat": "env",
+                      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 4},
+                      "datasource": {"type": "prometheus", "uid": "p"},
+                      "targets": [{"expr": "up", "refId": "A"}]},
+                 ]},
+            ],
+        }
+        top = self._translate(dashboard)
+        sections = [n for n in top if isinstance(n, dict) and "section" in n]
+        self.assertEqual(len(sections), 1)
+        self.assertIs(sections[0]["section"]["collapsed"], True)
 
     def test_panels_before_any_row_stay_flat(self):
         """Panels that genuinely precede every row (the author chose
