@@ -995,15 +995,21 @@ def _section_appendix_stats(audits: list[DashboardAudit]) -> str:
 
     # Match print_report's accounting: Grafana ``type=="row"`` containers are
     # structural elements, not panels — pull them out so percentages and the
-    # "panels found" number describe migratable content only.
+    # "renderable panels" number describe migratable content only.
     total_rows = sum(
         1 for a in audits for p in a.panels if p.source_panel_type == "row"
     )
-    total_panel_skipped = totals.get("skipped", 0) - total_rows
+    total_panel_skipped = max(totals.get("skipped", 0) - total_rows, 0)
     total = grand_total - total_rows
 
+    if total_rows:
+        elements_line = f"{grand_total} total ({total} panels + {total_rows} rows)"
+    else:
+        elements_line = f"{grand_total} total ({total} panels)"
+
     lines = ["From the latest trace run:", "", "```"]
-    lines.append(f"Total panels found:  {total}")
+    lines.append(f"Elements:            {elements_line}")
+    lines.append(f"Renderable panels:   {total}")
     for key, label in [
         ("migrated", "Migrated"),
         ("migrated_with_warnings", "With warnings"),
@@ -1016,11 +1022,8 @@ def _section_appendix_stats(audits: list[DashboardAudit]) -> str:
         if count:
             pct = count / total * 100 if total > 0 else 0.0
             lines.append(f"  {label + ':':<20s} {count:>4d} ({pct:.1f}%)")
-    if total_panel_skipped:
-        pct = total_panel_skipped / total * 100 if total > 0 else 0.0
-        lines.append(f"  {'Skipped:':<20s} {total_panel_skipped:>4d} ({pct:.1f}%)")
-    if total_rows:
-        lines.append(f"  {'Row containers:':<20s} {total_rows:>4d} (structural, not migrated)")
+    pct = total_panel_skipped / total * 100 if total > 0 else 0.0
+    lines.append(f"  {'Skipped:':<20s} {total_panel_skipped:>4d} ({pct:.1f}%)")
     lines.append("```")
 
     verdicts: dict[str, int] = {}

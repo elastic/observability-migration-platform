@@ -242,19 +242,38 @@ def _row_count(result):
     return sum(1 for pr in result.panel_results if pr.grafana_type == "row")
 
 
+def _element_summary(panels: int, rows: int) -> str:
+    """Render the ``N total (X panels [+ Y rows])`` line content.
+
+    Panels and rows are pluralised independently so single-element dashboards
+    don't read awkwardly ("1 panels"). Rows are omitted when zero so dashboards
+    without any structural containers stay tidy (also the Datadog-style case
+    if this function is reused).
+    """
+    total = panels + rows
+    panel_word = "panel" if panels == 1 else "panels"
+    if rows:
+        row_word = "row" if rows == 1 else "rows"
+        breakdown = f"{panels} {panel_word} + {rows} {row_word}"
+    else:
+        breakdown = f"{panels} {panel_word}"
+    return f"{total} total ({breakdown})"
+
+
 def print_report(results, compile_results):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
-    # from _flatten_dashboard_panels). The user-facing "panels found" number is
-    # panels-only so the breakdown (Migrated/Warn/Man/NF) sums consistently.
+    # from _flatten_dashboard_panels). The user-facing "renderable panels"
+    # number subtracts rows so the breakdown (Migrated/Warn/Man/NF/Skipped)
+    # sums consistently.
     total_panels = sum(r.total_panels for r in results) - total_rows
     total_migrated = sum(r.migrated for r in results)
     total_warnings = sum(r.migrated_with_warnings for r in results)
     total_manual = sum(r.requires_manual for r in results)
     total_nf = sum(r.not_feasible for r in results)
-    # r.skipped counts every panel with status=="skipped" — including rows. The
-    # remainder is genuine panel skips (variable-expansion warnings, L4 repeat
-    # caps, non-normalized group panels, etc.) which still deserve a line.
+    # r.skipped counts every panel with status=="skipped" — including rows.
+    # The remainder is genuine panel skips (variable-expansion warnings, L4
+    # repeat caps, non-normalized group panels, etc.).
     total_panel_skipped = sum(r.skipped for r in results) - total_rows
     compiled_ok = sum(1 for _, ok, _ in compile_results if ok)
     total_green = sum(
@@ -285,32 +304,42 @@ def print_report(results, compile_results):
     print("MIGRATION REPORT")
     print("=" * 70)
     print(f"\nDashboards processed: {len(results)}")
-    print(f"Total panels found:  {total_panels}")
+    # One summary line surfaces both the source-side total and the panel/row
+    # split so the reader can verify the math at a glance.
+    print(f"Elements:            {_element_summary(total_panels, total_rows)}")
+    print(f"Renderable panels:   {total_panels}")
     print(f"  Migrated:          {total_migrated} ({pct(total_migrated, total_panels)})")
     print(f"  With warnings:     {total_warnings} ({pct(total_warnings, total_panels)})")
     print(f"  Requires manual:   {total_manual} ({pct(total_manual, total_panels)})")
     print(f"  Not feasible:      {total_nf} ({pct(total_nf, total_panels)})")
-    if total_panel_skipped:
-        print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
+    # ``Skipped`` is always shown so the breakdown shape stays predictable for
+    # log-diff / grep workflows; the other four states already print at zero.
+    print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
-        print(f"  Verification gate: {total_green} Green / {total_yellow} Yellow / {total_red} Red")
-    if total_rows:
-        print(f"  Row containers:    {total_rows} (structural, not migrated)")
+        print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
     print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
 
     print("─" * 70)
-    print(f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} {'NF':>5} {'Compiled':>10}")
+    # ``Skip`` and ``Rows`` columns make the per-dashboard totals add up
+    # (Panels = OK + Warn + Man + NF + Skip; Rows is informational).
+    print(
+        f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} "
+        f"{'NF':>5} {'Skip':>5} {'Rows':>5} {'Compiled':>10}"
+    )
     print("─" * 70)
 
     for r in results:
         comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "?"
-        panels_for_dashboard = r.total_panels - _row_count(r)
+        rows_for_dashboard = _row_count(r)
+        panels_for_dashboard = r.total_panels - rows_for_dashboard
+        skip_for_dashboard = r.skipped - rows_for_dashboard
         print(
             f"{r.dashboard_title[:39]:<40} {panels_for_dashboard:>6} {r.migrated:>5} "
-            f"{r.migrated_with_warnings:>5} {r.requires_manual:>5} {r.not_feasible:>5} {comp_status:>10}"
+            f"{r.migrated_with_warnings:>5} {r.requires_manual:>5} {r.not_feasible:>5} "
+            f"{skip_for_dashboard:>5} {rows_for_dashboard:>5} {comp_status:>10}"
         )
 
     print("─" * 70)
