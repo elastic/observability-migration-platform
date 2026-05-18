@@ -1,0 +1,42 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+name: Auto-link stability issues
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  STABILITY_TRACKER: 30
+
+jobs:
+  link-to-tracker:
+    if: |
+      contains(github.event.issue.labels.*.name, 'stability') &&
+      github.event.issue.number != 30
+    runs-on: ubuntu-latest
+    steps:
+      - name: Link as sub-issue of stability tracker
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_DB_ID: ${{ github.event.issue.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set +e
+          response=$(gh api \
+            "repos/${{ github.repository }}/issues/${STABILITY_TRACKER}/sub_issues" \
+            -X POST -F sub_issue_id=$ISSUE_DB_ID 2>&1)
+          status=$?
+          if [ $status -eq 0 ]; then
+            echo "::notice::Linked #${ISSUE_NUMBER} under stability tracker #${STABILITY_TRACKER}"
+          elif echo "$response" | grep -qE "duplicate|may only have one parent"; then
+            echo "::notice::#${ISSUE_NUMBER} already has a parent — skipping"
+          else
+            echo "::error::Failed to link #${ISSUE_NUMBER}: $response"
+            exit 1
+          fi
