@@ -1,0 +1,52 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+name: Stability / Quality Fix
+description: Reliability, correctness, fidelity, or quality issue in the migration engine
+title: "[Stability] "
+labels: ["stability"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for stability, reliability, correctness, or quality issues in the migration engine.
+        The `stability` label is pre-applied and triggers auto-linking under the
+        [Stability, Quality & Reliability tracker](https://github.com/elastic/mig-to-kbn/issues/30).
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Grafana translator
+        - Datadog translator
+        - Kibana upload path
+        - Layout / panel rendering
+        - Report / telemetry generation
+        - CLI / orchestration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What is broken or unreliable?
+      description: Describe the user-visible symptom and where it surfaces.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Command, dashboard input, or scenario that triggers it.
+      placeholder: |
+        1. Run `obs-migrate ...`
+        2. Observe ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, related issues/PRs, suspected root cause.
