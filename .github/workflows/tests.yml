@@ -146,3 +146,28 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
           retention-days: 30
+
+  pytest-e2e:
+    name: E2E pytest suite
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync locked Python dependency environment
+        run: |
+          UV_PROJECT_ENVIRONMENT=.venv-e2e \
+            uv sync --locked --python 3.11 --all-extras
+
+      - name: Run e2e pytest suite
+        run: .venv-e2e/bin/python -m pytest tests/e2e/ -x -q
