@@ -171,3 +171,38 @@ jobs:
 
       - name: Run e2e pytest suite
         run: .venv-e2e/bin/python -m pytest tests/e2e/ -x -q
+
+  build-and-smoke:
+    name: Build and packaging smoke
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Install wheel in isolated environment and smoke test
+        run: |
+          uv venv .venv-wheel --python 3.11
+          uv pip install --python .venv-wheel dist/*.whl
+          .venv-wheel/bin/obs-migrate --help >/dev/null
+          .venv-wheel/bin/obs-migrate migrate --help >/dev/null
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
