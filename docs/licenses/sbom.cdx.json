@@ -406,6 +406,60 @@
       "version": "3.4.7"
     },
     {
+      "bom-ref": "coverage==7.14.0",
+      "description": "Code coverage measurement for Python",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://coverage.readthedocs.io/en/7.14.0"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Issues",
+          "type": "issue-tracker",
+          "url": "https://github.com/coveragepy/coveragepy/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Mastodon",
+          "type": "other",
+          "url": "https://hachyderm.io/@coveragepy"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Mastodon (nedbat)",
+          "type": "other",
+          "url": "https://hachyderm.io/@nedbat"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Funding",
+          "type": "other",
+          "url": "https://tidelift.com/subscription/pkg/pypi-coverage?utm_source=pypi-coverage&utm_medium=referral&utm_campaign=pypi"
+        },
+        {
+          "comment": "from packaging metadata: Home-page",
+          "type": "website",
+          "url": "https://github.com/coveragepy/coveragepy"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "name": "coverage",
+      "properties": [
+        {
+          "name": "cdx:python:package:required-extra",
+          "value": "toml"
+        }
+      ],
+      "purl": "pkg:pypi/coverage@7.14.0",
+      "type": "library",
+      "version": "7.14.0"
+    },
+    {
       "bom-ref": "cyclonedx-bom==7.3.0",
       "description": "CycloneDX Software Bill of Materials (SBOM) generator for Python projects and environments",
       "externalReferences": [
@@ -1826,6 +1880,44 @@
       "version": "9.0.3"
     },
     {
+      "bom-ref": "pytest-cov==7.1.0",
+      "description": "Pytest plugin for measuring coverage.",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://pytest-cov.readthedocs.io/"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Issue Tracker",
+          "type": "issue-tracker",
+          "url": "https://github.com/pytest-dev/pytest-cov/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Sources",
+          "type": "other",
+          "url": "https://github.com/pytest-dev/pytest-cov"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://pytest-cov.readthedocs.io/en/latest/changelog.html"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pytest-cov",
+      "purl": "pkg:pypi/pytest-cov@7.1.0",
+      "type": "library",
+      "version": "7.1.0"
+    },
+    {
       "bom-ref": "python-dateutil==2.9.0.post0",
       "description": "Extensions to the standard Python datetime module",
       "externalReferences": [
@@ -2819,6 +2911,7 @@
     {
       "dependsOn": [
         "pre_commit==4.5.1",
+        "pytest-cov==7.1.0",
         "pytest==9.0.3",
         "python-dateutil==2.9.0.post0",
         "tzdata==2026.1"
@@ -2854,6 +2947,9 @@
     },
     {
       "ref": "charset-normalizer==3.4.7"
+    },
+    {
+      "ref": "coverage==7.14.0"
     },
     {
       "dependsOn": [
@@ -2904,6 +3000,7 @@
     {
       "dependsOn": [
         "build==1.4.4",
+        "coverage==7.14.0",
         "niquests==3.18.6",
         "ruff==0.15.11",
         "verlib2==0.3.2"
@@ -3038,6 +3135,7 @@
       "dependsOn": [
         "mypy==1.20.1",
         "prettytable==3.17.0",
+        "pytest-cov==7.1.0",
         "ruff==0.15.11",
         "virtualenv==21.2.4",
         "wheel==0.47.0"
@@ -3057,6 +3155,7 @@
     },
     {
       "dependsOn": [
+        "coverage==7.14.0",
         "pre_commit==4.5.1",
         "pytest==9.0.3"
       ],
@@ -3074,6 +3173,7 @@
     },
     {
       "dependsOn": [
+        "pytest-cov==7.1.0",
         "pytest==9.0.3",
         "wcwidth==0.6.0"
       ],
@@ -3112,6 +3212,15 @@
     },
     {
       "dependsOn": [
+        "coverage==7.14.0",
+        "pluggy==1.6.0",
+        "pytest==9.0.3",
+        "virtualenv==21.2.4"
+      ],
+      "ref": "pytest-cov==7.1.0"
+    },
+    {
+      "dependsOn": [
         "Pygments==2.20.0",
         "attrs==26.1.0",
         "hypothesis==6.152.1",
@@ -3131,6 +3240,7 @@
     },
     {
       "dependsOn": [
+        "coverage==7.14.0",
         "filelock==3.29.0",
         "platformdirs==4.9.6",
         "pytest==9.0.3",
@@ -3189,6 +3299,7 @@
         "pre_commit==4.5.1",
         "promql-parser==0.8.0",
         "pydantic==2.13.2",
+        "pytest-cov==7.1.0",
         "pytest==9.0.3",
         "requests==2.33.1",
         "ruff==0.15.11",
@@ -3212,6 +3323,7 @@
         "mypy==1.20.1",
         "packaging==26.1",
         "pyproject_hooks==1.2.0",
+        "pytest-cov==7.1.0",
         "pytest==9.0.3",
         "ruff==0.15.11",
         "virtualenv==21.2.4",
@@ -3267,6 +3379,7 @@
     {
       "dependsOn": [
         "build==1.4.4",
+        "pytest-cov==7.1.0",
         "pytest==9.0.3",
         "ruff==0.15.11"
       ],
