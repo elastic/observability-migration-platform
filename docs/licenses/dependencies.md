@@ -16,6 +16,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `cfgv` | 3.5.0 | MIT | <https://github.com/asottile/cfgv> |
 | `chardet` | 5.2.0 | GNU Lesser General Public License v2 or later (LGPLv2+) | <https://github.com/chardet/chardet> |
 | `charset-normalizer` | 3.4.7 | MIT | <https://github.com/jawah/charset_normalizer/blob/master/CHANGELOG.md> |
+| `coverage` | 7.14.0 | Apache-2.0 | <https://github.com/coveragepy/coveragepy> |
 | `cyclonedx-bom` | 7.3.0 | Apache Software License | <https://github.com/CycloneDX/cyclonedx-python/#readme> |
 | `cyclonedx-python-lib` | 11.7.0 | Apache Software License | <https://github.com/CycloneDX/cyclonedx-python-lib/#readme> |
 | `datadog-api-client` | 2.53.0 | Apache Software License | <https://github.com/DataDog/datadog-api-client-python> |
@@ -59,6 +60,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `pyparsing` | 3.3.2 | MIT | <https://github.com/pyparsing/pyparsing/> |
 | `pyproject_hooks` | 1.2.0 | MIT License | <https://github.com/pypa/pyproject-hooks> |
 | `pytest` | 9.0.3 | MIT | <https://docs.pytest.org/en/latest/> |
+| `pytest-cov` | 7.1.0 | MIT | <https://pytest-cov.readthedocs.io/en/latest/changelog.html> |
 | `python-dateutil` | 2.9.0.post0 | Apache Software License; BSD License | <https://github.com/dateutil/dateutil> |
 | `python-discovery` | 1.2.2 | MIT License | <https://github.com/tox-dev/python-discovery> |
 | `PyYAML` | 6.0.3 | MIT License | <https://pyyaml.org/> |
