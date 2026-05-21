@@ -27,6 +27,7 @@ from .models import (
     FormulaFuncCall,
     FormulaNumber,
     FormulaRef,
+    FormulaString,
     FormulaUnary,
     FunctionCall,
     MetricQuery,
@@ -513,6 +514,8 @@ class _FormulaTokenizer:
         r"""
         (\d+(?:\.\d+)?)       # number
         |([a-zA-Z_]\w*)       # identifier (query ref or function name)
+        |('(?:[^'\\]|\\.)*')  # single-quoted string
+        |("(?:[^"\\]|\\.)*")  # double-quoted string
         |([+\-*/])            # operator
         |([(),])              # punctuation
         |\s+                  # whitespace (skip)
@@ -533,9 +536,13 @@ class _FormulaTokenizer:
             elif m.group(2) is not None:
                 tokens.append(("IDENT", m.group(2)))
             elif m.group(3) is not None:
-                tokens.append(("OP", m.group(3)))
+                tokens.append(("STR", m.group(3)[1:-1]))
             elif m.group(4) is not None:
-                tokens.append(("PUNCT", m.group(4)))
+                tokens.append(("STR", m.group(4)[1:-1]))
+            elif m.group(5) is not None:
+                tokens.append(("OP", m.group(5)))
+            elif m.group(6) is not None:
+                tokens.append(("PUNCT", m.group(6)))
         return tokens
 
 
@@ -607,6 +614,10 @@ class _FormulaParser:
         if tok[0] == "NUM":
             self.consume()
             return FormulaNumber(value=float(tok[1]))
+
+        if tok[0] == "STR":
+            self.consume()
+            return FormulaString(value=tok[1])
 
         if tok[0] == "IDENT":
             name = self.consume()[1]

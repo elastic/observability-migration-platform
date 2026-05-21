@@ -277,6 +277,19 @@ class TestFormulaParser(unittest.TestCase):
         self.assertIsInstance(fe.ast, FormulaBinOp)
         self.assertEqual(fe.ast.op, "*")
 
+    def test_top_formula_with_string_args_parses(self):
+        # Datadog's top() takes string literals — the tokenizer must accept them.
+        fe = parse_formula("top(query1, 10, 'mean', 'desc')")
+        self.assertIsInstance(fe.ast, FormulaFuncCall)
+        self.assertEqual(fe.ast.name, "top")
+        self.assertEqual(len(fe.ast.args), 4)
+
+    def test_top_formula_with_expression_arg(self):
+        fe = parse_formula("top(query1 / 1000, 10, 'mean', 'desc')")
+        self.assertIsInstance(fe.ast, FormulaFuncCall)
+        self.assertEqual(fe.ast.name, "top")
+        self.assertIsInstance(fe.ast.args[0], FormulaBinOp)
+
     def test_referenced_queries(self):
         fe = parse_formula("per_second(query1) / query2 * 100")
         refs = fe.referenced_queries
@@ -1113,6 +1126,83 @@ class TestTranslation(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertIn("| WHERE query1 > 0", result.esql_query)
         self.assertIn("| STATS value = COUNT(*)", result.esql_query)
+
+    def test_rate_formula_translates_with_warning(self):
+        query = "sum:mysql.performance.table_locks_waited{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Locking rate",
+            queries=[wq],
+            formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertEqual(result.status, "warning")
+        self.assertIn("/ bucket_span_seconds", result.esql_query)
+        self.assertIn("BUCKET(@timestamp", result.esql_query)
+        self.assertTrue(any("rate()" in w for w in result.warnings))
+
+    def test_diff_formula_translates_with_warning(self):
+        query = "sum:redis.net.rejected{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="diff(query1)")
+        wf.expression = parse_formula("diff(query1)")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Rejected connections delta",
+            queries=[wq],
+            formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertEqual(result.status, "warning")
+        self.assertIn("BUCKET(@timestamp", result.esql_query)
+        self.assertTrue(any("diff()" in w for w in result.warnings))
+
+    def test_top_formula_translates_to_unwrapped_query_with_warning(self):
+        query = "avg:apache.performance.cpu_load{*} by {host}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="top(query1, 10, 'mean', 'desc')")
+        wf.expression = parse_formula("top(query1, 10, 'mean', 'desc')")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="toplist",
+            title="Top CPU hosts",
+            queries=[wq],
+            formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        # toplist widgets emit status=warning by default; ensure no
+        # `not_feasible` and that the panel sort/limit applies.
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn("apache_performance_cpu_load", result.esql_query)
+        self.assertTrue(any("top()" in w for w in result.warnings))
+
+    def test_top_formula_with_expression_inside_translates(self):
+        # Real-world case from the redis dashboard:
+        # top(query1 / 1000, 10, 'mean', 'desc')
+        query = "sum:redis.slowlog.micros.95percentile{*} by {name,command}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="top(query1 / 1000, 10, 'mean', 'desc')")
+        wf.expression = parse_formula("top(query1 / 1000, 10, 'mean', 'desc')")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Slowlog duration",
+            queries=[wq],
+            formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        # The expression inside top() must be preserved.
+        self.assertIn("(query1 / 1000)", result.esql_query)
 
     def test_ratio_formula_uses_both_queries(self):
         q1 = "avg:etcd.disk.wal.fsync.duration.seconds.sum{env:prod} by {host}"

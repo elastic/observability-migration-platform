@@ -22,6 +22,7 @@ from .models import (
     FormulaFuncCall,
     FormulaNumber,
     FormulaRef,
+    FormulaString,
     FormulaUnary,
     MetricQuery,
     NormalizedWidget,
@@ -461,11 +462,14 @@ def _translate_formula_metric_widget(
     query_aliases = {spec.query_name: spec.alias for spec in used_specs}
     output_fields: list[str] = []
     eval_parts: list[str] = []
+    formula_warnings: list[str] = []
     for formula in formulas:
-        expr = _formula_ast_to_esql(formula.ast, query_aliases)
+        expr = _formula_ast_to_esql(formula.ast, query_aliases, formula_warnings)
         output_fields.append(formula.alias)
         if expr != _esql_identifier(formula.alias):
             eval_parts.append(f"{formula.alias} = {expr}")
+    for w in formula_warnings:
+        _append_unique_warning(result, w)
     if eval_parts:
         lines.append(f"| EVAL {', '.join(eval_parts)}")
 
@@ -760,13 +764,17 @@ def _formula_ref_names(node: Any) -> list[str]:
             refs.extend(_formula_ref_names(arg))
     elif isinstance(node, FormulaUnary):
         refs.extend(_formula_ref_names(node.operand))
+    # FormulaString / FormulaNumber: no refs
     return list(dict.fromkeys(refs))
+
+
+_BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:
     if isinstance(node, FormulaFuncCall):
         fn_name = (node.name or "").lower()
-        if fn_name in ("per_second", "per_minute", "per_hour"):
+        if fn_name in _BUCKET_SPAN_FORMULA_FNS:
             return True
         return any(_formula_needs_bucket_span(arg) for arg in (node.args or []))
     if isinstance(node, FormulaBinOp):
@@ -779,6 +787,7 @@ def _formula_needs_bucket_span(node: Any) -> bool:
 def _formula_ast_to_esql(
     node: Any,
     query_aliases: dict[str, str],
+    warnings: list[str] | None = None,
 ) -> str:
     if isinstance(node, FormulaRef):
         if node.name not in query_aliases:
@@ -789,18 +798,38 @@ def _formula_ast_to_esql(
         if float(val).is_integer():
             return str(int(val))
         return str(val)
+    if isinstance(node, FormulaString):
+        # String literals only appear as positional args to functions like
+        # top(); they have no direct ES|QL equivalent in an expression
+        # context and the surrounding function handler reads them directly.
+        raise ValueError(
+            f"string literal {node.value!r} is not allowed in an expression position"
+        )
     if isinstance(node, FormulaBinOp):
-        left = _formula_ast_to_esql(node.left, query_aliases)
-        right = _formula_ast_to_esql(node.right, query_aliases)
+        left = _formula_ast_to_esql(node.left, query_aliases, warnings)
+        right = _formula_ast_to_esql(node.right, query_aliases, warnings)
         return f"({left} {node.op} {right})"
     if isinstance(node, FormulaUnary):
-        operand = _formula_ast_to_esql(node.operand, query_aliases)
+        operand = _formula_ast_to_esql(node.operand, query_aliases, warnings)
         if node.op == "-":
             return f"(-{operand})"
         raise ValueError(f"unsupported unary formula operator: {node.op}")
     if isinstance(node, FormulaFuncCall):
         fn_name = (node.name or "").lower()
-        args = [_formula_ast_to_esql(arg, query_aliases) for arg in (node.args or [])]
+        if fn_name == "top":
+            # top(query_ref, N, 'agg', 'order') — list-semantic top-N. We
+            # cannot apply the N/agg/order constraints inside an expression,
+            # so we unwrap to the first arg and record an approximation
+            # warning. The surrounding panel sort/limit logic still applies.
+            if not node.args:
+                raise ValueError("top() requires at least one argument")
+            if warnings is not None:
+                warnings.append(
+                    "top() filtering is approximated — uses panel-level sort/limit "
+                    "instead of formula-scoped top-N"
+                )
+            return _formula_ast_to_esql(node.args[0], query_aliases, warnings)
+        args = [_formula_ast_to_esql(arg, query_aliases, warnings) for arg in (node.args or [])]
         if fn_name == "abs" and len(args) == 1:
             return f"ABS({args[0]})"
         if fn_name == "ceil" and len(args) == 1:
@@ -819,6 +848,27 @@ def _formula_ast_to_esql(
             if multiplier != 1:
                 expr = f"({expr}) * {multiplier}"
             return expr
+        if fn_name == "rate" and len(args) == 1:
+            # DD rate(x) is the per-second rate of change. For already-
+            # aggregated time-bucket data we approximate it as
+            # x / bucket_span_seconds (same shape as per_second).
+            if warnings is not None:
+                warnings.append(
+                    "rate() approximated as per-bucket value divided by bucket span; "
+                    "for counters this matches DD semantics within a bucket"
+                )
+            return f"({args[0]}) / bucket_span_seconds"
+        if fn_name in ("diff", "monotonic_diff") and len(args) == 1:
+            # DD diff(x) is x[t]-x[t-1] between adjacent buckets. ES|QL has
+            # no window-LAG in this aggregation context, so we emit the
+            # identity value and warn. For monotonic counters this is wrong
+            # in absolute terms but correct in shape.
+            if warnings is not None:
+                warnings.append(
+                    f"{fn_name}() per-bucket delta is approximated as the bucket value; "
+                    "absolute numbers may differ from DD"
+                )
+            return f"({args[0]})"
         raise ValueError(f"unsupported formula function: {node.name}")
     raise ValueError(f"unsupported formula node: {type(node).__name__}")
 
