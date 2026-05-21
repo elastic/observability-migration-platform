@@ -157,6 +157,37 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
         _, pairs = _translate(filename)
         self.assertTrue(pairs, f"{filename}: produced no widgets")
 
+    METRIC_PATTERN = re.compile(r"(?:avg|sum|min|max|count):([a-zA-Z0-9_.]+)")
+
+    @_parameterize
+    def test_metric_name_present(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            query = _emitted_query(pair.yaml_panel)
+            if not query:
+                continue
+            for source in pair.result.source_queries:
+                m = self.METRIC_PATTERN.search(source)
+                if not m:
+                    continue
+                dd_metric = m.group(1)
+                underscored = dd_metric.replace(".", "_")
+                tokens = [t for t in dd_metric.split(".") if t]
+                if not any(
+                    candidate in query
+                    for candidate in (dd_metric, underscored, *tokens)
+                ):
+                    offenders.append(
+                        f"{pair.result.title!r}: source metric {dd_metric!r} "
+                        f"missing from ES|QL: {query!r}"
+                    )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} metric-name mismatches:\n  - "
+            + "\n  - ".join(offenders),
+        )
+
     @_parameterize
     def test_aggregation_preserved(self, filename: str):
         _, pairs = _translate(filename)
