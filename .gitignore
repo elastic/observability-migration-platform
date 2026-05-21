@@ -74,3 +74,6 @@ grafana_creds.env
 *.creds.env
 
 docs/superpowers/
+
+# Datadog parity rig run outputs
+parity-rig/datadog/parity_report.json
