@@ -13,6 +13,7 @@ regressions that the existing translate-without-crash tests don't.
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -142,10 +143,44 @@ class _SemanticAccuracyMeta(type):
 
 
 class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracyMeta):
+    AGG_MAP = {
+        "avg": "AVG(",
+        "sum": "SUM(",
+        "min": "MIN(",
+        "max": "MAX(",
+        "count": "COUNT(",
+    }
+    AGG_PREFIX_RE = re.compile(r"\s*(avg|sum|min|max|count):")
+
     @_parameterize
     def test_translates(self, filename: str):
         _, pairs = _translate(filename)
         self.assertTrue(pairs, f"{filename}: produced no widgets")
+
+    @_parameterize
+    def test_aggregation_preserved(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            query = _emitted_query(pair.yaml_panel)
+            if not query:
+                continue
+            upper = query.upper()
+            for source in pair.result.source_queries:
+                m = self.AGG_PREFIX_RE.match(source)
+                if not m:
+                    continue
+                expected = self.AGG_MAP[m.group(1)]
+                if expected not in upper:
+                    offenders.append(
+                        f"{pair.result.title!r}: source aggregation {m.group(1)!r} "
+                        f"missing from ES|QL: {query!r}"
+                    )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} aggregation mismatches:\n  - "
+            + "\n  - ".join(offenders),
+        )
 
 
 if __name__ == "__main__":
