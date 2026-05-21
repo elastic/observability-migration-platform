@@ -161,6 +161,27 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
     GROUP_BY_PATTERN = re.compile(r"by\s*\{([^}]*)\}")
 
     @_parameterize
+    def test_timeseries_has_bucket(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            if pair.widget.widget_type != "timeseries":
+                continue
+            query = _emitted_query(pair.yaml_panel)
+            if not query:
+                continue
+            if "BUCKET(@timestamp" not in query:
+                offenders.append(
+                    f"{pair.result.title!r}: timeseries widget missing "
+                    f"BUCKET(@timestamp, ...): {query!r}"
+                )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} timeseries panels without bucket:\n  - "
+            + "\n  - ".join(offenders),
+        )
+
+    @_parameterize
     def test_group_by_preserved(self, filename: str):
         _, pairs = _translate(filename)
         offenders: list[str] = []
