@@ -80,6 +80,7 @@ class _MetricQuerySpec:
     group_fields: list[str]
     agg_expr: str
     mq: MetricQuery
+    es_metric: str = ""  # raw ES field name, used for FIRST/LAST in rate()/diff()
 
 
 @dataclass
@@ -444,7 +445,25 @@ def _translate_formula_metric_widget(
     )
     needs_bucket_span = any(_formula_needs_bucket_span(formula.ast) for formula in formulas)
 
+    derivative_refs: set[str] = set()
+    for formula in formulas:
+        derivative_refs |= _collect_derivative_query_refs(formula.ast)
+
     stats_parts = [f"{spec.alias} = {spec.agg_expr}" for spec in used_specs]
+    for spec in used_specs:
+        if spec.query_name in derivative_refs and spec.es_metric:
+            # FIRST/LAST give the bucket-endpoint values needed for true
+            # rate/diff semantics; the WHERE filter skips rows where the
+            # metric column is null (other metrics share the index in
+            # multi-metric data streams, so without the filter FIRST/LAST
+            # could pick a row whose metric value is null).
+            null_guard = f"WHERE {spec.es_metric} IS NOT NULL"
+            stats_parts.append(
+                f"{spec.alias}_first = FIRST({spec.es_metric}, @timestamp) {null_guard}"
+            )
+            stats_parts.append(
+                f"{spec.alias}_last = LAST({spec.es_metric}, @timestamp) {null_guard}"
+            )
     if needs_bucket_span:
         stats_parts.append(
             'bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1'
@@ -464,7 +483,9 @@ def _translate_formula_metric_widget(
     eval_parts: list[str] = []
     formula_warnings: list[str] = []
     for formula in formulas:
-        expr = _formula_ast_to_esql(formula.ast, query_aliases, formula_warnings)
+        expr = _formula_ast_to_esql(
+            formula.ast, query_aliases, formula_warnings, derivative_refs
+        )
         output_fields.append(formula.alias)
         if expr != _esql_identifier(formula.alias):
             eval_parts.append(f"{formula.alias} = {expr}")
@@ -594,6 +615,7 @@ def _build_metric_query_spec(
         group_fields=group_fields,
         agg_expr=_format_agg_expr(es_agg, es_metric, mq),
         mq=mq,
+        es_metric=es_metric,
     )
 
 
@@ -769,6 +791,7 @@ def _formula_ref_names(node: Any) -> list[str]:
 
 
 _BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
+_DERIVATIVE_FORMULA_FNS = {"rate", "diff", "monotonic_diff"}
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:
@@ -784,10 +807,33 @@ def _formula_needs_bucket_span(node: Any) -> bool:
     return False
 
 
+def _collect_derivative_query_refs(node: Any) -> set[str]:
+    """Find query names that are direct arguments to rate()/diff() so the
+    STATS clause can emit FIRST/LAST aggregations for them (enabling true
+    derivative semantics, not the value/span approximation)."""
+
+    refs: set[str] = set()
+    if isinstance(node, FormulaFuncCall):
+        fn_name = (node.name or "").lower()
+        if fn_name in _DERIVATIVE_FORMULA_FNS and node.args:
+            arg = node.args[0]
+            if isinstance(arg, FormulaRef):
+                refs.add(arg.name)
+        for child in (node.args or []):
+            refs |= _collect_derivative_query_refs(child)
+    elif isinstance(node, FormulaBinOp):
+        refs |= _collect_derivative_query_refs(node.left)
+        refs |= _collect_derivative_query_refs(node.right)
+    elif isinstance(node, FormulaUnary):
+        refs |= _collect_derivative_query_refs(node.operand)
+    return refs
+
+
 def _formula_ast_to_esql(
     node: Any,
     query_aliases: dict[str, str],
     warnings: list[str] | None = None,
+    derivative_refs: set[str] | None = None,
 ) -> str:
     if isinstance(node, FormulaRef):
         if node.name not in query_aliases:
@@ -806,11 +852,11 @@ def _formula_ast_to_esql(
             f"string literal {node.value!r} is not allowed in an expression position"
         )
     if isinstance(node, FormulaBinOp):
-        left = _formula_ast_to_esql(node.left, query_aliases, warnings)
-        right = _formula_ast_to_esql(node.right, query_aliases, warnings)
+        left = _formula_ast_to_esql(node.left, query_aliases, warnings, derivative_refs)
+        right = _formula_ast_to_esql(node.right, query_aliases, warnings, derivative_refs)
         return f"({left} {node.op} {right})"
     if isinstance(node, FormulaUnary):
-        operand = _formula_ast_to_esql(node.operand, query_aliases, warnings)
+        operand = _formula_ast_to_esql(node.operand, query_aliases, warnings, derivative_refs)
         if node.op == "-":
             return f"(-{operand})"
         raise ValueError(f"unsupported unary formula operator: {node.op}")
@@ -828,8 +874,8 @@ def _formula_ast_to_esql(
                     "top() filtering is approximated — uses panel-level sort/limit "
                     "instead of formula-scoped top-N"
                 )
-            return _formula_ast_to_esql(node.args[0], query_aliases, warnings)
-        args = [_formula_ast_to_esql(arg, query_aliases, warnings) for arg in (node.args or [])]
+            return _formula_ast_to_esql(node.args[0], query_aliases, warnings, derivative_refs)
+        args = [_formula_ast_to_esql(arg, query_aliases, warnings, derivative_refs) for arg in (node.args or [])]
         if fn_name == "abs" and len(args) == 1:
             return f"ABS({args[0]})"
         if fn_name == "ceil" and len(args) == 1:
@@ -849,9 +895,19 @@ def _formula_ast_to_esql(
                 expr = f"({expr}) * {multiplier}"
             return expr
         if fn_name == "rate" and len(args) == 1:
-            # DD rate(x) is the per-second rate of change. For already-
-            # aggregated time-bucket data we approximate it as
-            # x / bucket_span_seconds (same shape as per_second).
+            # DD rate(x) is the per-second rate of change. When x is a
+            # direct query reference, the STATS clause has emitted
+            # {alias}_first and {alias}_last via FIRST(metric, @timestamp)
+            # / LAST(metric, @timestamp), enabling proper derivative
+            # semantics: (last - first) / bucket_span_seconds.
+            orig_arg = (node.args or [None])[0]
+            if (
+                derivative_refs is not None
+                and isinstance(orig_arg, FormulaRef)
+                and orig_arg.name in derivative_refs
+            ):
+                alias = _esql_identifier(query_aliases[orig_arg.name])
+                return f"({alias}_last - {alias}_first) / bucket_span_seconds"
             if warnings is not None:
                 warnings.append(
                     "rate() approximated as per-bucket value divided by bucket span; "
@@ -859,10 +915,17 @@ def _formula_ast_to_esql(
                 )
             return f"({args[0]}) / bucket_span_seconds"
         if fn_name in ("diff", "monotonic_diff") and len(args) == 1:
-            # DD diff(x) is x[t]-x[t-1] between adjacent buckets. ES|QL has
-            # no window-LAG in this aggregation context, so we emit the
-            # identity value and warn. For monotonic counters this is wrong
-            # in absolute terms but correct in shape.
+            # DD diff(x) is x[t]-x[t-1]. With FIRST/LAST in STATS we can
+            # express it as (last - first) per bucket; otherwise fall
+            # back to identity with warning.
+            orig_arg = (node.args or [None])[0]
+            if (
+                derivative_refs is not None
+                and isinstance(orig_arg, FormulaRef)
+                and orig_arg.name in derivative_refs
+            ):
+                alias = _esql_identifier(query_aliases[orig_arg.name])
+                return f"({alias}_last - {alias}_first)"
             if warnings is not None:
                 warnings.append(
                     f"{fn_name}() per-bucket delta is approximated as the bucket value; "

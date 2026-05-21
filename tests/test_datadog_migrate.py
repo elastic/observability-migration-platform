@@ -1127,7 +1127,10 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("| WHERE query1 > 0", result.esql_query)
         self.assertIn("| STATS value = COUNT(*)", result.esql_query)
 
-    def test_rate_formula_translates_with_warning(self):
+    def test_rate_formula_uses_first_last_for_proper_derivative(self):
+        # rate(query_ref) where query_ref is a direct reference: STATS
+        # emits FIRST/LAST so EVAL can compute (last - first)/span — true
+        # DD derivative semantics, not the value/span approximation.
         query = "sum:mysql.performance.table_locks_waited{*}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
@@ -1141,12 +1144,14 @@ class TestTranslation(unittest.TestCase):
             formulas=[wf],
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
-        self.assertEqual(result.status, "warning")
-        self.assertIn("/ bucket_span_seconds", result.esql_query)
+        self.assertIn("FIRST(mysql_performance_table_locks_waited, @timestamp)", result.esql_query)
+        self.assertIn("LAST(mysql_performance_table_locks_waited, @timestamp)", result.esql_query)
+        self.assertIn("(query1_last - query1_first) / bucket_span_seconds", result.esql_query)
         self.assertIn("BUCKET(@timestamp", result.esql_query)
-        self.assertTrue(any("rate()" in w for w in result.warnings))
+        # No approximation warning when FIRST/LAST path is used.
+        self.assertFalse(any("rate()" in w for w in result.warnings))
 
-    def test_diff_formula_translates_with_warning(self):
+    def test_diff_formula_uses_first_last_for_proper_delta(self):
         query = "sum:redis.net.rejected{*}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
@@ -1160,9 +1165,11 @@ class TestTranslation(unittest.TestCase):
             formulas=[wf],
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
-        self.assertEqual(result.status, "warning")
+        self.assertIn("FIRST(redis_net_rejected, @timestamp)", result.esql_query)
+        self.assertIn("LAST(redis_net_rejected, @timestamp)", result.esql_query)
+        self.assertIn("(query1_last - query1_first)", result.esql_query)
         self.assertIn("BUCKET(@timestamp", result.esql_query)
-        self.assertTrue(any("diff()" in w for w in result.warnings))
+        self.assertFalse(any("diff()" in w for w in result.warnings))
 
     def test_top_formula_translates_to_unwrapped_query_with_warning(self):
         query = "avg:apache.performance.cpu_load{*} by {host}"

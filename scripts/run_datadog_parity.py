@@ -341,13 +341,9 @@ def _build_cases(start_unix: int, end_unix: int, step_seconds: int) -> tuple[lis
                 "formula": "rate(query1)",
             },
             "es_value_col": "rate_query1",
-            "known_gap": "DD rate() is (value[t]-value[t-1])/Δt — "
-                         "true derivative. Our translation is "
-                         "value/bucket_span which only matches DD's "
-                         "per_second(), not rate(). Translation is "
-                         "approximate; widget unblocked but semantically "
-                         "different. Real fix needs ES|QL TS aggregations "
-                         "or LAG-style window functions.",
+            # rate() now uses FIRST/LAST within each bucket to compute the
+            # true derivative (last - first) / bucket_span_seconds.
+            # Expected to match DD exactly for constant counters.
         },
         {
             "title": "query1 / query2 ratio formula",
