@@ -161,6 +161,50 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
     GROUP_BY_PATTERN = re.compile(r"by\s*\{([^}]*)\}")
 
     @_parameterize
+    def test_no_empty_emitted_query(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            if pair.result.backend not in {"esql", "esql_with_kql"}:
+                continue
+            query = _emitted_query(pair.yaml_panel)
+            if not query.strip():
+                offenders.append(
+                    f"{pair.result.title!r}: backend {pair.result.backend!r} "
+                    f"but emitted query is empty/whitespace"
+                )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} empty ES|QL queries:\n  - "
+            + "\n  - ".join(offenders),
+        )
+
+    @_parameterize
+    def test_log_queries_non_empty(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            if pair.result.query_language != "datadog_log":
+                continue
+            query = _emitted_query(pair.yaml_panel)
+            if not query:
+                continue
+            if "// manual review" in query or 'KQL("")' in query:
+                offenders.append(
+                    f"{pair.result.title!r}: log query emitted as placeholder: {query!r}"
+                )
+                continue
+            if "WHERE" not in query.upper():
+                offenders.append(
+                    f"{pair.result.title!r}: log query missing WHERE clause: {query!r}"
+                )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} log query issues:\n  - "
+            + "\n  - ".join(offenders),
+        )
+
+    @_parameterize
     def test_timeseries_has_bucket(self, filename: str):
         _, pairs = _translate(filename)
         offenders: list[str] = []
