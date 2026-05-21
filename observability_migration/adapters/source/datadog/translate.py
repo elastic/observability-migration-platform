@@ -71,6 +71,14 @@ _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
+class _RequiresManualError(ValueError):
+    """Translator-internal signal: the source widget is ambiguous or uses
+    a pattern we can't faithfully translate, but the failure is at the
+    semantics level rather than the engine level. The widget is downgraded
+    to `requires_manual` (not `not_feasible`) so the migration manifest
+    surfaces a placeholder for human review instead of a hard block."""
+
+
 @dataclass
 class _MetricQuerySpec:
     query_name: str
@@ -197,6 +205,10 @@ def translate_widget(
         result.esql_query = esql
         result.status = "warning" if result.warnings else "ok"
 
+    except _RequiresManualError as exc:
+        result.status = "requires_manual"
+        result.warnings.append(f"manual review needed: {exc}")
+        result.semantic_losses.append(str(exc))
     except Exception as exc:
         result.status = "not_feasible"
         result.warnings.append(f"translation error: {exc}")
@@ -753,7 +765,16 @@ def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
         if spec.index != base.index:
             raise ValueError("formula queries span different index patterns")
         if spec.group_fields != base.group_fields:
-            raise ValueError("multi-query formulas with different groupings are not translated safely yet")
+            # Different per-query groupings is a semantic ambiguity DD
+            # resolves by convention; we can't reproduce it cleanly in
+            # one ES|QL pipeline. Surface as requires_manual so the
+            # widget gets a placeholder for human review.
+            raise _RequiresManualError(
+                "multi-query formulas with different groupings need a "
+                "manually-designed ES|QL query (e.g. UNION ALL or split "
+                "into separate panels) — automatic translation would be "
+                "semantically ambiguous"
+            )
     # Heterogeneous filters across specs are translated via per-aggregation
     # WHERE clauses (no error). Heterogeneous groupings still raise because
     # they would require a UNION/join that ES|QL can't express in one STATS.
