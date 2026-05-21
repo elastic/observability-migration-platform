@@ -163,6 +163,12 @@ class FormulaNumber:
 
 
 @dataclass
+class FormulaString:
+    """String literal inside a formula expression (e.g. top(q, 10, 'mean', 'desc'))."""
+    value: str
+
+
+@dataclass
 class FormulaBinOp:
     op: str
     left: Any

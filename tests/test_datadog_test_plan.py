@@ -953,7 +953,9 @@ class TestNegativeChaos(unittest.TestCase):
         nd = normalize_dashboard(raw)
         self.assertEqual(len(nd.widgets), 0)
 
-    def test_conflicting_multi_query_formula_reports_not_feasible(self):
+    def test_multi_query_formula_with_different_filters_translates(self):
+        # Previously blocked at translation; now per-aggregation WHERE
+        # clauses in STATS preserve each query's filter independently.
         q1 = "count:a{type:x AND direction:out} by {topic}.as_rate()"
         q2 = "count:b{type:x AND direction:in} by {topic}.as_rate()"
         mq1 = parse_metric_query(q1)
@@ -969,7 +971,9 @@ class TestNegativeChaos(unittest.TestCase):
             formulas=[wf],
         )
         result = translate_widget(w, plan_widget(w), OTEL_PROFILE)
-        self.assertEqual(result.status, "not_feasible")
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn('direction == "out"', result.esql_query)
+        self.assertIn('direction == "in"', result.esql_query)
 
     def test_unsupported_formula_function_reports_error(self):
         mq = parse_metric_query("avg:system.cpu.user{*}")

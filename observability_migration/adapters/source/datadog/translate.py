@@ -22,6 +22,7 @@ from .models import (
     FormulaFuncCall,
     FormulaNumber,
     FormulaRef,
+    FormulaString,
     FormulaUnary,
     MetricQuery,
     NormalizedWidget,
@@ -70,6 +71,14 @@ _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
+class _RequiresManualError(ValueError):
+    """Translator-internal signal: the source widget is ambiguous or uses
+    a pattern we can't faithfully translate, but the failure is at the
+    semantics level rather than the engine level. The widget is downgraded
+    to `requires_manual` (not `not_feasible`) so the migration manifest
+    surfaces a placeholder for human review instead of a hard block."""
+
+
 @dataclass
 class _MetricQuerySpec:
     query_name: str
@@ -79,6 +88,9 @@ class _MetricQuerySpec:
     group_fields: list[str]
     agg_expr: str
     mq: MetricQuery
+    es_metric: str = ""  # raw ES field name, used for FIRST/LAST in rate()/diff()
+    tag_where_str: str = ""  # WHERE clauses excluding TIME_FILTER, used as per-agg
+                              # filter when sibling specs have heterogeneous filters
 
 
 @dataclass
@@ -193,6 +205,10 @@ def translate_widget(
         result.esql_query = esql
         result.status = "warning" if result.warnings else "ok"
 
+    except _RequiresManualError as exc:
+        result.status = "requires_manual"
+        result.warnings.append(f"manual review needed: {exc}")
+        result.semantic_losses.append(str(exc))
     except Exception as exc:
         result.status = "not_feasible"
         result.warnings.append(f"translation error: {exc}")
@@ -443,15 +459,60 @@ def _translate_formula_metric_widget(
     )
     needs_bucket_span = any(_formula_needs_bucket_span(formula.ast) for formula in formulas)
 
-    stats_parts = [f"{spec.alias} = {spec.agg_expr}" for spec in used_specs]
+    derivative_refs: set[str] = set()
+    for formula in formulas:
+        derivative_refs |= _collect_derivative_query_refs(formula.ast)
+
+    heterogeneous = _specs_have_heterogeneous_filters(used_specs)
+
+    def _per_agg_where(spec: _MetricQuerySpec) -> str:
+        """Return the WHERE clause to append to an aggregation expression
+        in STATS. Empty string when not needed."""
+        if heterogeneous and spec.tag_where_str:
+            return f" WHERE {spec.tag_where_str}"
+        return ""
+
+    stats_parts = []
+    for spec in used_specs:
+        stats_parts.append(f"{spec.alias} = {spec.agg_expr}{_per_agg_where(spec)}")
+    for spec in used_specs:
+        if spec.query_name in derivative_refs and spec.es_metric:
+            # FIRST/LAST give the bucket-endpoint values needed for true
+            # rate/diff semantics; the WHERE filter skips rows where the
+            # metric column is null (other metrics share the index in
+            # multi-metric data streams) AND (when sibling specs differ in
+            # filters) limits the row population to this spec's filter set.
+            null_guard = f"{spec.es_metric} IS NOT NULL"
+            spec_filter = spec.tag_where_str if heterogeneous else ""
+            agg_where = f" WHERE {null_guard}"
+            if spec_filter:
+                agg_where = f" WHERE {null_guard} AND {spec_filter}"
+            stats_parts.append(
+                f"{spec.alias}_first = FIRST({spec.es_metric}, @timestamp){agg_where}"
+            )
+            stats_parts.append(
+                f"{spec.alias}_last = LAST({spec.es_metric}, @timestamp){agg_where}"
+            )
     if needs_bucket_span:
         stats_parts.append(
             'bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1'
         )
 
+    # When filters are heterogeneous, the outer WHERE is the time filter
+    # plus the OR of all per-spec filters. This narrows the candidate row
+    # set without filtering out anything any aggregation needs.
+    if heterogeneous:
+        outer_filters = [TIME_FILTER]
+        spec_filters = [s.tag_where_str for s in used_specs if s.tag_where_str]
+        if spec_filters:
+            outer_filters.append("(" + " OR ".join(f"({f})" for f in spec_filters) + ")")
+        outer_where = " AND ".join(outer_filters)
+    else:
+        outer_where = used_specs[0].where_str
+
     lines = [
         f"FROM {used_specs[0].index}",
-        f"| WHERE {used_specs[0].where_str}",
+        f"| WHERE {outer_where}",
     ]
     if dim_exprs:
         lines.append(f"| STATS {', '.join(stats_parts)} BY {', '.join(dim_exprs)}")
@@ -461,11 +522,16 @@ def _translate_formula_metric_widget(
     query_aliases = {spec.query_name: spec.alias for spec in used_specs}
     output_fields: list[str] = []
     eval_parts: list[str] = []
+    formula_warnings: list[str] = []
     for formula in formulas:
-        expr = _formula_ast_to_esql(formula.ast, query_aliases)
+        expr = _formula_ast_to_esql(
+            formula.ast, query_aliases, formula_warnings, derivative_refs
+        )
         output_fields.append(formula.alias)
         if expr != _esql_identifier(formula.alias):
             eval_parts.append(f"{formula.alias} = {expr}")
+    for w in formula_warnings:
+        _append_unique_warning(result, w)
     if eval_parts:
         lines.append(f"| EVAL {', '.join(eval_parts)}")
 
@@ -582,6 +648,7 @@ def _build_metric_query_spec(
             "fill(zero) only applies to null values in returned rows; empty buckets may still be omitted",
         )
 
+    tag_where = " AND ".join(c for c in where_clauses if c != TIME_FILTER)
     return _MetricQuerySpec(
         query_name=wq.name,
         alias=_safe_alias(wq.name or "query"),
@@ -590,6 +657,8 @@ def _build_metric_query_spec(
         group_fields=group_fields,
         agg_expr=_format_agg_expr(es_agg, es_metric, mq),
         mq=mq,
+        es_metric=es_metric,
+        tag_where_str=tag_where,
     )
 
 
@@ -695,10 +764,27 @@ def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
     for spec in specs[1:]:
         if spec.index != base.index:
             raise ValueError("formula queries span different index patterns")
-        if spec.where_str != base.where_str:
-            raise ValueError("multi-query formulas with different filters are not translated safely yet")
         if spec.group_fields != base.group_fields:
-            raise ValueError("multi-query formulas with different groupings are not translated safely yet")
+            # Different per-query groupings is a semantic ambiguity DD
+            # resolves by convention; we can't reproduce it cleanly in
+            # one ES|QL pipeline. Surface as requires_manual so the
+            # widget gets a placeholder for human review.
+            raise _RequiresManualError(
+                "multi-query formulas with different groupings need a "
+                "manually-designed ES|QL query (e.g. UNION ALL or split "
+                "into separate panels) — automatic translation would be "
+                "semantically ambiguous"
+            )
+    # Heterogeneous filters across specs are translated via per-aggregation
+    # WHERE clauses (no error). Heterogeneous groupings still raise because
+    # they would require a UNION/join that ES|QL can't express in one STATS.
+
+
+def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
+    if len(specs) < 2:
+        return False
+    base = specs[0].where_str
+    return any(s.where_str != base for s in specs[1:])
 
 
 def _metric_dimension_exprs(
@@ -760,13 +846,18 @@ def _formula_ref_names(node: Any) -> list[str]:
             refs.extend(_formula_ref_names(arg))
     elif isinstance(node, FormulaUnary):
         refs.extend(_formula_ref_names(node.operand))
+    # FormulaString / FormulaNumber: no refs
     return list(dict.fromkeys(refs))
+
+
+_BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
+_DERIVATIVE_FORMULA_FNS = {"rate", "diff", "monotonic_diff"}
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:
     if isinstance(node, FormulaFuncCall):
         fn_name = (node.name or "").lower()
-        if fn_name in ("per_second", "per_minute", "per_hour"):
+        if fn_name in _BUCKET_SPAN_FORMULA_FNS:
             return True
         return any(_formula_needs_bucket_span(arg) for arg in (node.args or []))
     if isinstance(node, FormulaBinOp):
@@ -776,9 +867,33 @@ def _formula_needs_bucket_span(node: Any) -> bool:
     return False
 
 
+def _collect_derivative_query_refs(node: Any) -> set[str]:
+    """Find query names that are direct arguments to rate()/diff() so the
+    STATS clause can emit FIRST/LAST aggregations for them (enabling true
+    derivative semantics, not the value/span approximation)."""
+
+    refs: set[str] = set()
+    if isinstance(node, FormulaFuncCall):
+        fn_name = (node.name or "").lower()
+        if fn_name in _DERIVATIVE_FORMULA_FNS and node.args:
+            arg = node.args[0]
+            if isinstance(arg, FormulaRef):
+                refs.add(arg.name)
+        for child in (node.args or []):
+            refs |= _collect_derivative_query_refs(child)
+    elif isinstance(node, FormulaBinOp):
+        refs |= _collect_derivative_query_refs(node.left)
+        refs |= _collect_derivative_query_refs(node.right)
+    elif isinstance(node, FormulaUnary):
+        refs |= _collect_derivative_query_refs(node.operand)
+    return refs
+
+
 def _formula_ast_to_esql(
     node: Any,
     query_aliases: dict[str, str],
+    warnings: list[str] | None = None,
+    derivative_refs: set[str] | None = None,
 ) -> str:
     if isinstance(node, FormulaRef):
         if node.name not in query_aliases:
@@ -789,18 +904,38 @@ def _formula_ast_to_esql(
         if float(val).is_integer():
             return str(int(val))
         return str(val)
+    if isinstance(node, FormulaString):
+        # String literals only appear as positional args to functions like
+        # top(); they have no direct ES|QL equivalent in an expression
+        # context and the surrounding function handler reads them directly.
+        raise ValueError(
+            f"string literal {node.value!r} is not allowed in an expression position"
+        )
     if isinstance(node, FormulaBinOp):
-        left = _formula_ast_to_esql(node.left, query_aliases)
-        right = _formula_ast_to_esql(node.right, query_aliases)
+        left = _formula_ast_to_esql(node.left, query_aliases, warnings, derivative_refs)
+        right = _formula_ast_to_esql(node.right, query_aliases, warnings, derivative_refs)
         return f"({left} {node.op} {right})"
     if isinstance(node, FormulaUnary):
-        operand = _formula_ast_to_esql(node.operand, query_aliases)
+        operand = _formula_ast_to_esql(node.operand, query_aliases, warnings, derivative_refs)
         if node.op == "-":
             return f"(-{operand})"
         raise ValueError(f"unsupported unary formula operator: {node.op}")
     if isinstance(node, FormulaFuncCall):
         fn_name = (node.name or "").lower()
-        args = [_formula_ast_to_esql(arg, query_aliases) for arg in (node.args or [])]
+        if fn_name == "top":
+            # top(query_ref, N, 'agg', 'order') — list-semantic top-N. We
+            # cannot apply the N/agg/order constraints inside an expression,
+            # so we unwrap to the first arg and record an approximation
+            # warning. The surrounding panel sort/limit logic still applies.
+            if not node.args:
+                raise ValueError("top() requires at least one argument")
+            if warnings is not None:
+                warnings.append(
+                    "top() filtering is approximated — uses panel-level sort/limit "
+                    "instead of formula-scoped top-N"
+                )
+            return _formula_ast_to_esql(node.args[0], query_aliases, warnings, derivative_refs)
+        args = [_formula_ast_to_esql(arg, query_aliases, warnings, derivative_refs) for arg in (node.args or [])]
         if fn_name == "abs" and len(args) == 1:
             return f"ABS({args[0]})"
         if fn_name == "ceil" and len(args) == 1:
@@ -819,6 +954,44 @@ def _formula_ast_to_esql(
             if multiplier != 1:
                 expr = f"({expr}) * {multiplier}"
             return expr
+        if fn_name == "rate" and len(args) == 1:
+            # DD rate(x) is the per-second rate of change. When x is a
+            # direct query reference, the STATS clause has emitted
+            # {alias}_first and {alias}_last via FIRST(metric, @timestamp)
+            # / LAST(metric, @timestamp), enabling proper derivative
+            # semantics: (last - first) / bucket_span_seconds.
+            orig_arg = (node.args or [None])[0]
+            if (
+                derivative_refs is not None
+                and isinstance(orig_arg, FormulaRef)
+                and orig_arg.name in derivative_refs
+            ):
+                alias = _esql_identifier(query_aliases[orig_arg.name])
+                return f"({alias}_last - {alias}_first) / bucket_span_seconds"
+            if warnings is not None:
+                warnings.append(
+                    "rate() approximated as per-bucket value divided by bucket span; "
+                    "for counters this matches DD semantics within a bucket"
+                )
+            return f"({args[0]}) / bucket_span_seconds"
+        if fn_name in ("diff", "monotonic_diff") and len(args) == 1:
+            # DD diff(x) is x[t]-x[t-1]. With FIRST/LAST in STATS we can
+            # express it as (last - first) per bucket; otherwise fall
+            # back to identity with warning.
+            orig_arg = (node.args or [None])[0]
+            if (
+                derivative_refs is not None
+                and isinstance(orig_arg, FormulaRef)
+                and orig_arg.name in derivative_refs
+            ):
+                alias = _esql_identifier(query_aliases[orig_arg.name])
+                return f"({alias}_last - {alias}_first)"
+            if warnings is not None:
+                warnings.append(
+                    f"{fn_name}() per-bucket delta is approximated as the bucket value; "
+                    "absolute numbers may differ from DD"
+                )
+            return f"({args[0]})"
         raise ValueError(f"unsupported formula function: {node.name}")
     raise ValueError(f"unsupported formula node: {type(node).__name__}")
 
