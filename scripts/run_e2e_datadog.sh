@@ -46,6 +46,14 @@ DASHBOARDS=(
   "infra/datadog/dashboards/integrations/nginx_overview.json|dd-nginx"
   "infra/datadog/dashboards/integrations/postgres.json|dd-postgres"
   "infra/datadog/dashboards/integrations/redis.json|dd-redis"
+  "infra/datadog/dashboards/integrations/mysql.json|dd-mysql"
+  "infra/datadog/dashboards/integrations/apache.json|dd-apache"
+  "infra/datadog/dashboards/integrations/haproxy.json|dd-haproxy"
+  "infra/datadog/dashboards/integrations/kafka.json|dd-kafka"
+  "infra/datadog/dashboards/integrations/mongodb.json|dd-mongodb"
+  "infra/datadog/dashboards/integrations/rabbitmq.json|dd-rabbitmq"
+  "infra/datadog/dashboards/integrations/consul.json|dd-consul"
+  "infra/datadog/dashboards/integrations/celery.json|dd-celery"
 )
 
 # ---------------------------------------------------------------------------
