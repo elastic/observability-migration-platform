@@ -158,6 +158,45 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
         self.assertTrue(pairs, f"{filename}: produced no widgets")
 
     METRIC_PATTERN = re.compile(r"(?:avg|sum|min|max|count):([a-zA-Z0-9_.]+)")
+    GROUP_BY_PATTERN = re.compile(r"by\s*\{([^}]*)\}")
+
+    @_parameterize
+    def test_group_by_preserved(self, filename: str):
+        _, pairs = _translate(filename)
+        offenders: list[str] = []
+        for pair in _actionable(pairs):
+            query = _emitted_query(pair.yaml_panel)
+            if not query:
+                continue
+            upper = query.upper()
+            for source in pair.result.source_queries:
+                m = self.GROUP_BY_PATTERN.search(source)
+                if not m:
+                    continue
+                raw_keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
+                # Skip template-variable keys like `$scope` — they're not
+                # group-by dimensions, they're filter substitutions.
+                raw_keys = [k for k in raw_keys if not k.startswith("$") and k != "*"]
+                if not raw_keys:
+                    continue
+                if "BY " not in upper:
+                    offenders.append(
+                        f"{pair.result.title!r}: source by {{{', '.join(raw_keys)}}} "
+                        f"but ES|QL has no BY clause: {query!r}"
+                    )
+                    continue
+                for dd_key in raw_keys:
+                    mapped = OTEL_PROFILE.tag_map.get(dd_key, dd_key)
+                    if mapped not in query and dd_key not in query:
+                        offenders.append(
+                            f"{pair.result.title!r}: group-by {dd_key!r} "
+                            f"(otel→{mapped!r}) missing from ES|QL: {query!r}"
+                        )
+        self.assertFalse(
+            offenders,
+            f"{filename}: {len(offenders)} group-by mismatches:\n  - "
+            + "\n  - ".join(offenders),
+        )
 
     @_parameterize
     def test_metric_name_present(self, filename: str):
