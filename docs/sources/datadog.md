@@ -331,10 +331,9 @@ The Datadog path is now organized around executable stages:
 The translator handles Datadog formulas at three layers:
 
 - **Pointwise functions** (`abs`, `ceil`, `floor`, `round`, `default_zero`, `exclude_null`, `per_second`, `per_minute`, `per_hour`) map directly to ES|QL expressions in the `EVAL` stage.
-- **Derivative functions** (`rate`, `diff`, `monotonic_diff`) require bucket-endpoint values, so when they wrap a direct query reference the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` aggregations alongside the standard aggregation. The formula then translates to:
-  - `rate(query1)` → `(query1_last - query1_first) / bucket_span_seconds`
-  - `diff(query1)` / `monotonic_diff(query1)` → `(query1_last - query1_first)`
-  - A per-aggregation `WHERE metric IS NOT NULL` guard skips rows from other metrics that share the index, which is necessary because `FIRST`/`LAST` pick rows by timestamp regardless of the target column's value.
+- **Derivative functions** (`rate`, `diff`, `monotonic_diff`) take one of two paths depending on the target field's live `_field_caps`:
+  - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric, 5 minute) BY TBUCKET(5 minute)` (or `INCREASE(...)` for `diff`/`monotonic_diff`). This is the native ES|QL time-series aggregation — same pattern the Grafana adapter uses for PromQL `rate()`. Mirrors Datadog counter-rate semantics directly.
+  - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
 - **Multi-query formulas with different filters** (e.g. `count:x{direction:in} / count:x{direction:out}`) translate via per-aggregation `WHERE` clauses inside `STATS`: each query's tag filters are attached to its own aggregation expression. The outer `WHERE` becomes the `TIME_FILTER` plus an `OR` of the spec filters. Different groupings are still surfaced as `requires_manual` because the resolution between divergent group sets is semantically ambiguous.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 

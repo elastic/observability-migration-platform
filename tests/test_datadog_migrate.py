@@ -1127,6 +1127,85 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("| WHERE query1 > 0", result.esql_query)
         self.assertIn("| STATS value = COUNT(*)", result.esql_query)
 
+    def test_rate_formula_uses_ts_rate_when_metric_is_counter_typed(self):
+        # When the live field-caps loader knows the target field is a
+        # TSDS counter, the translator switches from the FROM+FIRST/LAST
+        # fallback to native ES|QL TS|QL RATE() — the same pattern Grafana
+        # uses for PromQL rate(). Construct a counter capability inline.
+        from copy import deepcopy
+
+        from observability_migration.core.verification.field_capabilities import (
+            FieldCapability,
+        )
+
+        profile = deepcopy(OTEL_PROFILE)
+        # Inject a counter capability for the mapped ES metric name.
+        profile.field_caps["parity_counter"] = FieldCapability(
+            name="parity_counter",
+            type="counter_long",
+            time_series_metric_kind="counter",
+        )
+
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Counter rate",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TS metrics-*", result.esql_query)
+        self.assertIn("RATE(parity_counter, 5 minute)", result.esql_query)
+        self.assertIn("TBUCKET(5 minute)", result.esql_query)
+        # FIRST/LAST fallback should NOT appear when we go the TS path.
+        self.assertNotIn("FIRST(parity_counter", result.esql_query)
+
+    def test_diff_formula_uses_ts_increase_when_metric_is_counter_typed(self):
+        from copy import deepcopy
+
+        from observability_migration.core.verification.field_capabilities import (
+            FieldCapability,
+        )
+
+        profile = deepcopy(OTEL_PROFILE)
+        profile.field_caps["parity_counter"] = FieldCapability(
+            name="parity_counter",
+            type="counter_double",
+            time_series_metric_kind="counter",
+        )
+
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="diff(query1)")
+        wf.expression = parse_formula("diff(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Counter delta",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TS metrics-*", result.esql_query)
+        self.assertIn("INCREASE(parity_counter, 5 minute)", result.esql_query)
+
+    def test_rate_formula_falls_back_to_first_last_for_gauges(self):
+        # No counter capability injected — current FIRST/LAST behaviour
+        # stays as the fallback for plain gauge metrics.
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Gauge rate",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotIn("TS metrics-*", result.esql_query)
+        self.assertIn("FROM metrics-*", result.esql_query)
+        self.assertIn("FIRST(parity_counter, @timestamp)", result.esql_query)
+
     def test_rate_formula_uses_first_last_for_proper_derivative(self):
         # rate(query_ref) where query_ref is a direct reference: STATS
         # emits FIRST/LAST so EVAL can compute (last - first)/span — true

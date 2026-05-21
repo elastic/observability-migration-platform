@@ -13,7 +13,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from observability_migration.core.verification.field_capabilities import assess_field_usage
+from observability_migration.core.verification.field_capabilities import (
+    assess_field_usage,
+    is_counter_metric_field,
+)
 
 from .field_map import FieldMapProfile
 from .log_parser import log_ast_to_esql_where, log_ast_to_kql
@@ -91,6 +94,7 @@ class _MetricQuerySpec:
     es_metric: str = ""  # raw ES field name, used for FIRST/LAST in rate()/diff()
     tag_where_str: str = ""  # WHERE clauses excluding TIME_FILTER, used as per-agg
                               # filter when sibling specs have heterogeneous filters
+    is_counter: bool = False  # target field is TSDS counter-typed — enables TS|QL RATE()
 
 
 @dataclass
@@ -479,6 +483,59 @@ def _translate_formula_metric_widget(
 
     heterogeneous = _specs_have_heterogeneous_filters(used_specs)
 
+    # ----------------------------------------------------------------
+    # TS|QL path: when the formula reduces to rate()/diff() of a single
+    # counter-typed metric reference, emit `TS index | STATS RATE(field,
+    # window)` — the native ES|QL time-series aggregation. Grafana uses
+    # the same pattern for PromQL rate(). Falls back to the FROM +
+    # FIRST/LAST path below when the metric is a gauge or when the
+    # formula is more complex than a direct counter rate/diff.
+    # ----------------------------------------------------------------
+    ts_rate_spec: _MetricQuerySpec | None = None
+    ts_fn_name: str = ""
+    if (
+        len(used_specs) == 1
+        and used_specs[0].is_counter
+        and used_specs[0].query_name in derivative_refs
+        and len(formulas) == 1
+        and isinstance(formulas[0].ast, FormulaFuncCall)
+        and (formulas[0].ast.name or "").lower() in _DERIVATIVE_FORMULA_FNS
+        and len(formulas[0].ast.args) == 1
+        and isinstance(formulas[0].ast.args[0], FormulaRef)
+        and formulas[0].ast.args[0].name == used_specs[0].query_name
+        and plan.kibana_type in ("xy", "heatmap")
+    ):
+        ts_rate_spec = used_specs[0]
+        ts_fn_name = (formulas[0].ast.name or "").lower()
+
+    if ts_rate_spec is not None:
+        # ES|QL native TS aggregation:
+        # rate / monotonic counter rate / increase per bucket.
+        es_agg = "RATE" if ts_fn_name == "rate" else "INCREASE"
+        window = "5 minute"
+        spec = ts_rate_spec
+        alias = _safe_alias(formulas[0].alias or formulas[0].raw or f"{ts_fn_name}_{spec.alias}")
+        by_clause = f"time_bucket = TBUCKET({window})"
+        if spec.group_fields:
+            by_clause += ", " + ", ".join(spec.group_fields)
+        ts_lines = [
+            f"TS {spec.index}",
+            f"| WHERE {spec.where_str}",
+            f"| STATS {alias} = {es_agg}({spec.es_metric}, {window}) BY {by_clause}",
+            "| KEEP time_bucket, " + ", ".join(spec.group_fields + [alias])
+            if spec.group_fields
+            else f"| KEEP time_bucket, {alias}",
+            "| SORT time_bucket",
+        ]
+        if result is not None:
+            _append_unique_warning(
+                result,
+                f"{ts_fn_name}() translated via ES|QL TS|QL "
+                f"{es_agg}({spec.es_metric}, {window}) — requires the target "
+                f"field to be a counter in a time_series index",
+            )
+        return "\n".join(ts_lines)
+
     def _per_agg_where(spec: _MetricQuerySpec) -> str:
         """Return the WHERE clause to append to an aggregation expression
         in STATS. Empty string when not needed."""
@@ -673,6 +730,7 @@ def _build_metric_query_spec(
         mq=mq,
         es_metric=es_metric,
         tag_where_str=tag_where,
+        is_counter=is_counter_metric_field(metric_cap),
     )
 
 
