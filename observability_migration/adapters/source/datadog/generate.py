@@ -446,6 +446,23 @@ def _build_lens_panel(
     return panel
 
 
+_STATUS_PLACEHOLDER_HINTS: dict[str, str] = {
+    "check_status": (
+        "Datadog **check_status** widgets show the health of a synthetic "
+        "check (HTTP, TCP, SSL, etc.). The closest Elastic equivalent is a "
+        "[Synthetics monitor](https://www.elastic.co/guide/en/observability/current/monitor-uptime-synthetics.html); "
+        "configure one targeting the same endpoint, then visualize its "
+        "status field on this panel."
+    ),
+    "manage_status": (
+        "Datadog **manage_status** widgets summarize the state of one or "
+        "more monitors. The closest Elastic equivalent is the "
+        "[Alerts UI](https://www.elastic.co/guide/en/kibana/current/create-and-manage-rules.html); "
+        "create matching rules in Kibana and link to them from this panel."
+    ),
+}
+
+
 def _build_markdown_panel(
     widget: NormalizedWidget,
     result: TranslationResult,
@@ -460,6 +477,10 @@ def _build_markdown_panel(
         lines = [f"**{result.title or widget.title or 'Untitled'}**", ""]
         lines.append(f"Original widget type: {widget.widget_type}")
         lines.append(f"Migration status: {result.status}")
+        hint = _STATUS_PLACEHOLDER_HINTS.get(widget.widget_type)
+        if hint:
+            lines.append("")
+            lines.append(hint)
         if result.source_queries:
             lines.append("")
             for sq in result.source_queries[:3]:

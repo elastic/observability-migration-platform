@@ -1929,7 +1929,7 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket")
         self.assertEqual(panel["esql"]["metrics"][0]["field"], "count")
 
-    def test_manage_status_pipeline_stays_not_feasible_and_emits_review_markdown(self):
+    def test_manage_status_pipeline_emits_markdown_placeholder_with_hint(self):
         widget = NormalizedWidget(
             id="1",
             widget_type="manage_status",
@@ -1938,20 +1938,127 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         )
 
         plan = plan_widget(widget)
-        self.assertEqual(plan.backend, "blocked")
-        self.assertEqual(plan.confidence, 0.0)
+        # New behavior: routed to markdown backend so the widget renders as
+        # an informative placeholder instead of blocking.
+        self.assertEqual(plan.backend, "markdown")
 
         result = translate_widget(widget, plan, OTEL_PROFILE)
-        self.assertEqual(result.status, "not_feasible")
-        self.assertIn("unsupported widget type: manage_status", result.reasons)
+        # Markdown placeholders for non-text widgets land as requires_manual
+        # (the YAML uploads, the panel surfaces guidance).
+        self.assertEqual(result.status, "requires_manual")
 
         payload = yaml.safe_load(
             generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
         )
         panel = payload["dashboards"][0]["panels"][0]
         self.assertIn("markdown", panel)
-        self.assertEqual(panel["markdown"]["content"], result.yaml_panel["markdown"]["content"])
-        self.assertIn("manage_status", panel["markdown"]["content"])
+        content = panel["markdown"]["content"]
+        self.assertIn("manage_status", content)
+        # Hint about the Elastic Alerts equivalent must be present.
+        self.assertIn("Alerts", content)
+
+    def test_check_status_pipeline_emits_markdown_placeholder_with_hint(self):
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="check_status",
+            title="Server reachable",
+        )
+
+        plan = plan_widget(widget)
+        self.assertEqual(plan.backend, "markdown")
+
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertEqual(result.status, "requires_manual")
+
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
+        )
+        content = payload["dashboards"][0]["panels"][0]["markdown"]["content"]
+        self.assertIn("check_status", content)
+        # Hint about the Elastic Synthetics equivalent.
+        self.assertIn("Synthetics", content)
+
+    def test_partition_widget_without_groupby_is_requires_manual(self):
+        # Sunburst (partition) widgets need at least one group-by; when
+        # the source has none, the translator surfaces requires_manual
+        # instead of blocking the upload.
+        query = "sum:rabbitmq.connection.incoming_packets.count{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1", data_source="metrics", raw_query=query,
+            metric_query=mq, query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1", widget_type="sunburst", title="Packets",
+            queries=[wq],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertEqual(result.status, "requires_manual")
+        # The placeholder mentions the source query so the reviewer can see it.
+        self.assertTrue(
+            any("group" in (w or "").lower() for w in result.warnings),
+            f"expected a group-related warning, got {result.warnings}",
+        )
+
+    def test_log_widget_with_modern_search_query_translates(self):
+        # Modern Datadog log widgets put the filter in raw_q["search"]["query"]
+        # instead of raw_q["query"]. Verify normalize captures it.
+        raw_dashboard = {
+            "title": "Log",
+            "widgets": [{
+                "definition": {
+                    "title": "Count by status",
+                    "type": "timeseries",
+                    "requests": [{
+                        "response_format": "timeseries",
+                        "queries": [{
+                            "data_source": "logs",
+                            "name": "a",
+                            "search": {"query": "service:kafka"},
+                            "compute": {"aggregation": "count"},
+                        }],
+                        "formulas": [{"formula": "a"}],
+                    }],
+                },
+            }],
+        }
+        from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+        nz = normalize_dashboard(raw_dashboard)
+        widget = nz.widgets[0]
+        # The raw_query should reflect the modern search.query field.
+        self.assertEqual(widget.queries[0].raw_query, "service:kafka")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn("service.name", result.esql_query)
+
+    def test_log_widget_with_empty_query_translates_as_match_all(self):
+        # Some Datadog widgets are emitted with no log filter at all; we
+        # should treat that as a match-all query rather than failing.
+        raw_dashboard = {
+            "title": "Log",
+            "widgets": [{
+                "definition": {
+                    "title": "All logs",
+                    "type": "timeseries",
+                    "requests": [{
+                        "response_format": "timeseries",
+                        "queries": [{
+                            "data_source": "logs",
+                            "name": "a",
+                        }],
+                        "formulas": [{"formula": "a"}],
+                    }],
+                },
+            }],
+        }
+        from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+        nz = normalize_dashboard(raw_dashboard)
+        widget = nz.widgets[0]
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn("FROM logs-*", result.esql_query)
+        # No KQL filter beyond the time clause.
+        self.assertIn("WHERE @timestamp", result.esql_query)
 
 
 # =========================================================================

@@ -192,6 +192,13 @@ def _extract_from_request(
 
         data_source = raw_q.get("data_source", "metrics")
         raw_query_str = raw_q.get("query", "")
+        # Modern Datadog log/event queries put the filter expression in a
+        # nested `search.query` field; fall back to it when the legacy
+        # `query` field is empty so we don't lose the filter.
+        if not raw_query_str and data_source in LOG_DATA_SOURCES:
+            search = raw_q.get("search")
+            if isinstance(search, dict):
+                raw_query_str = search.get("query", "") or ""
 
         wq = WidgetQuery(
             name=name,
@@ -211,7 +218,10 @@ def _extract_from_request(
                     wq.query_type = "metric"
                 else:
                     wq.query_type = "metric_unparsed"
-        elif data_source in LOG_DATA_SOURCES and raw_query_str:
+        elif data_source in LOG_DATA_SOURCES:
+            # Always parse — parse_log_query handles empty/wildcard input
+            # and returns a LogQuery(ast=None) marker. Downstream code can
+            # treat that as a match-all filter.
             wq.log_query = parse_log_query(raw_query_str)
             wq.query_type = "log"
         else:

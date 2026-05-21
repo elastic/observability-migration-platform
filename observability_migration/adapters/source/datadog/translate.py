@@ -312,7 +312,17 @@ def _translate_single_metric(
     if is_heatmap and not spec.group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
     if is_partition and not spec.group_fields:
-        raise ValueError(f"{plan.kibana_type} requires at least one grouping dimension")
+        # Sunburst/treemap/pie widgets need at least one dimension to
+        # carve up; without one the source dashboard is asking for an
+        # ungrouped pie chart, which is a single-value question with a
+        # multi-value visualization. Surface as requires_manual so the
+        # placeholder uploads — the YAML still ships, just with a
+        # marker for someone to redesign the panel.
+        raise _RequiresManualError(
+            f"{plan.kibana_type} widget needs at least one grouping dimension; "
+            "the source query has none, so the chart can't be sliced "
+            "automatically. Redesign as a single-value panel or add a `by {}`."
+        )
 
     if is_timeseries or is_heatmap:
         return _build_timeseries_esql(
@@ -442,7 +452,11 @@ def _translate_formula_metric_widget(
     if plan.kibana_type == "heatmap" and not used_specs[0].group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
     if plan.kibana_type in ("partition", "treemap") and not used_specs[0].group_fields:
-        raise ValueError(f"{plan.kibana_type} requires at least one grouping dimension")
+        raise _RequiresManualError(
+            f"{plan.kibana_type} formula widget needs at least one grouping "
+            "dimension; the source dashboard's query has none. Surface for "
+            "manual redesign rather than blocking the upload."
+        )
 
     reducer = None
     if plan.kibana_type not in ("xy", "heatmap"):

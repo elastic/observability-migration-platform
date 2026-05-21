@@ -42,6 +42,12 @@ UNTRANSLATABLE_FORMULA_FUNCS = {
 }
 
 TEXT_WIDGET_TYPES = {"note", "free_text", "image", "iframe"}
+
+# Widget types that represent a Datadog-side status/check view rather than
+# a queryable metric. These have no direct Kibana equivalent (Elastic uses
+# Synthetics for synthetic checks and Alerts for monitor status), so we
+# emit them as informative markdown placeholders rather than blocking.
+STATUS_PLACEHOLDER_WIDGET_TYPES = {"check_status", "manage_status"}
 GROUP_WIDGET_TYPES = {"group", "powerpack"}
 
 
@@ -115,6 +121,28 @@ def group_widget_rule(context: PlanContext) -> str | None:
     context.plan.backend = "group"
     context.plan.reasons.append("group/container widget")
     return "selected group backend"
+
+
+@PLANNER_PRECHECKS.register(
+    "datadog.plan.status_placeholder",
+    priority=25,
+    summary="Emit Datadog status/check widgets (check_status, manage_status) "
+            "as informative markdown placeholders rather than blocking — "
+            "Elastic uses Synthetics / Alerts instead.",
+)
+def status_placeholder_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type not in STATUS_PLACEHOLDER_WIDGET_TYPES:
+        return None
+    context.plan.backend = "markdown"
+    context.plan.kibana_type = "markdown"
+    # Confidence stays at 0 — this is not a real metric translation, it's
+    # an informative placeholder that needs human follow-up.
+    context.plan.confidence = 0.0
+    context.plan.reasons.append(
+        f"status widget ({context.widget.widget_type}) — placeholder for "
+        f"manual setup as an Elastic Synthetics check or Alert rule"
+    )
+    return f"selected markdown placeholder for status widget {context.widget.widget_type}"
 
 
 @PLANNER_PRECHECKS.register(
