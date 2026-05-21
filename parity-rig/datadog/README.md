@@ -69,9 +69,36 @@ translation pipeline must have:
 |---|---|
 | `STRICT_PASS` | max relative error ≤ 1 % |
 | `FUZZY_PASS` | max relative error ≤ 5 % (typical for bucket-boundary drift) |
+| `KNOWN_GAP` | case has a documented `known_gap` reason; would have failed without it |
 | `SHAPE_MISMATCH` | series tag-sets don't align between DD and ES |
 | `FAIL_DIVERGENT` | values diverge beyond fuzzy tolerance |
 | `ERROR` | exception during seeding or querying |
+
+A run exits with status 0 if every case is `STRICT_PASS`, `FUZZY_PASS`, or `KNOWN_GAP`. Anything else exits non-zero.
+
+## Current coverage
+
+The default suite ships 10 cases:
+
+**Single-query aggregation parity** — 4 STRICT_PASS:
+- `avg` with tag filter
+- `avg` by group-by
+- `min` by group-by
+- `max` by group-by
+
+**Filter shapes** — 2 STRICT_PASS:
+- AND of two tag filters (`{host:h1,service:web}`)
+- NOT filter (`{!env:dev}`) — verifies OTel tag mapping translates `env` → `deployment.environment`
+
+**Multi-dimension group-by** — 1 STRICT_PASS:
+- `avg by {host, service}`
+
+**Formula coverage** — 1 STRICT_PASS:
+- `query1 / query2` ratio formula across two AVG queries
+
+**Documented gaps (KNOWN_GAP)** — 2:
+- **`p95:` percentile**: DD's percentile aggregators require *distribution-typed* metric submission, not gauges. The ES|QL translation is correct in shape (`PERCENTILE(metric, 95)`) but cannot be validated end-to-end without distribution data. To verify percentiles, submit a distribution metric type with multiple values per timestamp.
+- **`rate()` formula**: DD's `rate()` is `(value[t] − value[t-1]) / Δt` — a true derivative between adjacent samples. The Phase 1 translation emits `value / bucket_span_seconds`, which matches DD's `per_second()` semantics but **not** `rate()`. The widget is unblocked (no longer `not_feasible`) but produces different numbers than DD. A real fix needs ES|QL time-series aggregations (`metrics-*` TS mode) or a window/LAG construct that ES|QL doesn't yet expose in standard mode.
 
 ## Running
 
