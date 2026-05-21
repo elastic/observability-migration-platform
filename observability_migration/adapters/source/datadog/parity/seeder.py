@@ -21,7 +21,7 @@ import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .dd_client import DDClient, DDPoint, DDSeries
+from .dd_client import DDClient, DDDistributionSeries, DDPoint, DDSeries
 
 
 @dataclass
@@ -62,6 +62,34 @@ def generate_series(
         es_tag_map=es_tag_fields,
         points=points,
     )
+
+
+def push_distribution_to_datadog(
+    client: DDClient,
+    series_list: Iterable[ParitySeries],
+    *,
+    samples_per_point: int = 10,
+) -> dict:
+    """Submit each ParitySeries to DD as a distribution series.
+
+    Each point's value becomes a `samples_per_point`-element list, so DD
+    can compute percentile aggregations (p50/p75/p90/p95/p99) that
+    require distribution-typed metrics. ES side stores one doc per
+    sample-bag entry (samples expanded into separate docs) so
+    PERCENTILE(metric, 95) gives the same answer.
+    """
+
+    dd_series = []
+    for s in series_list:
+        tag_strs = [f"{k}:{v}" for k, v in sorted(s.tag_value_map.items())]
+        dd_series.append(
+            DDDistributionSeries(
+                metric=s.dd_metric,
+                points=[(ts, [v] * samples_per_point) for ts, v in s.points],
+                tags=tag_strs,
+            )
+        )
+    return client.submit_distribution(dd_series)
 
 
 def push_to_datadog(client: DDClient, series_list: Iterable[ParitySeries]) -> dict:

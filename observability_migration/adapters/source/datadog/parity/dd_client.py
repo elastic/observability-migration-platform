@@ -45,6 +45,27 @@ class DDSeries:
         }
 
 
+@dataclass
+class DDDistributionSeries:
+    """One distribution series to submit via /api/v1/distribution_points.
+
+    Each `points` entry is `[timestamp_seconds, [value, value, ...]]` —
+    a list of raw observations at that bucket, from which DD computes
+    p50/p75/p90/p95/p99 etc.
+    """
+
+    metric: str
+    points: list[tuple[int, list[float]]]
+    tags: list[str]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "metric": self.metric,
+            "points": [[ts, list(values)] for ts, values in self.points],
+            "tags": list(self.tags),
+        }
+
+
 class DDClient:
     """Thin Datadog HTTP API wrapper.
 
@@ -75,6 +96,26 @@ class DDClient:
         if include_app_key and self.app_key:
             h["DD-APPLICATION-KEY"] = self.app_key
         return h
+
+    def submit_distribution(
+        self, series: list[DDDistributionSeries]
+    ) -> dict[str, Any]:
+        """POST /api/v1/distribution_points — submit distribution-typed
+        metric points. Distribution metrics are required for DD percentile
+        aggregators (p50/p75/p90/p95/p99); regular gauge submissions
+        return empty series for these queries.
+        """
+
+        payload = {"series": [s.to_payload() for s in series]}
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url=f"{self.base}/api/v1/distribution_points",
+            data=body,
+            method="POST",
+            headers=self._headers(include_app_key=False),
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
     def submit_series(self, series: list[DDSeries]) -> dict[str, Any]:
         """POST /api/v2/series — submit metric points.

@@ -48,6 +48,7 @@ from observability_migration.adapters.source.datadog.parity.seeder import (  # n
     constant,
     ensure_es_datastream,
     generate_series,
+    push_distribution_to_datadog,
     push_to_datadog,
     push_to_elasticsearch,
 )
@@ -197,6 +198,22 @@ def _run_case(
     }
 
 
+def _build_distribution_series(start_unix: int, end_unix: int, step_seconds: int) -> list:
+    """Distribution-typed series for percentile cases. DD requires
+    distribution submission (not gauge) for p50/p75/p90/p95/p99 to
+    return any data."""
+
+    series = []
+    for host, value in [("h1", 30.0), ("h2", 60.0)]:
+        series.append(generate_series(
+            dd_metric="parity.dist1", es_field="parity_dist1",
+            tags={"host": host}, es_tag_fields={"host.name": host},
+            start_ts=start_unix, end_ts=end_unix, interval_seconds=step_seconds,
+            value_fn=constant(value),
+        ))
+    return series
+
+
 def _build_cases(start_unix: int, end_unix: int, step_seconds: int) -> tuple[list, list[dict[str, Any]]]:
     """Construct the synthetic series and the parity test cases that
     will exercise them.
@@ -302,12 +319,20 @@ def _build_cases(start_unix: int, end_unix: int, step_seconds: int) -> tuple[lis
             "es_group_cols": ["service.name"],
         },
         {
-            "title": "p95 by host (constant ⇒ p95 == value)",
-            "dd_query": "p95:parity.gauge2{*} by {host}",
+            "title": "p95 by host on distribution metric",
+            "dd_query": "p95:parity.dist1{*} by {host}",
             "es_group_cols": ["host.name"],
-            "known_gap": "DD requires distribution-typed metric for "
-                         "percentile aggregators; gauges return empty. "
-                         "ES translation is correct in shape.",
+            "known_gap": "DD distribution submission via /api/v1/"
+                         "distribution_points alone doesn't make `p95:` "
+                         "queryable — DD requires the metric to also be "
+                         "registered as distribution-typed at the org "
+                         "metadata level (manual one-time setup per "
+                         "metric). The ES PERCENTILE(metric, 95) "
+                         "translation is correct in shape; validating "
+                         "it end-to-end would require either pre-"
+                         "registering the metric type or querying via "
+                         "the distribution-derived suffix "
+                         "(metric.95percentile).",
         },
 
         # --- filter shape parity ----------------------------------------
@@ -379,13 +404,17 @@ def main() -> int:
     print(f"Window: {start_unix} → {end_unix} (1h, {step_seconds}s steps)")
 
     series, cases = _build_cases(start_unix, end_unix, step_seconds)
+    dist_series = _build_distribution_series(start_unix, end_unix, step_seconds)
     total_points = sum(len(s.points) for s in series)
-    print(f"Generated {len(series)} series, {total_points} total points")
+    print(f"Generated {len(series)} gauge series + {len(dist_series)} distribution series, {total_points} total points")
 
-    print("Seeding Datadog…")
+    print("Seeding Datadog (gauge series via /api/v2/series)…")
     dd = DDClient(api_key=dd_api_key, app_key=dd_app_key, site=dd_site)
     dd_resp = push_to_datadog(dd, series)
-    print(f"  DD response: {json.dumps(dd_resp)[:200]}")
+    print(f"  DD gauge response: {json.dumps(dd_resp)[:200]}")
+    print("Seeding Datadog (distribution series via /api/v1/distribution_points)…")
+    dist_resp = push_distribution_to_datadog(dd, dist_series)
+    print(f"  DD distribution response: {json.dumps(dist_resp)[:200]}")
 
     print(f"Ensuring ES data stream {DATA_STREAM} exists…")
     ensure_es_datastream(es_endpoint=es_endpoint, api_key=es_key, data_stream=DATA_STREAM)
@@ -393,7 +422,7 @@ def main() -> int:
     print("Seeding Elasticsearch…")
     n = push_to_elasticsearch(
         es_endpoint=es_endpoint, api_key=es_key,
-        data_stream=DATA_STREAM, series_list=series,
+        data_stream=DATA_STREAM, series_list=list(series) + list(dist_series),
     )
     print(f"  ES indexed: {n} docs")
 
