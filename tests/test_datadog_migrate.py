@@ -1291,7 +1291,11 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket) BY replset_name", result.esql_query)
 
-    def test_incompatible_multi_query_formula_falls_back(self):
+    def test_multi_query_formula_with_different_filters_uses_per_agg_where(self):
+        # Two queries with identical metric and grouping but different
+        # tag filters — the kafka data_streams.latency pattern. The
+        # translator now emits per-aggregation WHERE clauses rather than
+        # blocking the widget.
         q1 = "count:data_streams.latency{type:kafka AND direction:out} by {topic}.as_rate()"
         q2 = "count:data_streams.latency{type:kafka AND direction:in} by {topic}.as_rate()"
         mq1 = parse_metric_query(q1)
@@ -1309,7 +1313,14 @@ class TestTranslation(unittest.TestCase):
             formulas=[wf],
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
-        self.assertEqual(result.status, "not_feasible")
+        self.assertNotEqual(result.status, "not_feasible")
+        # Each per-aggregation WHERE preserves its own direction filter.
+        self.assertIn('WHERE type == "kafka" AND direction == "out"', result.esql_query)
+        self.assertIn('WHERE type == "kafka" AND direction == "in"', result.esql_query)
+        # Outer WHERE includes the OR of both spec filters.
+        self.assertIn(' OR ', result.esql_query)
+        # Formula is applied as EVAL.
+        self.assertIn("query1_query2 = (query1 / query2)", result.esql_query)
 
     def test_log_widget_translation(self):
         lq = parse_log_query("service:web AND status:error")

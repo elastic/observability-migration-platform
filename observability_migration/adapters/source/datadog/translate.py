@@ -81,6 +81,8 @@ class _MetricQuerySpec:
     agg_expr: str
     mq: MetricQuery
     es_metric: str = ""  # raw ES field name, used for FIRST/LAST in rate()/diff()
+    tag_where_str: str = ""  # WHERE clauses excluding TIME_FILTER, used as per-agg
+                              # filter when sibling specs have heterogeneous filters
 
 
 @dataclass
@@ -449,29 +451,56 @@ def _translate_formula_metric_widget(
     for formula in formulas:
         derivative_refs |= _collect_derivative_query_refs(formula.ast)
 
-    stats_parts = [f"{spec.alias} = {spec.agg_expr}" for spec in used_specs]
+    heterogeneous = _specs_have_heterogeneous_filters(used_specs)
+
+    def _per_agg_where(spec: _MetricQuerySpec) -> str:
+        """Return the WHERE clause to append to an aggregation expression
+        in STATS. Empty string when not needed."""
+        if heterogeneous and spec.tag_where_str:
+            return f" WHERE {spec.tag_where_str}"
+        return ""
+
+    stats_parts = []
+    for spec in used_specs:
+        stats_parts.append(f"{spec.alias} = {spec.agg_expr}{_per_agg_where(spec)}")
     for spec in used_specs:
         if spec.query_name in derivative_refs and spec.es_metric:
             # FIRST/LAST give the bucket-endpoint values needed for true
             # rate/diff semantics; the WHERE filter skips rows where the
             # metric column is null (other metrics share the index in
-            # multi-metric data streams, so without the filter FIRST/LAST
-            # could pick a row whose metric value is null).
-            null_guard = f"WHERE {spec.es_metric} IS NOT NULL"
+            # multi-metric data streams) AND (when sibling specs differ in
+            # filters) limits the row population to this spec's filter set.
+            null_guard = f"{spec.es_metric} IS NOT NULL"
+            spec_filter = spec.tag_where_str if heterogeneous else ""
+            agg_where = f" WHERE {null_guard}"
+            if spec_filter:
+                agg_where = f" WHERE {null_guard} AND {spec_filter}"
             stats_parts.append(
-                f"{spec.alias}_first = FIRST({spec.es_metric}, @timestamp) {null_guard}"
+                f"{spec.alias}_first = FIRST({spec.es_metric}, @timestamp){agg_where}"
             )
             stats_parts.append(
-                f"{spec.alias}_last = LAST({spec.es_metric}, @timestamp) {null_guard}"
+                f"{spec.alias}_last = LAST({spec.es_metric}, @timestamp){agg_where}"
             )
     if needs_bucket_span:
         stats_parts.append(
             'bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1'
         )
 
+    # When filters are heterogeneous, the outer WHERE is the time filter
+    # plus the OR of all per-spec filters. This narrows the candidate row
+    # set without filtering out anything any aggregation needs.
+    if heterogeneous:
+        outer_filters = [TIME_FILTER]
+        spec_filters = [s.tag_where_str for s in used_specs if s.tag_where_str]
+        if spec_filters:
+            outer_filters.append("(" + " OR ".join(f"({f})" for f in spec_filters) + ")")
+        outer_where = " AND ".join(outer_filters)
+    else:
+        outer_where = used_specs[0].where_str
+
     lines = [
         f"FROM {used_specs[0].index}",
-        f"| WHERE {used_specs[0].where_str}",
+        f"| WHERE {outer_where}",
     ]
     if dim_exprs:
         lines.append(f"| STATS {', '.join(stats_parts)} BY {', '.join(dim_exprs)}")
@@ -607,6 +636,7 @@ def _build_metric_query_spec(
             "fill(zero) only applies to null values in returned rows; empty buckets may still be omitted",
         )
 
+    tag_where = " AND ".join(c for c in where_clauses if c != TIME_FILTER)
     return _MetricQuerySpec(
         query_name=wq.name,
         alias=_safe_alias(wq.name or "query"),
@@ -616,6 +646,7 @@ def _build_metric_query_spec(
         agg_expr=_format_agg_expr(es_agg, es_metric, mq),
         mq=mq,
         es_metric=es_metric,
+        tag_where_str=tag_where,
     )
 
 
@@ -721,10 +752,18 @@ def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
     for spec in specs[1:]:
         if spec.index != base.index:
             raise ValueError("formula queries span different index patterns")
-        if spec.where_str != base.where_str:
-            raise ValueError("multi-query formulas with different filters are not translated safely yet")
         if spec.group_fields != base.group_fields:
             raise ValueError("multi-query formulas with different groupings are not translated safely yet")
+    # Heterogeneous filters across specs are translated via per-aggregation
+    # WHERE clauses (no error). Heterogeneous groupings still raise because
+    # they would require a UNION/join that ES|QL can't express in one STATS.
+
+
+def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
+    if len(specs) < 2:
+        return False
+    base = specs[0].where_str
+    return any(s.where_str != base for s in specs[1:])
 
 
 def _metric_dimension_exprs(
