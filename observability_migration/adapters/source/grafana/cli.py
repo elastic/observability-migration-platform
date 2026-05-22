@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -555,7 +556,7 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
     all_alert_tasks = []
 
     for result, yaml_path, dashboard in dashboard_outputs:
-        result.yaml_path = str(yaml_path)
+        result.yaml_path = str(yaml_path) if yaml_path is not None else ""
         dashboard_links = translate_dashboard_links(dashboard)
         annotations = translate_annotations(dashboard, data_view=data_view)
         alert_tasks = build_alert_migration_tasks(extract_alerts_from_dashboard(dashboard))
@@ -1002,6 +1003,39 @@ def _run_preflight_reporting(
     return preflight_report
 
 
+def _translate_dashboard_resilient(
+    dashboard: dict,
+    yaml_dir: Path,
+    *,
+    datasource_index: str,
+    esql_index: str,
+    rule_pack: Any,
+    resolver: Any,
+) -> tuple[MigrationResult, Any]:
+    """Translate one dashboard; on unhandled exception return a stub result with translation_error set."""
+    try:
+        return translate_dashboard(
+            dashboard,
+            yaml_dir,
+            datasource_index=datasource_index,
+            esql_index=esql_index,
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+    except Exception as exc:
+        title = dashboard.get("title") or dashboard.get("_source_file") or "unknown"
+        print(f"  ✗ {title}: translation error — {exc}")
+        return (
+            MigrationResult(
+                dashboard_title=str(title),
+                dashboard_uid=str(dashboard.get("uid") or ""),
+                source_file=str(dashboard.get("_source_file") or ""),
+                translation_error=traceback.format_exc(),
+            ),
+            None,
+        )
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     _validate_field_profile(args)
@@ -1113,7 +1147,7 @@ def main(argv: list[str] | None = None):
     results = []
     dashboard_outputs = []
     for dashboard in dashboards:
-        result, yaml_path = translate_dashboard(
+        result, yaml_path = _translate_dashboard_resilient(
             dashboard,
             yaml_dir,
             datasource_index=args.data_view,
@@ -1121,6 +1155,10 @@ def main(argv: list[str] | None = None):
             rule_pack=rule_pack,
             resolver=resolver,
         )
+        if result.translation_error:
+            results.append(result)
+            dashboard_outputs.append((result, yaml_path, dashboard))
+            continue
         if args.polish_metadata:
             polish_summary = apply_metadata_polish(
                 yaml_path,
@@ -1297,6 +1335,8 @@ def main(argv: list[str] | None = None):
             write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
             print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
         for result, yaml_path, _dashboard in dashboard_outputs:
+            if yaml_path is None:
+                continue
             sync_result_queries_to_yaml(result, yaml_path)
     else:
         print("\n[3/7] Validation: skipped (pass --validate --es-url to enable)")
@@ -1383,6 +1423,8 @@ def main(argv: list[str] | None = None):
             compiled_ok_stems = {Path(name).stem for name, ok, _output in compile_results if ok}
             for result, yaml_path, _dashboard in dashboard_outputs:
                 result.upload_attempted = True
+                if yaml_path is None:
+                    continue
                 if yaml_path.stem not in compiled_ok_stems:
                     result.uploaded = False
                     result.upload_error = "Upload skipped because this dashboard did not compile."

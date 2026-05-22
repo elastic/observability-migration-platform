@@ -966,5 +966,78 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         self.assertTrue(all(result.layout_error == "" for result in results))
 
 
+class TestTranslateDashboardResilient(unittest.TestCase):
+    """_translate_dashboard_resilient must not propagate exceptions (issue #37)."""
+
+    def _make_minimal_dashboard(self, title="My Dashboard"):
+        return {
+            "title": title,
+            "uid": "abc123",
+            "panels": [
+                {
+                    "id": 1,
+                    "type": "timeseries",
+                    "title": "Panel 1",
+                    "targets": [{"expr": "rate(http_requests_total[5m])", "refId": "A",
+                                 "datasource": {"type": "prometheus"}}],
+                    "fieldConfig": {"defaults": {}, "overrides": []},
+                    "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+                }
+            ],
+        }
+
+    def test_exception_in_translate_returns_stub_result(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        dashboard = self._make_minimal_dashboard("Exploding Dashboard")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+                side_effect=RuntimeError("simulated crash"),
+            ):
+                result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                    dashboard,
+                    Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=None,
+                    resolver=None,
+                )
+
+        self.assertIsNone(yaml_path)
+        self.assertEqual(result.dashboard_title, "Exploding Dashboard")
+        self.assertIn("simulated crash", result.translation_error)
+        self.assertEqual(result.migrated, 0)
+
+    def test_success_passes_through_unchanged(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        dashboard = self._make_minimal_dashboard("Good Dashboard")
+        fake_result = MigrationResult(dashboard_title="Good Dashboard", dashboard_uid="abc123")
+        fake_path = Path("/tmp/good.yaml")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+                return_value=(fake_result, fake_path),
+            ):
+                result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                    dashboard,
+                    Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=None,
+                    resolver=None,
+                )
+
+        self.assertEqual(result, fake_result)
+        self.assertEqual(yaml_path, fake_path)
+
+
 if __name__ == "__main__":
     unittest.main()
