@@ -30,9 +30,8 @@ DEFAULT_NOT_FEASIBLE_PATTERNS = [
 ]
 
 DEFAULT_WARNING_PATTERNS = [
-    (r"\blabel_replace\b", "label_replace needs EVAL/RENAME in ES|QL"),
     (r"\bpredict_linear\b", "predict_linear has no ES|QL equivalent"),
-    (r"\babs\b|\bceil\b|\bfloor\b|\bround\b", "math functions need EVAL mapping"),
+    (r"\babs\b|\bceil\b|\bfloor\b", "math functions (abs/ceil/floor) need EVAL mapping"),
 ]
 
 DEFAULT_COUNTER_SUFFIXES = ["_total", "_seconds_total", "_bytes_total", "_created"]

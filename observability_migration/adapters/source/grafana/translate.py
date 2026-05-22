@@ -386,6 +386,20 @@ def parse_fragment_rule(context):
     return f"parsed fragment family={context.fragment.family} backend={backend}"
 
 
+def _or_left_is_feasible(frag):
+    """Return True when a binary_expr 'or' fragment should defer to the or-fallback path.
+
+    Reasons on the right operand alone don't block translation — binary_expr_family_rule
+    will translate the left operand with a warning. Only block when the left side itself
+    carries not_feasible reasons.
+    """
+    if frag.family != "binary_expr" or (frag.binary_op or "").lower() != "or":
+        return False
+    left_frag = frag.extra.get("left_frag")
+    left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else frag.extra.get("not_feasible_reasons") or []
+    return not left_reasons
+
+
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
 def fragment_guardrails_rule(context):
     frag = context.fragment
@@ -394,6 +408,8 @@ def fragment_guardrails_rule(context):
     reasons = list(frag.extra.get("not_feasible_reasons", []) or [])
     if not reasons:
         return None
+    if _or_left_is_feasible(frag):
+        return None  # let binary_expr_family_rule handle the or-fallback
     context.feasibility = "not_feasible"
     context.confidence = 0.0
     for reason in reasons:
@@ -417,10 +433,14 @@ def family_classifier_rule(context):
         "nested_agg",
         "binary_expr",
         "topk",
+        "label_replace",
     }
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
         if nf_reasons:
+            if _or_left_is_feasible(frag):
+                context.metadata["fragment_family"] = frag.family
+                return f"fragment family {frag.family} 'or': right-side reasons deferred to or-fallback"
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             for r in nf_reasons:
@@ -875,12 +895,44 @@ def binary_expr_family_rule(context):
         preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
-        # Set operators ``and`` / ``unless`` (and ``or`` between different
-        # metrics or different aggregations) have no honest single-stage
-        # ES|QL equivalent. Surface a clear ``not_feasible`` instead of
-        # falling through to a silent drop of one operand or every
-        # breakdown label.
+        # ``or`` between distinct metrics: translate the left operand alone.
+        # This covers the common "primary or fallback" / "metric or vector(0)"
+        # PromQL idioms where the left side is the meaningful signal.
         op_lower = (frag.binary_op or "").lower()
+        if op_lower == "or":
+            left_frag = frag.extra.get("left_frag")
+            if left_frag and not left_frag.extra.get("not_feasible_reasons"):
+                sub = TranslationContext(
+                    promql_expr=left_frag.raw_expr or context.promql_expr,
+                    data_view=context.data_view,
+                    index=context.index,
+                    rule_pack=context.rule_pack,
+                    resolver=context.resolver,
+                    metadata=dict(context.metadata),
+                )
+                sub.fragment = left_frag
+                sub.metadata["fragment_family"] = left_frag.family
+                QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+                QUERY_POSTPROCESSORS.apply(sub)
+                if sub.esql_query and sub.feasibility != "not_feasible":
+                    context.esql_query = sub.esql_query
+                    context.metric_name = sub.metric_name
+                    context.output_metric_field = sub.output_metric_field
+                    context.output_group_fields = sub.output_group_fields
+                    context.source_type = sub.source_type
+                    context.parser_backend = "fragment"
+                    context.translation_complete = True
+                    for w in sub.warnings:
+                        _append_unique(context.warnings, w)
+                    _append_unique(
+                        context.warnings,
+                        "PromQL 'or' fallback: using left operand only; "
+                        "right-hand side metric ignored",
+                    )
+                    return "or fallback: translated left operand"
+
+        # ``and`` / ``unless`` and unresolvable ``or`` have no honest single-stage
+        # ES|QL equivalent. Surface a clear ``not_feasible``.
         if op_lower in {"or", "and", "unless"}:
             context.feasibility = "not_feasible"
             context.confidence = 0.0
@@ -946,7 +998,7 @@ def topk_family_rule(context):
     frag = context.fragment
     if not frag or frag.family != "topk":
         return None
-    if not frag.metric or not frag.group_labels:
+    if not frag.metric:
         return None
 
     resolver = context.resolver
@@ -960,9 +1012,6 @@ def topk_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
-    if not group_fields:
-        return None
-
     source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
@@ -987,6 +1036,31 @@ def topk_family_rule(context):
     context.source_type = source
     context.metric_name = frag.metric
     context.output_metric_field = "value"
+
+    if not group_fields:
+        # No labels available — single-bucket top N (useful for stat panels)
+        context.output_group_fields = []
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS _bucket_value = {stats_expr} BY {bucket}",
+                "| SORT time_bucket ASC",
+                "| STATS value = LAST(_bucket_value, time_bucket)",
+                "| SORT value DESC",
+                f"| LIMIT {limit}",
+            ]
+        )
+        context.translation_complete = True
+        _append_unique(
+            context.warnings,
+            "topk() without group labels: collapsed to single-series top N; "
+            "add preferred_group_labels hint for per-series breakdown",
+        )
+        return "translated ungrouped topk as single-bucket top N"
+
     context.output_group_fields = group_fields
     context.esql_query = "\n".join(
         [
@@ -1005,6 +1079,88 @@ def topk_family_rule(context):
     context.translation_complete = True
     _append_unique(context.warnings, "Translated grouped topk() as latest-bucket ES|QL top N")
     return "translated grouped topk expression"
+
+
+def _build_label_replace_eval(dst, replacement, src, regex):
+    """Return an ES|QL EVAL clause for label_replace(), or None if untranslatable."""
+    # Case 1: full copy — replacement captures everything unchanged
+    if replacement in ("$1", "$0") and regex in ("(.*)", ".*", "(.+)", ".+"):
+        return f"| EVAL {dst} = {src}"
+    # Case 2: constant string — no $N capture group references
+    if not re.search(r"\$\d+", replacement):
+        safe = replacement.replace('"', '\\"')
+        return f'| EVAL {dst} = "{safe}"'
+    # Case 3: single capture group substitution
+    if replacement == "$1":
+        safe_regex = regex.replace('"', '\\"')
+        return f'| EVAL {dst} = REGEXP_EXTRACT({src}, "{safe_regex}")'
+    # Complex multi-group: cannot translate cleanly
+    return None
+
+
+@QUERY_TRANSLATORS.register("label_replace_family", priority=6)
+def label_replace_family_rule(context):
+    """Translate label_replace(v, dst, replacement, src, regex) via ES|QL EVAL."""
+    frag = context.fragment
+    if not frag or frag.family != "label_replace":
+        return None
+
+    inner_frag = frag.extra.get("lr_inner_frag")
+    if not inner_frag:
+        return None
+
+    dst = frag.extra.get("lr_dst", "")
+    replacement = frag.extra.get("lr_replacement", "")
+    src = frag.extra.get("lr_src", "")
+    regex = frag.extra.get("lr_regex", "")
+
+    # Translate the inner metric expression via a sub-context
+    sub = TranslationContext(
+        promql_expr=inner_frag.raw_expr or context.promql_expr,
+        data_view=context.data_view,
+        index=context.index,
+        rule_pack=context.rule_pack,
+        resolver=context.resolver,
+        metadata=dict(context.metadata),
+    )
+    sub.fragment = inner_frag
+    sub.metadata["fragment_family"] = inner_frag.family
+    QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+    QUERY_POSTPROCESSORS.apply(sub)
+
+    if not sub.esql_query or sub.feasibility == "not_feasible":
+        return None  # fall through to not_feasible
+
+    eval_clause = _build_label_replace_eval(dst, replacement, src, regex)
+    lines = sub.esql_query.splitlines()
+    if eval_clause:
+        sort_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+        lines.insert(sort_idx, eval_clause)
+        warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
+        if "REGEXP_EXTRACT" in eval_clause:
+            warning += "; rows where the regex does not match will produce null (PromQL preserves the original value)"
+        _append_unique(context.warnings, warning)
+    else:
+        _append_unique(
+            context.warnings,
+            f"label_replace(): complex replacement pattern not translatable; "
+            f"label renaming for {dst!r} skipped",
+        )
+
+    for w in sub.warnings:
+        _append_unique(context.warnings, w)
+
+    context.esql_query = "\n".join(lines)
+    context.metric_name = sub.metric_name
+    context.output_metric_field = sub.output_metric_field
+    context.output_group_fields = sub.output_group_fields
+    context.source_type = sub.source_type
+    context.parser_backend = "fragment"
+    context.translation_complete = True
+    return f"translated label_replace({dst!r})"
 
 
 @QUERY_TRANSLATORS.register("scaled_agg_family", priority=6)
@@ -1762,6 +1918,93 @@ def render_esql_rule(context):
         return None
     context.esql_query = _build_esql(context)
     return "rendered ES|QL query"
+
+
+@QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)
+def value_wrapper_transforms_rule(context):
+    """Apply ES|QL equivalents for sort/round/clamp_min wrapper functions."""
+    frag = context.fragment
+    if not frag or not context.esql_query or context.feasibility == "not_feasible":
+        return None
+
+    metric_field = context.output_metric_field or "value"
+    lines = context.esql_query.splitlines()
+    applied = []
+
+    # Detect two-stage topk shape: contains "STATS <field> = LAST(..." which
+    # means the output metric isn't defined until after that line — EVAL must
+    # be inserted *after* it, not before the first SORT.
+    last_stats_idx = next(
+        (i for i, ln in enumerate(lines) if "= LAST(" in ln and ln.strip().startswith("| STATS")),
+        None,
+    )
+
+    def _eval_insert_idx(lines):
+        if last_stats_idx is not None:
+            return last_stats_idx + 1
+        return next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+
+    # round() → EVAL value = ROUND(value, N)
+    if frag.extra.get("has_round"):
+        precision = frag.extra.get("round_precision")
+        if precision is not None:
+            prec_arg = int(precision) if precision == int(precision) else precision
+            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field}, {prec_arg})"
+        else:
+            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
+        lines.insert(_eval_insert_idx(lines), eval_clause)
+        _append_unique(context.warnings, "round() approximated with ES|QL ROUND()")
+        applied.append("round")
+
+    # clamp_min() → EVAL value = GREATEST(value, min)
+    clamp_min = frag.extra.get("clamp_min_value")
+    if clamp_min is not None:
+        val = _format_scalar_value(clamp_min)
+        eval_clause = f"| EVAL {metric_field} = GREATEST({metric_field}, {val})"
+        lines.insert(_eval_insert_idx(lines), eval_clause)
+        _append_unique(context.warnings, "clamp_min() approximated with ES|QL GREATEST()")
+        applied.append("clamp_min")
+
+    # sort() / sort_desc() → set the output sort direction.
+    # For two-stage topk, replace the LAST "| SORT <field>" line (which controls
+    # output order) rather than the first SORT (which orders time buckets for LAST()).
+    if "value_sort_desc" in frag.extra:
+        sort_desc = frag.extra["value_sort_desc"]
+        direction = "DESC" if sort_desc else "ASC"
+        if last_stats_idx is not None:
+            # Two-stage topk: update the last value-sort line only
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip().startswith("| SORT") and metric_field in lines[i]:
+                    lines[i] = f"| SORT {metric_field} {direction}"
+                    break
+            else:
+                lines.append(f"| SORT {metric_field} {direction}")
+        else:
+            new_lines = []
+            replaced = False
+            for ln in lines:
+                if ln.strip().startswith("| SORT") and not replaced:
+                    new_lines.append(f"| SORT {metric_field} {direction}")
+                    replaced = True
+                else:
+                    new_lines.append(ln)
+            if not replaced:
+                new_lines.append(f"| SORT {metric_field} {direction}")
+            lines = new_lines
+        func = "sort_desc" if sort_desc else "sort"
+        _append_unique(
+            context.warnings,
+            f"{func}() applied — ES|QL output sorted by value {direction}",
+        )
+        applied.append(func)
+
+    if applied:
+        context.esql_query = "\n".join(lines)
+        return f"applied value wrapper transforms: {', '.join(applied)}"
+    return None
 
 
 @QUERY_POSTPROCESSORS.register("post_filter", priority=95)

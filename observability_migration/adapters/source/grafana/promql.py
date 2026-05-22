@@ -152,7 +152,6 @@ HARD_UNSUPPORTED_CALL_REASONS = {
     "quantile": "quantile requires manual redesign",
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "timestamp": "timestamp() returns sample timestamps and has no ES|QL equivalent",
-    "topk": "topk requires manual redesign",
 }
 
 
@@ -222,7 +221,14 @@ def preprocess_grafana_macros(expr, rule_pack=None):
 
     result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
     result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
-    result = re.sub(r"\$(\w+)", lambda m: m.group(0) if m.group(1).startswith("__") else f"label_{m.group(1)}", result)
+    # Skip substitution for pure-digit sequences ($1, $2, …) — those are
+    # PromQL/regex capture-group backreferences inside label_replace() strings,
+    # not Grafana template variables (which always start with a letter).
+    result = re.sub(
+        r"\$(\w+)",
+        lambda m: m.group(0) if (m.group(1).startswith("__") or m.group(1)[0].isdigit()) else f"label_{m.group(1)}",
+        result,
+    )
     return result
 
 
@@ -867,8 +873,6 @@ def _ast_call_fragment(node, expr):
             limit_frag.is_scalar
             and limit_frag.scalar_value is not None
             and value_frag.metric
-            and value_frag.group_labels
-            and value_frag.group_mode == "by"
             and not value_frag.extra.get("not_feasible_reasons")
         ):
             frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), value_frag)
@@ -882,6 +886,65 @@ def _ast_call_fragment(node, expr):
             frag = _copy_fragment_summary(_new_fragment(expr, family="range_agg"), matrix_frag)
             frag.range_func = func_name
             return frag
+
+    # sort() / sort_desc() — strip outer wrapper, flag for value-sort postprocessor
+    if func_name in {"sort", "sort_desc"} and len(child_frags) == 1:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["value_sort_desc"] = (func_name == "sort_desc")
+            return result
+
+    # round() — strip outer wrapper, carry precision for ROUND() postprocessor
+    if func_name == "round" and 1 <= len(child_frags) <= 2:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            precision = (
+                child_frags[1].scalar_value
+                if len(child_frags) == 2 and child_frags[1].is_scalar
+                else None
+            )
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["has_round"] = True
+            result.extra["round_precision"] = precision
+            return result
+
+    # clamp_min() — strip outer wrapper, carry threshold for GREATEST() postprocessor
+    if func_name == "clamp_min" and len(child_frags) == 2:
+        inner, threshold_frag = child_frags
+        if (
+            not inner.extra.get("not_feasible_reasons")
+            and threshold_frag.is_scalar
+            and threshold_frag.scalar_value is not None
+        ):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["clamp_min_value"] = threshold_frag.scalar_value
+            return result
+
+    # label_replace(v, dst, replacement, src, regex) — new fragment family
+    if func_name == "label_replace" and len(child_frags) == 5:
+        value_frag = child_frags[0]
+        string_args = [f.extra.get("string_value") for f in child_frags[1:]]
+        if (
+            all(s is not None for s in string_args)
+            and not value_frag.extra.get("not_feasible_reasons")
+        ):
+            dst, replacement, src, regex = string_args
+            result = _copy_fragment_summary(
+                _new_fragment(expr, family="label_replace"), value_frag
+            )
+            result.extra["lr_dst"] = dst
+            result.extra["lr_replacement"] = replacement
+            result.extra["lr_src"] = src
+            result.extra["lr_regex"] = regex
+            result.extra["lr_inner_frag"] = value_frag
+            return result
 
     frag = _new_fragment(expr)
     for child in child_frags:
@@ -926,13 +989,7 @@ def _ast_aggregate_fragment(node, expr):
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if (
-        frag.outer_agg == "topk"
-        and child.metric
-        and child.group_labels
-        and child.group_mode == "by"
-        and not child.extra.get("not_feasible_reasons")
-    ):
+    if frag.outer_agg == "topk" and child.metric and not child.extra.get("not_feasible_reasons"):
         topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), child)
         try:
             param = getattr(node, "param", None)
@@ -1128,7 +1185,9 @@ def _ast_from_node(node, expr=None):
         return frag
 
     if node_type == "StringLiteral":
-        return _new_fragment(expr)
+        frag = _new_fragment(expr, family="string_literal")
+        frag.extra["string_value"] = str(getattr(node, "val", "") or "")
+        return frag
 
     if node_type == "VectorSelector":
         return _ast_vector_selector_fragment(node, expr)

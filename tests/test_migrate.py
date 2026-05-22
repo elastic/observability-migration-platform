@@ -495,15 +495,16 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('"4.."', joined_where)
         self.assertIn('"5.."', joined_where)
 
-    def test_set_or_between_different_metrics_is_not_feasible(self):
-        """``A or B`` between two different metrics has no honest single-stage
-        ES|QL equivalent; refuse rather than silently dropping one operand."""
+    def test_set_or_between_different_metrics_uses_left_operand_fallback(self):
+        """``A or B`` between two different metrics now translates the left
+        operand with an explicit fallback warning rather than refusing."""
         translated = self.translate(
             "http_requests_total or http_other_total",
         )
-        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        self.assertIn("http_requests_total", translated.esql_query or "")
         reasons = " ".join(getattr(translated, "warnings", []) or [])
-        self.assertRegex(reasons, r"(?i)set operator|or operator|set union")
+        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand")
 
     def test_set_and_between_metrics_is_not_feasible(self):
         translated = self.translate("http_requests_total and http_other_total")
@@ -820,9 +821,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         )
 
-    def test_topk_is_marked_not_feasible(self):
+    def test_topk_without_labels_translates_with_fallback(self):
+        # Ungrouped topk now uses single-bucket LIMIT fallback
         translated = self.translate("topk(5, rate(foo_total[5m]))")
-        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertNotEqual(translated.feasibility, "not_feasible", translated.warnings)
+        self.assertIn("LIMIT 5", translated.esql_query)
 
     def test_without_aggregation_is_marked_not_feasible(self):
         translated = self.translate("sum without (instance) (rate(foo_total[5m]))")
@@ -8318,10 +8321,11 @@ class NativePromqlTests(unittest.TestCase):
 
     # ── fallback to ES|QL translation ──
 
-    def test_topk_falls_back_to_markdown(self):
+    def test_topk_without_labels_uses_single_bucket_fallback(self):
+        # Ungrouped topk now translates via single-bucket LIMIT fallback
         panel = self._make_panel("topk(5, http_requests_total)")
         _yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(result.status, "not_feasible")
+        self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
     def test_offset_expr_uses_native_promql(self):
         panel = self._make_panel("rate(foo[5m]) offset 1h")
@@ -8717,9 +8721,10 @@ class NativePromqlTests(unittest.TestCase):
 
             topk_panels = [pr for pr in result.panel_results if "TopK" in pr.title]
             if topk_panels:
-                self.assertEqual(
-                    topk_panels[0].status, "not_feasible",
-                    "topk is unsupported on the ES PROMQL bridge",
+                # Ungrouped topk now translates via single-bucket fallback
+                self.assertNotEqual(
+                    topk_panels[0].status, "skipped",
+                    "topk panel should not be skipped",
                 )
 
             yaml_doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())

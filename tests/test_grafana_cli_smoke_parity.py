@@ -1071,5 +1071,202 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertFalse(getattr(bad_result, "yaml_linted", False))
 
 
+class TestLabelReplaceTranslation(unittest.TestCase):
+    """label_replace must translate to ES|QL EVAL (9 panels)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_label_replace_copy_whole_label(self):
+        # passthrough regex "(.*)" with "$1" → EVAL host = instance
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("EVAL host = instance", ctx.esql_query)
+
+    def test_label_replace_constant_value(self):
+        # no capture group in replacement → EVAL env = "production"
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "env", "production", "job", ".*")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn('EVAL env = "production"', ctx.esql_query)
+
+    def test_label_replace_regex_extract(self):
+        # $1 with a real capture group → EVAL short = REGEXP_EXTRACT(job, "prefix-(.*)")
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("REGEXP_EXTRACT", ctx.esql_query)
+        self.assertIn("prefix-(.*)", ctx.esql_query)
+
+    def test_label_replace_complex_falls_back_gracefully(self):
+        # $1-$2 multi-group replacement → not supported, graceful fallback
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "new", "$1-$2", "job", "(a)-(b)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertTrue(
+            any("label_replace" in w.lower() for w in ctx.warnings),
+            f"Expected a label_replace warning, got: {ctx.warnings}",
+        )
+
+
+class TestTopkUngrouped(unittest.TestCase):
+    """topk without explicit by() clause must translate when preferred_group_labels provided."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr, hints=None):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(
+            expr,
+            esql_index=self._INDEX,
+            rule_pack=rp,
+            translation_hints=hints or {},
+        )
+
+    def test_topk_with_preferred_group_labels(self):
+        ctx = self._translate(
+            "topk(5, rate(http_requests_total[5m]))",
+            hints={"preferred_group_labels": ["job"]},
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
+        self.assertIn("SORT", ctx.esql_query)
+
+    def test_topk_aggregate_syntax_with_preferred_labels(self):
+        ctx = self._translate(
+            "topk(3, sum(rate(http_requests_total[5m])))",
+            hints={"preferred_group_labels": ["job"]},
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 3", ctx.esql_query)
+
+    def test_topk_no_labels_single_bucket_fallback(self):
+        ctx = self._translate("topk(5, rate(http_requests_total[5m]))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
+
+    def test_topk_grouped_still_works(self):
+        ctx = self._translate("topk(3, sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 3", ctx.esql_query)
+        self.assertIn("job", ctx.esql_query)
+
+
+class TestValueWrapperTranslations(unittest.TestCase):
+    """sort_desc/round/clamp_min must produce correct ES|QL output (quick wins)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_sort_desc_emits_sort_value_desc(self):
+        ctx = self._translate("sort_desc(sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT", ctx.esql_query)
+        self.assertIn("DESC", ctx.esql_query)
+        # value-sort warning present
+        self.assertTrue(any("sort_desc" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_sort_asc_emits_sort_value_asc(self):
+        ctx = self._translate("sort(sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT", ctx.esql_query)
+        self.assertTrue(any("sort" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_round_emits_round_eval(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])), 2)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("ROUND(", ctx.esql_query)
+        self.assertTrue(any("round" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_clamp_min_emits_greatest_eval(self):
+        ctx = self._translate("clamp_min(sum by (job) (rate(http_requests_total[5m])), 0)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("GREATEST(", ctx.esql_query)
+        self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_round_over_topk_inserts_eval_after_last(self):
+        """EVAL for round() must appear after STATS value = LAST(...), not before it."""
+        ctx = self._translate("round(topk(5, rate(http_requests_total[5m])), 2)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("ROUND(", ctx.esql_query)
+        lines = ctx.esql_query.splitlines()
+        last_idx = next(i for i, ln in enumerate(lines) if "= LAST(" in ln)
+        round_idx = next(i for i, ln in enumerate(lines) if "ROUND(" in ln)
+        self.assertGreater(round_idx, last_idx, "ROUND() must appear after STATS value = LAST(...)")
+
+    def test_sort_desc_over_topk_preserves_time_bucket_sort(self):
+        """sort_desc(topk()) must not replace the time-bucket SORT needed by LAST()."""
+        ctx = self._translate("sort_desc(topk(5, rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT time_bucket ASC", ctx.esql_query)
+        self.assertIn("SORT value DESC", ctx.esql_query)
+
+
+class TestPromQLOrFallback(unittest.TestCase):
+    """PromQL 'or' between distinct metrics: translate left operand with warning."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_or_between_two_rates_uses_left_operand(self):
+        """rate(a) or rate(b) → translates, references left metric, warns about fallback."""
+        ctx = self._translate(
+            "rate(http_requests_total[5m]) or rate(http_errors_total[5m])"
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("http_requests_total", ctx.esql_query or "")
+        self.assertTrue(
+            any("or" in w.lower() and ("fallback" in w.lower() or "left" in w.lower())
+                for w in ctx.warnings),
+            f"Expected or-fallback warning; got: {ctx.warnings}",
+        )
+
+    def test_or_with_vector_zero_uses_left_operand(self):
+        """rate(a) or vector(0) is a 'default to 0' idiom — translate left side."""
+        ctx = self._translate("rate(http_requests_total[5m]) or vector(0)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("http_requests_total", ctx.esql_query or "")
+
+    def test_and_remains_not_feasible(self):
+        """PromQL 'and' (set intersection) has no safe ES|QL equivalent."""
+        ctx = self._translate("rate(foo_total[5m]) and rate(bar_total[5m])")
+        self.assertEqual(ctx.feasibility, "not_feasible")
+
+    def test_unless_remains_not_feasible(self):
+        """PromQL 'unless' (set difference) has no safe ES|QL equivalent."""
+        ctx = self._translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
+        self.assertEqual(ctx.feasibility, "not_feasible")
+
+
 if __name__ == "__main__":
     unittest.main()

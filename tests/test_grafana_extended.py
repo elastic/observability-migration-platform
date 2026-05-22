@@ -403,17 +403,18 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")
+        # histogram_quantile() is hard-blocked and always not_feasible
+        panel = _make_panel(1, "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "topk(5, rate(foo_total[5m]))"
+        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
-        self.assertIn("topk", yaml_panel["markdown"]["content"])
+        self.assertIn("histogram_quantile", yaml_panel["markdown"]["content"])
 
     def test_skipped_panel_has_skipped_status(self):
         for panel_type in ("row", "news", "dashlist", "alertlist", "nodeGraph", "canvas"):
@@ -462,9 +463,11 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("offset" in w.lower() for w in ctx.warnings))
 
-    def test_topk_is_not_feasible(self):
+    def test_topk_without_labels_now_translates(self):
+        # Ungrouped topk now uses single-bucket fallback — migrated_with_warnings, not not_feasible
         ctx = _translate("topk(5, rate(foo_total[5m]))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
 
     def test_grouped_topk_rate_sum_translates_to_sorted_limited_esql(self):
         ctx = _translate("topk(10, sum(rate(http_requests_total[5m])) by (handler))", panel_type="barchart")
@@ -531,12 +534,12 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "topk(5, rate(foo_total[5m]))"
+        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
         content = yaml_panel["markdown"]["content"]
-        self.assertIn("foo_total", content, "Original query must be in report")
+        self.assertIn("histogram_quantile", content, "Original query must be in report")
 
     def test_bottomk_is_not_feasible(self):
         ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))")
@@ -1144,10 +1147,11 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(result.visual_ir.title, yaml_panel["title"])
         self.assertEqual(result.query_ir.get("target_query"), query)
 
-    def test_topk_falls_back_to_markdown(self):
+    def test_topk_without_labels_translates_with_warnings(self):
+        # Ungrouped topk now uses single-bucket fallback (not not_feasible)
         panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")
         _, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
-        self.assertEqual(result.status, "not_feasible")
+        self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
 
 # =========================================================================
@@ -1458,10 +1462,10 @@ class TestNegationHandling(unittest.TestCase):
 class TestWarningPatternHonesty(unittest.TestCase):
     """Verify unsupported wrappers fail clearly instead of false-success."""
 
-    def test_label_replace_is_not_feasible(self):
+    def test_label_replace_now_translates(self):
+        # label_replace is now handled — copy pattern with passthrough regex
         ctx = _translate("label_replace(up, 'dst', '$1', 'src', '(.*)')")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("label_replace" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
 
     def test_predict_linear_is_not_feasible(self):
         ctx = _translate("predict_linear(node_filesystem_avail_bytes[6h], 86400)")
@@ -1473,15 +1477,15 @@ class TestWarningPatternHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("abs" in w.lower() for w in ctx.warnings))
 
-    def test_clamp_min_is_not_feasible(self):
+    def test_clamp_min_now_translates(self):
+        # clamp_min() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("clamp_min(rate(foo_total[5m]), 0)")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
 
-    def test_sort_desc_is_not_feasible(self):
+    def test_sort_desc_now_translates(self):
+        # sort_desc() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("sort_desc(rate(foo_total[5m]))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("sort_desc" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
 
 
 # =========================================================================
@@ -1793,6 +1797,57 @@ class TestBuildSectionGroupsNullRowHeight(unittest.TestCase):
         dashboard = self._make_legacy_dashboard(250)
         groups = panels._build_section_groups(dashboard)
         self.assertTrue(len(groups) > 0)
+
+
+class TestPromQLWrapperFragments(unittest.TestCase):
+    """sort/round/clamp_min must be handled as passthrough wrappers (quick wins)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_sort_desc_strips_outer_call(self):
+        ctx = self._translate("sort_desc(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("value_sort_desc"), True)
+
+    def test_sort_asc_strips_outer_call(self):
+        ctx = self._translate("sort(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("value_sort_desc"), False)
+
+    def test_round_strips_outer_call_with_precision(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])), 2)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertEqual(frag.extra.get("round_precision"), 2.0)
+
+    def test_round_strips_outer_call_no_precision(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertIsNone(frag.extra.get("round_precision"))
+
+    def test_clamp_min_strips_outer_call(self):
+        ctx = self._translate("clamp_min(sum by (job) (rate(http_requests_total[5m])), 0)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
 
 
 if __name__ == "__main__":
