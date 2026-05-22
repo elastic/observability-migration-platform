@@ -960,19 +960,6 @@ def topk_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
-    if not group_fields:
-        # Explicit not_feasible rather than silent fall-through to the generic translation
-        # path which would drop topk semantics entirely.
-        # Task 3 will add: use preferred_group_labels or single-bucket LIMIT fallback.
-        context.feasibility = "not_feasible"
-        context.confidence = 0.0
-        context.translation_complete = True
-        _append_unique(
-            context.warnings,
-            "topk() without group labels: add a 'by()' clause or set preferred_group_labels hint",
-        )
-        return "topk without group labels: not_feasible"
-
     source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
@@ -997,6 +984,31 @@ def topk_family_rule(context):
     context.source_type = source
     context.metric_name = frag.metric
     context.output_metric_field = "value"
+
+    if not group_fields:
+        # No labels available — single-bucket top N (useful for stat panels)
+        context.output_group_fields = []
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS _bucket_value = {stats_expr} BY {bucket}",
+                "| SORT time_bucket ASC",
+                "| STATS value = LAST(_bucket_value, time_bucket)",
+                "| SORT value DESC",
+                f"| LIMIT {limit}",
+            ]
+        )
+        context.translation_complete = True
+        _append_unique(
+            context.warnings,
+            "topk() without group labels: collapsed to single-series top N; "
+            "add preferred_group_labels hint for per-series breakdown",
+        )
+        return "translated ungrouped topk as single-bucket top N"
+
     context.output_group_fields = group_fields
     context.esql_query = "\n".join(
         [

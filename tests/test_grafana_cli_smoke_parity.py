@@ -1071,6 +1071,53 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertFalse(getattr(bad_result, "yaml_linted", False))
 
 
+class TestTopkUngrouped(unittest.TestCase):
+    """topk without explicit by() clause must translate when preferred_group_labels provided."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr, hints=None):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(
+            expr,
+            esql_index=self._INDEX,
+            rule_pack=rp,
+            translation_hints=hints or {},
+        )
+
+    def test_topk_with_preferred_group_labels(self):
+        ctx = self._translate(
+            "topk(5, rate(http_requests_total[5m]))",
+            hints={"preferred_group_labels": ["job"]},
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
+        self.assertIn("SORT", ctx.esql_query)
+
+    def test_topk_aggregate_syntax_with_preferred_labels(self):
+        ctx = self._translate(
+            "topk(3, sum(rate(http_requests_total[5m])))",
+            hints={"preferred_group_labels": ["job"]},
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 3", ctx.esql_query)
+
+    def test_topk_no_labels_single_bucket_fallback(self):
+        ctx = self._translate("topk(5, rate(http_requests_total[5m]))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
+
+    def test_topk_grouped_still_works(self):
+        ctx = self._translate("topk(3, sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 3", ctx.esql_query)
+        self.assertIn("job", ctx.esql_query)
+
+
 class TestValueWrapperTranslations(unittest.TestCase):
     """sort_desc/round/clamp_min must produce correct ES|QL output (quick wins)."""
 

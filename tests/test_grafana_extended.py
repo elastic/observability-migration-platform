@@ -403,17 +403,18 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")
+        # histogram_quantile() is hard-blocked and always not_feasible
+        panel = _make_panel(1, "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "topk(5, rate(foo_total[5m]))"
+        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
-        self.assertIn("topk", yaml_panel["markdown"]["content"])
+        self.assertIn("histogram_quantile", yaml_panel["markdown"]["content"])
 
     def test_skipped_panel_has_skipped_status(self):
         for panel_type in ("row", "news", "dashlist", "alertlist", "nodeGraph", "canvas"):
@@ -462,9 +463,11 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("offset" in w.lower() for w in ctx.warnings))
 
-    def test_topk_is_not_feasible(self):
+    def test_topk_without_labels_now_translates(self):
+        # Ungrouped topk now uses single-bucket fallback — migrated_with_warnings, not not_feasible
         ctx = _translate("topk(5, rate(foo_total[5m]))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LIMIT 5", ctx.esql_query)
 
     def test_grouped_topk_rate_sum_translates_to_sorted_limited_esql(self):
         ctx = _translate("topk(10, sum(rate(http_requests_total[5m])) by (handler))", panel_type="barchart")
@@ -531,12 +534,12 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "topk(5, rate(foo_total[5m]))"
+        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
         content = yaml_panel["markdown"]["content"]
-        self.assertIn("foo_total", content, "Original query must be in report")
+        self.assertIn("histogram_quantile", content, "Original query must be in report")
 
     def test_bottomk_is_not_feasible(self):
         ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))")
@@ -1144,10 +1147,11 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(result.visual_ir.title, yaml_panel["title"])
         self.assertEqual(result.query_ir.get("target_query"), query)
 
-    def test_topk_falls_back_to_markdown(self):
+    def test_topk_without_labels_translates_with_warnings(self):
+        # Ungrouped topk now uses single-bucket fallback (not not_feasible)
         panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")
         _, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
-        self.assertEqual(result.status, "not_feasible")
+        self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
 
 # =========================================================================
