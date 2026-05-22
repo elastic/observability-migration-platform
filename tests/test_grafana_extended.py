@@ -1774,6 +1774,23 @@ class TestFlattenDashboardPanelsNullGuards(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestBuildSectionGroupsNullRows(unittest.TestCase):
+    """_build_section_groups must not crash when 'rows' is explicitly null (Mimir dashboard pattern)."""
+
+    def test_null_rows_at_dashboard_level_does_not_crash(self):
+        dashboard = {"title": "t", "schemaVersion": 16, "panels": [], "rows": None}
+        panels._build_section_groups(dashboard)
+
+    def test_null_rows_produces_one_empty_group(self):
+        # _build_section_groups always emits at least one trailing flush group;
+        # with rows=None and no panels that group should have an empty panel list.
+        dashboard = {"title": "t", "schemaVersion": 16, "panels": [], "rows": None}
+        groups = panels._build_section_groups(dashboard)
+        self.assertEqual(len(groups), 1)
+        _title, group_panels, _is_row, _collapsed = groups[0]
+        self.assertEqual(group_panels, [])
+
+
 class TestBuildSectionGroupsNullRowHeight(unittest.TestCase):
     """_build_section_groups must not crash when a legacy row has 'height': null (issue #39-followup)."""
 

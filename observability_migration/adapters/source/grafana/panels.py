@@ -3238,7 +3238,7 @@ def _build_section_groups(dashboard):
         else:
             current_panels.append(panel)
 
-    for row in dashboard.get("rows", []):
+    for row in (dashboard.get("rows") or []):
         row_title = str(row.get("title") or "").strip() or None
         row_panels = row.get("panels", [])
         if not row_panels:
@@ -3567,7 +3567,7 @@ def _collect_repeat_variable_names(dashboard):
         repeat_name = _repeat_variable_name(panel.get("repeat"))
         if repeat_name:
             repeat_variables.add(repeat_name)
-    for row in dashboard.get("rows", []):
+    for row in (dashboard.get("rows") or []):
         repeat_name = _repeat_variable_name(row.get("repeat"))
         if repeat_name:
             repeat_variables.add(repeat_name)
