@@ -386,6 +386,20 @@ def parse_fragment_rule(context):
     return f"parsed fragment family={context.fragment.family} backend={backend}"
 
 
+def _or_left_is_feasible(frag):
+    """Return True when a binary_expr 'or' fragment should defer to the or-fallback path.
+
+    Reasons on the right operand alone don't block translation — binary_expr_family_rule
+    will translate the left operand with a warning. Only block when the left side itself
+    carries not_feasible reasons.
+    """
+    if frag.family != "binary_expr" or (frag.binary_op or "").lower() != "or":
+        return False
+    left_frag = frag.extra.get("left_frag")
+    left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else frag.extra.get("not_feasible_reasons") or []
+    return not left_reasons
+
+
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
 def fragment_guardrails_rule(context):
     frag = context.fragment
@@ -394,14 +408,8 @@ def fragment_guardrails_rule(context):
     reasons = list(frag.extra.get("not_feasible_reasons", []) or [])
     if not reasons:
         return None
-    # For 'or' binary expressions, not_feasible reasons may come from only the
-    # right operand. Defer to binary_expr_family_rule which will try the left
-    # operand fallback; only block here when the left side itself is infeasible.
-    if frag.family == "binary_expr" and (frag.binary_op or "").lower() == "or":
-        left_frag = frag.extra.get("left_frag")
-        left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else reasons
-        if not left_reasons:
-            return None  # let binary_expr_family_rule handle the or-fallback
+    if _or_left_is_feasible(frag):
+        return None  # let binary_expr_family_rule handle the or-fallback
     context.feasibility = "not_feasible"
     context.confidence = 0.0
     for reason in reasons:
@@ -430,18 +438,9 @@ def family_classifier_rule(context):
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
         if nf_reasons:
-            # For 'or' binary expressions, not_feasible reasons from the right
-            # operand alone don't block translation — binary_expr_family_rule will
-            # attempt a left-operand fallback. Only block when the left side is bad.
-            if (
-                frag.family == "binary_expr"
-                and (frag.binary_op or "").lower() == "or"
-            ):
-                left_frag = frag.extra.get("left_frag")
-                left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else nf_reasons
-                if not left_reasons:
-                    context.metadata["fragment_family"] = frag.family
-                    return f"fragment family {frag.family} 'or': right-side reasons deferred to or-fallback"
+            if _or_left_is_feasible(frag):
+                context.metadata["fragment_family"] = frag.family
+                return f"fragment family {frag.family} 'or': right-side reasons deferred to or-fallback"
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             for r in nf_reasons:
@@ -896,7 +895,6 @@ def binary_expr_family_rule(context):
         preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
-        # Set operators ``and`` / ``unless`` (and ``or`` between different
         # ``or`` between distinct metrics: translate the left operand alone.
         # This covers the common "primary or fallback" / "metric or vector(0)"
         # PromQL idioms where the left side is the meaningful signal.
@@ -1141,7 +1139,10 @@ def label_replace_family_rule(context):
             len(lines),
         )
         lines.insert(sort_idx, eval_clause)
-        _append_unique(context.warnings, f"label_replace({dst!r}) approximated with ES|QL EVAL")
+        warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
+        if "REGEXP_EXTRACT" in eval_clause:
+            warning += "; rows where the regex does not match will produce null (PromQL preserves the original value)"
+        _append_unique(context.warnings, warning)
     else:
         _append_unique(
             context.warnings,
@@ -1930,6 +1931,22 @@ def value_wrapper_transforms_rule(context):
     lines = context.esql_query.splitlines()
     applied = []
 
+    # Detect two-stage topk shape: contains "STATS <field> = LAST(..." which
+    # means the output metric isn't defined until after that line — EVAL must
+    # be inserted *after* it, not before the first SORT.
+    last_stats_idx = next(
+        (i for i, ln in enumerate(lines) if "= LAST(" in ln and ln.strip().startswith("| STATS")),
+        None,
+    )
+
+    def _eval_insert_idx(lines):
+        if last_stats_idx is not None:
+            return last_stats_idx + 1
+        return next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+
     # round() → EVAL value = ROUND(value, N)
     if frag.extra.get("has_round"):
         precision = frag.extra.get("round_precision")
@@ -1938,11 +1955,7 @@ def value_wrapper_transforms_rule(context):
             eval_clause = f"| EVAL {metric_field} = ROUND({metric_field}, {prec_arg})"
         else:
             eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
-        sort_idx = next(
-            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
-            len(lines),
-        )
-        lines.insert(sort_idx, eval_clause)
+        lines.insert(_eval_insert_idx(lines), eval_clause)
         _append_unique(context.warnings, "round() approximated with ES|QL ROUND()")
         applied.append("round")
 
@@ -1951,29 +1964,36 @@ def value_wrapper_transforms_rule(context):
     if clamp_min is not None:
         val = _format_scalar_value(clamp_min)
         eval_clause = f"| EVAL {metric_field} = GREATEST({metric_field}, {val})"
-        sort_idx = next(
-            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
-            len(lines),
-        )
-        lines.insert(sort_idx, eval_clause)
+        lines.insert(_eval_insert_idx(lines), eval_clause)
         _append_unique(context.warnings, "clamp_min() approximated with ES|QL GREATEST()")
         applied.append("clamp_min")
 
-    # sort() / sort_desc() → replace time_bucket sort with value sort
+    # sort() / sort_desc() → set the output sort direction.
+    # For two-stage topk, replace the LAST "| SORT <field>" line (which controls
+    # output order) rather than the first SORT (which orders time buckets for LAST()).
     if "value_sort_desc" in frag.extra:
         sort_desc = frag.extra["value_sort_desc"]
         direction = "DESC" if sort_desc else "ASC"
-        new_lines = []
-        replaced = False
-        for ln in lines:
-            if ln.strip().startswith("| SORT") and not replaced:
-                new_lines.append(f"| SORT {metric_field} {direction}")
-                replaced = True
+        if last_stats_idx is not None:
+            # Two-stage topk: update the last value-sort line only
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip().startswith("| SORT") and metric_field in lines[i]:
+                    lines[i] = f"| SORT {metric_field} {direction}"
+                    break
             else:
-                new_lines.append(ln)
-        if not replaced:
-            new_lines.append(f"| SORT {metric_field} {direction}")
-        lines = new_lines
+                lines.append(f"| SORT {metric_field} {direction}")
+        else:
+            new_lines = []
+            replaced = False
+            for ln in lines:
+                if ln.strip().startswith("| SORT") and not replaced:
+                    new_lines.append(f"| SORT {metric_field} {direction}")
+                    replaced = True
+                else:
+                    new_lines.append(ln)
+            if not replaced:
+                new_lines.append(f"| SORT {metric_field} {direction}")
+            lines = new_lines
         func = "sort_desc" if sort_desc else "sort"
         _append_unique(
             context.warnings,

@@ -1477,12 +1477,12 @@ class TestWarningPatternHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("abs" in w.lower() for w in ctx.warnings))
 
-    def test_clamp_min_translates_not_feasible(self):
+    def test_clamp_min_now_translates(self):
         # clamp_min() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("clamp_min(rate(foo_total[5m]), 0)")
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
 
-    def test_sort_desc_translates_not_feasible(self):
+    def test_sort_desc_now_translates(self):
         # sort_desc() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("sort_desc(rate(foo_total[5m]))")
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)

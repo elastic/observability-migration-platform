@@ -1085,27 +1085,32 @@ class TestLabelReplaceTranslation(unittest.TestCase):
         return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
 
     def test_label_replace_copy_whole_label(self):
+        # passthrough regex "(.*)" with "$1" → EVAL host = instance
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")'
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
-        self.assertIn("host", ctx.esql_query)
+        self.assertIn("EVAL host = instance", ctx.esql_query)
 
     def test_label_replace_constant_value(self):
+        # no capture group in replacement → EVAL env = "production"
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "env", "production", "job", ".*")'
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
-        self.assertIn("env", ctx.esql_query)
-        self.assertIn("production", ctx.esql_query)
+        self.assertIn('EVAL env = "production"', ctx.esql_query)
 
     def test_label_replace_regex_extract(self):
+        # $1 with a real capture group → EVAL short = REGEXP_EXTRACT(job, "prefix-(.*)")
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")'
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("REGEXP_EXTRACT", ctx.esql_query)
+        self.assertIn("prefix-(.*)", ctx.esql_query)
 
     def test_label_replace_complex_falls_back_gracefully(self):
+        # $1-$2 multi-group replacement → not supported, graceful fallback
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "new", "$1-$2", "job", "(a)-(b)")'
         )
@@ -1201,6 +1206,23 @@ class TestValueWrapperTranslations(unittest.TestCase):
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
         self.assertIn("GREATEST(", ctx.esql_query)
         self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_round_over_topk_inserts_eval_after_last(self):
+        """EVAL for round() must appear after STATS value = LAST(...), not before it."""
+        ctx = self._translate("round(topk(5, rate(http_requests_total[5m])), 2)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("ROUND(", ctx.esql_query)
+        lines = ctx.esql_query.splitlines()
+        last_idx = next(i for i, ln in enumerate(lines) if "= LAST(" in ln)
+        round_idx = next(i for i, ln in enumerate(lines) if "ROUND(" in ln)
+        self.assertGreater(round_idx, last_idx, "ROUND() must appear after STATS value = LAST(...)")
+
+    def test_sort_desc_over_topk_preserves_time_bucket_sort(self):
+        """sort_desc(topk()) must not replace the time-bucket SORT needed by LAST()."""
+        ctx = self._translate("sort_desc(topk(5, rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT time_bucket ASC", ctx.esql_query)
+        self.assertIn("SORT value DESC", ctx.esql_query)
 
 
 class TestPromQLOrFallback(unittest.TestCase):

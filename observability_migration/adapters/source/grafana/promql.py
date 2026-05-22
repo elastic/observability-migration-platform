@@ -221,7 +221,14 @@ def preprocess_grafana_macros(expr, rule_pack=None):
 
     result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
     result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
-    result = re.sub(r"\$(\w+)", lambda m: m.group(0) if m.group(1).startswith("__") else f"label_{m.group(1)}", result)
+    # Skip substitution for pure-digit sequences ($1, $2, …) — those are
+    # PromQL/regex capture-group backreferences inside label_replace() strings,
+    # not Grafana template variables (which always start with a letter).
+    result = re.sub(
+        r"\$(\w+)",
+        lambda m: m.group(0) if (m.group(1).startswith("__") or m.group(1)[0].isdigit()) else f"label_{m.group(1)}",
+        result,
+    )
     return result
 
 
