@@ -152,7 +152,6 @@ HARD_UNSUPPORTED_CALL_REASONS = {
     "quantile": "quantile requires manual redesign",
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "timestamp": "timestamp() returns sample timestamps and has no ES|QL equivalent",
-    "topk": "topk requires manual redesign",
 }
 
 
@@ -867,8 +866,6 @@ def _ast_call_fragment(node, expr):
             limit_frag.is_scalar
             and limit_frag.scalar_value is not None
             and value_frag.metric
-            and value_frag.group_labels
-            and value_frag.group_mode == "by"
             and not value_frag.extra.get("not_feasible_reasons")
         ):
             frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), value_frag)
@@ -882,6 +879,46 @@ def _ast_call_fragment(node, expr):
             frag = _copy_fragment_summary(_new_fragment(expr, family="range_agg"), matrix_frag)
             frag.range_func = func_name
             return frag
+
+    # sort() / sort_desc() — strip outer wrapper, flag for value-sort postprocessor
+    if func_name in {"sort", "sort_desc"} and len(child_frags) == 1:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["value_sort_desc"] = (func_name == "sort_desc")
+            return result
+
+    # round() — strip outer wrapper, carry precision for ROUND() postprocessor
+    if func_name == "round" and 1 <= len(child_frags) <= 2:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            precision = (
+                child_frags[1].scalar_value
+                if len(child_frags) == 2 and child_frags[1].is_scalar
+                else None
+            )
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["has_round"] = True
+            result.extra["round_precision"] = precision
+            return result
+
+    # clamp_min() — strip outer wrapper, carry threshold for GREATEST() postprocessor
+    if func_name == "clamp_min" and len(child_frags) == 2:
+        inner, threshold_frag = child_frags
+        if (
+            not inner.extra.get("not_feasible_reasons")
+            and threshold_frag.is_scalar
+            and threshold_frag.scalar_value is not None
+        ):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["clamp_min_value"] = threshold_frag.scalar_value
+            return result
 
     frag = _new_fragment(expr)
     for child in child_frags:
@@ -926,13 +963,7 @@ def _ast_aggregate_fragment(node, expr):
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if (
-        frag.outer_agg == "topk"
-        and child.metric
-        and child.group_labels
-        and child.group_mode == "by"
-        and not child.extra.get("not_feasible_reasons")
-    ):
+    if frag.outer_agg == "topk" and child.metric and not child.extra.get("not_feasible_reasons"):
         topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), child)
         try:
             param = getattr(node, "param", None)

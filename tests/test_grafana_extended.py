@@ -1473,15 +1473,15 @@ class TestWarningPatternHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("abs" in w.lower() for w in ctx.warnings))
 
-    def test_clamp_min_is_not_feasible(self):
+    def test_clamp_min_translates_not_feasible(self):
+        # clamp_min() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("clamp_min(rate(foo_total[5m]), 0)")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
 
-    def test_sort_desc_is_not_feasible(self):
+    def test_sort_desc_translates_not_feasible(self):
+        # sort_desc() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("sort_desc(rate(foo_total[5m]))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("sort_desc" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
 
 
 # =========================================================================
@@ -1793,6 +1793,57 @@ class TestBuildSectionGroupsNullRowHeight(unittest.TestCase):
         dashboard = self._make_legacy_dashboard(250)
         groups = panels._build_section_groups(dashboard)
         self.assertTrue(len(groups) > 0)
+
+
+class TestPromQLWrapperFragments(unittest.TestCase):
+    """sort/round/clamp_min must be handled as passthrough wrappers (quick wins)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_sort_desc_strips_outer_call(self):
+        ctx = self._translate("sort_desc(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("value_sort_desc"), True)
+
+    def test_sort_asc_strips_outer_call(self):
+        ctx = self._translate("sort(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("value_sort_desc"), False)
+
+    def test_round_strips_outer_call_with_precision(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])), 2)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertEqual(frag.extra.get("round_precision"), 2.0)
+
+    def test_round_strips_outer_call_no_precision(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertIsNone(frag.extra.get("round_precision"))
+
+    def test_clamp_min_strips_outer_call(self):
+        ctx = self._translate("clamp_min(sum by (job) (rate(http_requests_total[5m])), 0)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
 
 
 if __name__ == "__main__":

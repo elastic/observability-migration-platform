@@ -946,7 +946,7 @@ def topk_family_rule(context):
     frag = context.fragment
     if not frag or frag.family != "topk":
         return None
-    if not frag.metric or not frag.group_labels:
+    if not frag.metric:
         return None
 
     resolver = context.resolver
@@ -961,7 +961,17 @@ def topk_family_rule(context):
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not group_fields:
-        return None
+        # Explicit not_feasible rather than silent fall-through to the generic translation
+        # path which would drop topk semantics entirely.
+        # Task 3 will add: use preferred_group_labels or single-bucket LIMIT fallback.
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        context.translation_complete = True
+        _append_unique(
+            context.warnings,
+            "topk() without group labels: add a 'by()' clause or set preferred_group_labels hint",
+        )
+        return "topk without group labels: not_feasible"
 
     source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
