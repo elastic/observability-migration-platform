@@ -158,6 +158,17 @@ def parse_args(argv: list[str] | None = None):
         help="Validate generated ES|QL queries against Elasticsearch",
     )
     parser.add_argument(
+        "--validate-narrow-limit",
+        type=int,
+        default=10,
+        dest="validate_narrow_limit",
+        help=(
+            "Maximum number of concrete index candidates to probe when narrowing a wildcard "
+            "index pattern during ES|QL validation (default: 10). Lower values reduce worst-case "
+            "validation time per panel at the cost of fewer narrowing attempts."
+        ),
+    )
+    parser.add_argument(
         "--rules-file",
         action="append",
         default=[],
@@ -1275,6 +1286,7 @@ def main(argv: list[str] | None = None):
                 validation_result = validate_query_with_fixes(
                     pr.esql_query, args.es_url, resolver,
                     es_api_key=args.es_api_key or None,
+                    narrow_limit=getattr(args, "validate_narrow_limit", 10),
                 )
                 status = validation_result["status"]
                 if status == "pass":

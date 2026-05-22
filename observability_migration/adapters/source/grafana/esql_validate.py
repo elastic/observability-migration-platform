@@ -62,7 +62,7 @@ def configure_es_auth(es_api_key):
     _module_es_api_key = es_api_key
 
 
-def _run_esql_query(query, es_url, es_api_key=None, session=None):
+def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15):
     """Execute ES|QL and return validation status plus lightweight result metadata."""
     if not es_url or not query:
         return {"ok": None, "error": "", "rows": 0, "columns": [], "values": [], "metadata": {}}
@@ -75,7 +75,7 @@ def _run_esql_query(query, es_url, es_api_key=None, session=None):
             json={"query": query},
             params={"format": "json"},
             headers=_build_es_headers(api_key),
-            timeout=15,
+            timeout=timeout,
         )
         if resp.status_code == 200:
             body = resp.json()
@@ -178,7 +178,14 @@ def _promql_window_to_esql_interval(window):
     return _format_esql_interval(total_seconds)
 
 
-def _try_narrow_index_pattern(query, es_url, resolver, es_api_key=None, session=None):
+_NARROW_PROBE_TIMEOUT = 3
+_NARROW_MAX_CANDIDATES = 10
+
+
+def _try_narrow_index_pattern(
+    query, es_url, resolver, es_api_key=None, session=None,
+    max_candidates=_NARROW_MAX_CANDIDATES, probe_timeout=_NARROW_PROBE_TIMEOUT,
+):
     if not resolver or not es_url or not query:
         return None
     if not hasattr(resolver, "concrete_index_candidates"):
@@ -191,11 +198,14 @@ def _try_narrow_index_pattern(query, es_url, resolver, es_api_key=None, session=
     if not any(token in current_index for token in ("*", "?", ",")):
         return None
     best_empty = None
-    for candidate in resolver.concrete_index_candidates():
+    candidates = resolver.concrete_index_candidates()
+    if max_candidates and max_candidates > 0:
+        candidates = candidates[:max_candidates]
+    for candidate in candidates:
         if not candidate or candidate == current_index:
             continue
         narrowed = re.sub(r"^(FROM|TS)\s+\S+", rf"\1 {candidate}", query, count=1)
-        probe = _run_esql_query(narrowed, es_url, es_api_key=es_api_key, session=session)
+        probe = _run_esql_query(narrowed, es_url, es_api_key=es_api_key, session=session, timeout=probe_timeout)
         if probe["ok"] is True and probe["rows"] > 0:
             return {
                 "query": narrowed,
@@ -378,7 +388,10 @@ def write_suggested_rule_pack(path, validation_summary):
         yaml.safe_dump(build_suggested_rule_pack(validation_summary), fh, sort_keys=False)
 
 
-def validate_query_with_fixes(query, es_url, resolver, max_attempts=8, es_api_key=None):
+def validate_query_with_fixes(
+    query, es_url, resolver, max_attempts=8, es_api_key=None,
+    narrow_limit=_NARROW_MAX_CANDIDATES, narrow_timeout=_NARROW_PROBE_TIMEOUT,
+):
     original_query = query
     _, original_index = _query_source_and_index(query)
     current_query = query
@@ -437,6 +450,8 @@ def validate_query_with_fixes(query, es_url, resolver, max_attempts=8, es_api_ke
             resolver,
             es_api_key=api_key,
             session=session,
+            max_candidates=narrow_limit,
+            probe_timeout=narrow_timeout,
         )
         if narrowed_query and narrowed_query["query"] not in seen_queries:
             fix_errors.append(err)
