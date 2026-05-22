@@ -2145,6 +2145,62 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result["analysis"]["result_rows"], 0)
         self.assertEqual(result["analysis"]["narrowed_to_index"], "metrics-prometheus-synthetic")
 
+    def test_narrow_limit_caps_candidates_probed(self):
+        """narrow_limit prevents unbounded index-probing when the resolver has many candidates."""
+        probed = []
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return [f"metrics-stream-{i}" for i in range(20)]
+
+        query = "FROM metrics-*\n| STATS v = AVG(metric)"
+
+        def fake_run(q, _url, **kw):
+            if "metrics-*" in q:
+                return {"ok": False, "error": "Unknown index [metrics-*]", "rows": 0, "columns": []}
+            probed.append(q)
+            return {"ok": False, "error": "some error", "rows": 0, "columns": []}
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            migrate.validate_query_with_fixes(
+                query, "http://localhost:9200", StubResolver(),
+                narrow_limit=5,
+            )
+
+        self.assertLessEqual(len(probed), 5, "narrowing must probe at most narrow_limit candidates")
+
+    def test_narrow_probe_uses_short_timeout(self):
+        """Narrowing probes must use probe_timeout (3 s), not the full 15 s validation timeout."""
+        probe_timeouts = []
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return ["metrics-foo", "metrics-bar"]
+
+        query = "FROM metrics-*\n| STATS v = AVG(metric)"
+
+        def fake_run(q, _url, **kw):
+            if "metrics-*" in q:
+                return {"ok": False, "error": "Unknown index [metrics-*]", "rows": 0, "columns": []}
+            probe_timeouts.append(kw.get("timeout"))
+            return {"ok": False, "error": "some error", "rows": 0, "columns": []}
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            migrate.validate_query_with_fixes(
+                query, "http://localhost:9200", StubResolver(),
+                narrow_timeout=3,
+            )
+
+        self.assertTrue(probe_timeouts, "at least one narrowing probe should have run")
+        self.assertTrue(
+            all(t == 3 for t in probe_timeouts),
+            f"all narrowing probes must use narrow_timeout=3, got: {probe_timeouts}",
+        )
+
     def test_validate_query_with_fixes_rewrites_known_exporter_failed_metric_name(self):
         class StubResolver:
             def resolve_label(self, label):
