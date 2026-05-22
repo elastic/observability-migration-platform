@@ -1071,5 +1071,45 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertFalse(getattr(bad_result, "yaml_linted", False))
 
 
+class TestValueWrapperTranslations(unittest.TestCase):
+    """sort_desc/round/clamp_min must produce correct ES|QL output (quick wins)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_sort_desc_emits_sort_value_desc(self):
+        ctx = self._translate("sort_desc(sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT", ctx.esql_query)
+        self.assertIn("DESC", ctx.esql_query)
+        # value-sort warning present
+        self.assertTrue(any("sort_desc" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_sort_asc_emits_sort_value_asc(self):
+        ctx = self._translate("sort(sum by (job) (rate(http_requests_total[5m])))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SORT", ctx.esql_query)
+        self.assertTrue(any("sort" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_round_emits_round_eval(self):
+        ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])), 2)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("ROUND(", ctx.esql_query)
+        self.assertTrue(any("round" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+    def test_clamp_min_emits_greatest_eval(self):
+        ctx = self._translate("clamp_min(sum by (job) (rate(http_requests_total[5m])), 0)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("GREATEST(", ctx.esql_query)
+        self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings), ctx.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()

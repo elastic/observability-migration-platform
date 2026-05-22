@@ -1774,6 +1774,74 @@ def render_esql_rule(context):
     return "rendered ES|QL query"
 
 
+@QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)
+def value_wrapper_transforms_rule(context):
+    """Apply ES|QL equivalents for sort/round/clamp_min wrapper functions."""
+    frag = context.fragment
+    if not frag or not context.esql_query or context.feasibility == "not_feasible":
+        return None
+
+    metric_field = context.output_metric_field or "value"
+    lines = context.esql_query.splitlines()
+    applied = []
+
+    # round() → EVAL value = ROUND(value, N)
+    if frag.extra.get("has_round"):
+        precision = frag.extra.get("round_precision")
+        if precision is not None:
+            prec_arg = int(precision) if precision == int(precision) else precision
+            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field}, {prec_arg})"
+        else:
+            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
+        sort_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+        lines.insert(sort_idx, eval_clause)
+        _append_unique(context.warnings, "round() approximated with ES|QL ROUND()")
+        applied.append("round")
+
+    # clamp_min() → EVAL value = GREATEST(value, min)
+    clamp_min = frag.extra.get("clamp_min_value")
+    if clamp_min is not None:
+        val = _format_scalar_value(clamp_min)
+        eval_clause = f"| EVAL {metric_field} = GREATEST({metric_field}, {val})"
+        sort_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+        lines.insert(sort_idx, eval_clause)
+        _append_unique(context.warnings, "clamp_min() approximated with ES|QL GREATEST()")
+        applied.append("clamp_min")
+
+    # sort() / sort_desc() → replace time_bucket sort with value sort
+    if "value_sort_desc" in frag.extra:
+        sort_desc = frag.extra["value_sort_desc"]
+        direction = "DESC" if sort_desc else "ASC"
+        new_lines = []
+        replaced = False
+        for ln in lines:
+            if ln.strip().startswith("| SORT") and not replaced:
+                new_lines.append(f"| SORT {metric_field} {direction}")
+                replaced = True
+            else:
+                new_lines.append(ln)
+        if not replaced:
+            new_lines.append(f"| SORT {metric_field} {direction}")
+        lines = new_lines
+        func = "sort_desc" if sort_desc else "sort"
+        _append_unique(
+            context.warnings,
+            f"{func}() applied — ES|QL output sorted by value {direction}",
+        )
+        applied.append(func)
+
+    if applied:
+        context.esql_query = "\n".join(lines)
+        return f"applied value wrapper transforms: {', '.join(applied)}"
+    return None
+
+
 @QUERY_POSTPROCESSORS.register("post_filter", priority=95)
 def post_filter_rule(context):
     frag = context.fragment
