@@ -772,6 +772,7 @@ def _build_dashboard_run_summary(
 ) -> dict[str, Any]:
     return {
         "total": len(results),
+        "translation_failed": sum(1 for r in results if r.translation_error),
         "artifacts_dir": str(output_dir),
         "validation_summary": validation_summary,
     }

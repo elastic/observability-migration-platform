@@ -8741,5 +8741,35 @@ class NativePromqlTests(unittest.TestCase):
         self.assertTrue(rp.native_promql)
 
 
+class TestMigrationResultTranslationError(unittest.TestCase):
+    """MigrationResult must carry a translation_error field (issue #37)."""
+
+    def test_translation_error_defaults_to_empty_string(self):
+        result = migrate.MigrationResult(
+            dashboard_title="test",
+            dashboard_uid="abc",
+        )
+        self.assertEqual(result.translation_error, "")
+
+    def test_translation_error_survives_round_trip_in_report(self):
+        import json
+        import os
+        import tempfile
+        result = migrate.MigrationResult(
+            dashboard_title="broken",
+            dashboard_uid="xyz",
+            translation_error="Traceback (most recent call last):\n  TypeError: boom",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        self.addCleanup(os.unlink, path)
+        report.save_detailed_report([result], [], path)
+        with open(path) as f:
+            data = json.loads(f.read())
+        dashboard_entry = data["dashboards"][0]
+        self.assertEqual(dashboard_entry["translation_error"],
+                         "Traceback (most recent call last):\n  TypeError: boom")
+
+
 if __name__ == "__main__":
     unittest.main()
