@@ -1127,6 +1127,85 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("| WHERE query1 > 0", result.esql_query)
         self.assertIn("| STATS value = COUNT(*)", result.esql_query)
 
+    def test_rate_formula_uses_ts_rate_when_metric_is_counter_typed(self):
+        # When the live field-caps loader knows the target field is a
+        # TSDS counter, the translator switches from the FROM+FIRST/LAST
+        # fallback to native ES|QL TS|QL RATE() — the same pattern Grafana
+        # uses for PromQL rate(). Construct a counter capability inline.
+        from copy import deepcopy
+
+        from observability_migration.core.verification.field_capabilities import (
+            FieldCapability,
+        )
+
+        profile = deepcopy(OTEL_PROFILE)
+        # Inject a counter capability for the mapped ES metric name.
+        profile.field_caps["parity_counter"] = FieldCapability(
+            name="parity_counter",
+            type="counter_long",
+            time_series_metric_kind="counter",
+        )
+
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Counter rate",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TS metrics-*", result.esql_query)
+        self.assertIn("RATE(parity_counter, 5 minute)", result.esql_query)
+        self.assertIn("TBUCKET(5 minute)", result.esql_query)
+        # FIRST/LAST fallback should NOT appear when we go the TS path.
+        self.assertNotIn("FIRST(parity_counter", result.esql_query)
+
+    def test_diff_formula_uses_ts_increase_when_metric_is_counter_typed(self):
+        from copy import deepcopy
+
+        from observability_migration.core.verification.field_capabilities import (
+            FieldCapability,
+        )
+
+        profile = deepcopy(OTEL_PROFILE)
+        profile.field_caps["parity_counter"] = FieldCapability(
+            name="parity_counter",
+            type="counter_double",
+            time_series_metric_kind="counter",
+        )
+
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="diff(query1)")
+        wf.expression = parse_formula("diff(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Counter delta",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TS metrics-*", result.esql_query)
+        self.assertIn("INCREASE(parity_counter, 5 minute)", result.esql_query)
+
+    def test_rate_formula_falls_back_to_first_last_for_gauges(self):
+        # No counter capability injected — current FIRST/LAST behaviour
+        # stays as the fallback for plain gauge metrics.
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Gauge rate",
+            queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotIn("TS metrics-*", result.esql_query)
+        self.assertIn("FROM metrics-*", result.esql_query)
+        self.assertIn("FIRST(parity_counter, @timestamp)", result.esql_query)
+
     def test_rate_formula_uses_first_last_for_proper_derivative(self):
         # rate(query_ref) where query_ref is a direct reference: STATS
         # emits FIRST/LAST so EVAL can compute (last - first)/span — true
@@ -1929,7 +2008,7 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket")
         self.assertEqual(panel["esql"]["metrics"][0]["field"], "count")
 
-    def test_manage_status_pipeline_stays_not_feasible_and_emits_review_markdown(self):
+    def test_manage_status_pipeline_emits_markdown_placeholder_with_hint(self):
         widget = NormalizedWidget(
             id="1",
             widget_type="manage_status",
@@ -1938,20 +2017,127 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         )
 
         plan = plan_widget(widget)
-        self.assertEqual(plan.backend, "blocked")
-        self.assertEqual(plan.confidence, 0.0)
+        # New behavior: routed to markdown backend so the widget renders as
+        # an informative placeholder instead of blocking.
+        self.assertEqual(plan.backend, "markdown")
 
         result = translate_widget(widget, plan, OTEL_PROFILE)
-        self.assertEqual(result.status, "not_feasible")
-        self.assertIn("unsupported widget type: manage_status", result.reasons)
+        # Markdown placeholders for non-text widgets land as requires_manual
+        # (the YAML uploads, the panel surfaces guidance).
+        self.assertEqual(result.status, "requires_manual")
 
         payload = yaml.safe_load(
             generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
         )
         panel = payload["dashboards"][0]["panels"][0]
         self.assertIn("markdown", panel)
-        self.assertEqual(panel["markdown"]["content"], result.yaml_panel["markdown"]["content"])
-        self.assertIn("manage_status", panel["markdown"]["content"])
+        content = panel["markdown"]["content"]
+        self.assertIn("manage_status", content)
+        # Hint about the Elastic Alerts equivalent must be present.
+        self.assertIn("Alerts", content)
+
+    def test_check_status_pipeline_emits_markdown_placeholder_with_hint(self):
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="check_status",
+            title="Server reachable",
+        )
+
+        plan = plan_widget(widget)
+        self.assertEqual(plan.backend, "markdown")
+
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertEqual(result.status, "requires_manual")
+
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
+        )
+        content = payload["dashboards"][0]["panels"][0]["markdown"]["content"]
+        self.assertIn("check_status", content)
+        # Hint about the Elastic Synthetics equivalent.
+        self.assertIn("Synthetics", content)
+
+    def test_partition_widget_without_groupby_is_requires_manual(self):
+        # Sunburst (partition) widgets need at least one group-by; when
+        # the source has none, the translator surfaces requires_manual
+        # instead of blocking the upload.
+        query = "sum:rabbitmq.connection.incoming_packets.count{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1", data_source="metrics", raw_query=query,
+            metric_query=mq, query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1", widget_type="sunburst", title="Packets",
+            queries=[wq],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertEqual(result.status, "requires_manual")
+        # The placeholder mentions the source query so the reviewer can see it.
+        self.assertTrue(
+            any("group" in (w or "").lower() for w in result.warnings),
+            f"expected a group-related warning, got {result.warnings}",
+        )
+
+    def test_log_widget_with_modern_search_query_translates(self):
+        # Modern Datadog log widgets put the filter in raw_q["search"]["query"]
+        # instead of raw_q["query"]. Verify normalize captures it.
+        raw_dashboard = {
+            "title": "Log",
+            "widgets": [{
+                "definition": {
+                    "title": "Count by status",
+                    "type": "timeseries",
+                    "requests": [{
+                        "response_format": "timeseries",
+                        "queries": [{
+                            "data_source": "logs",
+                            "name": "a",
+                            "search": {"query": "service:kafka"},
+                            "compute": {"aggregation": "count"},
+                        }],
+                        "formulas": [{"formula": "a"}],
+                    }],
+                },
+            }],
+        }
+        from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+        nz = normalize_dashboard(raw_dashboard)
+        widget = nz.widgets[0]
+        # The raw_query should reflect the modern search.query field.
+        self.assertEqual(widget.queries[0].raw_query, "service:kafka")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn("service.name", result.esql_query)
+
+    def test_log_widget_with_empty_query_translates_as_match_all(self):
+        # Some Datadog widgets are emitted with no log filter at all; we
+        # should treat that as a match-all query rather than failing.
+        raw_dashboard = {
+            "title": "Log",
+            "widgets": [{
+                "definition": {
+                    "title": "All logs",
+                    "type": "timeseries",
+                    "requests": [{
+                        "response_format": "timeseries",
+                        "queries": [{
+                            "data_source": "logs",
+                            "name": "a",
+                        }],
+                        "formulas": [{"formula": "a"}],
+                    }],
+                },
+            }],
+        }
+        from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+        nz = normalize_dashboard(raw_dashboard)
+        widget = nz.widgets[0]
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertIn("FROM logs-*", result.esql_query)
+        # No KQL filter beyond the time clause.
+        self.assertIn("WHERE @timestamp", result.esql_query)
 
 
 # =========================================================================
