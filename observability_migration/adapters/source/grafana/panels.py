@@ -3247,7 +3247,7 @@ def _build_section_groups(dashboard):
         # handful of exports also carry ``collapsed`` so accept either
         # rather than silently ignoring the wrong spelling.
         row_collapsed = bool(row.get("collapse", row.get("collapsed", False)))
-        row_height_px = row.get("height", 250)
+        row_height_px = row.get("height") or 250
         if isinstance(row_height_px, str):
             row_height_px = int("".join(c for c in row_height_px if c.isdigit()) or "250")
         grid_h = max(row_height_px // 30, 4)

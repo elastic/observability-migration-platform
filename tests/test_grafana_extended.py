@@ -1770,5 +1770,30 @@ class TestFlattenDashboardPanelsNullGuards(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestBuildSectionGroupsNullRowHeight(unittest.TestCase):
+    """_build_section_groups must not crash when a legacy row has 'height': null (issue #39-followup)."""
+
+    def _make_legacy_dashboard(self, height):
+        panel = {
+            "id": 1, "type": "graph", "title": "P",
+            "targets": [{"expr": "up", "refId": "A", "datasource": {"type": "prometheus"}}],
+            "span": 12,
+        }
+        return {"title": "t", "schemaVersion": 6, "rows": [{"title": "R", "height": height, "panels": [panel]}]}
+
+    def test_null_row_height_does_not_crash(self):
+        dashboard = self._make_legacy_dashboard(None)
+        panels._build_section_groups(dashboard)
+
+    def test_zero_row_height_does_not_crash(self):
+        dashboard = self._make_legacy_dashboard(0)
+        panels._build_section_groups(dashboard)
+
+    def test_normal_row_height_still_works(self):
+        dashboard = self._make_legacy_dashboard(250)
+        groups = panels._build_section_groups(dashboard)
+        self.assertTrue(len(groups) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
