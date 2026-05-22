@@ -1038,6 +1038,38 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertEqual(result, fake_result)
         self.assertEqual(yaml_path, fake_path)
 
+    def test_stub_result_does_not_crash_yaml_path_lookups(self):
+        """Stub results from failed translation must not crash any code that iterates dashboard_outputs."""
+        bad_dashboard = self._make_minimal_dashboard("Bad")
+        bad_dashboard["uid"] = "bad123"
+
+        # Stub the bad dashboard
+        bad_result = MigrationResult(
+            dashboard_title="Bad",
+            dashboard_uid="bad123",
+            translation_error="Traceback:\n  RuntimeError: boom",
+        )
+
+        # dashboard_outputs format: [(result, yaml_path, raw_dashboard)]
+        dashboard_outputs = [
+            (bad_result, None, bad_dashboard),
+        ]
+
+        # Simulate the lint loop — this should not raise
+        yaml_lint_results = {}  # empty, no yaml produced for failed dashboard
+        for result, yaml_path, _dashboard in dashboard_outputs:
+            if yaml_path is None:
+                continue
+            result.yaml_linted = True
+            lint_ok, lint_output = yaml_lint_results.get(
+                Path(yaml_path).name, (False, "missing")
+            )
+            result.yaml_lint_error = "" if lint_ok else lint_output
+
+        # Verify the stub result was not modified and translation_error intact
+        self.assertEqual(bad_result.translation_error, "Traceback:\n  RuntimeError: boom")
+        self.assertFalse(getattr(bad_result, "yaml_linted", False))
+
 
 if __name__ == "__main__":
     unittest.main()

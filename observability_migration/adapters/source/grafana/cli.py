@@ -556,6 +556,8 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
     all_alert_tasks = []
 
     for result, yaml_path, dashboard in dashboard_outputs:
+        if result.translation_error:
+            continue
         result.yaml_path = str(yaml_path) if yaml_path is not None else ""
         dashboard_links = translate_dashboard_links(dashboard)
         annotations = translate_annotations(dashboard, data_view=data_view)
@@ -1345,6 +1347,8 @@ def main(argv: list[str] | None = None):
     print("\n[4/7] Linting generated dashboard YAML...")
     yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
     for result, yaml_path, _dashboard in dashboard_outputs:
+        if yaml_path is None:
+            continue
         result.yaml_linted = True
         lint_ok, lint_output = yaml_lint_results.get(
             Path(yaml_path).name,
@@ -1379,7 +1383,8 @@ def main(argv: list[str] | None = None):
     compile_map = {Path(name).stem: (ok, output) for name, ok, output in compile_results}
     for result in results:
         dashboard_stem = _dashboard_output_stem(result.dashboard_title)
-        result.compiled_path = str(compiled_dir / dashboard_stem / "compiled_dashboards.ndjson")
+        if not result.translation_error:
+            result.compiled_path = str(compiled_dir / dashboard_stem / "compiled_dashboards.ndjson")
         compiled_state = compile_map.get(dashboard_stem)
         if compiled_state:
             result.compiled = compiled_state[0]
