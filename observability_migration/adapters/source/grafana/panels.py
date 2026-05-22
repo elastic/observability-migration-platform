@@ -3183,12 +3183,12 @@ def _panel_sort_key(panel):
 
 def _flatten_dashboard_panels(dashboard):
     all_panels = []
-    for panel in dashboard.get("panels", []):
+    for panel in (dashboard.get("panels") or []):
         all_panels.append(panel)
-        for sub_panel in panel.get("panels", []):
+        for sub_panel in (panel.get("panels") or []):
             all_panels.append(sub_panel)
-    for row in dashboard.get("rows", []):
-        for panel in row.get("panels", []):
+    for row in (dashboard.get("rows") or []):
+        for panel in (row.get("panels") or []):
             all_panels.append(panel)
     return sorted(all_panels, key=_panel_sort_key)
 

@@ -966,5 +966,110 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         self.assertTrue(all(result.layout_error == "" for result in results))
 
 
+class TestTranslateDashboardResilient(unittest.TestCase):
+    """_translate_dashboard_resilient must not propagate exceptions (issue #37)."""
+
+    def _make_minimal_dashboard(self, title="My Dashboard"):
+        return {
+            "title": title,
+            "uid": "abc123",
+            "panels": [
+                {
+                    "id": 1,
+                    "type": "timeseries",
+                    "title": "Panel 1",
+                    "targets": [{"expr": "rate(http_requests_total[5m])", "refId": "A",
+                                 "datasource": {"type": "prometheus"}}],
+                    "fieldConfig": {"defaults": {}, "overrides": []},
+                    "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+                }
+            ],
+        }
+
+    def test_exception_in_translate_returns_stub_result(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        dashboard = self._make_minimal_dashboard("Exploding Dashboard")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+                side_effect=RuntimeError("simulated crash"),
+            ):
+                result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                    dashboard,
+                    Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=None,
+                    resolver=None,
+                )
+
+        self.assertIsNone(yaml_path)
+        self.assertEqual(result.dashboard_title, "Exploding Dashboard")
+        self.assertIn("simulated crash", result.translation_error)
+        self.assertEqual(result.migrated, 0)
+
+    def test_success_passes_through_unchanged(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        dashboard = self._make_minimal_dashboard("Good Dashboard")
+        fake_result = MigrationResult(dashboard_title="Good Dashboard", dashboard_uid="abc123")
+        fake_path = Path("/tmp/good.yaml")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+                return_value=(fake_result, fake_path),
+            ):
+                result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                    dashboard,
+                    Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=None,
+                    resolver=None,
+                )
+
+        self.assertEqual(result, fake_result)
+        self.assertEqual(yaml_path, fake_path)
+
+    def test_stub_result_does_not_crash_yaml_path_lookups(self):
+        """Stub results from failed translation must not crash any code that iterates dashboard_outputs."""
+        bad_dashboard = self._make_minimal_dashboard("Bad")
+        bad_dashboard["uid"] = "bad123"
+
+        # Stub the bad dashboard
+        bad_result = MigrationResult(
+            dashboard_title="Bad",
+            dashboard_uid="bad123",
+            translation_error="Traceback:\n  RuntimeError: boom",
+        )
+
+        # dashboard_outputs format: [(result, yaml_path, raw_dashboard)]
+        dashboard_outputs = [
+            (bad_result, None, bad_dashboard),
+        ]
+
+        # Simulate the lint loop — this should not raise
+        yaml_lint_results = {}  # empty, no yaml produced for failed dashboard
+        for result, yaml_path, _dashboard in dashboard_outputs:
+            if yaml_path is None:
+                continue
+            result.yaml_linted = True
+            lint_ok, lint_output = yaml_lint_results.get(
+                Path(yaml_path).name, (False, "missing")
+            )
+            result.yaml_lint_error = "" if lint_ok else lint_output
+
+        # Verify the stub result was not modified and translation_error intact
+        self.assertEqual(bad_result.translation_error, "Traceback:\n  RuntimeError: boom")
+        self.assertFalse(getattr(bad_result, "yaml_linted", False))
+
+
 if __name__ == "__main__":
     unittest.main()

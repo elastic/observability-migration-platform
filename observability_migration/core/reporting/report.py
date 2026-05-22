@@ -63,6 +63,7 @@ class MigrationResult:
     feature_gap_summary: dict = field(default_factory=dict)
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
+    translation_error: str = ""   # non-empty iff translate_dashboard() raised
 
 
 @dataclass
@@ -474,6 +475,7 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             ],
             "alert_results": getattr(r, "alert_results", []),
             "alert_summary": getattr(r, "alert_summary", {}),
+            "translation_error": r.translation_error,
         }
         report["dashboards"].append(d)
 
