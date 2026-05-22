@@ -394,6 +394,14 @@ def fragment_guardrails_rule(context):
     reasons = list(frag.extra.get("not_feasible_reasons", []) or [])
     if not reasons:
         return None
+    # For 'or' binary expressions, not_feasible reasons may come from only the
+    # right operand. Defer to binary_expr_family_rule which will try the left
+    # operand fallback; only block here when the left side itself is infeasible.
+    if frag.family == "binary_expr" and (frag.binary_op or "").lower() == "or":
+        left_frag = frag.extra.get("left_frag")
+        left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else reasons
+        if not left_reasons:
+            return None  # let binary_expr_family_rule handle the or-fallback
     context.feasibility = "not_feasible"
     context.confidence = 0.0
     for reason in reasons:
@@ -422,6 +430,18 @@ def family_classifier_rule(context):
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
         if nf_reasons:
+            # For 'or' binary expressions, not_feasible reasons from the right
+            # operand alone don't block translation — binary_expr_family_rule will
+            # attempt a left-operand fallback. Only block when the left side is bad.
+            if (
+                frag.family == "binary_expr"
+                and (frag.binary_op or "").lower() == "or"
+            ):
+                left_frag = frag.extra.get("left_frag")
+                left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else nf_reasons
+                if not left_reasons:
+                    context.metadata["fragment_family"] = frag.family
+                    return f"fragment family {frag.family} 'or': right-side reasons deferred to or-fallback"
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             for r in nf_reasons:
@@ -877,11 +897,44 @@ def binary_expr_family_rule(context):
     )
     if not plan:
         # Set operators ``and`` / ``unless`` (and ``or`` between different
-        # metrics or different aggregations) have no honest single-stage
-        # ES|QL equivalent. Surface a clear ``not_feasible`` instead of
-        # falling through to a silent drop of one operand or every
-        # breakdown label.
+        # ``or`` between distinct metrics: translate the left operand alone.
+        # This covers the common "primary or fallback" / "metric or vector(0)"
+        # PromQL idioms where the left side is the meaningful signal.
         op_lower = (frag.binary_op or "").lower()
+        if op_lower == "or":
+            left_frag = frag.extra.get("left_frag")
+            if left_frag and not left_frag.extra.get("not_feasible_reasons"):
+                sub = TranslationContext(
+                    promql_expr=left_frag.raw_expr or context.promql_expr,
+                    data_view=context.data_view,
+                    index=context.index,
+                    rule_pack=context.rule_pack,
+                    resolver=context.resolver,
+                    metadata=dict(context.metadata),
+                )
+                sub.fragment = left_frag
+                sub.metadata["fragment_family"] = left_frag.family
+                QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+                QUERY_POSTPROCESSORS.apply(sub)
+                if sub.esql_query and sub.feasibility != "not_feasible":
+                    context.esql_query = sub.esql_query
+                    context.metric_name = sub.metric_name
+                    context.output_metric_field = sub.output_metric_field
+                    context.output_group_fields = sub.output_group_fields
+                    context.source_type = sub.source_type
+                    context.parser_backend = "fragment"
+                    context.translation_complete = True
+                    for w in sub.warnings:
+                        _append_unique(context.warnings, w)
+                    _append_unique(
+                        context.warnings,
+                        "PromQL 'or' fallback: using left operand only; "
+                        "right-hand side metric ignored",
+                    )
+                    return "or fallback: translated left operand"
+
+        # ``and`` / ``unless`` and unresolvable ``or`` have no honest single-stage
+        # ES|QL equivalent. Surface a clear ``not_feasible``.
         if op_lower in {"or", "and", "unless"}:
             context.feasibility = "not_feasible"
             context.confidence = 0.0

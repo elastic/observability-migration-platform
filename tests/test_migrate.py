@@ -495,15 +495,16 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('"4.."', joined_where)
         self.assertIn('"5.."', joined_where)
 
-    def test_set_or_between_different_metrics_is_not_feasible(self):
-        """``A or B`` between two different metrics has no honest single-stage
-        ES|QL equivalent; refuse rather than silently dropping one operand."""
+    def test_set_or_between_different_metrics_uses_left_operand_fallback(self):
+        """``A or B`` between two different metrics now translates the left
+        operand with an explicit fallback warning rather than refusing."""
         translated = self.translate(
             "http_requests_total or http_other_total",
         )
-        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        self.assertIn("http_requests_total", translated.esql_query or "")
         reasons = " ".join(getattr(translated, "warnings", []) or [])
-        self.assertRegex(reasons, r"(?i)set operator|or operator|set union")
+        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand")
 
     def test_set_and_between_metrics_is_not_feasible(self):
         translated = self.translate("http_requests_total and http_other_total")

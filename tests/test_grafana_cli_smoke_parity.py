@@ -1203,5 +1203,48 @@ class TestValueWrapperTranslations(unittest.TestCase):
         self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings), ctx.warnings)
 
 
+class TestPromQLOrFallback(unittest.TestCase):
+    """PromQL 'or' between distinct metrics: translate left operand with warning."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_or_between_two_rates_uses_left_operand(self):
+        """rate(a) or rate(b) → translates, references left metric, warns about fallback."""
+        ctx = self._translate(
+            "rate(http_requests_total[5m]) or rate(http_errors_total[5m])"
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("http_requests_total", ctx.esql_query or "")
+        self.assertTrue(
+            any("or" in w.lower() and ("fallback" in w.lower() or "left" in w.lower())
+                for w in ctx.warnings),
+            f"Expected or-fallback warning; got: {ctx.warnings}",
+        )
+
+    def test_or_with_vector_zero_uses_left_operand(self):
+        """rate(a) or vector(0) is a 'default to 0' idiom — translate left side."""
+        ctx = self._translate("rate(http_requests_total[5m]) or vector(0)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("http_requests_total", ctx.esql_query or "")
+
+    def test_and_remains_not_feasible(self):
+        """PromQL 'and' (set intersection) has no safe ES|QL equivalent."""
+        ctx = self._translate("rate(foo_total[5m]) and rate(bar_total[5m])")
+        self.assertEqual(ctx.feasibility, "not_feasible")
+
+    def test_unless_remains_not_feasible(self):
+        """PromQL 'unless' (set difference) has no safe ES|QL equivalent."""
+        ctx = self._translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
+        self.assertEqual(ctx.feasibility, "not_feasible")
+
+
 if __name__ == "__main__":
     unittest.main()
