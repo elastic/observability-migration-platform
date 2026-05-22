@@ -1751,5 +1751,24 @@ class TestPanelNotesHonesty(unittest.TestCase):
                         f"Field overrides should be noted: {result.notes}")
 
 
+class TestFlattenDashboardPanelsNullGuards(unittest.TestCase):
+    """_flatten_dashboard_panels must not crash on explicit null fields (issue #37)."""
+
+    def test_null_rows_returns_empty(self):
+        dashboard = {"title": "test", "rows": None, "panels": []}
+        result = panels._flatten_dashboard_panels(dashboard)
+        self.assertEqual(result, [])
+
+    def test_null_panels_returns_empty(self):
+        dashboard = {"title": "test", "rows": [], "panels": None}
+        result = panels._flatten_dashboard_panels(dashboard)
+        self.assertEqual(result, [])
+
+    def test_null_rows_and_panels_returns_empty(self):
+        dashboard = {"title": "test", "rows": None, "panels": None}
+        result = panels._flatten_dashboard_panels(dashboard)
+        self.assertEqual(result, [])
+
+
 if __name__ == "__main__":
     unittest.main()
