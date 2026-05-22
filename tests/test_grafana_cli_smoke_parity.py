@@ -1071,6 +1071,51 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertFalse(getattr(bad_result, "yaml_linted", False))
 
 
+class TestLabelReplaceTranslation(unittest.TestCase):
+    """label_replace must translate to ES|QL EVAL (9 panels)."""
+
+    _INDEX = "metrics-*"
+
+    def _translate(self, expr):
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = RulePackConfig()
+        return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
+
+    def test_label_replace_copy_whole_label(self):
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("host", ctx.esql_query)
+
+    def test_label_replace_constant_value(self):
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "env", "production", "job", ".*")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("env", ctx.esql_query)
+        self.assertIn("production", ctx.esql_query)
+
+    def test_label_replace_regex_extract(self):
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+
+    def test_label_replace_complex_falls_back_gracefully(self):
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "new", "$1-$2", "job", "(a)-(b)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertTrue(
+            any("label_replace" in w.lower() for w in ctx.warnings),
+            f"Expected a label_replace warning, got: {ctx.warnings}",
+        )
+
+
 class TestTopkUngrouped(unittest.TestCase):
     """topk without explicit by() clause must translate when preferred_group_labels provided."""
 

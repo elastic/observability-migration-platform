@@ -920,6 +920,25 @@ def _ast_call_fragment(node, expr):
             result.extra["clamp_min_value"] = threshold_frag.scalar_value
             return result
 
+    # label_replace(v, dst, replacement, src, regex) — new fragment family
+    if func_name == "label_replace" and len(child_frags) == 5:
+        value_frag = child_frags[0]
+        string_args = [f.extra.get("string_value") for f in child_frags[1:]]
+        if (
+            all(s is not None for s in string_args)
+            and not value_frag.extra.get("not_feasible_reasons")
+        ):
+            dst, replacement, src, regex = string_args
+            result = _copy_fragment_summary(
+                _new_fragment(expr, family="label_replace"), value_frag
+            )
+            result.extra["lr_dst"] = dst
+            result.extra["lr_replacement"] = replacement
+            result.extra["lr_src"] = src
+            result.extra["lr_regex"] = regex
+            result.extra["lr_inner_frag"] = value_frag
+            return result
+
     frag = _new_fragment(expr)
     for child in child_frags:
         _copy_fragment_summary(frag, child)
@@ -1159,7 +1178,9 @@ def _ast_from_node(node, expr=None):
         return frag
 
     if node_type == "StringLiteral":
-        return _new_fragment(expr)
+        frag = _new_fragment(expr, family="string_literal")
+        frag.extra["string_value"] = str(getattr(node, "val", "") or "")
+        return frag
 
     if node_type == "VectorSelector":
         return _ast_vector_selector_fragment(node, expr)

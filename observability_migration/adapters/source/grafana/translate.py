@@ -417,6 +417,7 @@ def family_classifier_rule(context):
         "nested_agg",
         "binary_expr",
         "topk",
+        "label_replace",
     }
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
@@ -1027,6 +1028,85 @@ def topk_family_rule(context):
     context.translation_complete = True
     _append_unique(context.warnings, "Translated grouped topk() as latest-bucket ES|QL top N")
     return "translated grouped topk expression"
+
+
+def _build_label_replace_eval(dst, replacement, src, regex):
+    """Return an ES|QL EVAL clause for label_replace(), or None if untranslatable."""
+    # Case 1: full copy — replacement captures everything unchanged
+    if replacement in ("$1", "$0") and regex in ("(.*)", ".*", "(.+)", ".+"):
+        return f"| EVAL {dst} = {src}"
+    # Case 2: constant string — no $N capture group references
+    if not re.search(r"\$\d+", replacement):
+        safe = replacement.replace('"', '\\"')
+        return f'| EVAL {dst} = "{safe}"'
+    # Case 3: single capture group substitution
+    if replacement == "$1":
+        safe_regex = regex.replace('"', '\\"')
+        return f'| EVAL {dst} = REGEXP_EXTRACT({src}, "{safe_regex}")'
+    # Complex multi-group: cannot translate cleanly
+    return None
+
+
+@QUERY_TRANSLATORS.register("label_replace_family", priority=6)
+def label_replace_family_rule(context):
+    """Translate label_replace(v, dst, replacement, src, regex) via ES|QL EVAL."""
+    frag = context.fragment
+    if not frag or frag.family != "label_replace":
+        return None
+
+    inner_frag = frag.extra.get("lr_inner_frag")
+    if not inner_frag:
+        return None
+
+    dst = frag.extra.get("lr_dst", "")
+    replacement = frag.extra.get("lr_replacement", "")
+    src = frag.extra.get("lr_src", "")
+    regex = frag.extra.get("lr_regex", "")
+
+    # Translate the inner metric expression via a sub-context
+    sub = TranslationContext(
+        promql_expr=inner_frag.raw_expr or context.promql_expr,
+        data_view=context.data_view,
+        index=context.index,
+        rule_pack=context.rule_pack,
+        resolver=context.resolver,
+        metadata=dict(context.metadata),
+    )
+    sub.fragment = inner_frag
+    sub.metadata["fragment_family"] = inner_frag.family
+    QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+    QUERY_POSTPROCESSORS.apply(sub)
+
+    if not sub.esql_query or sub.feasibility == "not_feasible":
+        return None  # fall through to not_feasible
+
+    eval_clause = _build_label_replace_eval(dst, replacement, src, regex)
+    lines = sub.esql_query.splitlines()
+    if eval_clause:
+        sort_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
+            len(lines),
+        )
+        lines.insert(sort_idx, eval_clause)
+        _append_unique(context.warnings, f"label_replace({dst!r}) approximated with ES|QL EVAL")
+    else:
+        _append_unique(
+            context.warnings,
+            f"label_replace(): complex replacement pattern not translatable; "
+            f"label renaming for {dst!r} skipped",
+        )
+
+    for w in sub.warnings:
+        _append_unique(context.warnings, w)
+
+    context.esql_query = "\n".join(lines)
+    context.metric_name = sub.metric_name
+    context.output_metric_field = sub.output_metric_field
+    context.output_group_fields = sub.output_group_fields
+    context.source_type = sub.source_type
+    context.parser_backend = "fragment"
+    context.translation_complete = True
+    return f"translated label_replace({dst!r})"
 
 
 @QUERY_TRANSLATORS.register("scaled_agg_family", priority=6)

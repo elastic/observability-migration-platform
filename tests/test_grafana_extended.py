@@ -1462,10 +1462,10 @@ class TestNegationHandling(unittest.TestCase):
 class TestWarningPatternHonesty(unittest.TestCase):
     """Verify unsupported wrappers fail clearly instead of false-success."""
 
-    def test_label_replace_is_not_feasible(self):
+    def test_label_replace_now_translates(self):
+        # label_replace is now handled — copy pattern with passthrough regex
         ctx = _translate("label_replace(up, 'dst', '$1', 'src', '(.*)')")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("label_replace" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
 
     def test_predict_linear_is_not_feasible(self):
         ctx = _translate("predict_linear(node_filesystem_avail_bytes[6h], 86400)")
