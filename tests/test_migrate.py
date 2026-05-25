@@ -9368,5 +9368,56 @@ class TestScalarAggregationHoisting(unittest.TestCase):
         )
 
 
+class TestUnaryMinusOverBinaryExpr(unittest.TestCase):
+    """-(A op B) must translate correctly, not fail with 'Could not extract metric name'.
+
+    Root cause: _copy_fragment_summary does not copy left_frag/right_frag from
+    the child's extra dict, so wrapping a binary_expr in UnaryExpr lost the
+    sub-fragment structure entirely.  Fix rewrites -(A op B) as 0 - (A op B)
+    so _make_binary_fragment preserves the full structure."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_negate_sum_of_irates(self):
+        """-(irate(A) + irate(B)) — butterfly-chart negation — must translate."""
+        r = self._translate(
+            "-(irate(node_network_transmit_errs_total[5m])"
+            " + irate(node_network_transmit_drop_total[5m]))"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_negate_sum_of_rates(self):
+        """-(rate(A) + rate(B)) — alternate form — must translate."""
+        r = self._translate(
+            "-(rate(http_requests_bytes_total[5m]) + rate(http_other_bytes_total[5m]))"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_negate_sum_with_comparison(self):
+        """-(irate(A) + irate(B)) < 0 — negation + filter — must translate."""
+        r = self._translate(
+            "-(irate(node_network_transmit_errs_total[5m])"
+            " + irate(node_network_transmit_drop_total[5m])) < 0"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_negate_single_metric_still_works(self):
+        """-(irate(A)) — single-metric unary minus — must still translate."""
+        r = self._translate("-(irate(node_disk_written_bytes_total[5m]))")
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_negate_scalar_still_works(self):
+        """Unary minus on scalar literal must produce negative scalar."""
+        r = self._translate("sum(-1 * rate(http_requests_total[5m])) by (job)")
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+
 if __name__ == "__main__":
     unittest.main()

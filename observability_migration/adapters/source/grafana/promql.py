@@ -1159,6 +1159,12 @@ def _ast_binary_fragment(node, expr):
             "op": op,
             "value": right.scalar_value,
         }
+        # When left is a binary_expr (e.g. -(A+B) < 0), propagate left_frag/right_frag
+        # so the formula plan can still decompose the expression.
+        if left.family == "binary_expr":
+            for key in ("left_frag", "right_frag"):
+                if key in left.extra and key not in frag.extra:
+                    frag.extra[key] = left.extra[key]
         return frag
 
     if left.is_time_call and op == "-" and right.family in {"join", "range_agg", "simple_agg", "simple_metric"}:
@@ -1240,11 +1246,20 @@ def _ast_from_node(node, expr=None):
 
     if node_type == "UnaryExpr":
         child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
-        frag = _copy_fragment_summary(_new_fragment(expr), child)
         if child.is_scalar and child.scalar_value is not None:
-            frag.family = "scalar"
+            frag = _new_fragment(expr, family="scalar")
             frag.is_scalar = True
             frag.scalar_value = -child.scalar_value
+            return frag
+        if child.family == "binary_expr":
+            # Rewrite -(A op B) as 0 - (A op B) so _make_binary_fragment
+            # preserves left_frag/right_frag; without this, _copy_fragment_summary
+            # drops those extra keys and the formula plan cannot extract a metric name.
+            zero = _new_fragment("0", family="scalar")
+            zero.is_scalar = True
+            zero.scalar_value = 0.0
+            return _make_binary_fragment(expr, zero, "-", child)
+        frag = _copy_fragment_summary(_new_fragment(expr), child)
         return frag
 
     if node_type == "NumberLiteral":
