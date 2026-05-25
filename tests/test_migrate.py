@@ -9419,5 +9419,161 @@ class TestUnaryMinusOverBinaryExpr(unittest.TestCase):
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
 
 
+class TestBinaryExprJoinLHS(unittest.TestCase):
+    """(A op B) * ON(x) GROUP_LEFT(y) C must translate, not fail 'Could not extract metric name'.
+
+    Root cause: join_family_rule's binary_op=='*' branch used
+    ``left_frag.metric or frag.metric`` which is empty when the LHS is itself a
+    binary_expr.  Fix delegates to _build_formula_plan so the arithmetic is
+    handled correctly and the join RHS (label enrichment) is still stripped."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_difference_times_label_join(self):
+        """(A - B) * ON(instance) GROUP_LEFT(nodename) C — memory used * uname."""
+        r = self._translate(
+            "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)"
+            " * ON(instance) GROUP_LEFT(nodename) node_uname_info"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("Dropped group_left label enrichment", " ".join(r.warnings))
+        self.assertIn("computed_value", r.esql_query or "")
+
+    def test_filesystem_used_times_error_flag(self):
+        """(size - avail) * on(...) group_left() error_flag — filesystem used bytes."""
+        r = self._translate(
+            "(node_filesystem_size_bytes - node_filesystem_avail_bytes)"
+            " * on(instance, device, mountpoint, fstype) group_left()"
+            " node_filesystem_device_error"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_simple_join_lhs_still_works(self):
+        """A * ON(instance) GROUP_LEFT(nodename) B — simple single-metric LHS unchanged."""
+        r = self._translate(
+            "node_hwmon_temp_celsius * ON(chip) GROUP_LEFT(chip_name) node_hwmon_chip_names"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("Dropped group_left label enrichment", " ".join(r.warnings))
+
+
+class TestPhantomGrafanaVarStripping(unittest.TestCase):
+    """rate(A) * $trends must translate, not fail with 'divergent filters'.
+
+    Root cause: preprocess_grafana_macros converts bare $var tokens to
+    label_var, so ``$trends`` becomes a simple_metric named ``label_trends``.
+    The formula plan sees two different series (TS rate + FROM gauge) which
+    can't be merged.  Fix detects bare label_* simple_metrics with no matchers
+    and strips them from multiplicative binary ops."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_rate_times_dollar_trends(self):
+        """rate(A) * $trends — ClickHouse-style trend toggle must translate."""
+        r = self._translate(
+            'rate(ClickHouseProfileEvents_ReadBackoff{instance=~"$instance"}[5m]) * $trends'
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertTrue(
+            any("trends" in w and "dropped" in w.lower() for w in r.warnings),
+            f"Expected $trends-dropped warning, got {r.warnings}",
+        )
+
+    def test_dollar_trends_times_rate_commutative(self):
+        """$trends * rate(A) — commutative form also works."""
+        r = self._translate(
+            '$trends * rate(ClickHouseProfileEvents_Query{instance=~"$instance"}[5m])'
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_normal_scalar_multiplication_unaffected(self):
+        """rate(A) * 8 — real numeric scalar still uses scalar hoisting, not phantom strip."""
+        r = self._translate("rate(node_network_receive_bytes_total[5m]) * 8")
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertFalse(
+            any("dropped" in w.lower() and "variable" in w.lower() for w in r.warnings),
+            f"Scalar * 8 should not trigger phantom-var warning: {r.warnings}",
+        )
+
+    def test_real_metric_ratio_unaffected(self):
+        """sum(rate(A)) / sum(rate(A)) — same-metric ratio must still merge."""
+        r = self._translate(
+            "sum(rate(http_requests_total[5m])) / sum(rate(http_requests_total[5m]))"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+
+class TestJoinAggScalarDiv(unittest.TestCase):
+    """sum(A * group_right B / k) pattern — Podman container memory dashboards.
+
+    The outer sum must hoist the scalar divisions out and strip the join RHS,
+    yielding sum(A) / k rather than not_feasible."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_sum_join_div_1024_twice(self):
+        """sum by(name)(A * group_right B / 1024 / 1024) — two scalar divisions."""
+        r = self._translate(
+            "sum by(name)(podman_container_info"
+            " * on(id) group_right(name) podman_container_memory_bytes"
+            " / 1024 / 1024)"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("1024", r.esql_query or "", "scalar division should appear in EVAL")
+        self.assertTrue(
+            any("enrichment" in w for w in r.warnings),
+            f"Expected dropped-enrichment warning, got {r.warnings}",
+        )
+
+    def test_sum_join_div_1024_once(self):
+        """sum(A * group_right B / 1024) — single scalar division."""
+        r = self._translate(
+            "sum(container_info * on(id) group_right(name) memory_bytes / 1024)"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("1024", r.esql_query or "")
+
+    def test_max_join_times_rate_div_scalar(self):
+        """max(rate(A) * group_left(label) B / 8) — group_left variant."""
+        r = self._translate(
+            "max(rate(node_network_receive_bytes_total[5m])"
+            " * on(instance) group_left(nodename) node_uname_info / 8)"
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("8", r.esql_query or "")
+
+    def test_sum_over_two_series_still_not_feasible(self):
+        """sum(A / B) with two real series must remain not_feasible."""
+        r = self._translate(
+            "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)"
+        )
+        self.assertEqual(
+            r.feasibility,
+            "not_feasible",
+            "per-element division between two real series should stay not_feasible",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -157,6 +157,33 @@ CASES: list[tuple[str, str, str]] = [
         ),
         "timeseries",
     ),
+    # --- binary_expr LHS of a group_left join (memory used * label enrichment) --
+    (
+        "binary_expr_join_lhs",
+        (
+            "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)"
+            " * ON(instance) GROUP_LEFT(nodename) node_uname_info"
+        ),
+        "timeseries",
+    ),
+    # --- Grafana $var phantom metric stripping (rate * $trends) ---------------
+    (
+        "phantom_var_rate_times_dollar_trends",
+        'rate(node_network_receive_bytes_total{instance=~"$instance"}[5m]) * $trends',
+        "timeseries",
+    ),
+    # --- join + outer agg + scalar division (Podman pattern) -----------------
+    # sum(A * group_right B / k / k) strips the join RHS, pushes sum down to A,
+    # then hoists the scalar divisions out: sum(A)/k/k.
+    (
+        "join_agg_scalar_div",
+        (
+            "sum by(name)(podman_container_info"
+            " * on(id) group_right(name) podman_container_memory_bytes"
+            " / 1024 / 1024)"
+        ),
+        "timeseries",
+    ),
 ]
 
 
