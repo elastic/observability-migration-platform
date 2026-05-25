@@ -146,6 +146,10 @@ All PM docs live in 3 files under `.pm/` (separate from repo `docs/`):
 
 When the Datadog adapter has a schema violation, check how the Grafana adapter handles the same `kb-dashboard` schema field — it's usually already correct and shows the expected pattern.
 
+### Output format
+
+When resolving a "Dashboard failed to compile" issue, always return the fix as a markdown (`.md`) file that includes: the root cause, the schema violation, the before/after code diff, and the corrected source file path.
+
 ## Guardrail
 
 This PM program operates under an internal-only constraint: no GitHub commits or publish unless the owner explicitly lifts the rule. Do not push commits unless the user explicitly opts in.
