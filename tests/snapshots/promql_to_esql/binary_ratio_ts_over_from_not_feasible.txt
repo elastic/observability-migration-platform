@@ -1,0 +1,4 @@
+feasibility: not_feasible
+warning: PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+---
+

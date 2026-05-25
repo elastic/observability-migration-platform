@@ -1,0 +1,10 @@
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE up IS NOT NULL
+| STATS up_avg_over_time_avg = AVG(AVG_OVER_TIME(up, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (up_avg_over_time_avg * 100)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC

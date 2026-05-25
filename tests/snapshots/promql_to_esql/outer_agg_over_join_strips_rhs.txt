@@ -1,0 +1,5 @@
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS node_network_receive_bytes_total = MAX(RATE(node_network_receive_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
