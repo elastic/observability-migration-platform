@@ -42,6 +42,7 @@ class SchemaResolver:
         "pod_name": ["k8s.pod.name"],
         "container": ["k8s.container.name", "container.name"],
         "container_name": ["k8s.container.name", "container.name"],
+        "image": ["container.image.name"],
         "node": ["k8s.node.name", "host.name"],
         "node_name": ["k8s.node.name", "host.name"],
         "cluster": ["k8s.cluster.name", "orchestrator.cluster.name"],

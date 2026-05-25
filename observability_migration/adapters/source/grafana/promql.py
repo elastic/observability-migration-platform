@@ -2131,6 +2131,45 @@ def _build_formula_plan(
     if scalar_expr is not None:
         return FormulaPlan(specs=[], expr=scalar_expr)
 
+    # An outer aggregation wrapped around a group_left/group_right vector-matching
+    # join (e.g. sum(rate(A) * on(ns,pod) group_left(w,wt) B) by (pod)) produces
+    # family='unknown' with extra['vector_matching'] set and the join RHS on
+    # binary_rhs.  _build_measure_spec has no 'unknown' handler and returns None,
+    # blocking multi-target fusion and ratio expressions.  Strip the join RHS and
+    # re-classify as the appropriate aggregate family so the primary metric can
+    # participate in both.  Label enrichment from the join is silently dropped —
+    # identical to what join_family_rule does in translate.py.
+    if (
+        frag
+        and frag.family == "unknown"
+        and frag.extra.get("vector_matching")
+        and frag.binary_op == "*"
+    ):
+        stripped_fields = {f.name: getattr(frag, f.name) for f in dataclasses.fields(frag)}
+        if frag.range_func:
+            stripped_fields["family"] = "range_agg"
+        elif frag.outer_agg:
+            stripped_fields["family"] = "simple_agg"
+        else:
+            stripped_fields["family"] = "simple_metric"
+        stripped_fields["binary_op"] = ""
+        stripped_fields["binary_rhs"] = None
+        stripped = PromQLFragment(**stripped_fields)
+        plan = _build_formula_plan(
+            stripped,
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=allow_direct_ts_gauge,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+            allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        )
+        if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
+            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        return plan
+
     if frag and frag.family == "binary_expr":
         # Set operators (``or`` / ``and`` / ``unless``) are not arithmetic
         # and cannot be composed by interpolating the operands into a single
