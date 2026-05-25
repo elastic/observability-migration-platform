@@ -401,6 +401,9 @@ def validate_query_with_fixes(
     original_analysis = {}
     api_key = es_api_key or _module_es_api_key
     session = requests.Session()
+    # Track the last index pattern for which narrow probing was attempted so we
+    # don't re-probe the same wildcard pattern on every field-fix iteration.
+    _narrow_probing_done_for: set[str] = set()
 
     for _ in range(max_attempts + 1):
         probe = _run_esql_query(current_query, es_url, es_api_key=api_key, session=session)
@@ -444,15 +447,27 @@ def validate_query_with_fixes(
         if not original_error:
             original_error = err
             original_analysis = analysis
-        narrowed_query = _try_narrow_index_pattern(
-            current_query,
-            es_url,
-            resolver,
-            es_api_key=api_key,
-            session=session,
-            max_candidates=narrow_limit,
-            probe_timeout=narrow_timeout,
-        )
+
+        # Only attempt narrow-index probing when:
+        #   (a) the error contains unknown index references (probing can find a better index), AND
+        #   (b) we have not already probed this index pattern (avoids 30 s re-spend per field-fix retry).
+        # Pure "Unknown column" errors are field-mapping issues, not index issues — probing
+        # different index candidates won't surface the missing field any faster.
+        _, probe_index = _query_source_and_index(current_query)
+        has_index_error = bool(analysis.get("unknown_indexes"))
+        only_column_errors = bool(analysis.get("unknown_columns")) and not has_index_error
+        narrowed_query = None
+        if not only_column_errors and probe_index not in _narrow_probing_done_for:
+            _narrow_probing_done_for.add(probe_index or "")
+            narrowed_query = _try_narrow_index_pattern(
+                current_query,
+                es_url,
+                resolver,
+                es_api_key=api_key,
+                session=session,
+                max_candidates=narrow_limit,
+                probe_timeout=narrow_timeout,
+            )
         if narrowed_query and narrowed_query["query"] not in seen_queries:
             fix_errors.append(err)
             seen_queries.add(narrowed_query["query"])

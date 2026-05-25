@@ -158,11 +158,6 @@ def translate_widget(
         trace=list(plan.trace),
     )
 
-    if any(_has_template_vars(q.raw_query) for q in widget.queries):
-        result.warnings.append(
-            "Template variable filters applied via Kibana dashboard controls"
-        )
-
     if plan.backend in ("markdown", "blocked"):
         is_text_widget = widget.widget_type in (
             "note", "free_text", "image", "iframe",
@@ -686,6 +681,12 @@ def _build_metric_query_spec(
         if clause:
             where_clauses.append(clause)
         if isinstance(filt, TagFilter):
+            if _has_template_vars(filt.value):
+                _append_unique_warning(
+                    result,
+                    "Scope filter with template variable broadened to LIKE pattern; "
+                    "apply specific values via Kibana dashboard controls",
+                )
             filter_field = field_map.map_tag(filt.key, context="metric")
             filter_cap = field_map.field_capability(filter_field, context="metric")
             if filter_cap:

@@ -2201,6 +2201,110 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"all narrowing probes must use narrow_timeout=3, got: {probe_timeouts}",
         )
 
+    def test_narrow_probing_skipped_for_column_only_errors(self):
+        """Narrow-index probing must not run when the error is Unknown column (not Unknown index).
+
+        Field-mapping errors cannot be fixed by trying a different index pattern; running
+        narrow probing on every fix iteration is the root cause of the ~75 s/panel spiral
+        seen on Mixin / Compute Resources / Workload dashboards.
+        """
+        narrow_calls = []
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return ["metrics-foo", "metrics-bar"]
+
+            def _candidate_fields(self, col):
+                return []
+
+            def field_exists(self, f):
+                return False
+
+        query = "FROM metrics-*\n| STATS v = AVG(cpu_usage)"
+        call_count = [0]
+
+        def fake_run(q, _url, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"ok": False, "error": "Unknown column [cpu_usage]", "rows": 0, "columns": []}
+            return {"ok": True, "error": "", "rows": 1, "columns": [], "values": [], "metadata": {}}
+
+        def fake_narrow(q, url, resolver, **kw):
+            narrow_calls.append(q)
+            return None
+
+        def fake_fix(q, err, resolver):
+            return q.replace("cpu_usage", "system.cpu.usage")
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run), \
+             mock.patch.object(esql_validate, "_try_narrow_index_pattern", side_effect=fake_narrow), \
+             mock.patch.object(esql_validate, "_try_fix_esql_field_error", side_effect=fake_fix):
+            result = migrate.validate_query_with_fixes(
+                query, "http://localhost:9200", StubResolver(),
+            )
+
+        self.assertEqual(result["status"], "fixed")
+        self.assertEqual(len(narrow_calls), 0,
+                         "narrow probing must not run for Unknown column errors")
+
+    def test_narrow_probing_runs_at_most_once_per_index_pattern(self):
+        """Narrow-index probing must not re-run for the same index pattern across fix iterations.
+
+        When narrow probing fails to find a better index, retrying it on every subsequent
+        field-fix iteration wastes (max_candidates x probe_timeout) seconds per iteration.
+        """
+        narrow_calls = []
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return ["metrics-foo", "metrics-bar"]
+
+            def _candidate_fields(self, col):
+                return []
+
+            def field_exists(self, f):
+                return False
+
+        query = "FROM metrics-*\n| STATS v = AVG(cpu_usage)"
+        call_count = [0]
+
+        def fake_run(q, _url, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: unknown index error (triggers narrow probing)
+                return {"ok": False, "error": "Unknown index [metrics-*] and Unknown column [cpu_usage]", "rows": 0, "columns": []}
+            if call_count[0] == 2:
+                # After field fix: column error only
+                return {"ok": False, "error": "Unknown column [cpu_usage_v2]", "rows": 0, "columns": []}
+            return {"ok": True, "error": "", "rows": 1, "columns": [], "values": [], "metadata": {}}
+
+        def fake_narrow(q, url, resolver, **kw):
+            narrow_calls.append(q)
+            return None  # No candidate found
+
+        fix_count = [0]
+
+        def fake_fix(q, err, resolver):
+            fix_count[0] += 1
+            if fix_count[0] == 1:
+                return q.replace("cpu_usage", "cpu_usage_v2")
+            return q.replace("cpu_usage_v2", "system.cpu.usage")
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run), \
+             mock.patch.object(esql_validate, "_try_narrow_index_pattern", side_effect=fake_narrow), \
+             mock.patch.object(esql_validate, "_try_fix_esql_field_error", side_effect=fake_fix):
+            result = migrate.validate_query_with_fixes(
+                query, "http://localhost:9200", StubResolver(),
+            )
+
+        self.assertEqual(result["status"], "fixed")
+        self.assertEqual(len(narrow_calls), 1,
+                         f"narrow probing must run at most once per index pattern, ran {len(narrow_calls)}x")
+
     def test_validate_query_with_fixes_rewrites_known_exporter_failed_metric_name(self):
         class StubResolver:
             def resolve_label(self, label):
