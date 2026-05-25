@@ -115,7 +115,15 @@ class RulePackConfig:
     logs_limit: int = 200
     label_rewrites: dict = field(default_factory=dict)
     label_candidates: dict = field(default_factory=dict)
-    ignored_labels: list = field(default_factory=lambda: ["origin_prometheus"])
+    ignored_labels: list = field(default_factory=lambda: [
+        "origin_prometheus",
+        # Prometheus scrape-target metadata labels — these describe the scrape
+        # configuration (endpoint path, scheme) and are not stored as metric
+        # dimensions in Elastic indices.  Translating them to WHERE clauses
+        # produces "Unknown column" errors at validation time.
+        "metrics_path",
+        "__metrics_path__",
+    ])
     control_field_overrides: dict = field(default_factory=dict)
     panel_type_overrides: dict = field(default_factory=dict)
     skip_panel_types: list = field(default_factory=list)

@@ -23,20 +23,34 @@ def _is_counter_fallback(metric_name, rule_pack):
     return any(metric_name.endswith(s) for s in suffixes)
 
 
+def _esql_field(name: str) -> str:
+    """Backtick-quote an ES|QL field reference that contains special characters.
+
+    Plain identifiers ([a-zA-Z0-9_.]) are returned as-is.  Field paths that
+    contain characters like ':' (Prometheus recording-rule metrics) or '-' are
+    wrapped in backticks so ES|QL does not misinterpret them as operators.
+    """
+    if name and re.search(r"[^a-zA-Z0-9_.]", name):
+        escaped = name.replace("`", "\\`")
+        return f"`{escaped}`"
+    return name
+
+
 def _resolve_metric_field(resolver, metric_name, *, prefer=None):
-    """Resolve a PromQL metric name to its physical target field.
+    """Resolve a PromQL metric name to its physical target field, ES|QL-escaped.
 
     Passes through to ``resolver.resolve_metric_field`` when a resolver is
     available, otherwise returns ``metric_name`` unchanged so callers without
     a resolver (offline / fallback paths) still emit the source-faithful
-    field reference.
+    field reference.  The returned field path is always safe to embed directly
+    inside ES|QL STATS / WHERE expressions.
     """
     if resolver is None or not metric_name:
         return metric_name
     resolve = getattr(resolver, "resolve_metric_field", None)
     if resolve is None:
-        return metric_name
-    return resolve(metric_name, prefer=prefer)
+        return _esql_field(metric_name)
+    return _esql_field(resolve(metric_name, prefer=prefer))
 
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
