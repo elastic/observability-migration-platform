@@ -1099,6 +1099,35 @@ def _ast_aggregate_fragment(node, expr):
                 new_binary.group_mode = frag.group_mode
                 return new_binary
         elif child.binary_op in {"/", "*"}:
+            # Constant scaling: agg(X op k) = agg(X) op k.  When one operand
+            # is a scalar literal the aggregation distributes over it, so hoist
+            # the scalar out and push the aggregation down to the vector side.
+            # This covers patterns like max(rate(A[5m]) * 8) or avg(up * 100).
+            scalar_side = None
+            vector_side = None
+            if inner_right is not None and inner_right.is_scalar and inner_right.scalar_value is not None:
+                scalar_side = inner_right
+                vector_side = inner_left
+            elif inner_left is not None and inner_left.is_scalar and inner_left.scalar_value is not None:
+                scalar_side = inner_left
+                vector_side = inner_right
+            if (
+                scalar_side is not None
+                and vector_side is not None
+                and not vector_side.extra.get("not_feasible_reasons")
+            ):
+                pushed = _push_outer_agg(vector_side, frag.outer_agg, frag.group_labels, frag.group_mode)
+                if pushed is not None:
+                    # Preserve order for non-commutative division (k / agg(X)).
+                    if child.binary_op == "/" and scalar_side is inner_left:
+                        new_binary = _make_binary_fragment(expr, scalar_side, "/", pushed)
+                    else:
+                        new_binary = _make_binary_fragment(expr, pushed, child.binary_op, scalar_side)
+                    new_binary.group_labels = list(frag.group_labels)
+                    new_binary.group_mode = frag.group_mode
+                    return new_binary
+            # Two true time-series operands — multiplication/division is not
+            # linearisable: agg(A op B) ≠ agg(A) op agg(B).
             _append_not_feasible_reason(
                 frag,
                 f"Aggregating over a per-element {child.binary_op} between two time-series "

@@ -9316,5 +9316,57 @@ class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
         self.assertIn("status", left_suffix, f"Left suffix should contain 'status': {left_suffix!r}")
 
 
+class TestScalarAggregationHoisting(unittest.TestCase):
+    """agg(X op k) where k is a scalar literal must translate by hoisting
+    the constant out: agg(X op k) → agg(X) op k.  The not_feasible path
+    must only fire for true two-vector operands."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_avg_over_time_times_100(self):
+        """avg(avg_over_time(up) * 100) must translate, not be not_feasible."""
+        r = self._translate('avg(avg_over_time(up{job=~"$job"}[$interval]) * 100)')
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("* 100", r.esql_query or "", f"scalar not in EVAL:\n{r.esql_query}")
+
+    def test_max_rate_times_8(self):
+        """max(rate(A[t]) * 8) — bytes→bits conversion — must translate."""
+        r = self._translate(
+            'max(rate(node_network_receive_bytes_total{job=~"$job"}[$interval])*8) by (instance)'
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("* 8", r.esql_query or "", f"scalar not in EVAL:\n{r.esql_query}")
+        stats_lines = [ln for ln in (r.esql_query or "").splitlines() if "| STATS" in ln]
+        self.assertEqual(len(stats_lines), 1, f"Expected single STATS:\n{r.esql_query}")
+
+    def test_sum_rate_divided_by_scalar(self):
+        """sum(rate(A[5m]) / 1000) — unit conversion — must translate."""
+        r = self._translate('sum(rate(http_requests_total[5m]) / 1000) by (job)')
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("/ 1000", r.esql_query or "", f"scalar not in EVAL:\n{r.esql_query}")
+
+    def test_scalar_on_left_commutes(self):
+        """sum(8 * rate(A[5m])) — scalar on left — must translate."""
+        r = self._translate('sum(8 * rate(http_requests_total[5m])) by (job)')
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+
+    def test_true_two_series_still_not_feasible(self):
+        """max(A / B) with two distinct metrics must remain not_feasible."""
+        r = self._translate(
+            'max(node_filesystem_size_bytes / node_filesystem_avail_bytes)'
+        )
+        self.assertEqual(
+            r.feasibility, "not_feasible",
+            f"Two-series ratio should stay not_feasible; got:\n{r.esql_query}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
