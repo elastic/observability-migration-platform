@@ -1,0 +1,10 @@
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total_rate_sum = SUM(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| EVAL computed_value = (http_requests_total_rate_sum / 1000)
+| KEEP time_bucket, service.name, computed_value
+| SORT time_bucket ASC

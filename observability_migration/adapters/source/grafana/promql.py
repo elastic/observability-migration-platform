@@ -1001,17 +1001,68 @@ def _ast_call_fragment(node, expr):
     return frag
 
 
+def _contains_join_frag(frag, _depth=0):
+    """Return True if *frag* or any binary_expr descendant is a join fragment."""
+    if frag is None or _depth > 8:
+        return False
+    if frag.family == "join":
+        return True
+    if frag.family == "binary_expr":
+        return _contains_join_frag(frag.extra.get("left_frag"), _depth + 1) or _contains_join_frag(
+            frag.extra.get("right_frag"), _depth + 1
+        )
+    return False
+
+
 def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
     """Push an outer aggregation down to a leaf fragment.
 
     Used to apply linearity when rewriting ``sum(A ± B)`` as
-    ``sum(A) ± sum(B)``.  Returns ``None`` when the fragment family
-    cannot accept a pushed aggregation.
+    ``sum(A) ± sum(B)``.  Also handles two deeper cases:
+
+    * ``family="join"`` — strip the label-enrichment RHS and push the agg
+      to the primary (LHS) metric, mirroring what ``join_family_rule`` does.
+      This enables ``agg(join_result / k)`` → ``agg(primary) / k``.
+    * ``family="binary_expr"`` with a scalar operand — recurse through nested
+      scalar divisions/multiplications so ``agg(join / k1 / k2)`` resolves to
+      ``agg(primary) / k1 / k2``.
+
+    Returns ``None`` when the fragment cannot accept a pushed aggregation.
     """
     new_family = frag.family
     if frag.family == "simple_metric":
         new_family = "simple_agg"
-    elif frag.family not in {"range_agg", "simple_agg"}:
+    elif frag.family in {"range_agg", "simple_agg"}:
+        pass
+    elif frag.family == "join" and frag.binary_op == "*":
+        # Strip the label-enrichment join; push the agg to the primary metric
+        # on the LHS (same side join_family_rule uses in translate.py).
+        left = frag.extra.get("left_frag")
+        if left is None or left.extra.get("not_feasible_reasons"):
+            return None
+        return _push_outer_agg(left, outer_agg, group_labels, group_mode)
+    elif frag.family == "binary_expr" and frag.binary_op in {"/", "*"}:
+        # Recursive scalar hoisting through nested binary_expr layers.
+        # Handles e.g. agg(join_result / 1024 / 1024).
+        inner_left = frag.extra.get("left_frag")
+        inner_right = frag.extra.get("right_frag")
+        scalar_side = None
+        vector_side = None
+        if inner_right is not None and inner_right.is_scalar and inner_right.scalar_value is not None:
+            scalar_side = inner_right
+            vector_side = inner_left
+        elif frag.binary_op == "*" and inner_left is not None and inner_left.is_scalar and inner_left.scalar_value is not None:
+            scalar_side = inner_left
+            vector_side = inner_right
+        if scalar_side is None or vector_side is None or vector_side.extra.get("not_feasible_reasons"):
+            return None
+        pushed = _push_outer_agg(vector_side, outer_agg, group_labels, group_mode)
+        if pushed is None:
+            return None
+        if frag.binary_op == "/" and scalar_side is inner_left:
+            return _make_binary_fragment(frag.raw_expr, scalar_side, "/", pushed)
+        return _make_binary_fragment(frag.raw_expr, pushed, frag.binary_op, scalar_side)
+    else:
         return None
     return dataclasses.replace(
         frag,
@@ -1099,6 +1150,37 @@ def _ast_aggregate_fragment(node, expr):
                 new_binary.group_mode = frag.group_mode
                 return new_binary
         elif child.binary_op in {"/", "*"}:
+            # Constant scaling: agg(X op k) = agg(X) op k.  When one operand
+            # is a scalar literal the aggregation distributes over it, so hoist
+            # the scalar out and push the aggregation down to the vector side.
+            # This covers patterns like max(rate(A[5m]) * 8) or avg(up * 100).
+            scalar_side = None
+            vector_side = None
+            if inner_right is not None and inner_right.is_scalar and inner_right.scalar_value is not None:
+                scalar_side = inner_right
+                vector_side = inner_left
+            elif inner_left is not None and inner_left.is_scalar and inner_left.scalar_value is not None:
+                scalar_side = inner_left
+                vector_side = inner_right
+            if (
+                scalar_side is not None
+                and vector_side is not None
+                and not vector_side.extra.get("not_feasible_reasons")
+            ):
+                pushed = _push_outer_agg(vector_side, frag.outer_agg, frag.group_labels, frag.group_mode)
+                if pushed is not None:
+                    # Preserve order for non-commutative division (k / agg(X)).
+                    if child.binary_op == "/" and scalar_side is inner_left:
+                        new_binary = _make_binary_fragment(expr, scalar_side, "/", pushed)
+                    else:
+                        new_binary = _make_binary_fragment(expr, pushed, child.binary_op, scalar_side)
+                    new_binary.group_labels = list(frag.group_labels)
+                    new_binary.group_mode = frag.group_mode
+                    if _contains_join_frag(vector_side):
+                        new_binary.extra["stripped_join"] = True
+                    return new_binary
+            # Two true time-series operands — multiplication/division is not
+            # linearisable: agg(A op B) ≠ agg(A) op agg(B).
             _append_not_feasible_reason(
                 frag,
                 f"Aggregating over a per-element {child.binary_op} between two time-series "
@@ -1130,6 +1212,12 @@ def _ast_binary_fragment(node, expr):
             "op": op,
             "value": right.scalar_value,
         }
+        # When left is a binary_expr (e.g. -(A+B) < 0), propagate left_frag/right_frag
+        # so the formula plan can still decompose the expression.
+        if left.family == "binary_expr":
+            for key in ("left_frag", "right_frag"):
+                if key in left.extra and key not in frag.extra:
+                    frag.extra[key] = left.extra[key]
         return frag
 
     if left.is_time_call and op == "-" and right.family in {"join", "range_agg", "simple_agg", "simple_metric"}:
@@ -1211,11 +1299,20 @@ def _ast_from_node(node, expr=None):
 
     if node_type == "UnaryExpr":
         child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
-        frag = _copy_fragment_summary(_new_fragment(expr), child)
         if child.is_scalar and child.scalar_value is not None:
-            frag.family = "scalar"
+            frag = _new_fragment(expr, family="scalar")
             frag.is_scalar = True
             frag.scalar_value = -child.scalar_value
+            return frag
+        if child.family == "binary_expr":
+            # Rewrite -(A op B) as 0 - (A op B) so _make_binary_fragment
+            # preserves left_frag/right_frag; without this, _copy_fragment_summary
+            # drops those extra keys and the formula plan cannot extract a metric name.
+            zero = _new_fragment("0", family="scalar")
+            zero.is_scalar = True
+            zero.scalar_value = 0.0
+            return _make_binary_fragment(expr, zero, "-", child)
+        frag = _copy_fragment_summary(_new_fragment(expr), child)
         return frag
 
     if node_type == "NumberLiteral":
@@ -1529,9 +1626,61 @@ def _rename_measure_alias(spec, new_alias):
         spec.eval_expr = re.sub(rf"\b{re.escape(old_alias)}\b", new_alias, spec.eval_expr)
 
 
+def _is_variable_driven_matcher(m):
+    """Return True for matchers that originate from Grafana template variables.
+
+    ``preprocess_grafana_macros`` converts ``=~"$var"`` inside ``{}`` to
+    ``=~".*"`` (match-all catch-all) and converts remaining ``$var`` tokens to
+    ``label_var``.  Both forms are variable-driven and should not contribute to
+    the alias suffix — they are the same across binary-expression operands and
+    would produce identical suffixes even when a static distinguishing matcher
+    (e.g. ``status!~"[4-5].*"``) is present.
+
+    Also handles anchored forms like ``^label_Container$`` that arise when the
+    original matcher had regex anchors around the variable (``^$Container$``).
+    """
+    v = str(m.get("value", ""))
+    if v == ".*" or v.startswith("label_") or v.startswith("$"):
+        return True
+    # ^label_Var or ^label_Var$ — regex-anchored preprocessed variable
+    if re.match(r"^\^label_[A-Za-z_]\w*\$?$", v):
+        return True
+    return False
+
+
+def _is_phantom_grafana_var(frag):
+    """Return True when *frag* is a bare Grafana variable masquerading as a metric.
+
+    ``preprocess_grafana_macros`` converts a bare ``$var`` token that appears
+    outside curly-brace label selectors to ``label_var`` — a name that the
+    PromQL parser accepts as a vector selector but which resolves to nothing in
+    ES|QL.  When such a fragment appears as one operand of a ``*`` or ``/``
+    expression (e.g. ``rate(A) * $trends``) it behaves as a user-supplied
+    scalar constant.  Stripping it and emitting only the other operand is safe
+    for multiplicative binary ops.
+    """
+    if frag is None:
+        return False
+    return (
+        frag.family == "simple_metric"
+        and frag.metric.startswith("label_")
+        and not frag.matchers
+        and not frag.range_func
+        and not frag.outer_agg
+        and not frag.is_scalar
+    )
+
+
 def _matcher_alias_suffix(frag):
+    # Prefer non-variable matchers so that when both operands of a binary_expr
+    # share the same variable-driven matchers (e.g. controller_pod=~".*"), the
+    # distinguishing static matcher (e.g. status!~"[4-5].*") contributes to
+    # the alias.  Without this, both operands produce identical aliases and
+    # _build_shared_measure_pipeline incorrectly treats them as duplicates.
+    static = [m for m in frag.matchers if not _is_variable_driven_matcher(m)]
+    source = (static or frag.matchers)[:2]
     parts = []
-    for matcher in frag.matchers[:2]:
+    for matcher in source:
         label = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["label"]).strip("_")
         value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
         if label or value:
@@ -2229,6 +2378,48 @@ def _build_formula_plan(
             if rewritten is not None:
                 return rewritten
             return None
+
+        # When a Grafana variable like ``$trends`` is used as a scalar
+        # multiplier/divisor (e.g. ``rate(A) * $trends``), the preprocessor
+        # converts it to ``label_trends`` — a bare simple_metric with no
+        # matchers or aggregation.  This "phantom metric" can never be queried
+        # from ES|QL, so strip it from ``*`` / ``÷`` expressions and emit the
+        # remaining operand unchanged.  ``+`` / ``-`` are left alone: adding a
+        # phantom metric would change the numeric value.
+        if op_lower in ("*", "/"):
+            left_frag_peek = frag.extra.get("left_frag")
+            right_frag_peek = frag.extra.get("right_frag")
+            phantom_side = None
+            real_side = None
+            if _is_phantom_grafana_var(right_frag_peek):
+                phantom_side = right_frag_peek
+                real_side = left_frag_peek
+            elif op_lower == "*" and _is_phantom_grafana_var(left_frag_peek):
+                phantom_side = left_frag_peek
+                real_side = right_frag_peek
+            if phantom_side is not None and real_side is not None:
+                plan = _build_formula_plan(
+                    real_side,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                )
+                if plan:
+                    var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
+                    if (
+                        f"Grafana variable ${var_name} dropped"
+                        not in (plan.warnings or [])
+                    ):
+                        plan.warnings.append(
+                            f"Grafana variable ${var_name} used as scalar "
+                            f"multiplier/divisor was dropped; chart values unscaled"
+                        )
+                    return plan
 
         left_plan = _build_formula_plan(
             frag.extra.get("left_frag"),

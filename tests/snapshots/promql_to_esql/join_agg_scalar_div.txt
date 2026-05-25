@@ -1,0 +1,11 @@
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Dropped group_left label enrichment; kept primary metric series only
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE podman_container_info IS NOT NULL
+| STATS podman_container_info_sum = SUM(podman_container_info) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), name
+| EVAL computed_value = ((podman_container_info_sum / 1024) / 1024)
+| KEEP time_bucket, name, computed_value
+| SORT time_bucket ASC

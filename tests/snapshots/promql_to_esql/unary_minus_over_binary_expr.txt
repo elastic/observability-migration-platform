@@ -1,0 +1,10 @@
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_network_transmit_errs_total IS NOT NULL OR node_network_transmit_drop_total IS NOT NULL
+| STATS node_network_transmit_errs_total_irate = IRATE(node_network_transmit_errs_total, 5m), node_network_transmit_drop_total_irate = IRATE(node_network_transmit_drop_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (0 - (node_network_transmit_errs_total_irate + node_network_transmit_drop_total_irate))
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC

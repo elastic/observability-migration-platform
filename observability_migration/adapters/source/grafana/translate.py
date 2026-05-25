@@ -751,6 +751,42 @@ def join_family_rule(context):
         if had_vars:
             _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
         metric_name = left_frag.metric or frag.metric
+
+        if not metric_name and left_frag.family == "binary_expr":
+            # Left side is itself a binary_expr (e.g. A-B); no single metric_name.
+            # Delegate to _build_formula_plan so the arithmetic is handled normally
+            # while the join RHS (label enrichment) is still stripped.
+            plan = _build_formula_plan(
+                left_frag,
+                resolver,
+                rp,
+                summary_mode=_summary_mode_from_metadata(context.metadata),
+                preferred_group_labels=context.metadata.get("preferred_group_labels"),
+                preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
+            )
+            if plan and plan.specs:
+                shared = _build_shared_measure_pipeline(context.index, plan.specs)
+                if shared:
+                    parts, output_group_fields, _ = shared
+                    result_alias = "computed_value"
+                    parts.append(f"| EVAL {result_alias} = {plan.expr}")
+                    parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
+                    if "time_bucket" in output_group_fields:
+                        parts.append("| SORT time_bucket ASC")
+                    for warning in plan.warnings:
+                        _append_unique(context.warnings, warning)
+                    _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
+                    _append_unique(context.warnings, "Approximated PromQL arithmetic using same-bucket ES|QL math")
+                    context.parser_backend = "fragment"
+                    context.source_type = plan.specs[0].source_type
+                    context.metric_name = result_alias
+                    context.output_metric_field = result_alias
+                    context.output_group_fields = output_group_fields
+                    context.esql_query = "\n".join(parts)
+                    context.translation_complete = True
+                    return "translated label enrichment join over binary_expr lhs"
+            return None
+
         metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", metric_name)
         preferred_group_labels = (
             resolver.resolve_labels(context.metadata.get("preferred_group_labels", []))
@@ -1000,6 +1036,8 @@ def binary_expr_family_rule(context):
         context.source_type = "ROW"
         context.output_group_fields = []
 
+    if frag.extra.get("stripped_join"):
+        _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
     for warning in plan.warnings:
         _append_unique(context.warnings, warning)
 
