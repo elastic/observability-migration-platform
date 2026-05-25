@@ -76,6 +76,18 @@ def _default_instance_field(rp):
     return "instance" if rp.native_promql else "service.instance.id"
 
 
+def _keep(*field_lists) -> str:
+    """Build a deduplicated KEEP clause from one or more field lists."""
+    seen: dict[str, None] = {}
+    for lst in field_lists:
+        if isinstance(lst, str):
+            seen[lst] = None
+        else:
+            for f in lst:
+                seen[f] = None
+    return ", ".join(seen)
+
+
 @dataclass
 class TranslationContext:
     promql_expr: str
@@ -381,7 +393,13 @@ def parse_fragment_rule(context):
     context.fragment = _parse_fragment(context.clean_expr or context.promql_expr)
     parse_error = context.fragment.extra.get("parse_error")
     if parse_error:
-        _append_unique(context.warnings, f"AST parse failed ({parse_error}), using regex fragment parser")
+        if context.query_language == "logql":
+            # Complex LogQL with pipeline stages (| logfmt, | json, etc.) cannot be parsed
+            # as PromQL — give a clean actionable message rather than a PromQL parse error.
+            _append_unique(context.warnings, "LogQL pipeline stages require manual redesign")
+            context.feasibility = "not_feasible"
+        else:
+            _append_unique(context.warnings, f"AST parse failed ({parse_error}), using regex fragment parser")
     backend = context.fragment.extra.get("parser_backend", "unknown")
     return f"parsed fragment family={context.fragment.family} backend={backend}"
 
@@ -635,7 +653,7 @@ def uptime_family_rule(context):
             f"| WHERE {physical_metric} IS NOT NULL",
             stats_line,
             f'| EVAL {result_alias} = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())',
-            f"| KEEP {', '.join(group_fields + [result_alias]) if group_fields else result_alias}",
+            f"| KEEP {_keep(group_fields, result_alias) if group_fields else result_alias}",
         ]
     )
     context.translation_complete = True
@@ -720,7 +738,7 @@ def join_family_rule(context):
                     *common_filters,
                     f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call} BY {', '.join(group_by_parts)}",
                     f"| EVAL {result_alias} = numerator / denominator",
-                    f"| KEEP {', '.join(output_group + [result_alias])}",
+                    f"| KEEP {_keep(output_group, result_alias)}",
                     "| SORT time_bucket ASC",
                 ]
             )
@@ -969,7 +987,7 @@ def binary_expr_family_rule(context):
             if _summary_mode_from_metadata(context.metadata):
                 collapsed = _collapse_summary_ts_query(parts, output_group_fields, [result_alias])
             if collapsed is None:
-                parts.append(f"| KEEP {', '.join(output_group_fields + [result_alias])}")
+                parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
                 if "time_bucket" in output_group_fields:
                     parts.append("| SORT time_bucket ASC")
             else:
@@ -1222,7 +1240,7 @@ def scaled_agg_family_rule(context):
         collapsed = _collapse_summary_ts_query(parts, context.output_group_fields, [final_alias])
     if collapsed is None:
         if eval_line:
-            parts.append(f"| KEEP {', '.join(context.output_group_fields + [final_alias])}")
+            parts.append(f"| KEEP {_keep(context.output_group_fields, final_alias)}")
         if "time_bucket" in context.output_group_fields:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -1415,7 +1433,7 @@ def range_agg_family_rule(context):
         collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
     if collapsed is None:
         if eval_line:
-            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+            parts.append(f"| KEEP {_keep(output_group, final_alias)}")
         if "time_bucket" in output_group:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -1578,7 +1596,7 @@ def simple_agg_family_rule(context):
         collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
     if collapsed is None:
         if eval_line:
-            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+            parts.append(f"| KEEP {_keep(output_group, final_alias)}")
         if "time_bucket" in output_group:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -1697,7 +1715,7 @@ def simple_metric_family_rule(context):
         collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
     if collapsed is None:
         if eval_line:
-            parts.append(f"| KEEP {', '.join(output_group + [final_alias])}")
+            parts.append(f"| KEEP {_keep(output_group, final_alias)}")
         if "time_bucket" in output_group:
             parts.append("| SORT time_bucket ASC")
     else:

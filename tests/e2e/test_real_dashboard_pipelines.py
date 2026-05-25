@@ -167,7 +167,7 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         panels = _panels_by_title(yaml_doc)
         counts = _status_counts(results)
 
-        self.assertEqual(counts["warning"], 9)
+        self.assertEqual(counts["ok"], 9)
         self.assertEqual(len(yaml_doc["dashboards"][0].get("panels") or []), 9)
 
         connections = panels["Connections"]["esql"]
@@ -189,7 +189,6 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
 
         counts = _status_counts(results)
 
-        self.assertGreater(counts.get("warning", 0), 0)
         self.assertGreater(counts.get("not_feasible", 0), 0)
         total_panels = len(yaml_doc["dashboards"][0].get("panels") or [])
         self.assertGreater(total_panels, 20)

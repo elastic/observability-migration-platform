@@ -217,10 +217,36 @@ def preprocess_grafana_macros(expr, rule_pack=None):
     for pattern, replacement in replacements:
         result = re.sub(pattern, replacement, result)
     result = re.sub(r"\[\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*\]", f"[{default_window}]", result)
+    # Subquery form [$var:$var] — must run BEFORE the general $var→label_var
+    # pass so both halves are still recognisable as variables.
+    result = re.sub(
+        r"\[\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*\]",
+        f"[{default_window}:1m]",
+        result,
+    )
     result = re.sub(r"\[\s*label_([A-Za-z_][A-Za-z0-9_]*)\s*\]", f"[{default_window}]", result)
+    # Subquery form with one substituted half: [5m:$var], [$var:5m], or after
+    # label_xxx substitution [5m:label_xxx] / [label_xxx:5m].  Any bracket
+    # selector that contains a colon and a non-duration token is a subquery
+    # with template variables; normalise to a concrete [range:step] so the AST
+    # parser correctly flags it as "subquery" rather than an opaque parse error.
+    _DUR_RE = r"(?:\d+(?:ms|s|m|h|d|w|y))"
+    result = re.sub(
+        rf"\[\s*({_DUR_RE})\s*:\s*(?!\s*\d)[^\]]+\]",
+        f"[{default_window}:1m]",
+        result,
+    )
 
     result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
     result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
+    # ${var} and ${var:format} — Grafana advanced variable interpolation.
+    # Must run before the bare $var substitution so the opening brace isn't
+    # left as a dangling token that confuses the PromQL AST parser.
+    result = re.sub(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}",
+        lambda m: f"label_{m.group(1)}",
+        result,
+    )
     # Skip substitution for pure-digit sequences ($1, $2, …) — those are
     # PromQL/regex capture-group backreferences inside label_replace() strings,
     # not Grafana template variables (which always start with a letter).

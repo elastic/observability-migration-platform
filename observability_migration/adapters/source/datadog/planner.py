@@ -509,6 +509,22 @@ def log_query_value_rule(context: PlanContext) -> str | None:
 
 
 @LOG_PLANNERS.register(
+    "datadog.plan.log_geomap",
+    priority=55,
+    summary="Downgrade log-based geomaps to markdown (Kibana Maps not yet supported).",
+)
+def log_geomap_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type != "geomap":
+        return None
+    context.plan.backend = "markdown"
+    context.plan.kibana_type = "markdown"
+    context.plan.reasons.append("geomap requires Kibana Maps — not yet supported")
+    context.plan.warnings.append("geomap migration needs dedicated Maps saved object support")
+    context.plan.confidence = 0.0
+    return "selected markdown for log geomap"
+
+
+@LOG_PLANNERS.register(
     "datadog.plan.log_default",
     priority=60,
     summary="Default remaining log widgets to the chosen log backend.",

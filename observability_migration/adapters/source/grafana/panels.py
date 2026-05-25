@@ -93,6 +93,7 @@ PANEL_TYPE_MAP = {
     "logs": "datatable",
     "heatmap": "heatmap",
     "piechart": "pie",
+    "grafana-piechart-panel": "pie",  # community plugin alias for built-in piechart
     "barchart": "bar",
 }
 
@@ -710,7 +711,7 @@ def _extract_legend_labels(legend_format):
 
 
 def _static_legend_label(legend_format):
-    if not legend_format:
+    if not legend_format or legend_format in ("__auto", ""):
         return ""
     if _extract_legend_labels(legend_format):
         return ""
@@ -799,9 +800,11 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
     static_label = (legend_format or "").strip()
-    if static_label:
+    if static_label and static_label != "__auto":
         # Static legend text (no placeholders) — emit it verbatim as the
         # series label so Lens uses the author's chosen name.
+        # Skip Grafana's "__auto" sentinel — it means "derive automatically"
+        # and must not appear as a literal string in the ES|QL output.
         escaped = _escape_esql_double_quoted_literal(static_label)
         return (
             base
@@ -2107,7 +2110,7 @@ def _try_collapse_same_metric_targets(translations):
     if _summary_mode_from_metadata(collapsed.metadata):
         collapsed_summary = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed_summary is None:
-        parts.append(f"| KEEP {', '.join(output_group_fields + metric_fields)}")
+        parts.append("| KEEP " + ", ".join(dict.fromkeys(output_group_fields + metric_fields)))
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -2214,7 +2217,7 @@ def _build_multi_target_series_query(translations):
     if summary_mode and plans[0][1].specs:
         collapsed = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed is None:
-        parts.append(f"| KEEP {', '.join(output_group_fields + metric_fields)}")
+        parts.append("| KEEP " + ", ".join(dict.fromkeys(output_group_fields + metric_fields)))
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -2835,6 +2838,16 @@ def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
     minimum = _coerce_number(defaults.get("min"))
     maximum = _coerce_number(defaults.get("max"))
     goal = _first_numeric_threshold(panel)
+    # When a goal is set but no explicit max exists, infer max=100 for gauges
+    # that use percentage-mode thresholds or a percent unit.  Without a max,
+    # the Kibana gauge cannot position the goal arc correctly and the YAML lint
+    # rule gauge-goal-without-max fires and blocks compilation.
+    if goal is not None and maximum is None:
+        thresholds_cfg = defaults.get("thresholds") or {}
+        threshold_mode = thresholds_cfg.get("mode") if isinstance(thresholds_cfg, dict) else ""
+        unit = defaults.get("unit") or ""
+        if threshold_mode == "percentage" or unit in ("percent", "percentunit"):
+            maximum = 100
     constants = {
         "_gauge_min": minimum,
         "_gauge_max": maximum,
