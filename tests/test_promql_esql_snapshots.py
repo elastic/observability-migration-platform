@@ -184,6 +184,30 @@ CASES: list[tuple[str, str, str]] = [
         ),
         "timeseries",
     ),
+    # --- correctness fix A: anchored template-var matcher dropped (^label_*) -
+    # namespace=~"^$Namespace$" preprocesses to "^label_Namespace$"; the
+    # leading "^" previously bypassed the label_ check and leaked into RLIKE.
+    (
+        "anchored_variable_matcher_dropped",
+        'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0',
+        "timeseries",
+    ),
+    # --- correctness fix C: real end-of-string anchor preserved in RLIKE ------
+    # status!~".*cam(era)?$" — the trailing "$" is a regex anchor, NOT a
+    # Grafana variable reference; it must NOT be dropped.
+    (
+        "real_regex_anchor_kept",
+        'http_requests_total{service="web",status!~".*cam(era)?$"}',
+        "timeseries",
+    ),
+    # --- correctness fix B: by($Var) preprocessed label dropped from BY -------
+    # sum(M) by (namespace, label_Env) — label_Env is a preprocessed $Env
+    # template variable and must be silently dropped from the STATS BY clause.
+    (
+        "group_by_var_dropped",
+        "sum(kube_pod_info) by (namespace, label_Env)",
+        "timeseries",
+    ),
 ]
 
 

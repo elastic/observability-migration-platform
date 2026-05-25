@@ -1,0 +1,11 @@
+feasibility: feasible
+warning: Dropped variable-driven label filters during migration
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE phase == "Running"
+| WHERE kube_pod_status_phase IS NOT NULL
+| STATS kube_pod_status_phase = AVG(kube_pod_status_phase) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| WHERE kube_pod_status_phase > 0
+| SORT time_bucket ASC

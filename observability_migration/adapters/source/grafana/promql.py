@@ -607,7 +607,10 @@ def _matcher_to_esql(matcher, resolver):
     value = matcher["value"]
     if not label:
         return None
-    if "$" in value or value.startswith("label_"):
+    # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
+    # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
+    # false-positives on regex end-of-string anchors like ".*cam(era)?$".
+    if value.startswith("label_") or value.startswith("^label_") or re.search(r"\$\w", value):
         return None
     if op == "=":
         if matcher["label"] in _FLOAT_LABEL_NAMES:
@@ -667,7 +670,13 @@ def _parse_logql_search(expr):
 
 
 def _build_log_message_filter(search_expr, rule_pack):
-    if not search_expr or search_expr.startswith("$") or search_expr.startswith("label_"):
+    if not search_expr:
+        return None
+    # Strip leading inline regex flags like (?i) before variable-reference checks so
+    # that "(?i)$searchable_pattern" (preprocessed Grafana variable) is correctly dropped
+    # rather than rendered as RLIKE ".*(?i)label_searchable_pattern.*".
+    check = re.sub(r"^\(\?[imsx-]+\)", "", search_expr).strip()
+    if check.startswith("$") or check.startswith("label_") or re.search(r"\$\w", check):
         return None
     if re.fullmatch(r"[A-Za-z0-9_\-\. ]+", search_expr):
         return f'{rule_pack.logs_message_field} LIKE {_quote_esql_string(f"*{search_expr}*")}'
@@ -1509,8 +1518,10 @@ def _frag_filters(frag, resolver):
     """Build ES|QL WHERE clauses from fragment matchers using the resolver."""
     filters = _selector_filters(frag.matchers, resolver)
     had_vars = any(
-        "$" in m.get("value", "")
+        bool(re.search(r"\$\w", m.get("value", "")))
         or (m.get("op") == "=~" and m.get("value", "").strip() == ".*")
+        or m.get("value", "").startswith("label_")
+        or m.get("value", "").startswith("^label_")
         for m in frag.matchers
     )
     return filters, had_vars
@@ -1533,8 +1544,14 @@ def _merge_group_fields(explicit_fields, preferred_fields, preferred_origin=None
 
 
 def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
-    """Resolve fragment group labels through the resolver."""
-    explicit = resolver.resolve_labels(frag.group_labels) if resolver else list(frag.group_labels or [])
+    """Resolve fragment group labels through the resolver.
+
+    Labels that start with ``label_`` are preprocessed Grafana template
+    variables (``$Var`` → ``label_Var``) and are silently dropped; keeping
+    them would emit non-existent field names in the BY clause.
+    """
+    raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
+    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
 
@@ -1640,12 +1657,8 @@ def _is_variable_driven_matcher(m):
     original matcher had regex anchors around the variable (``^$Container$``).
     """
     v = str(m.get("value", ""))
-    if v == ".*" or v.startswith("label_") or v.startswith("$"):
-        return True
-    # ^label_Var or ^label_Var$ — regex-anchored preprocessed variable
-    if re.match(r"^\^label_[A-Za-z_]\w*\$?$", v):
-        return True
-    return False
+    # label_Var (bare preprocessed variable) or ^label_Var* (anchored form)
+    return v == ".*" or v.startswith("label_") or v.startswith("$") or v.startswith("^label_")
 
 
 def _is_phantom_grafana_var(frag):

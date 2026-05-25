@@ -9575,5 +9575,138 @@ class TestJoinAggScalarDiv(unittest.TestCase):
         )
 
 
+class TestAnchoredVariableMatcherQuality(unittest.TestCase):
+    """Correctness fixes A & C: anchored-variable matchers and real regex anchors.
+
+    Bug A: namespace=~"^$Namespace$" preprocesses to "^label_Namespace$";
+    the leading "^" previously bypassed startswith("label_") and leaked into
+    RLIKE as WHERE namespace RLIKE "^label_Namespace$".
+
+    Bug C: status!~".*cam(era)?$" — trailing "$" is a regex end-anchor, NOT
+    a Grafana variable; the old "$" in value check incorrectly dropped it.
+    """
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_anchored_var_matcher_not_in_rlike(self):
+        """^$Namespace$ preprocesses to ^label_Namespace$; must not emit RLIKE."""
+        r = self._translate(
+            'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0'
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertNotIn(
+            "label_Namespace",
+            r.esql_query or "",
+            "preprocessed variable label should not appear in WHERE RLIKE clause",
+        )
+        self.assertTrue(
+            any("variable" in w.lower() and "filter" in w.lower() for w in r.warnings),
+            f"Expected dropped-variable-filter warning, got {r.warnings}",
+        )
+
+    def test_real_regex_end_anchor_preserved(self):
+        """status!~".*cam(era)?$" — real end-anchor must survive into RLIKE."""
+        r = self._translate('http_requests_total{service="web",status!~".*cam(era)?$"}')
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn(
+            'RLIKE ".*cam(era)?$"',
+            r.esql_query or "",
+            "real regex end-anchor must appear verbatim in RLIKE filter",
+        )
+
+    def test_dollar_end_anchor_without_word_char_not_a_var(self):
+        """Regex "end$" — bare end-anchor with no following word char is kept."""
+        r = self._translate('http_requests_total{status!~".*end$"}')
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn('RLIKE ".*end$"', r.esql_query or "")
+
+
+class TestGroupByVarLabelDropped(unittest.TestCase):
+    """Correctness fix B: label_* entries from by($Var) must not appear in BY.
+
+    Grafana template variables in by() clauses (e.g. by (namespace, $Env))
+    are preprocessed to label_Env.  These phantom labels must be silently
+    dropped from the STATS BY clause to avoid non-existent field references.
+    """
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+
+    def test_preprocessed_label_var_not_in_by(self):
+        """sum(M) by (namespace, label_Env) — label_Env dropped from STATS BY."""
+        r = self._translate("sum(kube_pod_info) by (namespace, label_Env)")
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertNotIn(
+            "label_Env",
+            r.esql_query or "",
+            "preprocessed Grafana variable must not appear in BY clause",
+        )
+        self.assertIn(
+            "k8s.namespace.name",
+            r.esql_query or "",
+            "real namespace label should still be resolved and present",
+        )
+
+    def test_real_label_not_affected(self):
+        """sum(M) by (namespace, pod) — real labels must not be dropped."""
+        r = self._translate("sum(kube_pod_info) by (namespace, pod)")
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        self.assertIn("k8s.namespace.name", r.esql_query or "")
+
+
+class TestLogQLVariablePrefixDropped(unittest.TestCase):
+    """Correctness fix D: (?i)$var in LogQL search filters.
+
+    _build_log_message_filter must strip leading inline regex flags (like
+    (?i)) before checking for variable references, so that
+    "(?i)label_searchable_pattern" is dropped rather than emitted as
+    RLIKE ".*(?i)label_searchable_pattern.*".
+    """
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.promql import (
+            _build_log_message_filter,
+        )
+        self.rule_pack = migrate.RulePackConfig()
+        self._fn = lambda s: _build_log_message_filter(s, self.rule_pack)
+
+    def test_case_insensitive_label_var_dropped(self):
+        """(?i)label_pattern — inline flag + preprocessed var → None."""
+        self.assertIsNone(self._fn("(?i)label_searchable_pattern"))
+
+    def test_case_insensitive_dollar_var_dropped(self):
+        """(?i)$pattern — inline flag + raw Grafana var → None."""
+        self.assertIsNone(self._fn("(?i)$searchable_pattern"))
+
+    def test_bare_label_var_dropped(self):
+        """label_foo (no flag) — preprocessed var → None."""
+        self.assertIsNone(self._fn("label_foo"))
+
+    def test_case_insensitive_literal_kept(self):
+        """(?i)error — real literal with flag → non-None RLIKE filter."""
+        result = self._fn("(?i)error")
+        self.assertIsNotNone(result)
+        self.assertIn("error", result)
+
+    def test_bare_literal_kept(self):
+        """error — plain literal → LIKE filter."""
+        result = self._fn("error")
+        self.assertIsNotNone(result)
+        self.assertIn("error", result)
+
+
 if __name__ == "__main__":
     unittest.main()
