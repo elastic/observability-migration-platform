@@ -9255,5 +9255,66 @@ class TestBareJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
                             f"Join ratio should still translate, got: {result.esql_query}")
 
 
+class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
+    """_matcher_alias_suffix must distinguish operands of a ratio expression
+    that share variable-driven matchers (=~".*" / label_*) but differ only
+    in a static filter (e.g. status!~"[4-5].*")."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def test_nginx_success_rate_is_feasible(self):
+        """NGINX Controller Success Rate ratio must translate to a single STATS query."""
+        expr = (
+            'sum(rate(nginx_ingress_controller_requests{'
+            'controller_pod=~"$controller",controller_class=~"$controller_class",'
+            'controller_namespace=~"$namespace",status!~"[4-5].*"}'
+            '[$__rate_interval])) by (controller, controller_namespace)'
+            ' / sum(rate(nginx_ingress_controller_requests{'
+            'controller_pod=~"$controller",controller_class=~"$controller_class",'
+            'controller_namespace=~"$namespace"}'
+            '[$__rate_interval])) by (controller, controller_namespace)'
+        )
+        result = migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", panel_type="timeseries",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        self.assertNotEqual(
+            result.feasibility, "not_feasible",
+            f"NGINX success rate should be feasible; got warnings={result.warnings}",
+        )
+        query = result.esql_query or ""
+        stats_lines = [ln for ln in query.splitlines() if ln.strip().startswith("| STATS")]
+        self.assertEqual(len(stats_lines), 1, f"Expected single STATS; got:\n{query}")
+        # Both operands should appear in the STATS line
+        self.assertIn("CASE(", query, f"Expected CASE-wrapped filter in STATS:\n{query}")
+
+    def test_static_filter_only_operand_aliases_differ(self):
+        """Two same-metric ratio operands that share only variable-driven matchers
+        must produce distinct aliases so _build_shared_measure_pipeline can merge them."""
+        from observability_migration.adapters.source.grafana.promql import (
+            _matcher_alias_suffix,
+            _parse_fragment,
+            preprocess_grafana_macros,
+        )
+        expr = (
+            'sum(rate(http_requests_total{namespace=~"$ns",status!~"5.*"}[5m])) by (job)'
+            ' / sum(rate(http_requests_total{namespace=~"$ns"}[5m])) by (job)'
+        )
+        preprocessed = preprocess_grafana_macros(expr, self.rule_pack)
+        frag = _parse_fragment(preprocessed)
+        left_frag = frag.extra.get("left_frag")
+        right_frag = frag.extra.get("right_frag")
+        left_suffix = _matcher_alias_suffix(left_frag)
+        right_suffix = _matcher_alias_suffix(right_frag)
+        self.assertNotEqual(
+            left_suffix, right_suffix,
+            f"Operand alias suffixes must differ; both are {left_suffix!r}",
+        )
+        # Left operand has the static status filter — it should appear in its suffix
+        self.assertIn("status", left_suffix, f"Left suffix should contain 'status': {left_suffix!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

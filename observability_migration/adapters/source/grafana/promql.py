@@ -1529,9 +1529,30 @@ def _rename_measure_alias(spec, new_alias):
         spec.eval_expr = re.sub(rf"\b{re.escape(old_alias)}\b", new_alias, spec.eval_expr)
 
 
+def _is_variable_driven_matcher(m):
+    """Return True for matchers that originate from Grafana template variables.
+
+    ``preprocess_grafana_macros`` converts ``=~"$var"`` inside ``{}`` to
+    ``=~".*"`` (match-all catch-all) and converts remaining ``$var`` tokens to
+    ``label_var``.  Both forms are variable-driven and should not contribute to
+    the alias suffix — they are the same across binary-expression operands and
+    would produce identical suffixes even when a static distinguishing matcher
+    (e.g. ``status!~"[4-5].*"``) is present.
+    """
+    v = str(m.get("value", ""))
+    return v == ".*" or v.startswith("label_") or v.startswith("$")
+
+
 def _matcher_alias_suffix(frag):
+    # Prefer non-variable matchers so that when both operands of a binary_expr
+    # share the same variable-driven matchers (e.g. controller_pod=~".*"), the
+    # distinguishing static matcher (e.g. status!~"[4-5].*") contributes to
+    # the alias.  Without this, both operands produce identical aliases and
+    # _build_shared_measure_pipeline incorrectly treats them as duplicates.
+    static = [m for m in frag.matchers if not _is_variable_driven_matcher(m)]
+    source = (static or frag.matchers)[:2]
     parts = []
-    for matcher in frag.matchers[:2]:
+    for matcher in source:
         label = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["label"]).strip("_")
         value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
         if label or value:
