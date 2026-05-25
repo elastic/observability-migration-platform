@@ -9029,5 +9029,129 @@ class TestMetricsPathLabelIgnored(unittest.TestCase):
         self.assertIn("kubelet", result.esql_query, f"Expected job filter to remain, got: {result.esql_query}")
 
 
+class TestJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
+    """group_left join-wrapped aggregations must participate in multi-target fusion.
+
+    PromQL expressions like sum(rate(A) * on(ns,pod) group_left(w,wt) B) by (pod)
+    parse to family='unknown' with extra['vector_matching'] set.  _build_formula_plan
+    must strip the join RHS and treat the fragment as a regular aggregate so that:
+      1. Multi-target table panels fuse 6 network metrics into one 6-column query
+      2. Ratio targets (usage / requests) become valid EVAL expressions
+    """
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    _JOIN_TMPL = (
+        'sum(rate({metric}{{job="kubelet"}}[5m])'
+        " * on(namespace,pod) group_left(workload,workload_type)"
+        " namespace_workload_pod:kube_pod_owner:relabel{{workload='myapp'}}) by (pod)"
+    )
+
+    def _translate(self, expr, panel_type="graph"):
+        return migrate.translate_promql_to_esql(
+            expr,
+            esql_index="metrics-*",
+            panel_type=panel_type,
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+    def test_join_wrapped_rate_translates_to_valid_esql(self):
+        """A single join-wrapped rate target must produce a valid TS STATS query."""
+        expr = self._JOIN_TMPL.format(metric="container_network_receive_bytes_total")
+        result = self._translate(expr)
+        self.assertIn("RATE(container_network_receive_bytes_total", result.esql_query)
+        self.assertIn('service.name == "kubelet"', result.esql_query)
+
+    def test_six_network_targets_fuse_into_single_query(self):
+        """Current Network Usage: 6 join-wrapped network targets must fuse into a single multi-STATS query."""
+        metrics = [
+            "container_network_receive_bytes_total",
+            "container_network_transmit_bytes_total",
+            "container_network_receive_packets_total",
+            "container_network_transmit_packets_total",
+            "container_network_receive_packets_dropped_total",
+            "container_network_transmit_packets_dropped_total",
+        ]
+        panel = {
+            "title": "Current Network Usage",
+            "type": "table",
+            "targets": [
+                {"expr": self._JOIN_TMPL.format(metric=m), "refId": chr(65 + i)}
+                for i, m in enumerate(metrics)
+            ],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "options": {},
+        }
+        yaml_panel, _ = migrate.translate_panel(
+            panel,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        esql_metrics = [m["field"] for m in yaml_panel.get("esql", {}).get("metrics", [])]
+        self.assertEqual(len(esql_metrics), 6, f"Expected 6 metrics, got {len(esql_metrics)}: {esql_metrics}")
+        query = yaml_panel["esql"]["query"]
+        # All 6 metrics appear in a single STATS line
+        stats_lines = [line for line in query.splitlines() if line.strip().startswith("| STATS")]
+        self.assertEqual(len(stats_lines), 1, f"Expected 1 STATS line, got {len(stats_lines)}: {stats_lines}")
+        for m in metrics:
+            self.assertIn(m, query, f"{m} missing from fused query")
+
+    def test_ratio_of_join_wrapped_targets_produces_eval(self):
+        """CPU usage / CPU requests ratio must translate to a STATS + EVAL expression."""
+        ratio_expr = (
+            "sum("
+            "  node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{namespace='default'}"
+            "  * on(namespace,pod) group_left(workload,workload_type)"
+            "  namespace_workload_pod:kube_pod_owner:relabel{workload='myapp'}"
+            ") by (pod)"
+            " / "
+            "sum("
+            "  kube_pod_container_resource_requests{job='kube-state-metrics',namespace='default',resource='cpu'}"
+            "  * on(namespace,pod) group_left(workload,workload_type)"
+            "  namespace_workload_pod:kube_pod_owner:relabel{workload='myapp'}"
+            ") by (pod)"
+        )
+        result = self._translate(ratio_expr)
+        self.assertIn("| EVAL", result.esql_query, f"Expected EVAL in query:\n{result.esql_query}")
+        # Both source metrics must appear in the STATS
+        self.assertIn("`node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate`", result.esql_query)
+        self.assertIn("kube_pod_container_resource_requests", result.esql_query)
+
+
+class TestImageLabelOtelMapping(unittest.TestCase):
+    """The Prometheus 'image' label must map to OTel 'container.image.name'."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def test_image_label_in_otel_candidates(self):
+        self.assertIn("image", migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES)
+        self.assertIn("container.image.name", migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES["image"])
+
+    def test_image_filter_maps_to_otel_field_with_schema_discovery(self):
+        """With field discovery, image!="" must become WHERE container.image.name != ""."""
+        self.resolver._discovery_attempted = True
+        self.resolver._field_cache = {
+            "container.image.name": {"keyword": {"aggregatable": True, "searchable": True}},
+            "prometheus.labels.namespace": {"keyword": {"aggregatable": True, "searchable": True}},
+        }
+        self.resolver._build_discovered_mappings()
+        result = migrate.translate_promql_to_esql(
+            'sum(container_memory_working_set_bytes{container!="",image!=""}) by (pod)',
+            esql_index="metrics-*",
+            panel_type="graph",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertIn("container.image.name", result.esql_query, f"Expected OTel field, got:\n{result.esql_query}")
+        self.assertNotIn('image != ""', result.esql_query, f"Raw 'image' label leaked into:\n{result.esql_query}")
+
+
 if __name__ == "__main__":
     unittest.main()
