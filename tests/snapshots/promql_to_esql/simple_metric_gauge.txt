@@ -1,0 +1,8 @@
+feasibility: feasible
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_memory_MemAvailable_bytes IS NOT NULL
+| STATS node_memory_MemAvailable_bytes = AVG(node_memory_MemAvailable_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| SORT time_bucket ASC

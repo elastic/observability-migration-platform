@@ -1,0 +1,10 @@
+feasibility: feasible
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: PromQL 'or' fallback: using left operand only; right-hand side metric ignored
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE service.name == "prom"
+| WHERE up IS NOT NULL
+| STATS up = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| SORT time_bucket ASC

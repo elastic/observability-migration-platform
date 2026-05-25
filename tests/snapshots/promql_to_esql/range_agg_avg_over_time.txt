@@ -1,0 +1,8 @@
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE service.name == "prom"
+| WHERE up IS NOT NULL
+| STATS up = AVG(AVG_OVER_TIME(up, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| SORT time_bucket ASC

@@ -1,0 +1,10 @@
+feasibility: feasible
+warning: Approximated time() - metric as uptime from metric timestamp
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE service.name == "node"
+| WHERE node_boot_time_seconds IS NOT NULL
+| STATS start_time_ms = MAX(node_boot_time_seconds * 1000)
+| EVAL node_boot_time_seconds_uptime_seconds = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())
+| KEEP node_boot_time_seconds_uptime_seconds

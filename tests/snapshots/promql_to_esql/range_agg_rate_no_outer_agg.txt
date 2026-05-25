@@ -1,0 +1,8 @@
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE mode == "idle"
+| WHERE node_cpu_seconds_total IS NOT NULL
+| STATS node_cpu_seconds_total = RATE(node_cpu_seconds_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

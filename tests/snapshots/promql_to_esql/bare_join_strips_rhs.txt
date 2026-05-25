@@ -1,0 +1,8 @@
+feasibility: feasible
+warning: Dropped group_left label enrichment; kept primary metric series only
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_hwmon_temp_celsius IS NOT NULL
+| STATS node_hwmon_temp_celsius = AVG(node_hwmon_temp_celsius) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), chip
+| SORT time_bucket ASC
