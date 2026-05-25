@@ -52,6 +52,7 @@ migrate = SimpleNamespace(
     apply_metadata_polish=polish.apply_metadata_polish,
     apply_review_explanations=assistant.apply_review_explanations,
     build_runtime_summary=report.build_runtime_summary,
+    _esql_field=promql._esql_field,
 )
 
 
@@ -8934,6 +8935,98 @@ class TestMigrationResultTranslationError(unittest.TestCase):
         dashboard_entry = data["dashboards"][0]
         self.assertEqual(dashboard_entry["translation_error"],
                          "Traceback (most recent call last):\n  TypeError: boom")
+
+
+class TestEsqlFieldEscaping(unittest.TestCase):
+    """_esql_field must backtick-quote field names with special characters."""
+
+    def test_plain_field_unchanged(self):
+        self.assertEqual(migrate._esql_field("container_memory_working_set_bytes"), "container_memory_working_set_bytes")
+
+    def test_dotted_field_unchanged(self):
+        self.assertEqual(migrate._esql_field("prometheus.metrics.value"), "prometheus.metrics.value")
+
+    def test_recording_rule_metric_with_colons_is_quoted(self):
+        raw = "prometheus.node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate.value"
+        result = migrate._esql_field(raw)
+        self.assertTrue(result.startswith("`") and result.endswith("`"), f"Expected backtick-quoted, got: {result}")
+        self.assertIn(raw, result)
+
+    def test_field_with_hyphen_is_quoted(self):
+        result = migrate._esql_field("my-field.value")
+        self.assertTrue(result.startswith("`") and result.endswith("`"), f"Expected backtick-quoted, got: {result}")
+
+    def test_empty_string_unchanged(self):
+        self.assertEqual(migrate._esql_field(""), "")
+
+    def test_none_returns_none(self):
+        self.assertIsNone(migrate._esql_field(None))
+
+    def test_recording_rule_esql_does_not_contain_bare_colon_in_stats(self):
+        """Integration: recording-rule metric must be backtick-quoted in the generated ES|QL."""
+        rp = migrate.RulePackConfig()
+        resolver = migrate.SchemaResolver(rp)
+        # Seed an empty field cache so the resolver is "online" but has no profile
+        # → resolve_metric_field returns the metric name unchanged → _esql_field quotes it.
+        resolver._discovery_attempted = True
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+        metric = "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate"
+        result = migrate.translate_promql_to_esql(
+            f"sum({metric}{{namespace='default'}})",
+            esql_index="metrics-*",
+            panel_type="graph",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+        # The STATS clause must backtick-quote the colon-bearing field name
+        self.assertIn(f"`{metric}`", result.esql_query, f"Expected backtick-quoted field in: {result.esql_query}")
+        # No bare colon-bearing field outside backticks
+        import re
+        bare = re.search(rf"(?<!`)\b{re.escape(metric)}\b", result.esql_query)
+        self.assertIsNone(bare, f"Bare colon field found in: {result.esql_query}")
+
+
+class TestMetricsPathLabelIgnored(unittest.TestCase):
+    """metrics_path Prometheus scrape label must be dropped, not emitted as a WHERE filter."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr):
+        return migrate.translate_promql_to_esql(
+            expr,
+            esql_index="metrics-*",
+            panel_type="graph",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+    def test_metrics_path_in_ignored_labels_by_default(self):
+        self.assertIn("metrics_path", self.rule_pack.ignored_labels)
+        self.assertIn("__metrics_path__", self.rule_pack.ignored_labels)
+
+    def test_origin_prometheus_still_ignored(self):
+        self.assertIn("origin_prometheus", self.rule_pack.ignored_labels)
+
+    def test_metrics_path_filter_not_emitted(self):
+        result = self._translate(
+            'sum(rate(container_network_receive_bytes_total{job="kubelet",metrics_path="/metrics/cadvisor"}[5m]))'
+        )
+        self.assertNotIn("metrics_path", result.esql_query, f"metrics_path leaked into ES|QL: {result.esql_query}")
+
+    def test_double_underscore_metrics_path_filter_not_emitted(self):
+        result = self._translate(
+            'sum(rate(container_network_receive_bytes_total{job="kubelet",__metrics_path__="/metrics/cadvisor"}[5m]))'
+        )
+        self.assertNotIn("__metrics_path__", result.esql_query, f"__metrics_path__ leaked into ES|QL: {result.esql_query}")
+
+    def test_legitimate_label_job_is_kept(self):
+        result = self._translate(
+            'sum(rate(container_network_receive_bytes_total{job="kubelet",metrics_path="/metrics/cadvisor"}[5m]))'
+        )
+        self.assertIn("kubelet", result.esql_query, f"Expected job filter to remain, got: {result.esql_query}")
 
 
 if __name__ == "__main__":
