@@ -2170,6 +2170,39 @@ def _build_formula_plan(
             plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
         return plan
 
+    # A bare group_left/group_right vector-matching join without an outer
+    # aggregation (e.g. ``A * on(chip) group_left(chip_name) B``) lands as
+    # family='join' in the fragment parser.  _build_measure_spec has no
+    # 'join' handler and returns None, blocking multi-target fusion.  Strip
+    # the join RHS — identical to what join_family_rule does in translate.py
+    # for the ``binary_op == '*'`` branch — and delegate to the left_frag
+    # which already carries the correct metric and family.  Use join_labels
+    # as the fallback preferred group fields so the resulting spec retains the
+    # label enrichment fields (e.g. chip_name) that the join was providing.
+    if (
+        frag
+        and frag.family == "join"
+        and frag.binary_op == "*"
+        and frag.extra.get("left_frag")
+    ):
+        left_frag = frag.extra["left_frag"]
+        join_labels = frag.extra.get("join_labels", []) or []
+        effective_preferred = preferred_group_labels or (join_labels if join_labels else None)
+        plan = _build_formula_plan(
+            left_frag,
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=effective_preferred,
+            allow_direct_ts_gauge=allow_direct_ts_gauge,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+            allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        )
+        if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
+            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        return plan
+
     if frag and frag.family == "binary_expr":
         # Set operators (``or`` / ``and`` / ``unless``) are not arithmetic
         # and cannot be composed by interpolating the operands into a single

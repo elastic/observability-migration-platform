@@ -9153,5 +9153,107 @@ class TestImageLabelOtelMapping(unittest.TestCase):
         self.assertNotIn('image != ""', result.esql_query, f"Raw 'image' label leaked into:\n{result.esql_query}")
 
 
+class TestBareJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
+    """family='join' (bare A * on(x) group_left(y) B without outer aggregation)
+    must participate in multi-target fusion.
+
+    Unlike the family='unknown' case (outer agg wrapping a join), bare joins
+    land as family='join' in the fragment parser.  _build_formula_plan must
+    strip the join RHS and delegate to the left_frag so that:
+      1. A single target translates to a valid query using the primary metric
+      2. Two bare-join targets fuse into a single multi-STATS query
+      3. join_labels (e.g. chip_name) are preserved as group fields
+    """
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+
+    def _panel(self, targets):
+        return {
+            "title": "Bare Join Multi-Target",
+            "type": "timeseries",
+            "targets": [{"expr": expr, "refId": chr(65 + i)} for i, expr in enumerate(targets)],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "options": {},
+        }
+
+    def test_single_bare_join_translates(self):
+        """A bare join target must produce a valid FROM query with the primary metric."""
+        panel = self._panel([
+            'node_hwmon_temp_celsius{instance="host"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance="host"}',
+        ])
+        yaml_panel, result = migrate.translate_panel(
+            panel, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        query = yaml_panel.get("esql", {}).get("query", "")
+        self.assertIn("node_hwmon_temp_celsius", query)
+        self.assertNotIn("node_hwmon_chip_names", query)
+        self.assertIn("Dropped group_left label enrichment", str(result.reasons))
+
+    def test_two_bare_join_targets_fuse_into_single_query(self):
+        """Two bare-join targets with the same join structure must fuse."""
+        panel = self._panel([
+            'node_hwmon_temp_celsius{instance="host"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance="host"}',
+            'node_hwmon_temp_crit_celsius{instance="host"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance="host"}',
+        ])
+        yaml_panel, result = migrate.translate_panel(
+            panel, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        esql_metrics = [m["field"] for m in yaml_panel.get("esql", {}).get("metrics", [])]
+        self.assertEqual(len(esql_metrics), 2, f"Expected 2 fused metrics, got {esql_metrics}")
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("node_hwmon_temp_celsius", query)
+        self.assertIn("node_hwmon_temp_crit_celsius", query)
+        stats_lines = [ln for ln in query.splitlines() if ln.strip().startswith("| STATS")]
+        self.assertEqual(len(stats_lines), 1, f"Expected single STATS, got {stats_lines}")
+        self.assertIn("Merged compatible panel targets", str(result.reasons))
+
+    def test_join_on_labels_preserved_as_group_fields(self):
+        """The on() matching labels (e.g. chip) must appear in the BY clause.
+
+        frag.extra['join_labels'] stores the on() matching labels, not the
+        group_left() carry labels.  chip_name appears in the BY clause only
+        when the panel legendFormat drives it via preferred_group_labels; chip
+        (the on-matching label) is what the fusion pipeline inherits.
+        """
+        panel = {
+            "title": "Bare Join Multi-Target",
+            "type": "timeseries",
+            "targets": [
+                {"expr": 'node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names',
+                 "refId": "A", "legendFormat": "{{chip_name}} temp"},
+                {"expr": 'node_hwmon_temp_crit_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names',
+                 "refId": "C", "legendFormat": "{{chip_name}} crit"},
+            ],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "options": {},
+        }
+        yaml_panel, _ = migrate.translate_panel(
+            panel, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        query = yaml_panel.get("esql", {}).get("query", "")
+        # preferred_group_labels drives chip_name into the BY clause via legendFormat
+        self.assertIn("chip_name", query, f"chip_name missing from BY clause:\n{query}")
+
+    def test_join_slash_ratio_not_affected(self):
+        """family='join' with binary_op='/' (ratio join) is NOT stripped — it has
+        its own dedicated handler in translate.py and needs special treatment."""
+        expr = (
+            "sum by(instance)(irate(node_cpu_guest_seconds_total{mode='user'}[1m]))"
+            " / on(instance) group_left"
+            " sum by(instance)(irate(node_cpu_seconds_total[1m]))"
+        )
+        result = migrate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", panel_type="graph",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        self.assertNotEqual(result.feasibility, "not_feasible",
+                            f"Join ratio should still translate, got: {result.esql_query}")
+
+
 if __name__ == "__main__":
     unittest.main()
