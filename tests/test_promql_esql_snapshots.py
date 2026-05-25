@@ -148,6 +148,15 @@ CASES: list[tuple[str, str, str]] = [
         "sum(rate(http_requests_total[5m]))",
         "stat",
     ),
+    # --- unary minus over binary_expr (butterfly-chart pattern) ------------
+    (
+        "unary_minus_over_binary_expr",
+        (
+            "-(irate(node_network_transmit_errs_total[5m])"
+            " + irate(node_network_transmit_drop_total[5m]))"
+        ),
+        "timeseries",
+    ),
 ]
 
 
