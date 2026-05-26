@@ -457,6 +457,14 @@ def _translate_formula_metric_widget(
             "manual redesign rather than blocking the upload."
         )
 
+    # For xy panels whose formula root is top(expr, N, agg, order), extract
+    # the top-N parameters so we can emit a ranked flat table instead.
+    # ES|QL has no subquery support so we cannot filter to exactly N series
+    # while keeping the time dimension; we collapse to per-group ranking.
+    top_params: tuple[int, str, str] | None = None
+    if plan.kibana_type == "xy" and len(formulas) == 1:
+        top_params = _extract_top_params(formulas[0].ast)
+
     reducer = None
     if plan.kibana_type not in ("xy", "heatmap"):
         used_names = {spec.query_name for spec in used_specs}
@@ -617,7 +625,38 @@ def _translate_formula_metric_widget(
     if keep_fields:
         lines.append(f"| KEEP {', '.join(keep_fields)}")
 
-    if plan.kibana_type in ("xy", "heatmap"):
+    if top_params is not None and plan.kibana_type == "xy":
+        # top(expr, N, agg, order) in a timeseries formula: ES|QL cannot
+        # filter to exactly N time-series in a single pass (no subqueries).
+        # Collapse to a per-group ranked flat table — the time dimension is
+        # dropped but the top-N groups are correctly identified.
+        top_n, top_agg, top_order = top_params
+        group_aliases_no_bucket = [a for a in dim_aliases if a != "time_bucket"]
+        formula_field = output_fields[0] if output_fields else "_rank"
+        rank_expr = _series_reducer_expr(top_agg, formula_field)
+        if group_aliases_no_bucket:
+            lines.append(
+                f"| STATS _rank = {rank_expr} BY {', '.join(group_aliases_no_bucket)}"
+            )
+        else:
+            lines.append(f"| STATS _rank = {rank_expr}")
+        lines.append(f"| SORT _rank {top_order}")
+        lines.append(f"| LIMIT {top_n}")
+        plan.kibana_type = "table"
+        # Replace the generic "uses panel-level sort/limit" warning that
+        # _formula_ast_to_esql already added with a more accurate message.
+        _OLD_TOP_WARNING = (
+            "top() filtering is approximated — uses panel-level sort/limit "
+            "instead of formula-scoped top-N"
+        )
+        if _OLD_TOP_WARNING in result.warnings:
+            result.warnings.remove(_OLD_TOP_WARNING)
+        _append_unique_warning(
+            result,
+            f"top({top_n}) on timeseries approximated as ranked table of top-{top_n} groups"
+            f" — ES|QL cannot filter to N series in a single pass",
+        )
+    elif plan.kibana_type in ("xy", "heatmap"):
         lines.append("| SORT time_bucket")
     elif widget.widget_type == "toplist" or plan.kibana_type in ("table", "partition", "treemap"):
         sort_field, sort_order, limit = _extract_metric_sort(widget, output_fields)
@@ -1498,6 +1537,40 @@ def _extract_top_function_config(mq: MetricQuery | None) -> _TopFunctionConfig:
         if order in {"ASC", "DESC"}:
             config.sort_order = order
     return config
+
+
+def _extract_top_params(ast: Any) -> tuple[int, str, str] | None:
+    """If the formula root is top(expr, N, agg, order), return (N, agg, order).
+
+    The Datadog top() signature is top(expr, N, 'agg', 'order') where:
+    - expr is the inner formula expression (args[0])
+    - N    is the series count limit   (args[1])
+    - agg  is the ranking aggregator   (args[2]): 'mean'/'sum'/'min'/'max'/'last'
+    - order is 'asc' or 'desc'         (args[3])
+    """
+    if not isinstance(ast, FormulaFuncCall) or (ast.name or "").lower() != "top":
+        return None
+    args = ast.args or []
+    n = 10
+    agg = "avg"
+    order = "DESC"
+    if len(args) >= 2:
+        raw_n = args[1]
+        if isinstance(raw_n, FormulaNumber):
+            n = int(raw_n.value)
+        elif isinstance(raw_n, (int, float)):
+            n = int(raw_n)
+    if len(args) >= 3:
+        raw_agg = args[2]
+        agg_str = (raw_agg.value if isinstance(raw_agg, FormulaString) else str(raw_agg)).strip().lower()
+        reducer_map = {"mean": "avg", "avg": "avg", "sum": "sum", "min": "min", "max": "max", "last": "last"}
+        agg = reducer_map.get(agg_str, "avg")
+    if len(args) >= 4:
+        raw_order = args[3]
+        order_str = (raw_order.value if isinstance(raw_order, FormulaString) else str(raw_order)).strip().upper()
+        if order_str in {"ASC", "DESC"}:
+            order = order_str
+    return n, agg, order
 
 
 def _series_reducer_expr(reducer: str, field: str) -> str:
