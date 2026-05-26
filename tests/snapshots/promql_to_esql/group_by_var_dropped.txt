@@ -1,0 +1,7 @@
+feasibility: feasible
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE kube_pod_info IS NOT NULL
+| STATS kube_pod_info = SUM(kube_pod_info) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), k8s.namespace.name
+| SORT time_bucket ASC
