@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Phase B: migration report carries variable bindings and parameterization counts.
 
 See `docs/roadmap/2026-04-27-kibana-variable-controls-design.md` §10.3.

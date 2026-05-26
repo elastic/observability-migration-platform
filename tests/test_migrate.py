@@ -689,7 +689,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                         "aggregatable": True,
                         "time_series_metric": "gauge",
                     }
-                }
+                },
+                "unknown_gauge": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
             }
         )
 
@@ -1672,7 +1679,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                         "aggregatable": True,
                         "time_series_metric": "counter",
                     }
-                }
+                },
+                "mode": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
             }
         )
         panel = {

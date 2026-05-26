@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Tests for binding-map-aware Datadog tag-filter rewriting (Task 9)."""
 
 from observability_migration.adapters.source.datadog import translate as dd

@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
 from observability_migration.adapters.source.datadog.generate import _build_controls_from_template_vars
 from observability_migration.adapters.source.datadog.models import TemplateVariable

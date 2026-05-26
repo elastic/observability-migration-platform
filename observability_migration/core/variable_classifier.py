@@ -1,13 +1,18 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Variable feasibility classifier for Kibana ES|QL variable controls.
 
 See docs/roadmap/2026-04-27-kibana-variable-controls-design.md for the design.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
+
+_logger = logging.getLogger(__name__)
 
 REJECT_REASONS: Final[tuple[str, ...]] = (
     "unsupported_variable_type",
@@ -108,7 +113,8 @@ def _fetch_default_values(resolver_or_map, field_name: str) -> tuple[str, ...]:
         return ()
     try:
         values = fetcher(field_name, limit=20) or []
-    except Exception:
+    except Exception as exc:
+        _logger.warning("cluster discovery failed for field %r: %s", field_name, exc)
         return ()
     return tuple(str(v) for v in values if v is not None)
 

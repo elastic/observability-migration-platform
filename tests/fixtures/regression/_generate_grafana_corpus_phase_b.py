@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Re-bless the regression baseline for the phase-B Grafana corpus integration test.
 
 Run after intentionally changing the classifier or adding a new dashboard:

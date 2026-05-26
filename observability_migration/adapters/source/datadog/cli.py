@@ -510,6 +510,22 @@ def _verify_and_walk_back_datadog(
     if not downgraded_names:
         return post_verifier
 
+    from observability_migration.core.variable_warnings import render as _render_var_warning
+    for result in panel_results:
+        widget = by_widget_id.get(result.widget_id)
+        if widget is None:
+            continue
+        refs = _datadog_widget_var_refs(widget) & downgraded_names
+        for var_name in refs:
+            binding = post_verifier[var_name]
+            msg = _render_var_warning(
+                "variable.verifier_downgraded",
+                var=var_name,
+                invariant=getattr(binding, "reason", "unknown"),
+            )
+            if msg not in result.warnings:
+                result.warnings.append(msg)
+
     for idx, result in enumerate(panel_results):
         widget = by_widget_id.get(result.widget_id)
         if widget is None:
@@ -563,6 +579,24 @@ def _populate_dashboard_variable_bindings(
     ]
     if multi_names:
         dashboard_result.version_floor_reason = f"multi_value_binding({multi_names[0]})"
+
+    from observability_migration.core.variable_warnings import render as _render_var_warning
+    for result in panel_results:
+        query_text = str(result.esql_query or "")
+        if not query_text:
+            continue
+        for var_name, binding in post_verifier.items():
+            if not isinstance(binding, AcceptedBinding):
+                continue
+            if _re.search(rf"\?{_re.escape(var_name)}\b", query_text):
+                msg = _render_var_warning(
+                    "variable.bound",
+                    var=var_name,
+                    field=binding.field,
+                    kind="multi" if binding.multi else "single",
+                )
+                if msg not in result.warnings:
+                    result.warnings.append(msg)
 
 
 def _extract(args: argparse.Namespace) -> list[dict[str, Any]]:

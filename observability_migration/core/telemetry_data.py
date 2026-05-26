@@ -17,6 +17,8 @@ from typing import Any
 
 RequestFn = Callable[[str, str, Any | None, str], dict[str, Any]]
 
+SYNTHETIC_NAMESPACE = "synthetic"
+
 
 def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = None) -> str:
     """Return a concrete data stream name that is matched by an artifact index pattern."""
@@ -59,7 +61,7 @@ def resolved_stream_name(index_pattern: str, stream: dict[str, Any]) -> str:
     required_values = stream.get("required_values") or {}
     dataset_options = required_values.get("data_stream.dataset") or []
     namespace_options = required_values.get("data_stream.namespace") or []
-    dataset = dataset_options[0] if dataset_options else parts[1]
+    dataset = dataset_options[0] if len(dataset_options) == 1 else parts[1]
     if namespace_options:
         namespace = namespace_options[0]
     elif dataset != parts[1]:

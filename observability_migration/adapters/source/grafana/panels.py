@@ -4436,6 +4436,23 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         if multi_names:
             result.version_floor_reason = f"multi_value_binding({multi_names[0]})"
 
+        from observability_migration.core.variable_warnings import render as _render_var_warning
+        for _src, yaml_panel, panel_result in panel_records:
+            esql_block = yaml_panel.get("esql") if isinstance(yaml_panel, dict) else None
+            query_text = str(esql_block.get("query") or "") if isinstance(esql_block, dict) else ""
+            for var_name, binding in post_verifier.items():
+                if not isinstance(binding, AcceptedBinding):
+                    continue
+                if _re.search(rf"\?{_re.escape(var_name)}\b", query_text):
+                    msg = _render_var_warning(
+                        "variable.bound",
+                        var=var_name,
+                        field=binding.field,
+                        kind="multi" if binding.multi else "single",
+                    )
+                    if msg not in panel_result.reasons:
+                        panel_result.reasons.append(msg)
+
     yaml_doc = {
         "dashboards": [
             {
@@ -4555,6 +4572,19 @@ def _verify_and_walk_back(
     }
     if not downgraded_names:
         return post_verifier
+
+    from observability_migration.core.variable_warnings import render as _render_var_warning
+    for source_panel, _yaml_panel, panel_result in panel_records:
+        refs = _grafana_panel_var_refs(source_panel) & downgraded_names
+        for var_name in refs:
+            binding = post_verifier[var_name]
+            msg = _render_var_warning(
+                "variable.verifier_downgraded",
+                var=var_name,
+                invariant=getattr(binding, "reason", "unknown"),
+            )
+            if msg not in panel_result.reasons:
+                panel_result.reasons.append(msg)
 
     for source_panel, yaml_panel, panel_result in panel_records:
         if not _grafana_panel_var_refs(source_panel) & downgraded_names:

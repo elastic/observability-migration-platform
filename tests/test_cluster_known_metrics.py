@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Gap 3: panels referencing metrics the cluster does not have downgrade.
 
 When a SchemaResolver is connected to a live cluster (``--es-url``), it can
@@ -133,6 +135,16 @@ class ExtractMetricReferencesTests(unittest.TestCase):
         )
         self.assertNotIn("label_scrape_interval", refs)
         self.assertIn("metric", refs)
+
+    def test_skips_numeric_bucket_args(self):
+        """Numeric literals like the ``50`` step-size in BUCKET should not be
+        extracted as field references from the BY clause."""
+        refs = translate._extract_metric_references(
+            "FROM metrics-* | STATS m = AVG(some_metric) "
+            "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        self.assertNotIn("50", refs)
+        self.assertIn("some_metric", refs)
 
 
 class ClusterKnownMetricsRuleTests(unittest.TestCase):

@@ -467,6 +467,10 @@ def _extract_metric_references(esql_query):
                 # Aliased projection like ``time_bucket = BUCKET(...)`` — we
                 # only want bare field references on the right of ``BY``.
                 continue
+            if not part[0].isalpha() and part[0] != "_":
+                # Skip numeric literals (e.g. the ``50`` in BUCKET(@timestamp, 50, ...))
+                # that end up here when BUCKET args are split by comma.
+                continue
             refs.add(part)
     # Identifiers Grafana's ``label_<var>`` fallback emits are validated by
     # the ``leaked_label_variables`` validator instead — they should not be

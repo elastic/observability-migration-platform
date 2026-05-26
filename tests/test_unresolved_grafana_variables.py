@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Gap 2: panels with bare ``$varname`` that survive into ES|QL must downgrade.
 
 The Grafana macro preprocessor rewrites unbound ``$var`` into ``label_<var>`` so

@@ -2565,6 +2565,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            binding_map=binding_map,
         )
         if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
             plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
@@ -2598,6 +2599,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            binding_map=binding_map,
         )
         if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
             plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
@@ -2659,6 +2661,7 @@ def _build_formula_plan(
                     allow_direct_ts_gauge=allow_direct_ts_gauge,
                     preferred_group_labels_origin=preferred_group_labels_origin,
                     allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                    binding_map=binding_map,
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
@@ -2718,6 +2721,7 @@ def _build_formula_plan(
                     allow_direct_ts_gauge=allow_direct_ts_gauge,
                     preferred_group_labels_origin=preferred_group_labels_origin,
                     allow_tsds_gauge_promotion=False,
+                    binding_map=binding_map,
                 )
         warnings = []
         for warning in left_plan.warnings + right_plan.warnings:

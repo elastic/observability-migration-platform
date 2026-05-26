@@ -1,3 +1,5 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
 """Tests for binding-map-aware PromQL matcher rewriting (§6.1 rule table)."""
 
 from observability_migration.adapters.source.grafana import promql
