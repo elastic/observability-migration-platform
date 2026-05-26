@@ -1,0 +1,7 @@
+title: Memory Usage
+grafana_type: gauge
+status: migrated_with_warnings
+chart_type: gauge
+metric: computed_value
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: No explicit aggregation; using AVG (correct for gauge metrics)

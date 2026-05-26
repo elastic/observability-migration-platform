@@ -1,0 +1,7 @@
+title: Traffic Distribution
+grafana_type: piechart
+status: migrated_with_warnings
+chart_type: pie
+metrics: ['http_requests_total']
+breakdowns: ['handler']
+warning: Dropped variable-driven label filters during migration

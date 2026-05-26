@@ -1,0 +1,6 @@
+title: Uptime
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: node_boot_time_seconds_uptime_seconds
+warning: Approximated time() - metric as uptime from metric timestamp
