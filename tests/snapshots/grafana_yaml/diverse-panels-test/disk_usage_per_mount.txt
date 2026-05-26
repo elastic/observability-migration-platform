@@ -1,0 +1,9 @@
+title: Disk Usage per Mount
+grafana_type: bargauge
+status: migrated_with_warnings
+chart_type: bar
+dimension: mountpoint
+metrics: ['computed_value']
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: Approximated bargauge as bar chart

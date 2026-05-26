@@ -1,0 +1,7 @@
+title: Active Alerts
+grafana_type: table
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['ALERTS']
+warning: ALERTS{} is a Prometheus meta-metric exposing per-alert label sets; ES|QL aggregation collapses individual alerts into a single value
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
