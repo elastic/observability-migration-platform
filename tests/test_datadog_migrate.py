@@ -1766,9 +1766,9 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertFalse(esql["appearance"]["y_left_axis"]["title"])
         self.assertEqual([metric["label"] for metric in esql["metrics"]], ["User", "System"])
 
-    def test_y_axis_bounds_are_emitted_without_stale_warning(self):
+    def _make_timeseries_widget(self, yaxis: dict) -> NormalizedWidget:
         query = "avg:system.cpu.user{*}"
-        widget = NormalizedWidget(
+        return NormalizedWidget(
             id="1",
             widget_type="timeseries",
             title="CPU",
@@ -1781,24 +1781,76 @@ class TestYAMLGeneration(unittest.TestCase):
                     query_type="metric",
                 )
             ],
-            yaxis={"min": 0, "max": 100, "label": "CPU %"},
+            yaxis=yaxis,
             layout={"x": 0, "y": 0, "width": 8, "height": 4},
         )
+
+    def _translate_with_yaml(self, widget: NormalizedWidget):
         plan = plan_widget(widget)
         if plan.backend == "lens":
             plan.backend = "esql"
         result = translate_widget(widget, plan, OTEL_PROFILE)
-        dash = NormalizedDashboard(
-            id="1",
-            title="Dash",
-            widgets=[widget],
-        )
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
         generate_dashboard_yaml(dash, [result])
-        self.assertFalse(any("y-axis bounds are not mapped yet" in warning for warning in result.warnings))
+        return result
+
+    def test_y_axis_both_bounds_emits_custom_extent(self):
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"min": 0, "max": 100, "label": "CPU %"})
+        )
+        self.assertFalse(any("y-axis bounds are not mapped yet" in w for w in result.warnings))
         extent = result.yaml_panel["esql"]["appearance"]["y_left_axis"]["extent"]
         self.assertEqual(extent["mode"], "custom")
         self.assertEqual(extent["min"], 0.0)
         self.assertEqual(extent["max"], 100.0)
+
+    def test_y_axis_max_only_with_include_zero_true_infers_min_zero(self):
+        # Regression: max-only + include_zero=true previously emitted {mode:custom, max:N}
+        # which kb-dashboard-cli rejects. Fix: infer min=0 (semantically identical).
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"max": "100", "include_zero": True})
+        )
+        extent = result.yaml_panel["esql"]["appearance"]["y_left_axis"]["extent"]
+        self.assertEqual(extent["mode"], "custom")
+        self.assertEqual(extent["min"], 0.0)
+        self.assertEqual(extent["max"], 100.0)
+        self.assertFalse(any("extent omitted" in w for w in result.warnings))
+
+    def test_y_axis_max_only_include_zero_default_true_infers_min_zero(self):
+        # include_zero defaults to True in Datadog — omitting it is equivalent to True.
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"max": "1"})
+        )
+        extent = result.yaml_panel["esql"]["appearance"]["y_left_axis"]["extent"]
+        self.assertEqual(extent["min"], 0.0)
+        self.assertEqual(extent["max"], 1.0)
+
+    def test_y_axis_max_only_include_zero_false_omits_extent_and_warns(self):
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"max": "100", "include_zero": False})
+        )
+        y_left = result.yaml_panel["esql"]["appearance"].get("y_left_axis", {})
+        self.assertNotIn("extent", y_left)
+        self.assertTrue(any("extent omitted" in w for w in result.warnings))
+
+    def test_y_axis_auto_min_with_valid_max_and_include_zero_infers_min_zero(self):
+        # "auto" is a Datadog sentinel for auto-scaling — treat as absent, then apply
+        # include_zero logic. include_zero=true (default) → infer min=0.
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"min": "auto", "max": "100", "include_zero": True})
+        )
+        extent = result.yaml_panel["esql"]["appearance"]["y_left_axis"]["extent"]
+        self.assertEqual(extent["min"], 0.0)
+        self.assertEqual(extent["max"], 100.0)
+
+    def test_y_axis_min_only_omits_extent_and_warns(self):
+        # min-only (no max) — Kibana cannot anchor only the lower bound in custom mode.
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"min": "0"})
+        )
+        y_left = result.yaml_panel["esql"]["appearance"].get("y_left_axis", {})
+        self.assertNotIn("extent", y_left)
+        self.assertTrue(any("extent omitted" in w for w in result.warnings))
 
     def test_log_stream_uses_breakdown_columns(self):
         lq = parse_log_query("status:error")

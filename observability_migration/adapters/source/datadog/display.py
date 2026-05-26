@@ -64,12 +64,17 @@ def enrich_panel_display(
         _apply_format(esql, unit_format, result.kibana_type)
 
     _apply_legend(esql, widget, result.kibana_type)
-    _apply_axis(yaml_panel, widget)
+    _apply_axis(yaml_panel, widget, result)
 
     if widget.title:
         yaml_panel["title"] = _clean_template_vars(widget.title)
 
     return yaml_panel
+
+
+def _warn(result: TranslationResult, message: str) -> None:
+    if message not in result.warnings:
+        result.warnings.append(message)
 
 
 def _resolve_unit(widget: NormalizedWidget) -> dict[str, Any] | None:
@@ -139,8 +144,19 @@ def _apply_legend(
         appearance.setdefault("legend", {"visible": "show", "position": "right"})
 
 
-def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget) -> None:
-    """Map Datadog yaxis config into kb-dashboard appearance.y_left_axis."""
+def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget, result: TranslationResult) -> None:
+    """Map Datadog yaxis config into kb-dashboard appearance.y_left_axis.
+
+    Kibana's extent requires BOTH min and max when mode='custom'.  When only
+    one bound is present we apply these rules:
+      - max-only + include_zero=true (Datadog default): infer min=0 and emit
+        a full custom extent — include_zero is semantically identical to min=0.
+      - max-only + include_zero=false: omit extent and warn; Kibana auto-scales.
+      - min-only (no max): omit extent and warn; Kibana auto-scales upper bound.
+      - Both: emit full custom extent (already correct).
+      - Neither parseable: omit extent.
+    Unparseable sentinels such as "auto" are treated as absent.
+    """
     yaxis = widget.yaxis
     if not isinstance(yaxis, dict):
         return
@@ -156,22 +172,37 @@ def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget) -> None:
         y_cfg["scale"] = "log"
     elif scale == "sqrt":
         y_cfg["scale"] = "sqrt"
-    y_min = yaxis.get("min")
-    y_max = yaxis.get("max")
-    if y_min is not None or y_max is not None:
-        extent: dict[str, Any] = {"mode": "custom"}
-        if y_min is not None:
-            try:
-                extent["min"] = float(y_min)
-            except (ValueError, TypeError):
-                pass
-        if y_max is not None:
-            try:
-                extent["max"] = float(y_max)
-            except (ValueError, TypeError):
-                pass
-        if len(extent) > 1:
-            y_cfg["extent"] = extent
+
+    # include_zero defaults to True in Datadog — omitting it means "anchor at 0"
+    include_zero: bool = yaxis.get("include_zero", True) is not False
+
+    parsed_min: float | None = None
+    parsed_max: float | None = None
+    raw_min = yaxis.get("min")
+    raw_max = yaxis.get("max")
+    if raw_min is not None:
+        try:
+            parsed_min = float(raw_min)
+        except (ValueError, TypeError):
+            pass  # "auto" or other non-numeric sentinel → treat as absent
+    if raw_max is not None:
+        try:
+            parsed_max = float(raw_max)
+        except (ValueError, TypeError):
+            pass
+
+    if parsed_min is not None and parsed_max is not None:
+        y_cfg["extent"] = {"mode": "custom", "min": parsed_min, "max": parsed_max}
+    elif parsed_max is not None and include_zero:
+        # include_zero=true is an exact translation of min=0
+        y_cfg["extent"] = {"mode": "custom", "min": 0.0, "max": parsed_max}
+    elif parsed_max is not None:
+        _warn(result, f"y-axis max={parsed_max} has no inferable min (include_zero=false); "
+              "extent omitted — Kibana will auto-scale. Review axis bounds.")
+    elif parsed_min is not None:
+        _warn(result, f"y-axis min={parsed_min} has no max; "
+              "extent omitted — Kibana will auto-scale upper bound. Review axis bounds.")
+
     if y_cfg:
         appearance = esql.setdefault("appearance", {})
         appearance.setdefault("y_left_axis", {}).update(y_cfg)
