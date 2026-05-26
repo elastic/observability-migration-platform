@@ -404,10 +404,11 @@ def _parse_function_args(args_str: str) -> list[Any]:
 
 
 def _split_args(text: str) -> list[str]:
-    """Split function arguments on commas, respecting parens and quotes."""
+    """Split function arguments on commas, respecting parens, braces, and quotes."""
     parts: list[str] = []
     current: list[str] = []
     depth = 0
+    brace_depth = 0
     in_quote = False
     quote_char = ""
     for ch in text:
@@ -425,7 +426,13 @@ def _split_args(text: str) -> list[str]:
             elif ch == ")":
                 depth -= 1
                 current.append(ch)
-            elif ch == "," and depth == 0:
+            elif ch == "{":
+                brace_depth += 1
+                current.append(ch)
+            elif ch == "}":
+                brace_depth -= 1
+                current.append(ch)
+            elif ch == "," and depth == 0 and brace_depth == 0:
                 parts.append("".join(current))
                 current = []
             else:

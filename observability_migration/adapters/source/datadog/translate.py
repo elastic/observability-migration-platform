@@ -202,6 +202,7 @@ def translate_widget(
             return result
 
         result.esql_query = esql
+        result.kibana_type = plan.kibana_type
         result.status = "warning" if result.warnings else "ok"
 
     except _RequiresManualError as exc:
@@ -324,6 +325,29 @@ def _translate_single_metric(
         )
 
     if is_timeseries or is_heatmap:
+        if is_timeseries and top_config.limit is not None:
+            group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+            if spec.group_fields:
+                group_clause += ", " + ", ".join(spec.group_fields)
+            rank_expr = _series_reducer_expr(top_config.reducer or "avg", "value")
+            lines = [
+                f"FROM {spec.index}",
+                f"| WHERE {spec.where_str}",
+                f"| STATS value = {spec.agg_expr} BY {group_clause}",
+            ]
+            if spec.group_fields:
+                lines.append(f"| STATS _rank = {rank_expr} BY {', '.join(spec.group_fields)}")
+            else:
+                lines.append(f"| STATS _rank = {rank_expr}")
+            lines.append(f"| SORT _rank {top_config.sort_order}")
+            lines.append(f"| LIMIT {top_config.limit}")
+            plan.kibana_type = "table"
+            _append_unique_warning(
+                result,
+                f"top({top_config.limit}) on timeseries approximated as ranked table of top-{top_config.limit} groups"
+                " — ES|QL cannot filter to N series in a single pass",
+            )
+            return "\n".join(lines)
         return _build_timeseries_esql(
             spec.index, spec.where_str, spec.agg_expr, spec.group_fields,
         )
@@ -447,7 +471,10 @@ def _translate_formula_metric_widget(
         if len(formulas) != 1:
             raise ValueError("metric widgets support exactly one translated formula")
         if used_specs[0].group_fields:
-            raise ValueError("metric formula still produces grouped rows; manual redesign needed")
+            raise _RequiresManualError(
+                "grouped query used in a scalar (query_value) widget — "
+                "reduce to a single value or convert to a table panel"
+            )
     if plan.kibana_type == "heatmap" and not used_specs[0].group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
     if plan.kibana_type in ("partition", "treemap") and not used_specs[0].group_fields:

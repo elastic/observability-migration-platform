@@ -361,6 +361,26 @@ class TestLegacyQueryParser(unittest.TestCase):
         self.assertIsNone(mq)
         self.assertEqual(fns, [])
 
+    def test_top_with_multi_value_braced_scope_parses(self):
+        # Regression: _split_args didn't track brace depth, so commas inside
+        # {$host,$scope} were treated as argument separators, mangling the
+        # metric query string and causing a ParseError.
+        raw = "top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc')"
+        mq, fns = parse_legacy_query(raw)
+        self.assertIsNotNone(mq, "query with braced multi-value scope should parse")
+        self.assertEqual(mq.metric, "apache.performance.cpu_load")
+        self.assertEqual(mq.group_by, ["host"])
+        self.assertEqual(len(fns), 1)
+        self.assertEqual(fns[0].name, "top")
+        self.assertEqual(fns[0].args, [10, "mean", "desc"])
+
+    def test_multi_value_braced_scope_without_wrapper_parses(self):
+        # Same brace-depth fix should handle unwrapped queries too.
+        mq, _fns = parse_legacy_query("avg:system.cpu.user{host:web01,env:prod} by {host}")
+        self.assertIsNotNone(mq)
+        self.assertEqual(mq.metric, "system.cpu.user")
+        self.assertEqual(len(mq.scope), 2)
+
 
 # =========================================================================
 # Log Parser Tests
@@ -1327,6 +1347,30 @@ class TestTranslation(unittest.TestCase):
         # toplist path uses panel sort/limit — no extra ranking STATS
         self.assertNotIn("_rank", result.esql_query)
         self.assertTrue(any("top()" in w for w in result.warnings))
+
+    def test_legacy_top_on_timeseries_produces_ranked_flat_table(self):
+        # Regression: legacy format top(avg:metric{$var,$var2} by {host}, N, agg, order)
+        # was previously legacy_unparsed due to _split_args not tracking brace depth.
+        # After the fix it must translate as a ranked flat table, same as the formula path.
+        raw = "top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc')"
+        mq, fns = parse_legacy_query(raw)
+        mq.functions.extend(fns)
+        wq = WidgetQuery(name="query0", data_source="metrics", raw_query=raw, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Apache process CPU usage (top 10 hosts)",
+            queries=[wq],
+            formulas=[],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "table", "legacy top() on timeseries must produce a flat table")
+        self.assertIn("STATS _rank = AVG(", result.esql_query)
+        self.assertIn("| LIMIT 10", result.esql_query)
+        self.assertIn("| SORT _rank DESC", result.esql_query)
+        self.assertTrue(any("top(10)" in w for w in result.warnings))
 
     def test_ratio_formula_uses_both_queries(self):
         q1 = "avg:etcd.disk.wal.fsync.duration.seconds.sum{env:prod} by {host}"
