@@ -147,6 +147,11 @@ def _apply_legend(
 def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget, result: TranslationResult) -> None:
     """Map Datadog yaxis config into kb-dashboard appearance.y_left_axis.
 
+    Only XY panels (line/bar/area, kibana_type='xy') accept y_left_axis in
+    their appearance block.  All other Kibana types reject it with
+    'Extra inputs are not permitted'.  For non-XY panels we skip axis mapping
+    entirely; scale and bounds cannot be preserved without a supported target.
+
     Kibana's extent requires BOTH min and max when mode='custom'.  When only
     one bound is present we apply these rules:
       - max-only + include_zero=true (Datadog default): infer min=0 and emit
@@ -162,6 +167,9 @@ def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget, result: Tr
         return
     esql = yaml_panel.get("esql")
     if not isinstance(esql, dict):
+        return
+    # y_left_axis is only valid for XY panels; skip for all other types.
+    if result.kibana_type != "xy":
         return
     y_cfg: dict[str, Any] = {}
     label = yaxis.get("label")

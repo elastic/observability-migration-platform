@@ -1122,7 +1122,7 @@ def _infer_metrics(result: TranslationResult) -> list[str]:
 
 def _infer_keep_fields(query: str) -> list[str]:
     query = query or ""
-    keep_matches = list(re.finditer(r"\|\s*KEEP\s+(.+?)(?=\n\s*\||$)", query, re.IGNORECASE | re.DOTALL))
+    keep_matches = list(re.finditer(r"\|\s*KEEP\s+(.+?)(?=\s*\||$)", query, re.IGNORECASE | re.DOTALL))
     if not keep_matches:
         return []
     keep_clause = keep_matches[-1].group(1).replace("\n", " ").strip()

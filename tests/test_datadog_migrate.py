@@ -1852,6 +1852,43 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertNotIn("extent", y_left)
         self.assertTrue(any("extent omitted" in w for w in result.warnings))
 
+    def test_non_xy_panel_with_yaxis_does_not_emit_y_left_axis(self):
+        # Regression: _apply_axis emitted appearance.y_left_axis for ALL panel
+        # types.  Kibana rejects y_left_axis on non-XY panels with
+        # "Extra inputs are not permitted", failing the entire dashboard compile.
+        query = "avg:system.mem.used{*}"
+        mq = parse_metric_query(query)
+        for widget_type in ("query_value", "toplist"):
+            with self.subTest(widget_type=widget_type):
+                widget = NormalizedWidget(
+                    id="1",
+                    widget_type=widget_type,
+                    title="Memory",
+                    queries=[
+                        WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+                    ],
+                    yaxis={"min": "0", "max": "100", "scale": "log", "label": "MB"},
+                    layout={"x": 0, "y": 0, "width": 4, "height": 3},
+                )
+                result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+                dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+                generate_dashboard_yaml(dash, [result])
+                appearance = (result.yaml_panel.get("esql") or {}).get("appearance", {})
+                self.assertNotIn(
+                    "y_left_axis", appearance,
+                    f"{widget_type} panel must not have y_left_axis in appearance",
+                )
+
+    def test_xy_panel_with_yaxis_still_emits_y_left_axis(self):
+        # Ensure the guard does not break XY (timeseries) panels.
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"min": "0", "max": "100", "scale": "log"})
+        )
+        appearance = result.yaml_panel["esql"].get("appearance", {})
+        self.assertIn("y_left_axis", appearance)
+        self.assertIn("scale", appearance["y_left_axis"])
+        self.assertIn("extent", appearance["y_left_axis"])
+
     def test_metric_panel_primary_label_not_set_when_equal_to_title(self):
         # Regression: _metric_label returned widget.title for query_value panels,
         # causing primary.label == panel title.  kb-dashboard-cli fires
