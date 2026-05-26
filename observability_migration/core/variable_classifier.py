@@ -145,8 +145,17 @@ def _is_disabled() -> bool:
 
 
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_LABEL_VALUES_RE = re.compile(r"label_values\s*\(\s*([^,]+?)\s*,\s*([A-Za-z0-9_]+)\s*\)")
+
+# Two-arg form: label_values(metric{...}, label) — first arg may contain commas inside {}.
+_LABEL_VALUES_RE = re.compile(
+    r"label_values\s*\(\s*(?:[^,{}]|\{[^}]*\})+\s*,\s*([A-Za-z0-9_]+)\s*\)"
+)
+# Single-arg form: label_values(label) — used by many Micrometer/plain-Prometheus dashboards.
+_LABEL_VALUES_SINGLE_RE = re.compile(r"label_values\s*\(\s*([A-Za-z0-9_]+)\s*\)")
 _REGEX_META_RE = re.compile(r"[][(){}|^$+*?\\]")
+
+
+_BARE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def _grafana_definition_text(var: dict) -> str:
@@ -156,6 +165,12 @@ def _grafana_definition_text(var: dict) -> str:
     query = var.get("query")
     if isinstance(query, dict):
         text = query.get("query") or query.get("definition") or ""
+        if not text:
+            # Loki variable query format: {"label": "container", "stream": ...}
+            # The "label" key IS the stream label name — normalise to single-arg form.
+            label_name = query.get("label", "")
+            if label_name and _BARE_IDENTIFIER_RE.match(label_name):
+                return f"label_values({label_name})"
         return str(text)
     if isinstance(query, str):
         return query
@@ -164,9 +179,12 @@ def _grafana_definition_text(var: dict) -> str:
 
 def _extract_label_from_definition(text: str) -> str | None:
     match = _LABEL_VALUES_RE.search(text)
-    if not match:
-        return None
-    return match.group(2)
+    if match:
+        return match.group(1)
+    match = _LABEL_VALUES_SINGLE_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
 
 
 def _grafana_panel_matchers_for(var_name: str, panel: dict) -> list[dict]:

@@ -35,6 +35,7 @@ class SchemaResolver:
         "instance": ["service.instance.id", "host.name", "host.ip"],
         "service_instance_id": ["service.instance.id"],
         "job": ["service.name"],
+        "application": ["service.name"],
         "service_name": ["service.name"],
         "namespace": ["k8s.namespace.name"],
         "namespace_name": ["k8s.namespace.name"],

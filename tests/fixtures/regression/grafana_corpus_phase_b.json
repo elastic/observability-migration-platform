@@ -15,16 +15,49 @@
     ],
     "verifier_downgraded": []
   },
+  "JVM (Micrometer)": {
+    "accepted": [
+      "application",
+      "instance"
+    ],
+    "rejected": [
+      "jvm_buffer_pool",
+      "jvm_memory_pool_heap",
+      "jvm_memory_pool_nonheap"
+    ],
+    "verifier_downgraded": []
+  },
   "Kubernetes / Views / Global": {
-    "accepted": [],
+    "accepted": [
+      "cluster"
+    ],
     "rejected": [
       "datasource",
       "job",
       "resolution"
     ],
-    "verifier_downgraded": [
-      "cluster"
-    ]
+    "verifier_downgraded": []
+  },
+  "Logging Dashboard via Loki": {
+    "accepted": [
+      "container",
+      "pod"
+    ],
+    "rejected": [
+      "searchable_pattern",
+      "stream"
+    ],
+    "verifier_downgraded": []
+  },
+  "NGINX Ingress controller": {
+    "accepted": [],
+    "rejected": [
+      "controller",
+      "controller_class",
+      "ingress",
+      "namespace"
+    ],
+    "verifier_downgraded": []
   },
   "Node Exporter Full": {
     "accepted": [
@@ -37,16 +70,30 @@
     ],
     "verifier_downgraded": []
   },
+  "PostgreSQL Database": {
+    "accepted": [
+      "datname",
+      "mode"
+    ],
+    "rejected": [
+      "DS_PROMETHEUS",
+      "instance",
+      "interval",
+      "namespace",
+      "release"
+    ],
+    "verifier_downgraded": []
+  },
   "Prometheus 2.0 (by FUSAKLA)": {
-    "accepted": [],
+    "accepted": [
+      "instance"
+    ],
     "rejected": [
       "aggregation_interval",
       "datasource",
       "influx_datasource",
       "scrape_interval"
     ],
-    "verifier_downgraded": [
-      "instance"
-    ]
+    "verifier_downgraded": []
   }
 }
