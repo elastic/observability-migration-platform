@@ -361,6 +361,26 @@ class TestLegacyQueryParser(unittest.TestCase):
         self.assertIsNone(mq)
         self.assertEqual(fns, [])
 
+    def test_top_with_multi_value_braced_scope_parses(self):
+        # Regression: _split_args didn't track brace depth, so commas inside
+        # {$host,$scope} were treated as argument separators, mangling the
+        # metric query string and causing a ParseError.
+        raw = "top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc')"
+        mq, fns = parse_legacy_query(raw)
+        self.assertIsNotNone(mq, "query with braced multi-value scope should parse")
+        self.assertEqual(mq.metric, "apache.performance.cpu_load")
+        self.assertEqual(mq.group_by, ["host"])
+        self.assertEqual(len(fns), 1)
+        self.assertEqual(fns[0].name, "top")
+        self.assertEqual(fns[0].args, [10, "mean", "desc"])
+
+    def test_multi_value_braced_scope_without_wrapper_parses(self):
+        # Same brace-depth fix should handle unwrapped queries too.
+        mq, _fns = parse_legacy_query("avg:system.cpu.user{host:web01,env:prod} by {host}")
+        self.assertIsNotNone(mq)
+        self.assertEqual(mq.metric, "system.cpu.user")
+        self.assertEqual(len(mq.scope), 2)
+
 
 # =========================================================================
 # Log Parser Tests
@@ -1270,9 +1290,10 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("apache_performance_cpu_load", result.esql_query)
         self.assertTrue(any("top()" in w for w in result.warnings))
 
-    def test_top_formula_with_expression_inside_translates(self):
-        # Real-world case from the redis dashboard:
-        # top(query1 / 1000, 10, 'mean', 'desc')
+    def test_top_formula_on_timeseries_produces_ranked_flat_table(self):
+        # Real-world case: top(query1 / 1000, 10, 'mean', 'desc') on a
+        # timeseries widget (Redis Slowlog duration, Kafka lag, RabbitMQ queue time).
+        # ES|QL cannot filter to N series; we collapse to a per-group ranked table.
         query = "sum:redis.slowlog.micros.95percentile{*} by {name,command}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
@@ -1285,10 +1306,71 @@ class TestTranslation(unittest.TestCase):
             queries=[wq],
             formulas=[wf],
         )
-        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertNotEqual(result.status, "not_feasible")
-        # The expression inside top() must be preserved.
+        # The plan kibana_type must be overridden to table (not timeseries xy).
+        self.assertEqual(plan.kibana_type, "table", "top() on timeseries must produce a flat table")
+        # The inner expression must be preserved.
         self.assertIn("(query1 / 1000)", result.esql_query)
+        # A ranking STATS must collapse the time dimension.
+        self.assertIn("STATS _rank = AVG(", result.esql_query)
+        # Must be limited to top N.
+        self.assertIn("| LIMIT 10", result.esql_query)
+        self.assertIn("| SORT _rank DESC", result.esql_query)
+        # Warning must mention approximation but NOT the old "panel-level sort/limit" phrasing.
+        self.assertTrue(any("top(10)" in w for w in result.warnings))
+        self.assertFalse(
+            any("panel-level sort/limit" in w for w in result.warnings),
+            "old inaccurate warning must be replaced by the ranked-table warning",
+        )
+
+    def test_top_formula_on_toplist_uses_panel_sort_limit_unchanged(self):
+        # toplist widgets already have sort/limit; top() in that context is a
+        # pass-through with just the old approximation warning — no type change.
+        query = "avg:apache.performance.cpu_load{*} by {host}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="top(query1, 10, 'mean', 'desc')")
+        wf.expression = parse_formula("top(query1, 10, 'mean', 'desc')")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="toplist",
+            title="Top CPU hosts",
+            queries=[wq],
+            formulas=[wf],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "table", "toplist must stay as table")
+        # toplist path uses panel sort/limit — no extra ranking STATS
+        self.assertNotIn("_rank", result.esql_query)
+        self.assertTrue(any("top()" in w for w in result.warnings))
+
+    def test_legacy_top_on_timeseries_produces_ranked_flat_table(self):
+        # Regression: legacy format top(avg:metric{$var,$var2} by {host}, N, agg, order)
+        # was previously legacy_unparsed due to _split_args not tracking brace depth.
+        # After the fix it must translate as a ranked flat table, same as the formula path.
+        raw = "top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc')"
+        mq, fns = parse_legacy_query(raw)
+        mq.functions.extend(fns)
+        wq = WidgetQuery(name="query0", data_source="metrics", raw_query=raw, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Apache process CPU usage (top 10 hosts)",
+            queries=[wq],
+            formulas=[],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "table", "legacy top() on timeseries must produce a flat table")
+        self.assertIn("STATS _rank = AVG(", result.esql_query)
+        self.assertIn("| LIMIT 10", result.esql_query)
+        self.assertIn("| SORT _rank DESC", result.esql_query)
+        self.assertTrue(any("top(10)" in w for w in result.warnings))
 
     def test_ratio_formula_uses_both_queries(self):
         q1 = "avg:etcd.disk.wal.fsync.duration.seconds.sum{env:prod} by {host}"

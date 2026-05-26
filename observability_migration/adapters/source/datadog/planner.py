@@ -552,7 +552,7 @@ def _should_use_lens(
         return False
     if mq.as_rate or mq.as_count:
         return False
-    if any(fn.name in ("per_second", "per_minute", "per_hour", "derivative") for fn in mq.functions):
+    if any(fn.name in ("per_second", "per_minute", "per_hour", "derivative", "top") for fn in mq.functions):
         return False
     if widget.widget_type in ("heatmap", "scatterplot", "distribution"):
         return False
