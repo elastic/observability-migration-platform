@@ -52,6 +52,7 @@ def _resolve_metric_field(resolver, metric_name, *, prefer=None):
         return _esql_field(metric_name)
     return _esql_field(resolve(metric_name, prefer=prefer))
 
+
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -118,10 +119,10 @@ def _gauge_fallback_for_counter_range_func(range_func):
     result = _COUNTER_TO_GAUGE_FALLBACK.get(range_func)
     if result is None:
         raise ValueError(
-            f"no gauge fallback for range function {range_func!r}; "
-            f"expected one of {sorted(_COUNTER_TO_GAUGE_FALLBACK)}"
+            f"no gauge fallback for range function {range_func!r}; expected one of {sorted(_COUNTER_TO_GAUGE_FALLBACK)}"
         )
     return result
+
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
@@ -234,10 +235,7 @@ def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None, unresol
     if binding_map:
         from observability_migration.core.variable_classifier import AcceptedBinding
 
-        accepted_names = {
-            name for name, binding in binding_map.items()
-            if isinstance(binding, AcceptedBinding)
-        }
+        accepted_names = {name for name, binding in binding_map.items() if isinstance(binding, AcceptedBinding)}
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
     replacements = [
         (r"\$__rate_interval", "5m"),
@@ -285,12 +283,8 @@ def preprocess_grafana_macros(expr, rule_pack=None, *, binding_map=None, unresol
     # block; the loop runs at most once per matcher in the largest block.
     for _ in range(8):
         previous = result
-        result = re.sub(
-            r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
-        )
-        result = re.sub(
-            r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result
-        )
+        result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result)
+        result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', _broaden_unless_accepted, result)
         if result == previous:
             break
     # ${var} and ${var:format} — Grafana advanced variable interpolation.
@@ -684,6 +678,7 @@ def _matcher_to_esql(matcher, resolver, *, binding_map=None):
         var_name = _extract_single_var_name(value)
         if var_name and var_name in binding_map:
             from observability_migration.core.variable_classifier import AcceptedBinding
+
             binding = binding_map[var_name]
             if isinstance(binding, AcceptedBinding):
                 return _bound_param_clause(label, op, var_name, binding.multi)
@@ -696,10 +691,7 @@ def _matcher_to_esql(matcher, resolver, *, binding_map=None):
         if matcher["label"] in _FLOAT_LABEL_NAMES:
             alt = _le_float_alt(value)
             if alt is not None:
-                return (
-                    f"({label} == {_quote_esql_string(value)}"
-                    f" OR {label} == {_quote_esql_string(alt)})"
-                )
+                return f"({label} == {_quote_esql_string(value)} OR {label} == {_quote_esql_string(alt)})"
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
         return f"{label} != {_quote_esql_string(value)}"
@@ -759,7 +751,7 @@ def _build_log_message_filter(search_expr, rule_pack):
     if check.startswith("$") or check.startswith("label_") or re.search(r"\$\w", check):
         return None
     if re.fullmatch(r"[A-Za-z0-9_\-\. ]+", search_expr):
-        return f'{rule_pack.logs_message_field} LIKE {_quote_esql_string(f"*{search_expr}*")}'
+        return f"{rule_pack.logs_message_field} LIKE {_quote_esql_string(f'*{search_expr}*')}"
     if not search_expr.startswith(".*"):
         search_expr = f".*{search_expr}"
     if not search_expr.endswith(".*"):
@@ -979,15 +971,20 @@ def _ast_call_fragment(node, expr):
 
     if func_name == "scalar" and len(child_frags) == 1:
         child = child_frags[0]
-        if child.metric and not child.extra.get("not_feasible_reasons") and child.family in {
-            "binary_expr",
-            "nested_agg",
-            "range_agg",
-            "scaled_agg",
-            "simple_agg",
-            "simple_metric",
-            "uptime",
-        }:
+        if (
+            child.metric
+            and not child.extra.get("not_feasible_reasons")
+            and child.family
+            in {
+                "binary_expr",
+                "nested_agg",
+                "range_agg",
+                "scaled_agg",
+                "simple_agg",
+                "simple_metric",
+                "uptime",
+            }
+        ):
             wrapped = _copy_fragment_summary(_new_fragment(expr, family=child.family), child)
             wrapped.binary_rhs = child.binary_rhs
             for key in ("left_frag", "right_frag"):
@@ -1023,18 +1020,14 @@ def _ast_call_fragment(node, expr):
             result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
             for k, v in inner.extra.items():
                 result.extra.setdefault(k, v)
-            result.extra["value_sort_desc"] = (func_name == "sort_desc")
+            result.extra["value_sort_desc"] = func_name == "sort_desc"
             return result
 
     # round() — strip outer wrapper, carry precision for ROUND() postprocessor
     if func_name == "round" and 1 <= len(child_frags) <= 2:
         inner = child_frags[0]
         if not inner.extra.get("not_feasible_reasons"):
-            precision = (
-                child_frags[1].scalar_value
-                if len(child_frags) == 2 and child_frags[1].is_scalar
-                else None
-            )
+            precision = child_frags[1].scalar_value if len(child_frags) == 2 and child_frags[1].is_scalar else None
             result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
             for k, v in inner.extra.items():
                 result.extra.setdefault(k, v)
@@ -1060,14 +1053,9 @@ def _ast_call_fragment(node, expr):
     if func_name == "label_replace" and len(child_frags) == 5:
         value_frag = child_frags[0]
         string_args = [f.extra.get("string_value") for f in child_frags[1:]]
-        if (
-            all(s is not None for s in string_args)
-            and not value_frag.extra.get("not_feasible_reasons")
-        ):
+        if all(s is not None for s in string_args) and not value_frag.extra.get("not_feasible_reasons"):
             dst, replacement, src, regex = string_args
-            result = _copy_fragment_summary(
-                _new_fragment(expr, family="label_replace"), value_frag
-            )
+            result = _copy_fragment_summary(_new_fragment(expr, family="label_replace"), value_frag)
             result.extra["lr_dst"] = dst
             result.extra["lr_replacement"] = replacement
             result.extra["lr_src"] = src
@@ -1140,7 +1128,12 @@ def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
         if inner_right is not None and inner_right.is_scalar and inner_right.scalar_value is not None:
             scalar_side = inner_right
             vector_side = inner_left
-        elif frag.binary_op == "*" and inner_left is not None and inner_left.is_scalar and inner_left.scalar_value is not None:
+        elif (
+            frag.binary_op == "*"
+            and inner_left is not None
+            and inner_left.is_scalar
+            and inner_left.scalar_value is not None
+        ):
             scalar_side = inner_left
             vector_side = inner_right
         if scalar_side is None or vector_side is None or vector_side.extra.get("not_feasible_reasons"):
@@ -1451,7 +1444,7 @@ def _parse_logql_fragment(expr):
         return frag
 
     logql_count = re.match(
-        r'^\s*(?P<outer>sum|count)\s*\(\s*count_over_time\s*\(\s*\{(?P<selectors>[^}]*)\}.*?\[(?P<window>[^\]]+)\]\s*\)\s*\)\s*$',
+        r"^\s*(?P<outer>sum|count)\s*\(\s*count_over_time\s*\(\s*\{(?P<selectors>[^}]*)\}.*?\[(?P<window>[^\]]+)\]\s*\)\s*\)\s*$",
         expr,
         re.IGNORECASE | re.DOTALL,
     )
@@ -1509,9 +1502,7 @@ def _make_binary_fragment(expr, left_frag, op, right_frag):
     )
 
 
-_DOTTED_IDENT_RE = re.compile(
-    r"\b([A-Za-z_][\w]*\.[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\b"
-)
+_DOTTED_IDENT_RE = re.compile(r"\b([A-Za-z_][\w]*\.[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\b")
 _DOT_SENTINEL = "__OBSDOT__"
 
 
@@ -1601,25 +1592,36 @@ def _decode_fragment_in_place(frag, _seen=None):
         frag.outer_agg = _decode_dotted_identifiers(frag.outer_agg)
     decoded_matchers = []
     for matcher in frag.matchers or []:
-        decoded_matchers.append({
-            "label": _decode_dotted_identifiers(matcher.get("label", "")),
-            "op": matcher.get("op", ""),
-            "value": _decode_dotted_identifiers(matcher.get("value", "")),
-        })
+        decoded_matchers.append(
+            {
+                "label": _decode_dotted_identifiers(matcher.get("label", "")),
+                "op": matcher.get("op", ""),
+                "value": _decode_dotted_identifiers(matcher.get("value", "")),
+            }
+        )
     frag.matchers = decoded_matchers
     if frag.group_labels:
         frag.group_labels = [_decode_dotted_identifiers(g) for g in frag.group_labels]
     if frag.extra:
         for key in (
-            "inner_group", "outer_group", "preferred_group_labels",
-            "by_labels", "without_labels", "on_labels", "ignoring_labels",
-            "group_left", "group_right",
+            "inner_group",
+            "outer_group",
+            "preferred_group_labels",
+            "by_labels",
+            "without_labels",
+            "on_labels",
+            "ignoring_labels",
+            "group_left",
+            "group_right",
         ):
             value = frag.extra.get(key)
             if isinstance(value, list):
                 frag.extra[key] = [_decode_dotted_identifiers(v) for v in value]
         for key in (
-            "inner_metric", "outer_metric", "inner_agg", "scalar_value",
+            "inner_metric",
+            "outer_metric",
+            "inner_agg",
+            "scalar_value",
             "label_filter",
         ):
             value = frag.extra.get(key)
@@ -1632,8 +1634,7 @@ def _decode_fragment_in_place(frag, _seen=None):
         nested_reasons = frag.extra.get("not_feasible_reasons")
         if isinstance(nested_reasons, list):
             frag.extra["not_feasible_reasons"] = [
-                _decode_dotted_identifiers(r) if isinstance(r, str) else r
-                for r in nested_reasons
+                _decode_dotted_identifiers(r) if isinstance(r, str) else r for r in nested_reasons
             ]
     return frag
 
@@ -1645,8 +1646,7 @@ def _parse_fragment(expr, depth=0):
     """
     if promql_parser is None:
         raise ImportError(
-            "The 'promql-parser' package is required but not installed. "
-            "Install it with: pip install promql-parser"
+            "The 'promql-parser' package is required but not installed. Install it with: pip install promql-parser"
         )
 
     expr = _trim_outer_parens(expr.strip())
@@ -1688,12 +1688,18 @@ def _apply_fragment_to_context(frag, context):
     summary = _find_summary_fragment(frag) or frag
 
     if not context.group_labels:
-        context.group_labels = list(frag.group_labels or _extract_group_labels(context.clean_expr or context.promql_expr))
+        context.group_labels = list(
+            frag.group_labels or _extract_group_labels(context.clean_expr or context.promql_expr)
+        )
 
     if not context.outer_agg:
-        context.outer_agg = frag.outer_agg or summary.outer_agg or _detect_outer_agg(context.clean_expr or context.promql_expr) or ""
+        context.outer_agg = (
+            frag.outer_agg or summary.outer_agg or _detect_outer_agg(context.clean_expr or context.promql_expr) or ""
+        )
 
-    summary_inner = frag.extra.get("call_name") or frag.range_func or summary.extra.get("call_name") or summary.range_func
+    summary_inner = (
+        frag.extra.get("call_name") or frag.range_func or summary.extra.get("call_name") or summary.range_func
+    )
     if not context.inner_func and summary_inner:
         context.inner_func = summary_inner
 
@@ -1702,6 +1708,7 @@ def _apply_fragment_to_context(frag, context):
 
     if not context.range_window and (frag.range_window or summary.range_window):
         context.range_window = frag.range_window or summary.range_window
+
 
 def _build_stats_call(outer_agg, inner_func, metric_name, range_window):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
@@ -1815,9 +1822,7 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     # for monotonically-bucketed gauges and stats; this was surfaced by
     # reviewing the Node Exporter Full "Pressure" bar chart, which had
     # data in every bucket but rendered all-null bars.
-    reduced = ", ".join(
-        f"{field} = MAX({field})" for field in keep_fields
-    )
+    reduced = ", ".join(f"{field} = MAX({field})" for field in keep_fields)
     if group_fields:
         parts.append("| SORT time_bucket ASC")
         parts.append(f"| STATS {reduced} BY {', '.join(group_fields)}")
@@ -2068,9 +2073,7 @@ def _build_measure_spec(
         # Issue #8: gauge aggregations against a proven TSDS must use TS, not FROM —
         # FROM sums every per-sample doc instead of one value per series per bucket.
         is_proven_tsds_gauge = (
-            allow_tsds_gauge_promotion
-            and (not is_counter)
-            and _field_is_proven_tsds_gauge(frag.metric, resolver)
+            allow_tsds_gauge_promotion and (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
         )
         source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
@@ -2099,10 +2102,7 @@ def _build_measure_spec(
         # ``first argument of [RATE(...)] must be counter``. Degrade the
         # query to a gauge-equivalent so the panel still renders honest
         # numbers and surface a warning.
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        if not is_counter and frag.range_func in {"rate", "irate", "increase"}:
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
@@ -2129,10 +2129,7 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        if not is_counter and frag.range_func in {"rate", "irate", "increase"}:
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
@@ -2140,7 +2137,11 @@ def _build_measure_spec(
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
         stats_expr = f"{esql_outer}({esql_inner}({metric_field}, {frag.range_window}))"
     elif frag.family == "nested_agg":
-        inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+        inner_groups = (
+            resolver.resolve_labels(frag.extra.get("inner_group", []))
+            if resolver
+            else list(frag.extra.get("inner_group", []))
+        )
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
@@ -2485,10 +2486,7 @@ def _try_rewrite_set_or_same_metric(
         base,
         filters=unified_filters,
         group_fields=new_group_fields,
-        warnings=list(base.warnings)
-        + [
-            "Rewrote PromQL set-or between same metric as a unified WHERE OR clause"
-        ],
+        warnings=list(base.warnings) + ["Rewrote PromQL set-or between same metric as a unified WHERE OR clause"],
     )
     return FormulaPlan(
         specs=[new_spec],
@@ -2508,9 +2506,7 @@ def _set_or_distinguishing_labels(operand_frags):
             label = matcher.get("label")
             if not label:
                 continue
-            by_label_values.setdefault(label, set()).add(
-                (matcher.get("op", "="), matcher.get("value", ""))
-            )
+            by_label_values.setdefault(label, set()).add((matcher.get("op", "="), matcher.get("value", "")))
     return [label for label, values in by_label_values.items() if len(values) > 1]
 
 
@@ -2539,12 +2535,7 @@ def _build_formula_plan(
     # re-classify as the appropriate aggregate family so the primary metric can
     # participate in both.  Label enrichment from the join is silently dropped —
     # identical to what join_family_rule does in translate.py.
-    if (
-        frag
-        and frag.family == "unknown"
-        and frag.extra.get("vector_matching")
-        and frag.binary_op == "*"
-    ):
+    if frag and frag.family == "unknown" and frag.extra.get("vector_matching") and frag.binary_op == "*":
         stripped_fields = {f.name: getattr(frag, f.name) for f in dataclasses.fields(frag)}
         if frag.range_func:
             stripped_fields["family"] = "range_agg"
@@ -2580,12 +2571,7 @@ def _build_formula_plan(
     # which already carries the correct metric and family.  Use join_labels
     # as the fallback preferred group fields so the resulting spec retains the
     # label enrichment fields (e.g. chip_name) that the join was providing.
-    if (
-        frag
-        and frag.family == "join"
-        and frag.binary_op == "*"
-        and frag.extra.get("left_frag")
-    ):
+    if frag and frag.family == "join" and frag.binary_op == "*" and frag.extra.get("left_frag"):
         left_frag = frag.extra["left_frag"]
         join_labels = frag.extra.get("join_labels", []) or []
         effective_preferred = preferred_group_labels or (join_labels if join_labels else None)
@@ -2665,10 +2651,7 @@ def _build_formula_plan(
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
-                    if (
-                        f"Grafana variable ${var_name} dropped"
-                        not in (plan.warnings or [])
-                    ):
+                    if f"Grafana variable ${var_name} dropped" not in (plan.warnings or []):
                         plan.warnings.append(
                             f"Grafana variable ${var_name} used as scalar "
                             f"multiplier/divisor was dropped; chart values unscaled"
@@ -2768,6 +2751,7 @@ __all__ = [
     "_common_matchers",
     "_detect_outer_agg",
     "_extract_group_labels",
+    "_find_summary_fragment",
     "_format_scalar_value",
     "_frag_eval_line",
     "_frag_filters",

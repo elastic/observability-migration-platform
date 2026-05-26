@@ -45,6 +45,7 @@ from .promql import (
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
     _field_is_proven_tsds_gauge,
+    _find_summary_fragment,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -141,41 +142,39 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
     if not query_ir:
         return {}, {}, {}
 
-    metadata = (
-        query_ir.get("metadata", {})
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "metadata", {})
-    ) or {}
+    metadata = (query_ir.get("metadata", {}) if isinstance(query_ir, dict) else getattr(query_ir, "metadata", {})) or {}
     multi_series_metric_fields = []
-    for field_name in (metadata.get("multi_series_metric_fields", []) or []):
+    for field_name in metadata.get("multi_series_metric_fields", []) or []:
         normalized = str(field_name or "").strip()
         if normalized and normalized not in multi_series_metric_fields:
             multi_series_metric_fields.append(normalized)
 
-    source_language = str(
-        query_ir.get("source_language", "")
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "source_language", "")
-        or ""
-    ).strip().lower()
-    family = str(
-        query_ir.get("family", "")
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "family", "")
-        or ""
-    ).strip().lower()
+    source_language = (
+        str(
+            query_ir.get("source_language", "")
+            if isinstance(query_ir, dict)
+            else getattr(query_ir, "source_language", "") or ""
+        )
+        .strip()
+        .lower()
+    )
+    family = (
+        str(query_ir.get("family", "") if isinstance(query_ir, dict) else getattr(query_ir, "family", "") or "")
+        .strip()
+        .lower()
+    )
     metric_name = str(
-        query_ir.get("metric", "")
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "metric", "")
-        or ""
+        query_ir.get("metric", "") if isinstance(query_ir, dict) else getattr(query_ir, "metric", "") or ""
     ).strip()
-    range_function = str(
-        query_ir.get("range_function", "")
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "range_function", "")
-        or ""
-    ).strip().lower()
+    range_function = (
+        str(
+            query_ir.get("range_function", "")
+            if isinstance(query_ir, dict)
+            else getattr(query_ir, "range_function", "") or ""
+        )
+        .strip()
+        .lower()
+    )
     if source_language != "promql":
         return {}, {}, {}
 
@@ -191,9 +190,7 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
     #      output column aliases emitted in the ES|QL `STATS` clause (e.g.
     #      `Namespaces`, `Linux_Packets_dropped_receive`); those are not source
     #      field names and should never reach the contract.
-    query_ir_dict = (
-        query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
-    )
+    query_ir_dict = query_ir if isinstance(query_ir, dict) else query_ir.to_dict()
     has_source_expression = bool(
         str(query_ir_dict.get("source_expression", "") or "").strip()
         or str(query_ir_dict.get("clean_expression", "") or "").strip()
@@ -204,12 +201,14 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
             multi_series_metric_fields = sorted(derived_candidates)
 
     runtime_capabilities = RuntimeCapabilities(promql=bool((rule_pack or RulePackConfig()).native_promql))
-    index_pattern = str(
-        query_ir.get("target_index", "")
-        if isinstance(query_ir, dict)
-        else getattr(query_ir, "target_index", "")
-        or ""
-    ) or "metrics-*"
+    index_pattern = (
+        str(
+            query_ir.get("target_index", "")
+            if isinstance(query_ir, dict)
+            else getattr(query_ir, "target_index", "") or ""
+        )
+        or "metrics-*"
+    )
     planner_metric_name = metric_name or (multi_series_metric_fields[0] if multi_series_metric_fields else "")
     if family == "native_promql" and runtime_capabilities.promql and not (planner_metric_name or range_function):
         contract = TargetQueryContract(
@@ -228,16 +227,14 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
                 panel_type=str(
                     query_ir.get("panel_type", "")
                     if isinstance(query_ir, dict)
-                    else getattr(query_ir, "panel_type", "")
-                    or ""
+                    else getattr(query_ir, "panel_type", "") or ""
                 ),
                 metric=planner_metric_name,
                 range_function=range_function,
                 outer_agg=str(
                     query_ir.get("outer_agg", "")
                     if isinstance(query_ir, dict)
-                    else getattr(query_ir, "outer_agg", "")
-                    or ""
+                    else getattr(query_ir, "outer_agg", "") or ""
                 ),
                 target_index=index_pattern,
             ),
@@ -259,9 +256,7 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
         resolved_field_names = []
         for field_name in field_names:
             metric_kind = (
-                "counter"
-                if template.metric_kind and _looks_like_counter_metric(field_name)
-                else template.metric_kind
+                "counter" if template.metric_kind and _looks_like_counter_metric(field_name) else template.metric_kind
             )
             if resolver is not None and hasattr(resolver, "resolve_metric_field"):
                 prefer = "counter" if metric_kind == "counter" else "gauge"
@@ -302,8 +297,7 @@ def _build_metric_contract_artifacts(query_ir, *, resolver=None, rule_pack=None)
     all_tsds = True
     if len(concrete_indexes) == 1 and field_capabilities:
         all_tsds = all(
-            bool(getattr(capability, "time_series_metric_kind", "") or "")
-            for capability in field_capabilities.values()
+            bool(getattr(capability, "time_series_metric_kind", "") or "") for capability in field_capabilities.values()
         )
     elif len(concrete_indexes) > 1:
         all_tsds = False
@@ -402,7 +396,7 @@ def grafana_macro_rule(context):
 _METRIC_REF_AGG_RE = re.compile(
     r"\b(?:AVG|SUM|MAX|MIN|COUNT|RATE|IRATE|INCREASE|MEDIAN|STDDEV|VARIANCE|"
     r"COUNT_DISTINCT|PERCENTILE|FIRST|LAST)\("
-    r"(?:[A-Za-z_][\w.]*\()*"        # peel zero or more nested function calls
+    r"(?:[A-Za-z_][\w.]*\()*"  # peel zero or more nested function calls
     r"([A-Za-z_][\w.]*)\b(?!\s*\()",  # captured identifier must not be a call
     re.IGNORECASE,
 )
@@ -415,23 +409,56 @@ _METRIC_REF_RLIKE_RE = re.compile(
     re.IGNORECASE,
 )
 _BY_CLAUSE_RE = re.compile(
-    r"\bBY\s+(.+?)(?:\n|\||$)", re.IGNORECASE | re.DOTALL,
+    r"\bBY\s+(.+?)(?:\n|\||$)",
+    re.IGNORECASE | re.DOTALL,
 )
 _BY_FIELD_PARTS_RE = re.compile(r"[,\s]+")
-_ESQL_METRIC_BLOCKLIST = frozenset({
-    "time_bucket", "timestamp_bucket", "step", "value", "values",
-    "computed_value", "result", "count", "constant_value",
-    "@timestamp", "log_count",
-    # Common translator-introduced internal aliases that occasionally slip
-    # past the negative-lookahead.
-    "inner_val", "outer_val",
-    # ES|QL keywords / common function names that may appear bare in some
-    # syntactic positions (e.g. inside CASE) and should never be treated as
-    # field references.
-    "NOT", "AND", "OR", "TRUE", "FALSE", "NULL", "IS", "BY", "ON", "AS",
-    "CASE", "WHERE", "LIMIT", "SORT", "STATS", "EVAL", "KEEP", "DROP",
-    "RENAME", "FROM", "WHEN", "THEN", "ELSE", "END",
-})
+_ESQL_METRIC_BLOCKLIST = frozenset(
+    {
+        "time_bucket",
+        "timestamp_bucket",
+        "step",
+        "value",
+        "values",
+        "computed_value",
+        "result",
+        "count",
+        "constant_value",
+        "@timestamp",
+        "log_count",
+        # Common translator-introduced internal aliases that occasionally slip
+        # past the negative-lookahead.
+        "inner_val",
+        "outer_val",
+        # ES|QL keywords / common function names that may appear bare in some
+        # syntactic positions (e.g. inside CASE) and should never be treated as
+        # field references.
+        "NOT",
+        "AND",
+        "OR",
+        "TRUE",
+        "FALSE",
+        "NULL",
+        "IS",
+        "BY",
+        "ON",
+        "AS",
+        "CASE",
+        "WHERE",
+        "LIMIT",
+        "SORT",
+        "STATS",
+        "EVAL",
+        "KEEP",
+        "DROP",
+        "RENAME",
+        "FROM",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+    }
+)
 
 _ESQL_BLOCKLIST_LOWER = frozenset(name.lower() for name in _ESQL_METRIC_BLOCKLIST)
 
@@ -476,7 +503,8 @@ def _extract_metric_references(esql_query):
     # the ``leaked_label_variables`` validator instead — they should not be
     # double-reported as missing-cluster-fields here.
     return {
-        ref for ref in refs
+        ref
+        for ref in refs
         if ref not in _ESQL_METRIC_BLOCKLIST
         and ref.lower() not in _ESQL_BLOCKLIST_LOWER
         and not ref.startswith("_")
@@ -532,7 +560,11 @@ def _or_left_is_feasible(frag):
     if frag.family != "binary_expr" or (frag.binary_op or "").lower() != "or":
         return False
     left_frag = frag.extra.get("left_frag")
-    left_reasons = (left_frag.extra.get("not_feasible_reasons") or []) if left_frag else frag.extra.get("not_feasible_reasons") or []
+    left_reasons = (
+        (left_frag.extra.get("not_feasible_reasons") or [])
+        if left_frag
+        else frag.extra.get("not_feasible_reasons") or []
+    )
     return not left_reasons
 
 
@@ -743,7 +775,9 @@ def uptime_family_rule(context):
     if not start_metric:
         return None
 
-    filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver, binding_map=context.binding_map)
+    filters, had_vars = _frag_filters(
+        PromQLFragment(matchers=start_matchers), resolver, binding_map=context.binding_map
+    )
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
     group_fields = _frag_group_labels(
@@ -803,7 +837,11 @@ def join_family_rule(context):
     if not left_frag or not right_frag:
         return None
 
-    join_labels = resolver.resolve_labels(frag.extra.get("join_labels", [])) if resolver else list(frag.extra.get("join_labels", []))
+    join_labels = (
+        resolver.resolve_labels(frag.extra.get("join_labels", []))
+        if resolver
+        else list(frag.extra.get("join_labels", []))
+    )
 
     if frag.binary_op == "/" and left_frag.range_func and right_frag.range_func:
         left_info = _try_agg_range_info(left_frag)
@@ -826,8 +864,12 @@ def join_family_rule(context):
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
 
-            left_stats_call = _build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])
-            right_stats_call = _build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])
+            left_stats_call = _build_stats_call(
+                left_info["outer_agg"], left_info["inner_func"], left_metric_field, left_info["range_window"]
+            )
+            right_stats_call = _build_stats_call(
+                right_info["outer_agg"], right_info["inner_func"], right_metric_field, right_info["range_window"]
+            )
             # Apply per-side exclusive filters via CASE() so that label
             # selectors which appear on only one operand (e.g. mode="user" on
             # the numerator) are not silently dropped.
@@ -836,13 +878,18 @@ def join_family_rule(context):
                 if inlined:
                     left_stats_call = inlined
                 else:
-                    _append_unique(context.warnings, f"Numerator-only filter(s) could not be inlined and were dropped: {left_only}")
+                    _append_unique(
+                        context.warnings, f"Numerator-only filter(s) could not be inlined and were dropped: {left_only}"
+                    )
             if right_only:
                 inlined = _inline_filters_into_stats_expr(right_stats_call, right_only)
                 if inlined:
                     right_stats_call = inlined
                 else:
-                    _append_unique(context.warnings, f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}")
+                    _append_unique(
+                        context.warnings,
+                        f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}",
+                    )
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -893,7 +940,9 @@ def join_family_rule(context):
                         parts.append("| SORT time_bucket ASC")
                     for warning in plan.warnings:
                         _append_unique(context.warnings, warning)
-                    _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
+                    _append_unique(
+                        context.warnings, "Dropped group_left label enrichment; kept primary metric series only"
+                    )
                     _append_unique(context.warnings, "Approximated PromQL arithmetic using same-bucket ES|QL math")
                     context.parser_backend = "fragment"
                     context.source_type = plan.specs[0].source_type
@@ -918,9 +967,7 @@ def join_family_rule(context):
         source = "TS" if is_counter else "FROM"
         time_filter = rp.ts_time_filter if is_counter else rp.from_time_filter
         bucket = rp.ts_bucket if is_counter else rp.from_bucket
-        physical_metric = _resolve_metric_field(
-            resolver, metric_name, prefer="counter" if is_counter else "gauge"
-        )
+        physical_metric = _resolve_metric_field(resolver, metric_name, prefer="counter" if is_counter else "gauge")
 
         context.parser_backend = "fragment"
         context.source_type = source
@@ -975,10 +1022,7 @@ def join_family_rule(context):
             w = left_frag.range_window or rp.default_rate_window
             # Same gauge-fallback story as range_agg_family_rule: emitting
             # RATE/IRATE/INCREASE on a gauge-typed field hard-fails.
-            if (
-                not is_counter
-                and left_frag.range_func in {"rate", "irate", "increase"}
-            ):
+            if not is_counter and left_frag.range_func in {"rate", "irate", "increase"}:
                 esql_inner, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
                 _append_unique(context.warnings, warning.format(metric=left_frag.metric))
             inner_expr = f"{esql_inner}({physical_metric}, {w})"
@@ -1017,7 +1061,9 @@ def _build_ts_rate_over_count_distinct_pipeline(index, plan):
     if len(specs) != 2 or "/" not in str(getattr(plan, "expr", "")):
         return None
     numerator = next((spec for spec in specs if spec.source_type == "TS"), None)
-    denominator = next((spec for spec in specs if spec.source_type == "FROM" and spec.stats_expr.startswith("COUNT_DISTINCT(")), None)
+    denominator = next(
+        (spec for spec in specs if spec.source_type == "FROM" and spec.stats_expr.startswith("COUNT_DISTINCT(")), None
+    )
     if not numerator or not denominator:
         return None
     if numerator.metric_name != denominator.metric_name:
@@ -1099,8 +1145,7 @@ def binary_expr_family_rule(context):
                         _append_unique(context.warnings, w)
                     _append_unique(
                         context.warnings,
-                        "PromQL 'or' fallback: using left operand only; "
-                        "right-hand side metric ignored",
+                        "PromQL 'or' fallback: using left operand only; right-hand side metric ignored",
                     )
                     return "or fallback: translated left operand"
 
@@ -1321,8 +1366,7 @@ def label_replace_family_rule(context):
     else:
         _append_unique(
             context.warnings,
-            f"label_replace(): complex replacement pattern not translatable; "
-            f"label renaming for {dst!r} skipped",
+            f"label_replace(): complex replacement pattern not translatable; label renaming for {dst!r} skipped",
         )
 
     for w in sub.warnings:
@@ -1366,10 +1410,7 @@ def scaled_agg_family_rule(context):
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
     eval_line, final_alias = _frag_eval_line(alias, frag)
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-    if (
-        not is_counter
-        and frag.range_func in {"rate", "irate", "increase"}
-    ):
+    if not is_counter and frag.range_func in {"rate", "irate", "increase"}:
         esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
         _append_unique(context.warnings, warning.format(metric=frag.metric))
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
@@ -1421,9 +1462,17 @@ def nested_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    inner_group = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+    inner_group = (
+        resolver.resolve_labels(frag.extra.get("inner_group", []))
+        if resolver
+        else list(frag.extra.get("inner_group", []))
+    )
     if not inner_group:
-        inner_group = resolver.resolve_labels(context.metadata.get("preferred_group_labels", [])) if resolver else list(context.metadata.get("preferred_group_labels", []))
+        inner_group = (
+            resolver.resolve_labels(context.metadata.get("preferred_group_labels", []))
+            if resolver
+            else list(context.metadata.get("preferred_group_labels", []))
+        )
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "COUNT")
     inner_agg_name = frag.extra.get("inner_agg", "count")
@@ -1460,11 +1509,7 @@ def nested_agg_family_rule(context):
 
     inner_metric_expr = frag.metric
     requires_ts_source = False
-    if (
-        inner_agg_name != "count"
-        and resolver is not None
-        and resolver.is_counter(frag.metric)
-    ):
+    if inner_agg_name != "count" and resolver is not None and resolver.is_counter(frag.metric):
         rate_window = context.range_window or rp.default_rate_window
         inner_metric_expr = f"RATE({frag.metric}, {rate_window})"
         requires_ts_source = True
@@ -1498,17 +1543,13 @@ def nested_agg_family_rule(context):
         context.esql_query = "\n".join(summary_lines)
     else:
         context.output_group_fields = ["time_bucket"]
-        first_stats_by = (
-            f"{rp.from_bucket}, {', '.join(inner_group)}"
-            if inner_group
-            else rp.from_bucket
-        )
+        first_stats_by = f"{rp.from_bucket}, {', '.join(inner_group)}" if inner_group else rp.from_bucket
         context.esql_query = "\n".join(
             [
                 f"{source_keyword} {context.index}",
                 f"| WHERE {rp.from_time_filter}",
                 *_build_where_lines(filters),
-                *( [count_presence_filter] if count_presence_filter else [] ),
+                *([count_presence_filter] if count_presence_filter else []),
                 f"| STATS {first_stats_expr} BY {first_stats_by}",
                 f"| STATS {result_alias} = {esql_outer}({second_stats_arg}) BY time_bucket",
                 "| SORT time_bucket ASC",
@@ -1556,10 +1597,7 @@ def range_agg_family_rule(context):
     # ``first argument of [RATE(...)] must be counter``. Degrade the
     # query to a gauge-equivalent so the panel still renders honest
     # numbers and surface a warning.
-    if (
-        not is_counter
-        and frag.range_func in {"rate", "irate", "increase"}
-    ):
+    if not is_counter and frag.range_func in {"rate", "irate", "increase"}:
         esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
         _append_unique(context.warnings, warning.format(metric=frag.metric))
     needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
@@ -1640,18 +1678,19 @@ def simple_agg_family_rule(context):
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
-    physical_metric = _resolve_metric_field(
-        resolver, frag.metric, prefer="counter" if is_counter else "gauge"
-    )
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="counter" if is_counter else "gauge")
     gauge_physical_metric = (
-        physical_metric
-        if not is_counter
-        else _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        physical_metric if not is_counter else _resolve_metric_field(resolver, frag.metric, prefer="gauge")
     )
 
     if pre_agg_filter:
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
-        metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
+        metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {
+            "stat",
+            "singlestat",
+            "gauge",
+            "bargauge",
+        }
         filter_value = _format_scalar_value(pre_agg_filter["value"])
         # Issue #8: when the filtered metric is a proven TSDS gauge, the pre-agg
         # filter must run under TS so that the outer SUM/AVG/MAX aggregates one
@@ -1668,14 +1707,22 @@ def simple_agg_family_rule(context):
         ]
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})")
+            lines.append(
+                f"| STATS {alias} = COUNT(*)"
+                if frag.outer_agg == "count"
+                else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
+            )
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
+            stats_expr = (
+                "COUNT(*)"
+                if frag.outer_agg == "count"
+                else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
+            )
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -1709,7 +1756,9 @@ def simple_agg_family_rule(context):
             )
         else:
             context.output_group_fields = ["time_bucket"]
-            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp))
+            by_clause = f"{rp.from_bucket}, " + (
+                ", ".join(group_fields) if group_fields else _default_instance_field(rp)
+            )
             context.esql_query = "\n".join(
                 [
                     f"FROM {context.index}",
@@ -1738,7 +1787,9 @@ def simple_agg_family_rule(context):
         # directly to a counter field without rate(). Use LAST_OVER_TIME as the inner
         # function to get the raw cumulative value, then apply the outer aggregation.
         inner_expr = f"LAST_OVER_TIME({physical_metric})"
-        _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+        _append_unique(
+            context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value"
+        )
     else:
         inner_expr = physical_metric
 
@@ -1832,7 +1883,9 @@ def simple_metric_family_rule(context):
         # final value within each TBUCKET window, faithfully mirroring Prometheus's
         # instant-vector semantics. RATE would change the panel's meaning entirely.
         inner_expr = f"LAST_OVER_TIME({physical_metric})"
-        _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+        _append_unique(
+            context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value"
+        )
         stats_expr = f"MAX({inner_expr})"
     elif can_use_direct_ts_gauge:
         source = "TS"
@@ -1861,7 +1914,9 @@ def simple_metric_family_rule(context):
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
-            _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+            _append_unique(
+                context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)"
+            )
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     eval_line, final_alias = _frag_eval_line(alias, frag)
@@ -1954,7 +2009,8 @@ def extract_label_filters_rule(context):
     frag = context.fragment
     if not frag:
         return None
-    filters, had_vars = _frag_filters(frag, context.resolver)
+    effective_frag = _find_summary_fragment(frag) or frag
+    filters, had_vars = _frag_filters(effective_frag, context.resolver, binding_map=context.binding_map)
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
     if filters:
@@ -2250,7 +2306,8 @@ def rendered_query_required_rule(context):
 
 
 _FROM_INDEX_RE = re.compile(
-    r"\b(?:FROM|TS)\s+([\w.*?,-]+)", re.IGNORECASE,
+    r"\b(?:FROM|TS)\s+([\w.*?,-]+)",
+    re.IGNORECASE,
 )
 
 
@@ -2290,7 +2347,7 @@ def cluster_index_pattern_has_data_rule(context):
     context.confidence = 0.0
     reason = (
         f"Cluster has no indices matching pattern(s): {', '.join(missing)}. "
-        "The panel would fail with \"Unknown column [@timestamp]\" because no "
+        'The panel would fail with "Unknown column [@timestamp]" because no '
         "schema exists at query time."
     )
     _append_unique(context.warnings, reason)
@@ -2459,8 +2516,7 @@ def translate_promql_to_esql(
         context.output_metric_field = context.output_metric_field.replace("__OBSDOT__", ".")
     if context.output_group_fields:
         context.output_group_fields = [
-            f.replace("__OBSDOT__", ".") if isinstance(f, str) else f
-            for f in context.output_group_fields
+            f.replace("__OBSDOT__", ".") if isinstance(f, str) else f for f in context.output_group_fields
         ]
     context.query_ir = build_query_ir(context)
     contract, evaluation, fulfillment = _build_metric_contract_artifacts(
