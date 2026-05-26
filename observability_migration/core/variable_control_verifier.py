@@ -78,7 +78,7 @@ def _check_missing_param(records, binding_map):
             continue
         token = re.compile(rf"\?{name}\b")
         for r in records:
-            if name in r.source_var_refs and not token.search(r.compiled_esql):
+            if name in r.source_var_refs and r.compiled_esql and not token.search(r.compiled_esql):
                 out.append(_Downgrade(name, "verifier_failed_missing_param"))
                 break
     return out
