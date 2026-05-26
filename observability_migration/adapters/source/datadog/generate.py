@@ -1150,7 +1150,10 @@ def _metric_config(
 ) -> dict[str, Any]:
     config: dict[str, Any] = {"field": field}
     label = _metric_label(widget, result, field)
-    if label:
+    # On metric (query_value) panels the panel title is already displayed by
+    # Kibana; setting primary.label to the same string triggers the
+    # metric-redundant-label lint rule and causes compile to fail.
+    if label and not (result.kibana_type == "metric" and label == (widget.title or "")):
         config["label"] = label
     return config
 

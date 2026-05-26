@@ -1852,6 +1852,53 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertNotIn("extent", y_left)
         self.assertTrue(any("extent omitted" in w for w in result.warnings))
 
+    def test_metric_panel_primary_label_not_set_when_equal_to_title(self):
+        # Regression: _metric_label returned widget.title for query_value panels,
+        # causing primary.label == panel title.  kb-dashboard-cli fires
+        # metric-redundant-label in that case, failing the compile step.
+        query = "avg:calico.felix.active_local_endpoints{*}"
+        mq = parse_metric_query(query)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="Active endpoints",
+            queries=[
+                WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 3},
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Calico overview", widgets=[widget])
+        generate_dashboard_yaml(dash, [result])
+        primary = result.yaml_panel["esql"]["primary"]
+        panel_title = result.yaml_panel.get("title", widget.title)
+        self.assertNotEqual(
+            primary.get("label", ""),
+            panel_title,
+            "primary.label must not duplicate the panel title (metric-redundant-label)",
+        )
+
+    def test_metric_panel_formula_alias_label_preserved(self):
+        # When a formula has an explicit alias, that alias IS meaningful and must
+        # be kept as the primary label (even if it happens to differ from the title).
+        query = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(query)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU Usage",
+            queries=[
+                WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+            ],
+            formulas=[WidgetFormula(raw="q1", alias="User CPU %")],
+            layout={"x": 0, "y": 0, "width": 4, "height": 3},
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        generate_dashboard_yaml(dash, [result])
+        primary = result.yaml_panel["esql"]["primary"]
+        self.assertEqual(primary.get("label"), "User CPU %")
+
     def test_log_stream_uses_breakdown_columns(self):
         lq = parse_log_query("status:error")
         wq = WidgetQuery(name="q1", data_source="logs", raw_query="status:error", log_query=lq, query_type="log")
