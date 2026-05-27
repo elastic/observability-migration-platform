@@ -15,6 +15,10 @@ Arguments:
               (default: migration_output/dashboards/yaml)
 
 Environment variables:
+  PYTHON
+      Python interpreter used for JSON/YAML post-processing
+      (default: .venv-tests/bin/python, .venv/bin/python, then python3)
+
   KB_DASHBOARD_LINT_SOURCE
       uv tool source passed to `uvx --from`
       (default: kb-dashboard-lint@latest)
@@ -38,6 +42,19 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "ERROR: python3 is required" >&2
   exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON_BIN="${PYTHON:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "${REPO_ROOT}/.venv-tests/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv-tests/bin/python"
+  elif [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+  else
+    PYTHON_BIN="python3"
+  fi
 fi
 
 INPUT_PATH="${1:-migration_output/dashboards/yaml}"
@@ -70,7 +87,7 @@ trap cleanup EXIT
 
 echo "Running dashboard YAML lint checks..."
 
-json_outputs=()
+lint_outputs=()
 lint_exit=0
 for file in "${yaml_files[@]}"; do
   out_file="${tmp_dir}/$(basename "${file}").lint.json"
@@ -81,13 +98,18 @@ for file in "${yaml_files[@]}"; do
     --format json > "${out_file}"; then
     lint_exit=1
   fi
-  json_outputs+=( "${out_file}" )
+  lint_outputs+=( "${out_file}" "${file}" )
 done
 
-python3 - "${DASHBOARD_LINT_WARNING_ALLOWLIST}" "${json_outputs[@]}" <<'PY'
+"${PYTHON_BIN}" - "${DASHBOARD_LINT_WARNING_ALLOWLIST}" "${lint_outputs[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 allowlisted = {
     item.strip()
@@ -95,9 +117,60 @@ allowlisted = {
     if item.strip()
 }
 
+
+def iter_leaf_panels(panels):
+    for panel in panels or []:
+        if not isinstance(panel, dict):
+            continue
+        section = panel.get("section")
+        if isinstance(section, dict):
+            yield from iter_leaf_panels(section.get("panels") or [])
+        else:
+            yield panel
+
+
+def native_promql_panel_keys(yaml_path):
+    if yaml is None:
+        return set()
+    try:
+        payload = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+
+    keys = set()
+    for dashboard in payload.get("dashboards") or []:
+        if not isinstance(dashboard, dict):
+            continue
+        dashboard_name = str(dashboard.get("name") or "")
+        for panel in iter_leaf_panels(dashboard.get("panels") or []):
+            esql_config = panel.get("esql")
+            if not isinstance(esql_config, dict):
+                continue
+            query = esql_config.get("query")
+            if isinstance(query, str) and query.lstrip().upper().startswith("PROMQL "):
+                keys.add((dashboard_name, str(panel.get("title") or "")))
+    return keys
+
+
+def is_native_promql_esql_entry(entry, promql_panel_keys):
+    if not str(entry.get("rule_id") or "").startswith("esql-"):
+        return False
+    key = (str(entry.get("dashboard_name") or ""), str(entry.get("panel_title") or ""))
+    return key in promql_panel_keys
+
+
 entries = []
 parse_errors = 0
-for raw_path in sys.argv[2:]:
+ignored_native_promql_entries = 0
+if (len(sys.argv) - 2) % 2:
+    print("ERROR: Internal lint argument mismatch.", file=sys.stderr)
+    raise SystemExit(1)
+
+for idx in range(2, len(sys.argv), 2):
+    raw_path = sys.argv[idx]
+    yaml_path = sys.argv[idx + 1]
     path = Path(raw_path)
     if not path.exists() or path.stat().st_size == 0:
         continue
@@ -116,7 +189,12 @@ for raw_path in sys.argv[2:]:
                 print(raw_output[:1000], file=sys.stderr)
             continue
     if isinstance(payload, list):
-        entries.extend(payload)
+        promql_panel_keys = native_promql_panel_keys(yaml_path)
+        for entry in payload:
+            if is_native_promql_esql_entry(entry, promql_panel_keys):
+                ignored_native_promql_entries += 1
+                continue
+            entries.append(entry)
 
 if parse_errors:
     raise SystemExit(1)
@@ -130,6 +208,13 @@ warnings = [
 info = [entry for entry in entries if entry.get("severity") == "info"]
 
 print("")
+if ignored_native_promql_entries:
+    print(
+        "Ignored "
+        f"{ignored_native_promql_entries} ES|QL lint entr"
+        f"{'y' if ignored_native_promql_entries == 1 else 'ies'} "
+        "on native PROMQL panels."
+    )
 print(
     f"Lint summary: errors={len(errors)}, warnings={len(warnings)}, info={len(info)}"
 )
