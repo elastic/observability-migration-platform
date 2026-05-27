@@ -1,0 +1,35 @@
+dashboard: Docker - Overview
+source: infra/datadog/dashboards/integrations/docker.json
+widgets: 28
+panels: 28
+controls: 0
+filters: 0
+statuses: {'not_feasible': 2, 'ok': 25, 'requires_manual': 1}
+- title='Running containers by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_containers_running']; primary=
+- title='Most RAM-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
+- title='Most CPU-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
+- title='Memory by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='Running containers'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Stopped containers'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='CPU by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='CPU user by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_cpu_user']; primary=
+- title='RSS memory by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_mem_rss']; primary=
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Running container change'; kind=markdown
+- title='CPU system by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_cpu_system']; primary=
+- title=''; kind=markdown
+- title='Cache memory by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_mem_cache']; primary=
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Swap by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_mem_swap']; primary=
+- title=''; kind=markdown
+- title='Avg. I/O bytes read by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_io_read_bytes']; primary=
+- title='Avg. I/O bytes written by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_io_write_bytes']; primary=
+- title=''; kind=markdown
+- title='Avg. rx bytes by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_net_bytes_rcvd']; primary=
+- title='Avg. tx bytes by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_net_bytes_sent']; primary=
+- title='Most tx-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
+- title='tx by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='Running containers by image'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['docker_image']; primary=; metric=

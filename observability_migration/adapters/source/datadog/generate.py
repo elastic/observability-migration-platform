@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from observability_migration.core.reporting.report import _panel_query_index
+from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
     apply_style_guide_layout,
@@ -1041,27 +1042,8 @@ def _resolve_overlaps(panels: list[dict[str, Any]]) -> None:
 def _infer_dimensions(result: TranslationResult) -> list[str]:
     """Infer dimension fields from the ES|QL query (group-by fields)."""
     query = result.esql_query or ""
-    dims: list[str] = []
-
-    if "BY " in query.upper():
-        by_idx = query.upper().rindex("BY ")
-        by_clause = query[by_idx + 3:]
-        first_line = by_clause.split("\n")[0].strip()
-        if first_line.startswith("|"):
-            return dims
-
-        parts = _split_by_clause(first_line)
-        for part in parts:
-            part = part.strip().rstrip("|").strip()
-            if not part:
-                continue
-            if "=" in part:
-                alias = part.split("=")[0].strip()
-                dims.append(alias)
-            else:
-                dims.append(part)
-
-    return dims
+    shape = extract_esql_shape(query)
+    return list(shape.group_fields)
 
 
 def _split_by_clause(text: str) -> list[str]:
@@ -1090,6 +1072,9 @@ def _infer_metrics(result: TranslationResult) -> list[str]:
     """Infer metric fields from the ES|QL STATS clause."""
     query = result.esql_query or ""
     dims = _infer_dimensions(result)
+    shape = extract_esql_shape(query)
+    if shape.metric_fields:
+        return list(shape.metric_fields)
     keep_fields = _infer_keep_fields(query)
     if keep_fields:
         metrics = [

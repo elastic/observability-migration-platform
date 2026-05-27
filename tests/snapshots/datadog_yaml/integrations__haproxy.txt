@@ -1,0 +1,30 @@
+dashboard: HAProxy - Overview
+source: infra/datadog/dashboards/integrations/haproxy.json
+widgets: 29
+panels: 23
+controls: 3
+filters: 0
+statuses: {'ok': 21, 'requires_manual': 2, 'skipped': 6}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Incoming Success Rate (non-5xx responses)'; kind=markdown
+- title='Incoming Requests Volume'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Errors by Service'; kind=esql; type=pie; dimension=; metrics=['query1_query2']; breakdowns=['service.name']; primary=; metric=
+- title='Frontend Response codes'; kind=esql; type=line; dimension=time_bucket; metrics=['f_2xx', 'f_1xx', 'f_3xx', 'f_4xx', 'f_5xx', 'other']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='2xx Frontend Responses'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='3xx Frontend Responses'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='4xx Frontend Responses'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='5xx Frontend Responses'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='HAProxy Logs'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
+- title='Backend response codes by Release'; kind=esql; type=line; dimension=time_bucket; metrics=['f_2xx', 'f_1xx', 'f_3xx', 'f_4xx', 'f_5xx', 'other']; breakdowns=[]; primary=; metric=
+- title='2xx Backend Responses by Release'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='3xx Backend Responses by Release'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='4xx Backend Responses by Release'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='5xx Backend Responses by Release'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Backend p99 Response Time'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Top Resource Consumers'; kind=esql; type=datatable; dimension=; metrics=['cpu_cores', 'memory']; breakdowns=['k8s.pod.name']; primary=; metric=
+- title='CPU Usage by Pod'; kind=markdown
+- title='Memory Usage %'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2_100']; breakdowns=[]; primary=; metric=

@@ -1,0 +1,53 @@
+dashboard: Kafka, Zookeeper and Kafka Consumer Overview
+source: infra/datadog/dashboards/integrations/kafka.json
+widgets: 55
+panels: 46
+controls: 3
+filters: 0
+statuses: {'not_feasible': 2, 'ok': 38, 'requires_manual': 4, 'skipped': 9, 'warning': 2}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Kafka Topology for $topic, $env'; kind=markdown
+- title='Topic Health'; kind=markdown
+- title='Offline Partitions'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Under Replicated Partitions'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='ISR Delta'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Follower Fetch Latency'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Consumer Fetch Latency'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Produce Latency'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Kafka Monitors'; kind=markdown
+- title=''; kind=markdown
+- title='Clean and Unclean Leader Elections'; kind=esql; type=line; dimension=time_bucket; metrics=['clean', 'unclean']; breakdowns=[]; primary=; metric=
+- title='Broker Network Throughput'; kind=esql; type=line; dimension=time_bucket; metrics=['bytes_in', 'bytes_out']; breakdowns=[]; primary=; metric=
+- title='Producer and Fetch Request Purgatory '; kind=esql; type=line; dimension=time_bucket; metrics=['producer', 'fetch']; breakdowns=[]; primary=; metric=
+- title='Request Times'; kind=esql; type=line; dimension=time_bucket; metrics=['produce', 'fetch']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Bytes Out by Topic'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Request and Response Rate'; kind=esql; type=line; dimension=time_bucket; metrics=['request', 'response']; breakdowns=[]; primary=; metric=
+- title='Average Request Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='I/O Wait Time'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Consumer Lag by Group'; kind=esql; type=line; dimension=time_bucket; metrics=['lag', 'offset']; breakdowns=[]; primary=; metric=
+- title='Bytes Consumed'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Messages Consumed'; kind=esql; type=line; dimension=time_bucket; metrics=['abs_query1']; breakdowns=[]; primary=; metric=
+- title='Min Fetch Rate'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Top 10 Max Kafka Lag by env'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['deployment.environment', 'topic']; primary=; metric=
+- title='Incoming messages by env, producing service for $topic'; kind=markdown
+- title='Outgoing messages by env, consuming service for $topic'; kind=markdown
+- title='Top 10 p95 message size by env for {topic}'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
+- title='Distribution of message size for $topic'; kind=markdown
+- title=''; kind=markdown
+- title='ZK File Descriptors '; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2']; breakdowns=[]; primary=; metric=
+- title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1
+- title='Pending Syncs (Leader)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Average Request Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Outstanding Requests'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1
+- title='Number of Commits (Leader)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='JVM GC Count by Type'; kind=esql; type=line; dimension=time_bucket; metrics=['major_gc', 'minor_gc']; breakdowns=[]; primary=; metric=
+- title='JVM GC Time by Type'; kind=esql; type=line; dimension=time_bucket; metrics=['major_gc', 'minor_gc']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Count per Log Status'; kind=esql; type=line; dimension=time_bucket; metrics=['count']; breakdowns=[]; primary=; metric=
+- title='Error Logs'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=

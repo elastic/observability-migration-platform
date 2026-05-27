@@ -1,0 +1,29 @@
+dashboard: Consul Overview
+source: infra/datadog/dashboards/integrations/consul.json
+widgets: 27
+panels: 22
+controls: 3
+filters: 0
+statuses: {'ok': 16, 'requires_manual': 4, 'skipped': 5, 'warning': 2}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Healthy'; kind=markdown
+- title='Can Connect'; kind=markdown
+- title='Consul Monitor Status'; kind=markdown
+- title=''; kind=markdown
+- title='Nodes Critical'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Nodes Up'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Nodes Warning'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Nodes Passing'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Services Warning'; kind=esql; type=pie; dimension=; metrics=['query1']; breakdowns=['consul_node_id', 'consul_datacenter', 'host.name']; primary=; metric=
+- title='Services Critical'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['consul_node_id', 'consul_datacenter', 'host.name']; primary=; metric=
+- title=''; kind=markdown
+- title='Leader Last Contact with Followers (in ms)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_3']; breakdowns=[]; primary=; metric=
+- title='Latency of Leader Commit to Disk'; kind=esql; type=line; dimension=time_bucket; metrics=['max_time', 'average_time']; breakdowns=[]; primary=; metric=
+- title='New Leader Events'; kind=markdown
+- title='Consul Raft Commit Time'; kind=esql; type=line; dimension=time_bucket; metrics=['average_time', 'median_time']; breakdowns=[]; primary=; metric=
+- title='Consul Logs'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
+- title=''; kind=markdown
+- title='Memberlist TCP'; kind=esql; type=line; dimension=time_bucket; metrics=['connect', 'accept', 'sent']; breakdowns=[]; primary=; metric=
+- title='Memberlist UDP'; kind=esql; type=line; dimension=time_bucket; metrics=['sent', 'received']; breakdowns=[]; primary=; metric=

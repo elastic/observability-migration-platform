@@ -193,57 +193,89 @@ def select_xy_dimension_fields(by_cols, time_fields=None):
 
 def extract_esql_shape(esql):
     commands = split_esql_pipeline(esql)
+    shape = ESQLShape()
     for command in commands:
-        if not command.lower().startswith("stats "):
+        lower_command = command.lower()
+        if lower_command.startswith("stats "):
+            assignments_text, by_text = split_top_level_keyword(command[6:].strip(), "BY")
+            metric_fields = []
+            for assignment in _split_top_level_csv(assignments_text):
+                alias, expr = split_top_level_assignment(assignment)
+                field_name = alias or expr
+                if field_name:
+                    metric_fields.append(field_name)
+            group_fields = []
+            time_fields = []
+            for part in _split_top_level_csv(by_text):
+                alias, expr = split_top_level_assignment(part)
+                field_name = alias or expr
+                if not field_name:
+                    continue
+                group_fields.append(field_name)
+                if is_time_like_output_field(field_name) or is_time_bucket_expression(expr or field_name):
+                    time_fields.append(field_name)
+            shape = ESQLShape(
+                metric_fields=metric_fields,
+                group_fields=group_fields,
+                time_fields=time_fields,
+                projected_fields=list(group_fields) + list(metric_fields),
+                mode="stats",
+            )
             continue
-        assignments_text, by_text = split_top_level_keyword(command[6:].strip(), "BY")
-        metric_fields = []
-        for assignment in _split_top_level_csv(assignments_text):
-            alias, expr = split_top_level_assignment(assignment)
-            field_name = alias or expr
-            if field_name:
-                metric_fields.append(field_name)
-        group_fields = []
-        time_fields = []
-        for part in _split_top_level_csv(by_text):
-            alias, expr = split_top_level_assignment(part)
-            field_name = alias or expr
-            if not field_name:
-                continue
-            group_fields.append(field_name)
-            if is_time_like_output_field(field_name) or is_time_bucket_expression(expr or field_name):
-                time_fields.append(field_name)
-        return ESQLShape(
-            metric_fields=metric_fields,
-            group_fields=group_fields,
-            time_fields=time_fields,
-            projected_fields=list(group_fields) + list(metric_fields),
-            mode="stats",
-        )
-    for command in reversed(commands):
-        if not command.lower().startswith("keep "):
+
+        if lower_command.startswith("eval "):
+            for assignment in _split_top_level_csv(command[5:].strip()):
+                alias, _expr = split_top_level_assignment(assignment)
+                if alias and alias not in shape.projected_fields:
+                    shape.projected_fields.append(alias)
             continue
-        projected_fields = [part.strip() for part in _split_top_level_csv(command[5:].strip()) if part.strip()]
-        time_fields = [f for f in projected_fields if is_time_like_output_field(f)]
-        return ESQLShape(
-            projected_fields=projected_fields,
-            time_fields=time_fields,
-            mode="keep",
-        )
-    if commands and commands[0].lower().startswith("row "):
-        projected_fields = []
-        for assignment in _split_top_level_csv(commands[0][4:].strip()):
-            alias, expr = split_top_level_assignment(assignment)
-            field_name = alias or expr
-            if field_name:
-                projected_fields.append(field_name)
-        time_fields = [f for f in projected_fields if is_time_like_output_field(f)]
-        return ESQLShape(
-            projected_fields=projected_fields,
-            time_fields=time_fields,
-            mode="row",
-        )
-    return ESQLShape()
+
+        if lower_command.startswith("keep "):
+            projected_fields = [part.strip() for part in _split_top_level_csv(command[5:].strip()) if part.strip()]
+            group_fields = [field for field in shape.group_fields if field in projected_fields]
+            metric_fields = [field for field in shape.metric_fields if field in projected_fields]
+            if not metric_fields:
+                metric_fields = [
+                    field
+                    for field in projected_fields
+                    if field not in group_fields and not is_time_like_output_field(field)
+                ]
+            time_fields = [
+                field
+                for field in projected_fields
+                if field in shape.time_fields or is_time_like_output_field(field)
+            ]
+            shape = ESQLShape(
+                metric_fields=metric_fields,
+                group_fields=group_fields,
+                time_fields=time_fields,
+                projected_fields=projected_fields,
+                mode=shape.mode or "keep",
+            )
+            continue
+
+        if lower_command.startswith("drop "):
+            dropped_fields = {part.strip() for part in _split_top_level_csv(command[5:].strip()) if part.strip()}
+            shape.metric_fields = [field for field in shape.metric_fields if field not in dropped_fields]
+            shape.group_fields = [field for field in shape.group_fields if field not in dropped_fields]
+            shape.time_fields = [field for field in shape.time_fields if field not in dropped_fields]
+            shape.projected_fields = [field for field in shape.projected_fields if field not in dropped_fields]
+            continue
+
+        if lower_command.startswith("row "):
+            projected_fields = []
+            for assignment in _split_top_level_csv(command[4:].strip()):
+                alias, expr = split_top_level_assignment(assignment)
+                field_name = alias or expr
+                if field_name:
+                    projected_fields.append(field_name)
+            time_fields = [f for f in projected_fields if is_time_like_output_field(f)]
+            shape = ESQLShape(
+                projected_fields=projected_fields,
+                time_fields=time_fields,
+                mode="row",
+            )
+    return shape
 
 
 def extract_esql_columns(esql):

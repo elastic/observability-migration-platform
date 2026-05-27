@@ -1,0 +1,18 @@
+dashboard: MySQL - Overview
+source: infra/datadog/dashboards/integrations/mysql.json
+widgets: 11
+panels: 11
+controls: 0
+filters: 0
+statuses: {'ok': 11}
+- title='MySQL connections'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
+- title='MySQL reads and writes (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
+- title='MySQL fsync op count (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='MySQL slow queries'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='MySQL locking rate (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['rate_query1']; breakdowns=[]; primary=; metric=
+- title='MySQL CPU time (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='System load'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2', 'query1_3']; breakdowns=[]; primary=; metric=
+- title='CPU usage (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2', 'query3', 'query4', 'query5', 'query6']; breakdowns=[]; primary=; metric=
+- title='I/O wait (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='System memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Network traffic (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
