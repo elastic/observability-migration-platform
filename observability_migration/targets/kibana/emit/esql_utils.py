@@ -191,6 +191,14 @@ def select_xy_dimension_fields(by_cols, time_fields=None):
     return dimension, breakdown
 
 
+def _metric_fields_from_projection(projected_fields, group_fields):
+    return [
+        field
+        for field in projected_fields
+        if field not in group_fields and not is_time_like_output_field(field)
+    ]
+
+
 def extract_esql_shape(esql):
     commands = split_esql_pipeline(esql)
     shape = ESQLShape()
@@ -235,11 +243,7 @@ def extract_esql_shape(esql):
             group_fields = [field for field in shape.group_fields if field in projected_fields]
             metric_fields = [field for field in shape.metric_fields if field in projected_fields]
             if not metric_fields:
-                metric_fields = [
-                    field
-                    for field in projected_fields
-                    if field not in group_fields and not is_time_like_output_field(field)
-                ]
+                metric_fields = _metric_fields_from_projection(projected_fields, group_fields)
             time_fields = [
                 field
                 for field in projected_fields
@@ -260,6 +264,8 @@ def extract_esql_shape(esql):
             shape.group_fields = [field for field in shape.group_fields if field not in dropped_fields]
             shape.time_fields = [field for field in shape.time_fields if field not in dropped_fields]
             shape.projected_fields = [field for field in shape.projected_fields if field not in dropped_fields]
+            if not shape.metric_fields:
+                shape.metric_fields = _metric_fields_from_projection(shape.projected_fields, shape.group_fields)
             continue
 
         if lower_command.startswith("row "):

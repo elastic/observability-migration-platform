@@ -8,10 +8,10 @@ statuses: {'not_feasible': 2, 'ok': 25, 'requires_manual': 1}
 - title='Running containers by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_containers_running']; primary=
 - title='Most RAM-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
 - title='Most CPU-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
-- title='Memory by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='Memory by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value; x_axis=time_bucket; y_axis=container.name
 - title='Running containers'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Stopped containers'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='CPU by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='CPU by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value; x_axis=time_bucket; y_axis=container.name
 - title='CPU user by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_cpu_user']; primary=
 - title='RSS memory by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_mem_rss']; primary=
 - title=''; kind=markdown
@@ -31,5 +31,5 @@ statuses: {'not_feasible': 2, 'ok': 25, 'requires_manual': 1}
 - title='Avg. rx bytes by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_net_bytes_rcvd']; primary=
 - title='Avg. tx bytes by image'; kind=lens; type=line; dimension=@timestamp; metrics=['docker_net_bytes_sent']; primary=
 - title='Most tx-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
-- title='tx by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value
+- title='tx by container'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value; x_axis=time_bucket; y_axis=container.name
 - title='Running containers by image'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['docker_image']; primary=; metric=

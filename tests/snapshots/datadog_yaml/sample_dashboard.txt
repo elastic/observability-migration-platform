@@ -13,6 +13,6 @@ statuses: {'ok': 9, 'requires_manual': 1, 'warning': 1}
 - title=''; kind=markdown
 - title='Log Error Rate'; kind=esql; type=line; dimension=time_bucket; metrics=['count']; breakdowns=[]; primary=; metric=
 - title='Log Entries by Service'; kind=esql; type=datatable; dimension=; metrics=['count']; breakdowns=['service.name']; primary=; metric=
-- title='Request Latency Distribution'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1
+- title='Request Latency Distribution'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=resource_name
 - title='Monitor Summary'; kind=markdown
 - title='Network Bytes In'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

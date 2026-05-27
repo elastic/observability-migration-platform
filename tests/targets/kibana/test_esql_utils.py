@@ -40,3 +40,31 @@ def test_extract_esql_shape_ignores_by_inside_quoted_strings():
     assert shape.group_fields == ["time_bucket", "host.name"]
     assert shape.time_fields == ["time_bucket"]
     assert shape.projected_fields == ["time_bucket", "host.name", "value"]
+
+
+def test_extract_esql_shape_reclassifies_metric_after_drop():
+    query = (
+        "FROM metrics-* "
+        "| STATS value = AVG(system_cpu_user) "
+        "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name "
+        "| KEEP time_bucket, host.name, value "
+        "| EVAL ratio = value / 100 "
+        "| DROP value"
+    )
+
+    shape = extract_esql_shape(query)
+
+    assert shape.metric_fields == ["ratio"]
+    assert shape.group_fields == ["time_bucket", "host.name"]
+    assert shape.time_fields == ["time_bucket"]
+    assert shape.projected_fields == ["time_bucket", "host.name", "ratio"]
+
+
+def test_extract_esql_shape_drop_removes_group_field():
+    query = "FROM metrics-* | STATS value = AVG(system_cpu_user) BY host.name | KEEP host.name, value | DROP host.name"
+
+    shape = extract_esql_shape(query)
+
+    assert shape.metric_fields == ["value"]
+    assert shape.group_fields == []
+    assert shape.projected_fields == ["value"]

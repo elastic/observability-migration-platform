@@ -40,10 +40,10 @@ statuses: {'not_feasible': 2, 'ok': 38, 'requires_manual': 4, 'skipped': 9, 'war
 - title='Distribution of message size for $topic'; kind=markdown
 - title=''; kind=markdown
 - title='ZK File Descriptors '; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2']; breakdowns=[]; primary=; metric=
-- title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1
+- title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=service.name
 - title='Pending Syncs (Leader)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Average Request Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
-- title='Outstanding Requests'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1
+- title='Outstanding Requests'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=host.name
 - title='Number of Commits (Leader)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title=''; kind=markdown
 - title='JVM GC Count by Type'; kind=esql; type=line; dimension=time_bucket; metrics=['major_gc', 'minor_gc']; breakdowns=[]; primary=; metric=

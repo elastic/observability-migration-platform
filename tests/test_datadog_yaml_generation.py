@@ -21,7 +21,11 @@ from typing import Any
 import yaml
 
 from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-from observability_migration.adapters.source.datadog.generate import generate_dashboard_yaml
+from observability_migration.adapters.source.datadog.generate import (
+    _infer_dimensions,
+    _infer_metrics,
+    generate_dashboard_yaml,
+)
 from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
 from observability_migration.adapters.source.datadog.planner import plan_widget
 from observability_migration.adapters.source.datadog.translate import translate_widget
@@ -39,6 +43,7 @@ ESQL_REQUIRED_KEYS: dict[str, list[str]] = {
     "bar": ["dimension", "metrics"],
     "area": ["dimension", "metrics"],
     "metric": ["primary"],
+    "gauge": ["metric"],
     "pie": ["metrics", "breakdowns"],
     "treemap": ["metric", "breakdowns"],
     "heatmap": ["x_axis", "metric"],
@@ -160,6 +165,10 @@ def _snapshot_text(path: pathlib.Path) -> str:
                 f"primary={(block.get('primary') or {}).get('field', '') if isinstance(block.get('primary'), dict) else ''}",
                 f"metric={(block.get('metric') or {}).get('field', '') if isinstance(block.get('metric'), dict) else ''}",
             ]
+            if isinstance(block.get("x_axis"), dict):
+                details.append(f"x_axis={block['x_axis'].get('field', '')}")
+            if isinstance(block.get("y_axis"), dict):
+                details.append(f"y_axis={block['y_axis'].get('field', '')}")
         elif "lens" in panel:
             block = panel["lens"]
             details = [
@@ -242,6 +251,68 @@ class TestDatadogYAMLFieldContracts(unittest.TestCase):
             self.fail(f"{path.name}: {len(failures)} field contract violation(s):\n" + "\n".join(failures))
 
 
+class TestDatadogYAMLShapeInvariants(unittest.TestCase):
+    def _check_dashboard(self, path: pathlib.Path) -> None:
+        _dashboard, results, rendered = _render_dashboard(path)
+        failures: list[str] = []
+        for result in results:
+            if not result.esql_query:
+                continue
+            shape = extract_esql_shape(result.esql_query)
+            if not shape.projected_fields and not shape.metric_fields:
+                failures.append(f"  {result.title!r}: ES|QL shape parser produced no output fields")
+                continue
+            if _infer_dimensions(result) != list(shape.group_fields):
+                failures.append(
+                    f"  {result.title!r}: inferred dimensions {_infer_dimensions(result)!r} "
+                    f"do not match shape group fields {list(shape.group_fields)!r}"
+                )
+            if shape.metric_fields and _infer_metrics(result) != list(shape.metric_fields):
+                failures.append(
+                    f"  {result.title!r}: inferred metrics {_infer_metrics(result)!r} "
+                    f"do not match shape metric fields {list(shape.metric_fields)!r}"
+                )
+
+        for panel in _iter_leaf_panels(rendered.get("panels") or []):
+            block = panel.get("esql")
+            if not isinstance(block, dict):
+                continue
+            query = str(block.get("query") or "")
+            if not query:
+                continue
+            shape = extract_esql_shape(query)
+            if not shape.projected_fields and not shape.metric_fields:
+                failures.append(f"  {panel.get('title', '<untitled>')!r}: emitted query has no parsed output fields")
+        if failures:
+            self.fail(f"{path.name}: {len(failures)} shape invariant issue(s):\n" + "\n".join(failures))
+
+
+class TestDatadogYAMLLensContracts(unittest.TestCase):
+    def _check_dashboard(self, path: pathlib.Path) -> None:
+        _dashboard, _results, rendered = _render_dashboard(path)
+        failures: list[str] = []
+        for panel in _iter_leaf_panels(rendered.get("panels") or []):
+            lens = panel.get("lens")
+            if not isinstance(lens, dict):
+                continue
+            title = panel.get("title", "<untitled>")
+            if not lens.get("data_view"):
+                failures.append(f"  {title!r}: lens panel missing data_view")
+            for metric in lens.get("metrics") or []:
+                if not metric.get("aggregation"):
+                    failures.append(f"  {title!r}: lens metric missing aggregation")
+                if not metric.get("field"):
+                    failures.append(f"  {title!r}: lens metric missing field")
+            primary = lens.get("primary")
+            if isinstance(primary, dict):
+                if not primary.get("aggregation"):
+                    failures.append(f"  {title!r}: lens primary metric missing aggregation")
+                if not primary.get("field"):
+                    failures.append(f"  {title!r}: lens primary metric missing field")
+        if failures:
+            self.fail(f"{path.name}: {len(failures)} lens contract issue(s):\n" + "\n".join(failures))
+
+
 class TestDatadogYAMLSnapshots(unittest.TestCase):
     def _run_snapshot(self, path: pathlib.Path) -> None:
         actual = _snapshot_text(path)
@@ -295,4 +366,6 @@ for _dashboard_path in DASHBOARD_FILES:
     _test_name = f"test_{_dashboard_id(_dashboard_path)}"
     setattr(TestDatadogYAMLStructure, _test_name, _make_structure_test(_dashboard_path))
     setattr(TestDatadogYAMLFieldContracts, _test_name, _make_contract_test(_dashboard_path))
+    setattr(TestDatadogYAMLShapeInvariants, _test_name, _make_contract_test(_dashboard_path))
+    setattr(TestDatadogYAMLLensContracts, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLSnapshots, _test_name, _make_snapshot_test(_dashboard_path))
