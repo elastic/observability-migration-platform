@@ -93,6 +93,90 @@ class TestSharedCompileBehavior(unittest.TestCase):
         self.assertNotIn("Traceback", combined_output)
         self.assertNotIn("JSONDecodeError", combined_output)
 
+    def test_validate_dashboard_yaml_ignores_esql_warnings_for_native_promql_panels(self):
+        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir) / "yaml"
+            yaml_dir.mkdir()
+            (yaml_dir / "promql.yaml").write_text(
+                "dashboards:\n"
+                "- name: Authentik\n"
+                "  panels:\n"
+                "  - title: LDAP Requests\n"
+                "    esql:\n"
+                "      query: PROMQL index=metrics-* step=1m value=(group by (type) (authentik_outpost_ldap_requests_sum))\n",
+                encoding="utf-8",
+            )
+            bin_dir = Path(tmpdir) / "bin"
+            bin_dir.mkdir()
+            fake_uvx = bin_dir / "uvx"
+            fake_uvx.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat <<'JSON'\n"
+                "[{\"severity\":\"warning\",\"rule_id\":\"esql-group-by-syntax\","
+                "\"dashboard_name\":\"Authentik\",\"panel_title\":\"LDAP Requests\","
+                "\"message\":\"GROUP BY is not valid ES|QL\"}]\n"
+                "JSON\n",
+                encoding="utf-8",
+            )
+            fake_uvx.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+            proc = subprocess.run(
+                ["bash", str(script), str(yaml_dir)],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+
+        combined_output = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined_output)
+        self.assertIn("Dashboard YAML validation passed.", combined_output)
+
+    def test_validate_dashboard_yaml_keeps_esql_warnings_for_esql_panels(self):
+        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir) / "yaml"
+            yaml_dir.mkdir()
+            (yaml_dir / "esql.yaml").write_text(
+                "dashboards:\n"
+                "- name: Authentik\n"
+                "  panels:\n"
+                "  - title: LDAP Requests\n"
+                "    esql:\n"
+                "      query: FROM metrics-* | STATS value = SUM(requests) GROUP BY type\n",
+                encoding="utf-8",
+            )
+            bin_dir = Path(tmpdir) / "bin"
+            bin_dir.mkdir()
+            fake_uvx = bin_dir / "uvx"
+            fake_uvx.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat <<'JSON'\n"
+                "[{\"severity\":\"warning\",\"rule_id\":\"esql-group-by-syntax\","
+                "\"dashboard_name\":\"Authentik\",\"panel_title\":\"LDAP Requests\","
+                "\"message\":\"GROUP BY is not valid ES|QL\"}]\n"
+                "JSON\n",
+                encoding="utf-8",
+            )
+            fake_uvx.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+            proc = subprocess.run(
+                ["bash", str(script), str(yaml_dir)],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+
+        combined_output = proc.stdout + proc.stderr
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("esql-group-by-syntax", combined_output)
+
     def test_validate_compiled_layout_uses_repo_script(self):
         with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
             shared_compile.validate_compiled_layout("/tmp/compiled")
