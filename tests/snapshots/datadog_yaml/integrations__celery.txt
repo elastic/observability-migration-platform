@@ -1,0 +1,20 @@
+dashboard: Celery Overview
+source: infra/datadog/dashboards/integrations/celery.json
+widgets: 17
+panels: 13
+controls: 4
+filters: 0
+statuses: {'ok': 11, 'requires_manual': 2, 'skipped': 4}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Celery Flower OpenMetrics endpoint health'; kind=markdown
+- title='Celery Monitors'; kind=markdown
+- title=''; kind=markdown
+- title='Celery Worker Status'; kind=esql; type=datatable; dimension=; metrics=['online']; breakdowns=['worker']; primary=; metric=
+- title='Number of tasks currently executing by worker'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['worker', 'task', 'type']; primary=; metric=
+- title='Task Prefetch Time at Worker'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Number of  Prefetch Tasks at Worker'; kind=esql; type=line; dimension=time_bucket; metrics=['tasks']; breakdowns=[]; primary=; metric=
+- title='Number of tasks currently executing by worker'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Number of tasks currently executing by worker'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Untitled'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=

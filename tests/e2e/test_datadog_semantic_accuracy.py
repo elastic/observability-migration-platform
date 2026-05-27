@@ -68,24 +68,48 @@ class TranslatedPair:
 def _translate(filename: str) -> tuple[NormalizedDashboard, list[TranslatedPair]]:
     raw = json.loads((DASHBOARD_DIR / filename).read_text(encoding="utf-8"))
     normalized = normalize_dashboard(raw)
+    widgets = _iter_widgets(normalized.widgets)
     results = [
         translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
-        for widget in normalized.widgets
+        for widget in widgets
     ]
-    yaml_doc = yaml.safe_load(generate_dashboard_yaml(normalized, results))
-    panels_by_key = _index_panels(yaml_doc)
+    yaml_doc = yaml.safe_load(
+        generate_dashboard_yaml(
+            normalized,
+            results,
+            data_view=OTEL_PROFILE.metric_index,
+            metrics_dataset_filter=OTEL_PROFILE.metrics_dataset_filter,
+            logs_dataset_filter=OTEL_PROFILE.logs_dataset_filter,
+            logs_index=OTEL_PROFILE.logs_index,
+            field_map=OTEL_PROFILE,
+        )
+    )
+    leaf_panels = _leaf_panels(yaml_doc)
+    panel_idx = 0
     pairs: list[TranslatedPair] = []
-    for widget, result in zip(normalized.widgets, results):
-        yaml_panel = panels_by_key.get(result.title) or panels_by_key.get(result.widget_id, {})
+    for widget, result in zip(widgets, results):
+        if result.status in {"blocked", "skipped"}:
+            yaml_panel = {}
+        else:
+            yaml_panel = leaf_panels[panel_idx] if panel_idx < len(leaf_panels) else {}
+            panel_idx += 1
         pairs.append(TranslatedPair(widget=widget, result=result, yaml_panel=yaml_panel))
     return normalized, pairs
 
 
-def _index_panels(yaml_doc: dict) -> dict[str, dict]:
-    out: dict[str, dict] = {}
+def _iter_widgets(widgets: list[NormalizedWidget]) -> list[NormalizedWidget]:
+    ordered: list[NormalizedWidget] = []
+    for widget in widgets or []:
+        ordered.append(widget)
+        ordered.extend(_iter_widgets(widget.children or []))
+    return ordered
+
+
+def _leaf_panels(yaml_doc: dict) -> list[dict]:
     dashboards = yaml_doc.get("dashboards") or []
     if not dashboards:
-        return out
+        return []
+    out: list[dict] = []
     stack = list(dashboards[0].get("panels") or [])
     while stack:
         panel = stack.pop(0)
@@ -93,9 +117,7 @@ def _index_panels(yaml_doc: dict) -> dict[str, dict]:
         if isinstance(section, dict):
             stack = list(section.get("panels") or []) + stack
             continue
-        title = panel.get("title", "")
-        if title:
-            out[title] = panel
+        out.append(panel)
     return out
 
 
@@ -154,8 +176,13 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
 
     @_parameterize
     def test_translates(self, filename: str):
-        _, pairs = _translate(filename)
+        normalized, pairs = _translate(filename)
         self.assertTrue(pairs, f"{filename}: produced no widgets")
+        self.assertEqual(
+            len(pairs),
+            len(_iter_widgets(normalized.widgets)),
+            f"{filename}: semantic harness did not translate nested widgets",
+        )
 
     METRIC_PATTERN = re.compile(r"(?:avg|sum|min|max|count):([a-zA-Z0-9_.]+)")
     GROUP_BY_PATTERN = re.compile(r"by\s*\{([^}]*)\}")
@@ -166,6 +193,8 @@ class TestDatadogSemanticAccuracy(unittest.TestCase, metaclass=_SemanticAccuracy
         offenders: list[str] = []
         for pair in _actionable(pairs):
             if pair.result.backend not in {"esql", "esql_with_kql"}:
+                continue
+            if "markdown" in pair.yaml_panel:
                 continue
             query = _emitted_query(pair.yaml_panel)
             if not query.strip():

@@ -1,0 +1,16 @@
+dashboard: Postgres - Metrics
+source: infra/datadog/dashboards/integrations/postgres.json
+widgets: 9
+panels: 9
+controls: 0
+filters: 0
+statuses: {'ok': 9}
+- title='Rows fetched / returned / inserted / updated (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2', 'query1_3', 'query1_4']; breakdowns=[]; primary=; metric=
+- title='Connections'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Inserts / updates / deletes (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2', 'query3']; breakdowns=[]; primary=; metric=
+- title='Disk utilization (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='System load'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2', 'query1_3']; breakdowns=[]; primary=; metric=
+- title='CPU usage (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2', 'query3', 'query4', 'query5', 'query6']; breakdowns=[]; primary=; metric=
+- title='I/O wait (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='System memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Network traffic (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=

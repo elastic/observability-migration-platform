@@ -54,6 +54,14 @@ def _panels_by_title(yaml_doc: dict) -> dict[str, dict]:
     }
 
 
+def _iter_datadog_widgets(widgets: list[Any]) -> list[Any]:
+    ordered: list[Any] = []
+    for widget in widgets or []:
+        ordered.append(widget)
+        ordered.extend(_iter_datadog_widgets(getattr(widget, "children", []) or []))
+    return ordered
+
+
 def _translate_grafana_dashboard(
     filename: str,
     output_dir: Path,
@@ -83,8 +91,17 @@ def _translate_datadog_dashboard(
 ) -> tuple[NormalizedDashboard, list[TranslationResult], Path | None, dict[str, Any]]:
     raw = json.loads((DATADOG_DASHBOARD_DIR / relative_path).read_text(encoding="utf-8"))
     normalized = normalize_dashboard(raw)
-    results = [translate_widget(widget, plan_widget(widget), OTEL_PROFILE) for widget in normalized.widgets]
-    yaml_str = generate_dashboard_yaml(normalized, results)
+    widgets = _iter_datadog_widgets(normalized.widgets)
+    results = [translate_widget(widget, plan_widget(widget), OTEL_PROFILE) for widget in widgets]
+    yaml_str = generate_dashboard_yaml(
+        normalized,
+        results,
+        data_view=OTEL_PROFILE.metric_index,
+        metrics_dataset_filter=OTEL_PROFILE.metrics_dataset_filter,
+        logs_dataset_filter=OTEL_PROFILE.logs_dataset_filter,
+        logs_index=OTEL_PROFILE.logs_index,
+        field_map=OTEL_PROFILE,
+    )
     yaml_path = None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,11 +195,11 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         normalized, results, _, yaml_doc = _translate_datadog_dashboard("integrations/redis.json")
 
         self.assertEqual(len(normalized.widgets), 7)
+        self.assertGreater(len(results), len(normalized.widgets))
         self.assertTrue(results)
-        self.assertTrue(all(result.status == "skipped" for result in results))
-        self.assertTrue(all(result.backend == "group" for result in results))
-        self.assertTrue(all("group/container widget" in result.reasons[0] for result in results))
-        self.assertEqual(yaml_doc["dashboards"][0].get("panels") or [], [])
+        self.assertTrue(any(result.status == "skipped" for result in results))
+        self.assertTrue(any(result.status in {"ok", "warning", "requires_manual"} for result in results))
+        self.assertGreater(len(_leaf_panels(yaml_doc["dashboards"][0].get("panels") or [])), 20)
 
     def test_docker_dashboard_has_mixed_statuses_and_not_feasible(self):
         _, results, _, yaml_doc = _translate_datadog_dashboard("integrations/docker.json")

@@ -1,0 +1,48 @@
+dashboard: RabbitMQ Overview (OpenMetrics Version)
+source: infra/datadog/dashboards/integrations/rabbitmq.json
+widgets: 47
+panels: 41
+controls: 3
+filters: 0
+statuses: {'not_feasible': 1, 'ok': 32, 'requires_manual': 6, 'skipped': 6, 'warning': 2}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='RMQ Monitor Summary'; kind=markdown
+- title='OpenMetrics Status'; kind=markdown
+- title=''; kind=markdown
+- title='Queue Pipeline per Node'; kind=esql; type=pie; dimension=; metrics=['query1_query2_query3_query4']; breakdowns=['rabbitmq_node']; primary=; metric=
+- title='% Usage of Node Memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2_100']; breakdowns=[]; primary=; metric=
+- title='Consumers'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Difference of Opened vs Closed Connections'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Available Disk Space'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='% Usage of Erlang Processes'; kind=esql; type=line; dimension=time_bucket; metrics=['f_100_query1_query2']; breakdowns=[]; primary=; metric=
+- title='% Usage of Ports'; kind=esql; type=line; dimension=time_bucket; metrics=['f_100_query1_query2']; breakdowns=[]; primary=; metric=
+- title='Open Channels'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='% Usage of TCP Sockets'; kind=esql; type=line; dimension=time_bucket; metrics=['query2_query1_100']; breakdowns=[]; primary=; metric=
+- title='% Usage of File Descriptors'; kind=esql; type=line; dimension=time_bucket; metrics=['query2_query1_100']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='Messages Pipeline - Queue'; kind=esql; type=line; dimension=time_bucket; metrics=['ready', 'paged_out', 'persistent', 'published', 'unack_ed']; breakdowns=[]; primary=; metric=
+- title='Messages per queue and node'; kind=esql; type=pie; dimension=; metrics=['query1']; breakdowns=['rabbitmq_queue', 'rabbitmq_node']; primary=; metric=
+- title='Messages Pipeline - Channel'; kind=esql; type=line; dimension=time_bucket; metrics=['ack_ed', 'delivered', 'published', 'unroutable_dropped', 'unack_ed']; breakdowns=[]; primary=; metric=
+- title='Packets in a Connection'; kind=markdown
+- title='Queue Depth'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Ready Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Published Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Delivered Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Redelivered Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Acknowledged Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Unacknowledged Messages'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='Consumers per Queue'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title="Queue Consumers' Ability to Take New Messages"; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title='RabbitMQ Topology for $queue'; kind=markdown
+- title='Top 10 Max Time in Queue by env'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
+- title='Incoming Messages by env, Producing Service'; kind=markdown
+- title='Outgoing Messages by env, Consuming Service'; kind=markdown
+- title='Top 10 p95 Message Size by env'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
+- title='Distribution of Message Size'; kind=markdown
+- title=''; kind=markdown
+- title='Count per Log Status'; kind=esql; type=line; dimension=time_bucket; metrics=['count']; breakdowns=[]; primary=; metric=
+- title='Error Logs for RabbitMQ'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=

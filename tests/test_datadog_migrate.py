@@ -1647,6 +1647,31 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertNotIn("_dd_w", rendered_panel)
         self.assertNotIn("_dd_h", rendered_panel)
 
+    def test_esql_panel_fields_ignore_by_inside_quoted_strings(self):
+        widget = self._make_metric_widget("1", "CPU trend", "timeseries", {"x": 0, "y": 0, "width": 4, "height": 2})
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        result = TranslationResult(
+            widget_id=widget.id,
+            title=widget.title,
+            dd_widget_type=widget.widget_type,
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query=(
+                "FROM metrics-* "
+                "| STATS value = AVG(system_cpu_user) "
+                "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name "
+                '| EVAL note = "sent by host" '
+                "| KEEP time_bucket, host.name, value"
+            ),
+        )
+
+        panel = yaml.safe_load(generate_dashboard_yaml(dash, [result]))["dashboards"][0]["panels"][0]
+
+        self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket")
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "host.name")
+        self.assertEqual([metric["field"] for metric in panel["esql"]["metrics"]], ["value"])
+
     def test_lens_percentile_aggregation_uses_schema_percentile_field(self):
         query = "p95:trace.http.request.duration{*} by {resource_name}"
         mq = parse_metric_query(query)

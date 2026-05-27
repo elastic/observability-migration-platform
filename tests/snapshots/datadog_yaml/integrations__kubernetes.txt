@@ -1,0 +1,54 @@
+dashboard: Kubernetes - Overview
+source: infra/datadog/dashboards/integrations/kubernetes.json
+widgets: 57
+panels: 47
+controls: 9
+filters: 0
+statuses: {'not_feasible': 2, 'ok': 41, 'requires_manual': 4, 'skipped': 10}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Clusters'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Nodes'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Namespaces'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='DaemonSets'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Services'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Deployments'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Containers'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Kubelets up'; kind=markdown
+- title='Kubelet Ping'; kind=markdown
+- title='Events per node'; kind=markdown
+- title='Event logs per node'; kind=markdown
+- title='Ready state by node'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.cluster.name', 'host.name', 'nodepool']; primary=; metric=
+- title='Running pods per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_pods_running']; primary=
+- title='Running by namespace'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.cluster.name', 'k8s.namespace.name']; primary=; metric=
+- title='Running pods per namespace'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_pods_running']; primary=
+- title='Failure by namespaces'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.cluster.name', 'k8s.namespace.name', 'k8s.pod.phase']; primary=; metric=
+- title='CrashloopBackOff by Pod'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_container_status_report_count_waiting']; primary=
+- title='Ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods ready'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_daemonset_ready']; primary=
+- title='Desired'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods desired'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_daemonset_desired']; primary=
+- title='Pods desired'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods desired'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_desired']; primary=
+- title='Pods available'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods available'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_available']; primary=
+- title='Pods unavailable'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods unavailable'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_unavailable']; primary=
+- title='Ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Ready'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_replicaset_replicas_ready']; primary=
+- title='Not ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Not ready'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2']; breakdowns=[]; primary=; metric=
+- title='Container states'; kind=esql; type=line; dimension=time_bucket; metrics=['running', 'waiting', 'terminated', 'ready']; breakdowns=[]; primary=; metric=
+- title='CPU utilization per node'; kind=markdown
+- title='Sum Kubernetes CPU requests per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_cpu_requests']; primary=
+- title='Most CPU-intensive pods'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.pod.name']; primary=; metric=
+- title='Memory usage per node'; kind=markdown
+- title='Sum Kubernetes memory requests per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_memory_requests']; primary=
+- title='Most memory-intensive pods'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.pod.name']; primary=; metric=
+- title='Network in per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_network_rx_bytes']; primary=
+- title='Network out per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_network_tx_bytes']; primary=
+- title='Network errors per node'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2', 'query1_3']; breakdowns=[]; primary=; metric=
+- title='Network errors per pod'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
+- title='Disk writes per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_io_write_bytes']; primary=
+- title='Disk reads per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_io_read_bytes']; primary=

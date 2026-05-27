@@ -1,0 +1,41 @@
+dashboard: MongoDB - Overview
+source: infra/datadog/dashboards/integrations/mongodb.json
+widgets: 43
+panels: 34
+controls: 1
+filters: 0
+statuses: {'ok': 26, 'requires_manual': 1, 'skipped': 9, 'warning': 7}
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Averaged uptime'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Healthy members'; kind=markdown
+- title='Shards count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Primary count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Secondary count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Configsvr count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Oplog usage'; kind=esql; type=line; dimension=time_bucket; metrics=['oplog_log_size', 'oplog_used_size']; breakdowns=[]; primary=; metric=
+- title='Maximum lag per replica set'; kind=lens; type=line; dimension=@timestamp; metrics=['mongodb_replset_optime_lag']; primary=
+- title=''; kind=markdown
+- title='Maximum lag per replica set'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['replset_name']; primary=; metric=
+- title=''; kind=markdown
+- title='Percentage of client connections used (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['f_100_exclude_null_query1_exclude_null_query1_exclude_null_query2']; breakdowns=[]; primary=; metric=
+- title='Average memory usage'; kind=esql; type=line; dimension=time_bucket; metrics=['memory_used']; breakdowns=[]; primary=; metric=
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='Number of page faults per host'; kind=esql; type=line; dimension=time_bucket; metrics=['query3']; breakdowns=[]; primary=; metric=
+- title='Data size per replica set'; kind=lens; type=line; dimension=@timestamp; metrics=['mongodb_stats_datasize']; primary=
+- title='Read requests per second'; kind=esql; type=line; dimension=time_bucket; metrics=['getmore_operations', 'queries']; breakdowns=[]; primary=; metric=
+- title='Network I/O'; kind=esql; type=line; dimension=time_bucket; metrics=['received_network_traffic', 'sent_network_traffic']; breakdowns=[]; primary=; metric=
+- title='Write requests per second'; kind=esql; type=line; dimension=time_bucket; metrics=['delete_operations', 'insert_operations', 'update_operations']; breakdowns=[]; primary=; metric=
+- title='Query operations per second'; kind=esql; type=line; dimension=time_bucket; metrics=['total_queries', 'delete_operations', 'insert_operations', 'update_operations', 'getmore_operations', 'commands']; breakdowns=[]; primary=; metric=
+- title='For reads'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['replset_name']; primary=; metric=
+- title='For writes'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['replset_name']; primary=; metric=
+- title='Command Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['command_latency']; breakdowns=[]; primary=; metric=
+- title='Read Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['read_latency']; breakdowns=[]; primary=; metric=
+- title='Write Latency'; kind=esql; type=line; dimension=time_bucket; metrics=['write_latency']; breakdowns=[]; primary=; metric=
+- title='Count of current sessions opened to the sharded cluster.'; kind=esql; type=line; dimension=time_bucket; metrics=['session_count']; breakdowns=[]; primary=; metric=
+- title='Total chunks count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Jumbo chunks count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title=''; kind=markdown
+- title=''; kind=markdown
+- title='MongoDB Logs'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
