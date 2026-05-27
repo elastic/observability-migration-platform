@@ -15,6 +15,10 @@ Arguments:
               (default: migration_output/dashboards/yaml)
 
 Environment variables:
+  PYTHON
+      Python interpreter used for JSON/YAML post-processing
+      (default: .venv-tests/bin/python, .venv/bin/python, then python3)
+
   KB_DASHBOARD_LINT_SOURCE
       uv tool source passed to `uvx --from`
       (default: kb-dashboard-lint@latest)
@@ -38,6 +42,19 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "ERROR: python3 is required" >&2
   exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON_BIN="${PYTHON:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "${REPO_ROOT}/.venv-tests/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv-tests/bin/python"
+  elif [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+  else
+    PYTHON_BIN="python3"
+  fi
 fi
 
 INPUT_PATH="${1:-migration_output/dashboards/yaml}"
@@ -84,7 +101,7 @@ for file in "${yaml_files[@]}"; do
   lint_outputs+=( "${out_file}" "${file}" )
 done
 
-python3 - "${DASHBOARD_LINT_WARNING_ALLOWLIST}" "${lint_outputs[@]}" <<'PY'
+"${PYTHON_BIN}" - "${DASHBOARD_LINT_WARNING_ALLOWLIST}" "${lint_outputs[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path

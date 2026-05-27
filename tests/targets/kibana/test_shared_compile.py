@@ -77,6 +77,7 @@ class TestSharedCompileBehavior(unittest.TestCase):
             fake_uvx.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            env["PYTHON"] = sys.executable
 
             proc = subprocess.run(
                 ["bash", str(script), str(yaml_dir)],
@@ -122,6 +123,7 @@ class TestSharedCompileBehavior(unittest.TestCase):
             fake_uvx.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            env["PYTHON"] = sys.executable
 
             proc = subprocess.run(
                 ["bash", str(script), str(yaml_dir)],
@@ -164,6 +166,7 @@ class TestSharedCompileBehavior(unittest.TestCase):
             fake_uvx.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            env["PYTHON"] = sys.executable
 
             proc = subprocess.run(
                 ["bash", str(script), str(yaml_dir)],
