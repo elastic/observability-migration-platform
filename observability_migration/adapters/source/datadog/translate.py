@@ -21,6 +21,7 @@ from observability_migration.core.verification.field_capabilities import (
 from .field_map import FieldMapProfile
 from .log_parser import log_ast_to_esql_where, log_ast_to_kql
 from .models import (
+    LOG_DATA_SOURCES,
     FormulaBinOp,
     FormulaFuncCall,
     FormulaNumber,
@@ -463,6 +464,9 @@ def _translate_formula_metric_widget(
     special_query = _try_translate_formula_reducer(formulas, spec_map, plan)
     if special_query:
         return special_query
+    count_formula_query = _try_translate_count_formula_pipeline(formulas, spec_map, plan)
+    if count_formula_query:
+        return count_formula_query
 
     used_specs = _resolve_used_specs(formulas, spec_map)
     _ensure_formula_specs_compatible(used_specs)
@@ -848,7 +852,7 @@ def _try_translate_formula_reducer(
     if fn_name not in ("count_nonzero", "count_not_null"):
         return None
     if len(ast.args) != 1 or not isinstance(ast.args[0], FormulaRef):
-        raise ValueError(f"{fn_name} expects a single query reference")
+        return None
     spec = spec_map.get(ast.args[0].name)
     if spec is None:
         raise ValueError(f"unknown query reference in {fn_name}: {ast.args[0].name}")
@@ -879,6 +883,173 @@ def _try_translate_formula_reducer(
     else:
         lines.append("| STATS value = COUNT(*)")
     return "\n".join(lines)
+
+
+@dataclass
+class _CountReducer:
+    alias: str
+    query_name: str
+    predicate: str
+
+
+def _try_translate_count_formula_pipeline(
+    formulas: list[_FormulaSpec],
+    spec_map: dict[str, _MetricQuerySpec],
+    plan: PanelPlan,
+) -> str | None:
+    if not formulas or plan.kibana_type not in ("metric", "xy"):
+        return None
+
+    reducers: dict[tuple[str, str, str], _CountReducer] = {}
+    output_exprs: list[tuple[str, str]] = []
+    used_query_names: set[str] = set()
+    for formula in formulas:
+        expr = _count_formula_ast_to_esql(formula.ast, spec_map, reducers, used_query_names)
+        if expr is None:
+            return None
+        output_exprs.append((formula.alias, expr))
+
+    if not reducers or len(used_query_names) != 1:
+        return None
+
+    spec = spec_map[next(iter(used_query_names))]
+    include_time_bucket = plan.kibana_type == "xy"
+    dim_exprs, _dim_aliases = _metric_dimension_exprs(
+        spec.group_fields,
+        include_time_bucket=include_time_bucket,
+    )
+    lines = [
+        f"FROM {spec.index}",
+        f"| WHERE {spec.where_str}",
+    ]
+    first_stats = f"{spec.alias} = {spec.agg_expr}"
+    if dim_exprs:
+        lines.append(f"| STATS {first_stats} BY {', '.join(dim_exprs)}")
+    else:
+        lines.append(f"| STATS {first_stats}")
+
+    second_group_fields = ["time_bucket"] if include_time_bucket else []
+    reducer_parts = [
+        f"{reducer.alias} = COUNT(*) WHERE {reducer.predicate}"
+        for reducer in reducers.values()
+    ]
+    if second_group_fields:
+        lines.append(f"| STATS {', '.join(reducer_parts)} BY {', '.join(second_group_fields)}")
+    else:
+        lines.append(f"| STATS {', '.join(reducer_parts)}")
+
+    eval_parts = [
+        f"{alias} = {expr}"
+        for alias, expr in output_exprs
+    ]
+    lines.append(f"| EVAL {', '.join(eval_parts)}")
+
+    keep_fields = second_group_fields + [alias for alias, _ in output_exprs]
+    if keep_fields:
+        lines.append(f"| KEEP {', '.join(keep_fields)}")
+    if include_time_bucket:
+        lines.append("| SORT time_bucket")
+    return "\n".join(lines)
+
+
+def _count_formula_ast_to_esql(
+    node: Any,
+    spec_map: dict[str, _MetricQuerySpec],
+    reducers: dict[tuple[str, str, str], _CountReducer],
+    used_query_names: set[str],
+) -> str | None:
+    if isinstance(node, FormulaNumber):
+        return _formula_number_literal(node.value)
+    if isinstance(node, FormulaUnary):
+        operand = _count_formula_ast_to_esql(node.operand, spec_map, reducers, used_query_names)
+        if operand is None or node.op != "-":
+            return None
+        return f"(-{operand})"
+    if isinstance(node, FormulaBinOp):
+        left = _count_formula_ast_to_esql(node.left, spec_map, reducers, used_query_names)
+        right = _count_formula_ast_to_esql(node.right, spec_map, reducers, used_query_names)
+        if left is None or right is None:
+            return None
+        return f"({left} {node.op} {right})"
+    if isinstance(node, FormulaFuncCall):
+        fn_name = (node.name or "").lower()
+        if fn_name == "default_zero" and len(node.args or []) == 1:
+            arg = _count_formula_ast_to_esql(node.args[0], spec_map, reducers, used_query_names)
+            return f"COALESCE({arg}, 0)" if arg is not None else None
+        if fn_name == "exclude_null" and len(node.args or []) == 1:
+            return _count_formula_ast_to_esql(node.args[0], spec_map, reducers, used_query_names)
+        if fn_name in ("count_nonzero", "count_not_null") and len(node.args or []) == 1:
+            reducer = _count_reducer_for_arg(
+                fn_name,
+                node.args[0],
+                spec_map,
+                reducers,
+                used_query_names,
+            )
+            return reducer.alias if reducer else None
+    return None
+
+
+def _count_reducer_for_arg(
+    fn_name: str,
+    arg: Any,
+    spec_map: dict[str, _MetricQuerySpec],
+    reducers: dict[tuple[str, str, str], _CountReducer],
+    used_query_names: set[str],
+) -> _CountReducer | None:
+    query_ref, extra_predicate, suffix = _count_reducer_query_predicate(arg, spec_map)
+    if query_ref is None:
+        return None
+    spec = spec_map.get(query_ref)
+    if spec is None:
+        return None
+    base_predicate = (
+        f"{spec.alias} > 0"
+        if fn_name == "count_nonzero"
+        else f"{spec.alias} IS NOT NULL"
+    )
+    predicates = [base_predicate]
+    if extra_predicate:
+        predicates.append(extra_predicate)
+    predicate = " AND ".join(predicates)
+    key = (fn_name, query_ref, predicate)
+    if key not in reducers:
+        alias_suffix = f"_{suffix}" if suffix else ""
+        reducers[key] = _CountReducer(
+            alias=f"_{fn_name}_{spec.alias}{alias_suffix}",
+            query_name=query_ref,
+            predicate=predicate,
+        )
+    used_query_names.add(query_ref)
+    return reducers[key]
+
+
+def _count_reducer_query_predicate(
+    arg: Any,
+    spec_map: dict[str, _MetricQuerySpec],
+) -> tuple[str | None, str, str]:
+    if isinstance(arg, FormulaRef):
+        return arg.name, "", ""
+    if not isinstance(arg, FormulaFuncCall):
+        return None, "", ""
+    fn_name = (arg.name or "").lower()
+    if fn_name not in ("cutoff_max", "cutoff_min") or len(arg.args or []) != 2:
+        return None, "", ""
+    ref, threshold = arg.args
+    if not isinstance(ref, FormulaRef) or not isinstance(threshold, FormulaNumber):
+        return None, "", ""
+    spec = spec_map.get(ref.name)
+    if spec is None:
+        return None, "", ""
+    op = "<=" if fn_name == "cutoff_max" else ">="
+    threshold_literal = _formula_number_literal(threshold.value)
+    suffix = f"{fn_name}_{threshold_literal.replace('-', 'neg_').replace('.', '_')}"
+    return ref.name, f"{spec.alias} {op} {threshold_literal}", suffix
+
+
+def _formula_number_literal(value: float | int | None) -> str:
+    val = value if value is not None else 0
+    return str(int(val)) if float(val).is_integer() else str(val)
 
 
 def _resolve_used_specs(
@@ -1278,6 +1449,13 @@ def _build_log_widget_query(
     if not log_queries:
         raise ValueError("no parsed log queries")
     if len(log_queries) > 1:
+        if plan.kibana_type == "xy":
+            return _build_multi_log_timeseries_query(
+                widget,
+                log_queries,
+                field_map,
+                use_kql_bridge=use_kql_bridge,
+            )
         raise ValueError("widgets with multiple log queries are not translated safely yet")
 
     primary = log_queries[0]
@@ -1374,6 +1552,155 @@ def _build_log_widget_query(
         f"| SORT @timestamp DESC\n"
         f"| LIMIT 100"
     )
+
+
+def _build_multi_log_timeseries_query(
+    widget: NormalizedWidget,
+    log_queries: list[WidgetQuery],
+    field_map: FieldMapProfile,
+    use_kql_bridge: bool = False,
+) -> str:
+    raw_query_defs = _raw_log_query_defs_by_name(widget)
+    query_aliases = {q.name: _safe_alias(q.name or "query") for q in log_queries}
+    group_keys = _shared_log_query_group_by(log_queries, raw_query_defs)
+    group_fields = [_esql_identifier(field_map.map_tag(k, context="log")) for k in group_keys]
+
+    filters: dict[str, str] = {}
+    stats_parts: list[str] = []
+    for query in log_queries:
+        filter_expr = _log_query_filter_expr(query, field_map, use_kql_bridge=use_kql_bridge)
+        if filter_expr:
+            filters[query.name] = filter_expr
+        agg_expr = _log_compute_agg_expr(raw_query_defs.get(query.name, {}), field_map)
+        alias = query_aliases[query.name]
+        if filter_expr:
+            stats_parts.append(f"{alias} = {agg_expr} WHERE {filter_expr}")
+        else:
+            stats_parts.append(f"{alias} = {agg_expr}")
+
+    where_parts = [TIME_FILTER]
+    if filters:
+        where_parts.append("(" + " OR ".join(f"({expr})" for expr in filters.values()) + ")")
+
+    group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+    if group_fields:
+        group_clause += ", " + ", ".join(group_fields)
+
+    lines = [
+        f"FROM {field_map.logs_index}",
+        f"| WHERE {' AND '.join(where_parts)}",
+        f"| STATS {', '.join(stats_parts)} BY {group_clause}",
+    ]
+
+    output_fields: list[str] = []
+    eval_parts: list[str] = []
+    if widget.formulas:
+        for idx, formula in enumerate(widget.formulas, start=1):
+            ast = formula.expression.ast if formula.expression and formula.expression.ast else None
+            raw = (formula.raw or "").strip()
+            if ast is None and raw in query_aliases:
+                ast = FormulaRef(name=raw)
+            if ast is None:
+                raise ValueError(f"formula syntax not recognized: {formula.raw or '<empty>'}")
+            alias = _safe_alias(formula.alias or raw or f"formula_{idx}")
+            expr = _formula_ast_to_esql(ast, query_aliases)
+            output_fields.append(alias)
+            if expr != _esql_identifier(alias):
+                eval_parts.append(f"{alias} = {expr}")
+    else:
+        output_fields = [query_aliases[q.name] for q in log_queries]
+
+    if eval_parts:
+        lines.append(f"| EVAL {', '.join(eval_parts)}")
+
+    keep_fields = ["time_bucket"] + group_fields + output_fields
+    lines.append(f"| KEEP {', '.join(keep_fields)}")
+    lines.append("| SORT time_bucket")
+    return "\n".join(lines)
+
+
+def _raw_log_query_defs_by_name(widget: NormalizedWidget) -> dict[str, dict[str, Any]]:
+    raw_defs: dict[str, dict[str, Any]] = {}
+    for req in widget.raw_definition.get("requests", []) or []:
+        if not isinstance(req, dict):
+            continue
+        for query in req.get("queries", []) or []:
+            if not isinstance(query, dict) or query.get("data_source") not in LOG_DATA_SOURCES:
+                continue
+            name = str(query.get("name") or "")
+            if name:
+                raw_defs[name] = query
+    return raw_defs
+
+
+def _shared_log_query_group_by(
+    log_queries: list[WidgetQuery],
+    raw_query_defs: dict[str, dict[str, Any]],
+) -> list[str]:
+    group_sets = [
+        _raw_log_query_group_by(raw_query_defs.get(query.name, {}))
+        for query in log_queries
+    ]
+    if not group_sets:
+        return []
+    first = group_sets[0]
+    if any(group != first for group in group_sets[1:]):
+        raise ValueError("multiple log queries with different group-by fields need manual review")
+    return first
+
+
+def _raw_log_query_group_by(raw_query: dict[str, Any]) -> list[str]:
+    fields: list[str] = []
+    for item in raw_query.get("group_by", []) or []:
+        if isinstance(item, dict):
+            facet = str(item.get("facet") or "").strip()
+            if facet:
+                fields.append(facet)
+    return fields
+
+
+def _log_query_filter_expr(
+    query: WidgetQuery,
+    field_map: FieldMapProfile,
+    use_kql_bridge: bool = False,
+) -> str:
+    lq = query.log_query
+    if not lq or not lq.ast:
+        return ""
+    if use_kql_bridge:
+        tag_map = {
+            key: _esql_identifier(field_map.map_tag(key, context="log"))
+            for key in field_map.tag_map
+        }
+        kql_str = log_ast_to_kql(lq.ast, field_map=tag_map)
+        return f'KQL("{_esql_escape(kql_str)}")' if kql_str and kql_str != "*" else ""
+    return log_ast_to_esql_where(lq.ast, field_map)
+
+
+def _log_compute_agg_expr(raw_query: dict[str, Any], field_map: FieldMapProfile) -> str:
+    compute = raw_query.get("compute", {}) if isinstance(raw_query, dict) else {}
+    if not isinstance(compute, dict):
+        compute = {}
+    aggregation = str(compute.get("aggregation") or "count").lower().strip()
+    metric = _normalize_log_measure_field(str(compute.get("metric") or ""))
+    if aggregation == "count" and not metric:
+        return "COUNT(*)"
+    if not metric:
+        raise ValueError(f"log compute aggregation '{aggregation}' requires a metric")
+    field_ident = _esql_identifier(field_map.map_tag(metric, context="log"))
+    if aggregation == "count":
+        return f"COUNT({field_ident})"
+    if aggregation == "cardinality":
+        return f"COUNT_DISTINCT({field_ident})"
+    if aggregation == "sum":
+        return f"SUM({field_ident})"
+    if aggregation == "avg":
+        return f"AVG({field_ident})"
+    raise ValueError(f"unsupported log compute aggregation: {aggregation}")
+
+
+def _normalize_log_measure_field(field_name: str) -> str:
+    return field_name.strip()
 
 
 # ---------------------------------------------------------------------------

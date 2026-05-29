@@ -13,6 +13,9 @@ from .models import (
     LOG_DATA_SOURCES,
     METRIC_DATA_SOURCES,
     ConditionalFormat,
+    FormulaBinOp,
+    FormulaFuncCall,
+    FormulaUnary,
     MetricQuery,
     NormalizedDashboard,
     NormalizedWidget,
@@ -154,16 +157,16 @@ def _extract_queries_and_formulas(
 
     for req in defn.get("requests", []):
         if isinstance(req, dict):
-            _extract_from_request(req, queries, formulas, seen_names)
+            _extract_from_request(req, queries, formulas, seen_names, defn.get("type", ""))
         elif isinstance(req, list):
             for sub_req in req:
                 if isinstance(sub_req, dict):
-                    _extract_from_request(sub_req, queries, formulas, seen_names)
+                    _extract_from_request(sub_req, queries, formulas, seen_names, defn.get("type", ""))
 
     if defn.get("type") == "query_value" and not queries:
         for req in defn.get("requests", []):
             if isinstance(req, dict):
-                _extract_from_request(req, queries, formulas, seen_names)
+                _extract_from_request(req, queries, formulas, seen_names, defn.get("type", ""))
 
     if defn.get("type") in ("note", "free_text", "image", "iframe"):
         pass
@@ -176,6 +179,7 @@ def _extract_from_request(
     queries: list[WidgetQuery],
     formulas: list[WidgetFormula],
     seen_names: set[str],
+    widget_type: str = "",
 ) -> None:
     request_name_map: dict[str, str] = {}
     for raw_q in req.get("queries", []):
@@ -280,8 +284,24 @@ def _extract_from_request(
                     wq.metric_query = mq2
                     wq.query_type = "metric"
                 else:
+                    existing_queries = list(queries)
+                    formula_raw = _extract_legacy_metric_expression(
+                        part,
+                        queries,
+                        legacy_aggregator,
+                        require_group=widget_type == "heatmap",
+                    )
+                    if formula_raw:
+                        if not formulas:
+                            for query in existing_queries:
+                                if query.query_type == "metric":
+                                    _append_formula(query.name, formulas)
+                        _append_formula(formula_raw, formulas)
+                        continue
                     wq.query_type = "legacy_unparsed"
             queries.append(wq)
+            if formulas and wq.query_type == "metric":
+                _append_formula(wq.name, formulas)
 
     log_q = req.get("log_query", req.get("search", {}))
     if isinstance(log_q, dict) and log_q.get("query") and not any(
@@ -429,6 +449,122 @@ def _split_legacy_q(q: str) -> list[str]:
     if current:
         parts.append("".join(current))
     return parts
+
+
+def _append_formula(raw: str, formulas: list[WidgetFormula]) -> None:
+    wf = WidgetFormula(raw=raw)
+    try:
+        wf.expression = parse_formula(raw)
+    except ParseError:
+        pass
+    formulas.append(wf)
+
+
+def _extract_legacy_metric_expression(
+    text: str,
+    queries: list[WidgetQuery],
+    aggregator: str,
+    require_group: bool = False,
+) -> str | None:
+    """Convert legacy arithmetic over metric atoms into a normalized formula."""
+    formula: list[str] = []
+    new_queries: list[WidgetQuery] = []
+    idx = 0
+    replacements = 0
+    while idx < len(text):
+        candidate = _longest_legacy_metric_atom(text[idx:])
+        if candidate is None:
+            formula.append(text[idx])
+            idx += 1
+            continue
+
+        raw_atom, metric_query = candidate
+        name = f"query{len(queries) + len(new_queries)}"
+        new_queries.append(WidgetQuery(
+            name=name,
+            data_source="metrics",
+            raw_query=raw_atom,
+            metric_query=metric_query,
+            aggregator=aggregator,
+            query_type="metric",
+        ))
+        formula.append(name)
+        idx += len(raw_atom)
+        replacements += 1
+
+    if replacements == 0:
+        return None
+    raw_formula = "".join(formula).strip()
+    try:
+        parsed = parse_formula(raw_formula)
+    except ParseError:
+        return None
+    if parsed.ast is None:
+        return None
+    if _formula_uses_unsafe_legacy_function(parsed.ast):
+        return None
+    if require_group and not any(query.metric_query and query.metric_query.group_by for query in new_queries):
+        return None
+    if any(
+        query.metric_query
+        and query.metric_query.as_count
+        and not _metric_name_is_count_like(query.metric_query.metric)
+        for query in new_queries
+    ):
+        return None
+    queries.extend(new_queries)
+    return raw_formula
+
+
+def _longest_legacy_metric_atom(text: str) -> tuple[str, MetricQuery] | None:
+    if not _looks_like_legacy_metric_start(text):
+        return None
+    for end in range(len(text), 0, -1):
+        raw = text[:end]
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        metric_query = _parse_legacy_metric_atom(candidate)
+        if metric_query is not None:
+            return raw[:len(raw.rstrip())], metric_query
+    return None
+
+
+def _looks_like_legacy_metric_start(text: str) -> bool:
+    return bool(
+        re.match(r"(?:avg|sum|min|max|count|last|median|p\d+):", text, re.IGNORECASE)
+        or re.match(r"[\w.]+\{", text)
+    )
+
+
+def _parse_legacy_metric_atom(text: str) -> MetricQuery | None:
+    mq, outer_fns = parse_legacy_query(text)
+    if mq:
+        if outer_fns:
+            mq.functions.extend(outer_fns)
+        return mq
+    return _try_parse_bare_metric(text)
+
+
+def _formula_uses_unsafe_legacy_function(node: Any) -> bool:
+    if isinstance(node, FormulaFuncCall):
+        fn_name = (node.name or "").lower()
+        if fn_name in {"top", "timeshift", "derivative"}:
+            return True
+        return any(_formula_uses_unsafe_legacy_function(arg) for arg in node.args or [])
+    if isinstance(node, FormulaBinOp):
+        return (
+            _formula_uses_unsafe_legacy_function(node.left)
+            or _formula_uses_unsafe_legacy_function(node.right)
+        )
+    if isinstance(node, FormulaUnary):
+        return _formula_uses_unsafe_legacy_function(node.operand)
+    return False
+
+
+def _metric_name_is_count_like(metric_name: str) -> bool:
+    lowered = metric_name.lower()
+    return lowered.endswith((".count", "_count", ".total", "_total"))
 
 
 def _try_parse_bare_metric(text: str) -> MetricQuery | None:

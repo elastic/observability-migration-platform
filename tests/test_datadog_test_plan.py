@@ -1013,11 +1013,11 @@ class TestNegativeChaos(unittest.TestCase):
         self.assertIn(plan.backend, ("blocked", "markdown"))
         self.assertEqual(plan.confidence, 0.0)
 
-    def test_multiple_log_queries_error(self):
+    def test_multiple_log_queries_non_timeseries_error(self):
         lq1 = parse_log_query("service:a")
         lq2 = parse_log_query("service:b")
         w = NormalizedWidget(
-            id="1", widget_type="timeseries", title="Multi",
+            id="1", widget_type="query_table", title="Multi",
             queries=[
                 WidgetQuery(name="q1", data_source="logs", raw_query="service:a", log_query=lq1, query_type="log"),
                 WidgetQuery(name="q2", data_source="logs", raw_query="service:b", log_query=lq2, query_type="log"),

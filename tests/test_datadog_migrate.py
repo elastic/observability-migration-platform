@@ -572,6 +572,90 @@ class TestNormalization(unittest.TestCase):
         self.assertEqual(len(disk_widget.formulas), 1)
         self.assertEqual(disk_widget.formulas[0].raw, "query1 + query2")
 
+    def test_legacy_q_arithmetic_part_normalizes_to_metric_queries_and_formula(self):
+        raw = {
+            "title": "Legacy arithmetic",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "System memory",
+                        "requests": [
+                            {
+                                "q": (
+                                    "sum:system.mem.usable{$scope},"
+                                    "sum:system.mem.total{$scope}-sum:system.mem.usable{$scope}"
+                                )
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+
+        self.assertEqual([q.query_type for q in widget.queries], ["metric", "metric", "metric"])
+        self.assertEqual([q.metric_query.metric for q in widget.queries], [
+            "system.mem.usable",
+            "system.mem.total",
+            "system.mem.usable",
+        ])
+        self.assertEqual([f.raw for f in widget.formulas], ["query0", "query1-query2"])
+
+    def test_legacy_q_arithmetic_with_non_count_as_count_stays_manual(self):
+        raw = {
+            "title": "Legacy arithmetic",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "Response percentage",
+                        "requests": [
+                            {
+                                "q": (
+                                    "100 * sum:gunicorn.request.status.500{*}.as_count() / "
+                                    "sum:gunicorn.requests{*}.as_count()"
+                                )
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+
+        widget = normalize_dashboard(raw).widgets[0]
+
+        self.assertEqual([q.query_type for q in widget.queries], ["legacy_unparsed"])
+        self.assertEqual(widget.formulas, [])
+
+    def test_legacy_q_heatmap_expression_without_group_stays_manual(self):
+        raw = {
+            "title": "Legacy heatmap",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "heatmap",
+                        "title": "Latency ratio",
+                        "requests": [
+                            {
+                                "q": (
+                                    "sum:cilium.policy.regeneration_time_stats.seconds.sum{*}/"
+                                    "sum:cilium.policy.regeneration_time_stats.seconds.count{upper_bound:none}"
+                                )
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+
+        widget = normalize_dashboard(raw).widgets[0]
+
+        self.assertEqual([q.query_type for q in widget.queries], ["legacy_unparsed"])
+        self.assertEqual(widget.formulas, [])
+
     def test_template_variables(self):
         raw = self._load_sample()
         nd = normalize_dashboard(raw)
@@ -1129,6 +1213,37 @@ class TestTranslation(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertIn("| EVAL value = (query1 * 100)", result.esql_query)
 
+    def test_legacy_q_arithmetic_metric_expression_translates_to_formula_panel(self):
+        raw = {
+            "title": "Flink",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "Input buffer usage (%)",
+                        "requests": [
+                            {
+                                "q": (
+                                    "avg:flink.task.Shuffle.Netty.Input.Buffers.inPoolUsage{*} "
+                                    "by {task_id,subtask_index}*100"
+                                )
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        widget = normalize_dashboard(raw).widgets[0]
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "ok")
+        self.assertIn("query0 = AVG(flink_task_Shuffle_Netty_Input_Buffers_inPoolUsage)", result.esql_query)
+        self.assertIn("BY time_bucket = BUCKET(@timestamp", result.esql_query)
+        self.assertIn("task_id, subtask_index", result.esql_query)
+        self.assertIn("| EVAL query0_100 = (query0 * 100)", result.esql_query)
+        self.assertIn("| KEEP time_bucket, task_id, subtask_index, query0_100", result.esql_query)
+
     def test_count_nonzero_formula_reduces_grouped_query(self):
         query = "avg:kubernetes.pods.running{*} by {kube_cluster_name}"
         mq = parse_metric_query(query)
@@ -1146,6 +1261,61 @@ class TestTranslation(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertIn("| WHERE query1 > 0", result.esql_query)
         self.assertIn("| STATS value = COUNT(*)", result.esql_query)
+
+    def test_count_formula_nested_in_default_zero_reduces_timeseries_groups(self):
+        query = "avg:cisco_sdwan.control_connection.status{*} by {hostname,peer_system_ip}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        up = WidgetFormula(raw="default_zero(count_nonzero(query1))", alias="Control Conns UP")
+        up.expression = parse_formula("default_zero(count_nonzero(query1))")
+        down = WidgetFormula(raw="default_zero(count_not_null(query1) - count_nonzero(query1))", alias="Control Conns DOWN")
+        down.expression = parse_formula("default_zero(count_not_null(query1) - count_nonzero(query1))")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Control Connections UP / DOWN over time",
+            queries=[wq],
+            formulas=[up, down],
+        )
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "ok")
+        self.assertIn("BY time_bucket = BUCKET(@timestamp", result.esql_query)
+        self.assertIn("hostname, peer_system_ip", result.esql_query)
+        self.assertIn("_count_nonzero_query1 = COUNT(*) WHERE query1 > 0", result.esql_query)
+        self.assertIn("_count_not_null_query1 = COUNT(*) WHERE query1 IS NOT NULL", result.esql_query)
+        self.assertIn("control_conns_up = COALESCE(_count_nonzero_query1, 0)", result.esql_query)
+        self.assertIn(
+            "control_conns_down = COALESCE((_count_not_null_query1 - _count_nonzero_query1), 0)",
+            result.esql_query,
+        )
+        self.assertIn("| KEEP time_bucket, control_conns_up, control_conns_down", result.esql_query)
+
+    def test_count_not_null_cutoff_max_formula_counts_values_at_or_below_threshold(self):
+        query = "avg:cisco_sdwan.device.reachable{type:vbond} by {system_ip,device_namespace}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="count_not_null(cutoff_max(query1, 0.5))")
+        wf.expression = parse_formula("count_not_null(cutoff_max(query1, 0.5))")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="Validators down",
+            queries=[wq],
+            formulas=[wf],
+        )
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "ok")
+        self.assertIn("BY system_ip, device_namespace", result.esql_query)
+        self.assertIn(
+            "_count_not_null_query1_cutoff_max_0_5 = COUNT(*) WHERE query1 IS NOT NULL AND query1 <= 0.5",
+            result.esql_query,
+        )
+        self.assertIn("| EVAL value = _count_not_null_query1_cutoff_max_0_5", result.esql_query)
+        self.assertIn("| KEEP value", result.esql_query)
 
     def test_rate_formula_uses_ts_rate_when_metric_is_counter_typed(self):
         # When the live field-caps loader knows the target field is a
@@ -1492,6 +1662,95 @@ class TestTranslation(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertIn("FROM", result.esql_query)
         self.assertIn("COUNT", result.esql_query)
+
+    def test_multi_log_timeseries_translates_each_query_as_separate_series(self):
+        raw = {
+            "title": "Logs",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "Authorised and Unauthorised",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "logs",
+                                        "name": "query1",
+                                        "compute": {"aggregation": "cardinality", "metric": "@pspReference"},
+                                        "search": {"query": "source:adyen @evt.name:AUTHORISATION @success:true"},
+                                    },
+                                    {
+                                        "data_source": "logs",
+                                        "name": "query2",
+                                        "compute": {"aggregation": "cardinality", "metric": "@pspReference"},
+                                        "search": {"query": "source:adyen @evt.name:AUTHORISATION @success:false"},
+                                    },
+                                ],
+                                "formulas": [
+                                    {"formula": "query1", "alias": "Authorised"},
+                                    {"formula": "query2", "alias": "Unauthorised"},
+                                ],
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        widget = normalize_dashboard(raw).widgets[0]
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.warnings, [])
+        self.assertIn("query1 = COUNT_DISTINCT(`@pspReference`) WHERE", result.esql_query)
+        self.assertIn("query2 = COUNT_DISTINCT(`@pspReference`) WHERE", result.esql_query)
+        self.assertIn("| EVAL authorised = query1, unauthorised = query2", result.esql_query)
+        self.assertIn("| KEEP time_bucket, authorised, unauthorised", result.esql_query)
+
+    def test_multi_log_timeseries_formula_applies_query_side_arithmetic(self):
+        raw = {
+            "title": "Logs",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "Failure rate",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "logs",
+                                        "name": "query1",
+                                        "compute": {"aggregation": "count"},
+                                        "search": {"query": "service:vpn status:error"},
+                                    },
+                                    {
+                                        "data_source": "logs",
+                                        "name": "query2",
+                                        "compute": {"aggregation": "count"},
+                                        "search": {"query": "service:vpn"},
+                                    },
+                                ],
+                                "formulas": [
+                                    {"formula": "default_zero((query1 / query2) * 100)", "alias": "Failure rate"}
+                                ],
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        widget = normalize_dashboard(raw).widgets[0]
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.warnings, [])
+        self.assertIn("query1 = COUNT(*) WHERE", result.esql_query)
+        self.assertIn("query2 = COUNT(*) WHERE", result.esql_query)
+        self.assertIn("failure_rate = COALESCE(((query1 / query2) * 100), 0)", result.esql_query)
+        self.assertIn("| KEEP time_bucket, failure_rate", result.esql_query)
 
     def test_log_stream_translation(self):
         lq = parse_log_query("status:error")
