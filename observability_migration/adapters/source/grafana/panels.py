@@ -75,6 +75,7 @@ from .promql import (
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
+    substitute_grafana_range_macros,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .schema import SchemaResolver
@@ -570,6 +571,17 @@ def _strip_promql_string_literals(expr):
     return text
 
 
+def _promql_grouping_has_template_variable(expr):
+    stripped = _strip_promql_string_literals(expr)
+    return bool(
+        re.search(
+            rf"\b(?:by|without)\s*\([^)]*{_GRAFANA_VAR_TOKEN_PATTERN}[^)]*\)",
+            stripped,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _trim_wrapping_parens(expr):
     text = str(expr or "").strip()
     while text.startswith("(") and text.endswith(")"):
@@ -651,6 +663,7 @@ def _clean_promql_for_native_with_state(expr):
     """Strip Grafana template variables from a PromQL expression so it can be
     sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
     had_bare_variable = False
+    expr = substitute_grafana_range_macros(expr)
     # Replace $__rate_interval / $__interval with the window from the
     # expression itself, falling back to 5m.
     window_match = re.search(r"\[(\d+[smhd])\]", expr)
@@ -824,6 +837,8 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
 def can_use_native_promql(promql_expr):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
+        return False
+    if _promql_grouping_has_template_variable(promql_expr):
         return False
     sanitized = _strip_promql_string_literals(promql_expr)
     if _PROMQL_UNSUPPORTED_RE.search(sanitized):
