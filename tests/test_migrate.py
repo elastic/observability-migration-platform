@@ -1132,7 +1132,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.status, "migrated")
         query = yaml_panel["esql"]["query"]
         self.assertIn("foo_errors_total", query)
         self.assertIn("bar_errors_total", query)
@@ -2236,6 +2236,167 @@ class TranslatorRegressionTests(unittest.TestCase):
         field_names = [item["name"] for item in result.target_query_contract.get("field_requirements", [])]
         self.assertIn("cpu_usage", field_names)
         self.assertIn("memory_usage", field_names)
+
+    def test_lossless_multi_target_merge_does_not_warn(self):
+        panel = {
+            "id": 908,
+            "type": "graph",
+            "title": "Network I/O",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "fieldConfig": {"defaults": {"unit": "Bps"}},
+            "seriesOverrides": [],
+            "targets": [
+                {
+                    "expr": "sum(rate(container_network_receive_bytes_total[1m]))",
+                    "refId": "A",
+                    "legendFormat": "receive",
+                },
+                {
+                    "expr": "sum(rate(container_network_transmit_bytes_total[1m]))",
+                    "refId": "B",
+                    "legendFormat": "transmit",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated")
+        self.assertNotIn("Merged compatible panel targets into a single ES|QL query", result.reasons)
+        self.assertEqual(
+            [metric["field"] for metric in yaml_panel["esql"]["metrics"]],
+            ["receive", "transmit"],
+        )
+
+    def test_series_override_yaxis_preserved_on_merged_metric(self):
+        panel = {
+            "id": 909,
+            "type": "graph",
+            "title": "Network I/O",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "yaxes": [
+                {"format": "bytes", "show": True},
+                {"format": "Bps", "show": True},
+            ],
+            "seriesOverrides": [{"alias": "transmit", "yaxis": 2}],
+            "targets": [
+                {
+                    "expr": "sum(rate(container_network_receive_bytes_total[1m]))",
+                    "refId": "A",
+                    "legendFormat": "receive",
+                },
+                {
+                    "expr": "sum(rate(container_network_transmit_bytes_total[1m]))",
+                    "refId": "B",
+                    "legendFormat": "transmit",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated")
+        metrics_by_field = {metric["field"]: metric for metric in yaml_panel["esql"]["metrics"]}
+        self.assertNotIn("axis", metrics_by_field["receive"])
+        self.assertEqual(metrics_by_field["transmit"].get("axis"), "right")
+        self.assertEqual(metrics_by_field["receive"].get("format"), {"type": "bytes"})
+        self.assertEqual(metrics_by_field["transmit"].get("format"), {"type": "bytes", "suffix": "/s"})
+        self.assertNotIn("Merged compatible panel targets into a single ES|QL query", result.reasons)
+
+    def test_regex_series_override_yaxis_preserved_on_merged_metric(self):
+        panel = {
+            "id": 910,
+            "type": "graph",
+            "title": "Network I/O",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "fieldConfig": {"defaults": {"unit": "Bps"}},
+            "seriesOverrides": [{"alias": "/trans.*/", "yaxis": 2}],
+            "targets": [
+                {
+                    "expr": "sum(rate(container_network_receive_bytes_total[1m]))",
+                    "refId": "A",
+                    "legendFormat": "receive",
+                },
+                {
+                    "expr": "sum(rate(container_network_transmit_bytes_total[1m]))",
+                    "refId": "B",
+                    "legendFormat": "transmit",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated")
+        metrics_by_field = {metric["field"]: metric for metric in yaml_panel["esql"]["metrics"]}
+        self.assertEqual(metrics_by_field["transmit"].get("axis"), "right")
+
+    def test_real_k8s_loopback_network_merge_is_clean(self):
+        panel = {
+            "id": 911,
+            "type": "timeseries",
+            "title": "Network Received (loopback only) by instance",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "fieldConfig": {"defaults": {"unit": "Bps"}},
+            "targets": [
+                {
+                    "expr": (
+                        'sum(rate(node_network_receive_bytes_total{device="lo", cluster="$cluster", '
+                        'job="$job"}[$__rate_interval])) by (instance)'
+                    ),
+                    "refId": "A",
+                    "legendFormat": "Received bytes in {{ instance }}",
+                },
+                {
+                    "expr": (
+                        '- sum(rate(node_network_transmit_bytes_total{device="lo", cluster="$cluster", '
+                        'job="$job"}[$__rate_interval])) by (instance)'
+                    ),
+                    "refId": "B",
+                    "legendFormat": "Transmitted bytes in {{ instance }}",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated")
+        self.assertEqual(result.reasons, [])
+        self.assertEqual(
+            [metric["field"] for metric in yaml_panel["esql"]["metrics"]],
+            ["Received_bytes_in", "Transmitted_bytes_in"],
+        )
+        self.assertIn("node_network_receive_bytes_total", yaml_panel["esql"]["query"])
+        self.assertIn("node_network_transmit_bytes_total", yaml_panel["esql"]["query"])
+        self.assertNotIn("Merged compatible panel targets", str(result.reasons))
+
+    def test_real_prometheus_yaxis_override_becomes_right_axis_metric(self):
+        panel = {
+            "id": 912,
+            "type": "graph",
+            "title": "Rule evaulation duration",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "seriesOverrides": [{"alias": "Queue length", "yaxis": 2}],
+            "targets": [
+                {
+                    "expr": 'sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, quantile)',
+                    "refId": "B",
+                    "legendFormat": "Queue length",
+                }
+            ],
+            "yaxes": [
+                {"format": "s", "min": "0", "show": True},
+                {"format": "short", "min": "0", "show": True},
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated")
+        metric = yaml_panel["esql"]["metrics"][0]
+        self.assertEqual(metric["label"], "Queue length")
+        self.assertEqual(metric["axis"], "right")
+        self.assertEqual(metric["format"], {"type": "number", "compact": True})
 
     def test_timeseries_legend_placeholder_drives_grouping(self):
         panel = {
@@ -9965,7 +10126,7 @@ class TestBareJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
         self.assertIn("node_hwmon_temp_crit_celsius", query)
         stats_lines = [ln for ln in query.splitlines() if ln.strip().startswith("| STATS")]
         self.assertEqual(len(stats_lines), 1, f"Expected single STATS, got {stats_lines}")
-        self.assertIn("Merged compatible panel targets", str(result.reasons))
+        self.assertNotIn("Merged compatible panel targets", str(result.reasons))
 
     def test_join_on_labels_preserved_as_group_fields(self):
         """The on() matching labels (e.g. chip) must appear in the BY clause.
