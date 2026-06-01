@@ -10367,8 +10367,8 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
     the leading "^" previously bypassed startswith("label_") and leaked into
     RLIKE as WHERE namespace RLIKE "^label_Namespace$".
 
-    Bug C: status!~".*cam(era)?$" — trailing "$" is a regex end-anchor, NOT
-    a Grafana variable; the old "$" in value check incorrectly dropped it.
+    Bug C: status!~".*cam(era)?$" — trailing "$" is a PromQL regex
+    end-anchor. ES|QL RLIKE treats it as a literal, so it must be stripped.
     """
 
     def setUp(self):
@@ -10380,8 +10380,8 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
             expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
         )
 
-    def test_anchored_var_matcher_not_in_rlike(self):
-        """^$Namespace$ preprocesses to ^label_Namespace$; must not emit RLIKE."""
+    def test_anchored_var_matcher_becomes_param_filter(self):
+        """^$Namespace$ strips anchors and becomes a dashboard param filter."""
         r = self._translate(
             'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0'
         )
@@ -10391,26 +10391,26 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
             r.esql_query or "",
             "preprocessed variable label should not appear in WHERE RLIKE clause",
         )
-        self.assertTrue(
-            any("variable" in w.lower() and "filter" in w.lower() for w in r.warnings),
-            f"Expected dropped-variable-filter warning, got {r.warnings}",
-        )
+        self.assertIn("k8s.namespace.name RLIKE ?Namespace", r.esql_query or "")
+        self.assertNotIn("Dropped variable-driven label filters during migration", r.warnings)
 
-    def test_real_regex_end_anchor_preserved(self):
-        """status!~".*cam(era)?$" — real end-anchor must survive into RLIKE."""
+    def test_real_regex_end_anchor_stripped_for_esql(self):
+        """status!~".*cam(era)?$" — end-anchor must not become literal $."""
         r = self._translate('http_requests_total{service="web",status!~".*cam(era)?$"}')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
         self.assertIn(
-            'RLIKE ".*cam(era)?$"',
+            'RLIKE ".*cam(era)?"',
             r.esql_query or "",
-            "real regex end-anchor must appear verbatim in RLIKE filter",
+            "PromQL regex end-anchor should be stripped for ES|QL RLIKE",
         )
+        self.assertNotIn('RLIKE ".*cam(era)?$"', r.esql_query or "")
 
     def test_dollar_end_anchor_without_word_char_not_a_var(self):
-        """Regex "end$" — bare end-anchor with no following word char is kept."""
+        """Regex "end$" — bare end-anchor is stripped, not treated as a var."""
         r = self._translate('http_requests_total{status!~".*end$"}')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn('RLIKE ".*end$"', r.esql_query or "")
+        self.assertIn('RLIKE ".*end"', r.esql_query or "")
+        self.assertNotIn('RLIKE ".*end$"', r.esql_query or "")
 
 
 class TestGroupByVarLabelDropped(unittest.TestCase):

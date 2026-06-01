@@ -246,6 +246,27 @@ def grafana_template_var_name(token: str) -> str | None:
     return match.group("braced") or match.group("plain") or match.group("bracket")
 
 
+def _has_unescaped_trailing_dollar(value: str) -> bool:
+    if not value.endswith("$"):
+        return False
+    backslashes = 0
+    idx = len(value) - 2
+    while idx >= 0 and value[idx] == "\\":
+        backslashes += 1
+        idx -= 1
+    return backslashes % 2 == 0
+
+
+def _strip_promql_regex_anchors(value: str) -> str:
+    """Drop PromQL regex anchors that ES|QL RLIKE treats as literals."""
+    text = str(value or "")
+    if text.startswith("^"):
+        text = text[1:]
+    if _has_unescaped_trailing_dollar(text):
+        text = text[:-1]
+    return text
+
+
 def _grafana_param_value(name: str) -> str:
     return f"{_GRAFANA_PARAM_VALUE_PREFIX}{name}"
 
@@ -279,7 +300,9 @@ def _parameterize_grafana_label_matchers(expr: str) -> str:
             if not matcher:
                 parts.append(part)
                 continue
-            var_name = grafana_template_var_name(matcher.group("value"))
+            is_regex = "=~" in matcher.group("prefix") or "!~" in matcher.group("prefix")
+            value = matcher.group("value")
+            var_name = grafana_template_var_name(_strip_promql_regex_anchors(value) if is_regex else value)
             if not var_name or var_name.startswith("__"):
                 parts.append(part)
                 continue
@@ -721,6 +744,8 @@ def _matcher_to_esql(matcher, resolver):
     value = matcher["value"]
     if not label:
         return None
+    if op in {"=~", "!~"}:
+        value = _strip_promql_regex_anchors(value)
     param_name = _grafana_param_name(value)
     if param_name:
         if op == "=":

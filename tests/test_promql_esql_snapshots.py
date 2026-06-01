@@ -184,17 +184,18 @@ CASES: list[tuple[str, str, str]] = [
         ),
         "timeseries",
     ),
-    # --- correctness fix A: anchored template-var matcher dropped (^label_*) -
-    # namespace=~"^$Namespace$" preprocesses to "^label_Namespace$"; the
-    # leading "^" previously bypassed the label_ check and leaked into RLIKE.
+    # --- correctness fix A: anchored template-var matcher parameterized -------
+    # namespace=~"^$Namespace$" is equivalent to an exact full-value regex in
+    # PromQL. ES|QL RLIKE already matches the whole value and treats ^/$ as
+    # literals, so the anchors must be stripped before parameterization.
     (
-        "anchored_variable_matcher_dropped",
+        "anchored_variable_matcher_param",
         'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0',
         "timeseries",
     ),
-    # --- correctness fix C: real end-of-string anchor preserved in RLIKE ------
-    # status!~".*cam(era)?$" — the trailing "$" is a regex anchor, NOT a
-    # Grafana variable reference; it must NOT be dropped.
+    # --- correctness fix C: PromQL end anchor normalized for ES|QL RLIKE ------
+    # status!~".*cam(era)?$" — ES|QL RLIKE treats "$" as a literal dollar, so
+    # strip the PromQL anchor instead of preserving it.
     (
         "real_regex_anchor_kept",
         'http_requests_total{service="web",status!~".*cam(era)?$"}',
