@@ -135,6 +135,7 @@ OUTER_AGG_MAP = {
     "min": "MIN",
     "count": "COUNT",
     "stddev": "STDDEV",
+    "quantile": "PERCENTILE",
 }
 
 SUPPORTED_RANGE_FUNCTIONS = {
@@ -168,10 +169,37 @@ HARD_UNSUPPORTED_CALL_REASONS = {
     "count_values": "count_values requires manual redesign",
     "histogram_quantile": "histogram_quantile over Prometheus bucket series requires manual redesign",
     "label_join": "label_join requires manual redesign",
-    "quantile": "quantile requires manual redesign",
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "timestamp": "timestamp() returns sample timestamps and has no ES|QL equivalent",
 }
+
+# PromQL elementwise math/trig wrappers with exact single-argument ES|QL
+# equivalents. These are value-transforming wrappers (like sgn/clamp): strip the
+# outer call, carry the function name, and emit `EVAL value = FN(value)` in the
+# translator. The ES|QL rendering is defined in translate._MATH_FN_ESQL.
+ELEMENTWISE_MATH_FUNCTIONS = frozenset(
+    {
+        "abs",
+        "ceil",
+        "floor",
+        "sqrt",
+        "exp",
+        "ln",
+        "log2",
+        "log10",
+        "acos",
+        "asin",
+        "atan",
+        "cos",
+        "sin",
+        "tan",
+        "cosh",
+        "sinh",
+        "tanh",
+        "deg",
+        "rad",
+    }
+)
 
 
 @dataclass
@@ -1125,6 +1153,63 @@ def _ast_call_fragment(node, expr):
             result.extra["clamp_min_value"] = threshold_frag.scalar_value
             return result
 
+    # clamp_max() — strip outer wrapper, carry threshold for LEAST() postprocessor
+    if func_name == "clamp_max" and len(child_frags) == 2:
+        inner, threshold_frag = child_frags
+        if (
+            not inner.extra.get("not_feasible_reasons")
+            and threshold_frag.is_scalar
+            and threshold_frag.scalar_value is not None
+        ):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["clamp_max_value"] = threshold_frag.scalar_value
+            return result
+
+    # clamp(v, lo, hi) — equals GREATEST(LEAST(v, hi), lo); carry both bounds and
+    # reuse the clamp_min (GREATEST) + clamp_max (LEAST) postprocessors.
+    if func_name == "clamp" and len(child_frags) == 3:
+        inner, lo_frag, hi_frag = child_frags
+        if (
+            not inner.extra.get("not_feasible_reasons")
+            and lo_frag.is_scalar
+            and lo_frag.scalar_value is not None
+            and hi_frag.is_scalar
+            and hi_frag.scalar_value is not None
+        ):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["clamp_min_value"] = lo_frag.scalar_value
+            result.extra["clamp_max_value"] = hi_frag.scalar_value
+            return result
+
+    # sgn() — strip outer wrapper, carry flag for SIGNUM() postprocessor
+    if func_name == "sgn" and len(child_frags) == 1:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            result.extra["has_sgn"] = True
+            return result
+
+    # Elementwise math/trig wrappers (abs, ceil, sqrt, ln, sin, deg, ...) — strip
+    # the outer call and carry the function name for an exact EVAL postprocessor.
+    # Nested wrappers accumulate in evaluation order (innermost first) so that
+    # e.g. sqrt(abs(x)) emits ABS then SQRT.
+    if func_name in ELEMENTWISE_MATH_FUNCTIONS and len(child_frags) == 1:
+        inner = child_frags[0]
+        if not inner.extra.get("not_feasible_reasons"):
+            result = _copy_fragment_summary(_new_fragment(expr, family=inner.family), inner)
+            for k, v in inner.extra.items():
+                result.extra.setdefault(k, v)
+            existing = list(result.extra.get("math_fns", []))
+            existing.append(func_name)
+            result.extra["math_fns"] = existing
+            return result
+
     # label_replace(v, dst, replacement, src, regex) — new fragment family
     if func_name == "label_replace" and len(child_frags) == 5:
         value_frag = child_frags[0]
@@ -1247,6 +1332,21 @@ def _ast_aggregate_fragment(node, expr):
             topk_frag.extra["topk_limit"] = 10
         topk_frag.extra["topk_value_expr"] = child.raw_expr
         return topk_frag
+
+    # quantile(phi, expr) by (..) == ES|QL PERCENTILE(expr, phi*100). Capture the
+    # phi parameter; only the simple aggregation form over a metric is feasible.
+    if frag.outer_agg == "quantile":
+        param = getattr(node, "param", None)
+        try:
+            phi = float(getattr(param, "val", param))
+        except (TypeError, ValueError):
+            phi = None
+        if phi is None or not (0.0 <= phi <= 1.0):
+            _append_not_feasible_reason(
+                frag, "quantile() requires a constant phi in [0, 1]; got a non-literal argument"
+            )
+        else:
+            frag.extra["quantile_phi"] = phi
 
     if frag.outer_agg in HARD_UNSUPPORTED_CALL_REASONS:
         _append_not_feasible_reason(frag, HARD_UNSUPPORTED_CALL_REASONS[frag.outer_agg])
@@ -1918,6 +2018,23 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
     return _field_is_proven_tsds_gauge(metric_name, resolver)
 
 
+def gauge_default_agg_warning(group_fields, metric, default_agg):
+    """Honest warning for the default-aggregation gauge path.
+
+    With grouping labels present, the aggregator is a faithful per-series intra-bucket
+    downsample. Without any labels, multiple series collapse into a single line — say so,
+    and include the token ``drop`` so ``build_query_ir`` records it as a semantic loss.
+    """
+    if group_fields:
+        return f"No explicit aggregation; using {default_agg} per series (faithful gauge downsample)"
+    return (
+        f"Collapsed all series of `{metric}` into a single {default_agg} line; the source "
+        "selector has no series labels (no legend, by(), or dashboard reference), so per-series "
+        "detail is dropped. Add a legend/by() or migrate with target access to recover "
+        "per-series fidelity."
+    )
+
+
 def _build_measure_spec(
     frag,
     resolver,
@@ -1992,7 +2109,7 @@ def _build_measure_spec(
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             stats_expr = f"{default_agg}({metric_field})"
-            warnings.append(f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+            warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
@@ -2003,7 +2120,7 @@ def _build_measure_spec(
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
-                warnings.append(f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+                warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
     elif frag.family == "simple_agg":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:

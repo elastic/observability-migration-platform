@@ -1470,15 +1470,102 @@ class TestWarningPatternHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         self.assertTrue(any("predict_linear" in w.lower() for w in ctx.warnings))
 
-    def test_abs_is_not_feasible(self):
+    def test_abs_now_translates_to_esql_abs(self):
+        # abs() is now translated exactly via ES|QL ABS() — no longer not_feasible
         ctx = _translate("abs(rate(foo_total[5m]))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
-        self.assertTrue(any("abs" in w.lower() for w in ctx.warnings))
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("ABS(", ctx.esql_query or "")
 
     def test_clamp_min_now_translates(self):
         # clamp_min() is now handled as a passthrough wrapper — no longer not_feasible
         ctx = _translate("clamp_min(rate(foo_total[5m]), 0)")
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+
+    def test_clamp_max_now_translates_to_least(self):
+        # clamp_max(v, hi) is exactly ES|QL LEAST(v, hi)
+        ctx = _translate("clamp_max(node_filesystem_avail_bytes, 100)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LEAST(", ctx.esql_query or "")
+        self.assertIn("100", ctx.esql_query or "")
+
+    def test_clamp_now_translates_to_greatest_least(self):
+        # clamp(v, lo, hi) is GREATEST(LEAST(v, hi), lo)
+        ctx = _translate("clamp(node_filesystem_avail_bytes, 0, 100)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LEAST(", ctx.esql_query or "")
+        self.assertIn("GREATEST(", ctx.esql_query or "")
+
+    def test_sgn_now_translates_to_signum(self):
+        # sgn(v) is exactly ES|QL SIGNUM(v)
+        ctx = _translate("sgn(node_cpu_seconds_total)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("SIGNUM(", ctx.esql_query or "")
+
+    def test_quantile_by_now_translates_to_percentile(self):
+        # quantile(0.95, m) by (job) == STATS PERCENTILE(m, 95) BY job
+        ctx = _translate("quantile(0.95, node_filesystem_avail_bytes) by (job)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("PERCENTILE(", esql)
+        self.assertIn("95", esql)
+        self.assertIn("BY", esql)
+
+    def test_quantile_median_translates_to_percentile_50(self):
+        ctx = _translate("quantile(0.5, node_filesystem_avail_bytes)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("PERCENTILE(", esql)
+        # 0.5 * 100 == 50
+        self.assertIn("50", esql)
+
+    # --- elementwise math / trig wrappers: exact ES|QL function maps -------
+    def test_math_trig_functions_translate_exactly(self):
+        # Each PromQL math/trig wrapper maps to an exact ES|QL function/expression.
+        cases = {
+            "abs(node_memory_usage)": "ABS(",
+            "ceil(node_memory_usage)": "CEIL(",
+            "floor(node_memory_usage)": "FLOOR(",
+            "sqrt(node_memory_usage)": "SQRT(",
+            "exp(node_memory_usage)": "EXP(",
+            "ln(node_memory_usage)": "LOG(",
+            "log10(node_memory_usage)": "LOG10(",
+            "acos(node_memory_usage)": "ACOS(",
+            "asin(node_memory_usage)": "ASIN(",
+            "atan(node_memory_usage)": "ATAN(",
+            "cos(node_memory_usage)": "COS(",
+            "sin(node_memory_usage)": "SIN(",
+            "tan(node_memory_usage)": "TAN(",
+            "cosh(node_memory_usage)": "COSH(",
+            "sinh(node_memory_usage)": "SINH(",
+            "tanh(node_memory_usage)": "TANH(",
+        }
+        for expr, expected in cases.items():
+            with self.subTest(expr=expr):
+                ctx = _translate(expr)
+                self.assertNotEqual(ctx.feasibility, "not_feasible", f"{expr}: {ctx.warnings}")
+                self.assertIn(expected, ctx.esql_query or "", expr)
+
+    def test_log2_translates_to_log_base_2(self):
+        # log2(v) == LOG(2, v)
+        ctx = _translate("log2(node_memory_usage)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("LOG(2", ctx.esql_query or "")
+
+    def test_deg_translates_to_radians_to_degrees(self):
+        # deg(v) == v * 180 / PI()
+        ctx = _translate("deg(node_memory_usage)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("180", esql)
+        self.assertIn("PI()", esql)
+
+    def test_rad_translates_to_degrees_to_radians(self):
+        # rad(v) == v * PI() / 180
+        ctx = _translate("rad(node_memory_usage)")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("180", esql)
+        self.assertIn("PI()", esql)
 
     def test_sort_desc_now_translates(self):
         # sort_desc() is now handled as a passthrough wrapper — no longer not_feasible
@@ -1863,6 +1950,81 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertIsNotNone(frag)
         self.assertFalse(frag.extra.get("not_feasible_reasons"))
         self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
+
+    def test_clamp_max_strips_outer_call(self):
+        ctx = self._translate("clamp_max(sum by (job) (rate(http_requests_total[5m])), 100)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_max_value"), 100.0)
+
+    def test_clamp_strips_outer_call_carries_both_bounds(self):
+        ctx = self._translate("clamp(sum by (job) (rate(http_requests_total[5m])), 0, 100)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
+        self.assertEqual(frag.extra.get("clamp_max_value"), 100.0)
+
+    def test_sgn_strips_outer_call(self):
+        ctx = self._translate("sgn(sum by (job) (rate(http_requests_total[5m])))")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_sgn"))
+
+
+class TestGaugeSeriesFidelity(unittest.TestCase):
+    """Offline per-series fidelity for bare gauge selectors.
+
+    A bare gauge with no series labels collapses multiple series into one AVG
+    line; we must say so honestly. When labels are available (legend or
+    dashboard-inferred) they must be grouped and no loss warning emitted.
+    """
+
+    def _translate(self, expr, hints=None):
+        rp = rules.RulePackConfig()
+        res = schema.SchemaResolver(rp)
+        return translate.translate_promql_to_esql(
+            expr, esql_index="metrics-*", panel_type="graph",
+            rule_pack=rp, resolver=res, translation_hints=hints,
+        )
+
+    def test_bare_gauge_no_labels_emits_honest_loss_warning(self):
+        ctx = self._translate("node_xyz_metric")
+        self.assertTrue(any("Collapsed all series" in w for w in ctx.warnings))
+        self.assertIsNotNone(ctx.query_ir)
+        self.assertTrue(
+            any("Collapsed all series" in s for s in ctx.query_ir.semantic_losses)
+        )
+
+    def test_bare_gauge_with_labels_has_no_loss_warning(self):
+        ctx = self._translate(
+            "node_xyz_metric",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
+        self.assertIn("BY time_bucket", ctx.esql_query)
+        self.assertIn("instance", ctx.esql_query)
+
+    def test_target_hints_backfill_from_dashboard_map_when_panel_has_none(self):
+        target = {"expr": "go_goroutines", "legendFormat": ""}
+        hints = panels._target_translation_hints(
+            {"type": "timeseries"}, "timeseries", target, {"go_goroutines": ["instance"]}
+        )
+        self.assertEqual(hints.get("preferred_group_labels"), ["instance"])
+        self.assertEqual(hints.get("preferred_group_labels_origin"), "dashboard_inferred")
+
+    def test_target_hints_panel_legend_wins_over_dashboard_map(self):
+        target = {"expr": "go_goroutines", "legendFormat": "{{job}}"}
+        hints = panels._target_translation_hints(
+            {"type": "timeseries"}, "timeseries", target, {"go_goroutines": ["instance"]}
+        )
+        self.assertEqual(hints.get("preferred_group_labels"), ["job"])
+        self.assertEqual(hints.get("preferred_group_labels_origin"), "legend")
 
 
 if __name__ == "__main__":
