@@ -1,0 +1,5 @@
+source: topk(10, count by (__name__)({__name__=~".+"}))
+feasibility: not_feasible
+warning: PromQL metric-name introspection via __name__ requires manual redesign
+---
+

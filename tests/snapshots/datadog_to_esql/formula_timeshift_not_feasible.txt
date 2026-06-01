@@ -1,0 +1,8 @@
+source: query1 = avg:system.cpu.user{*}
+formula: timeshift(query1, -3600)
+status: not_feasible
+backend: esql
+kibana_type: xy
+warning: translation error: unsupported formula function: timeshift
+---
+

@@ -1,0 +1,5 @@
+source: histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))
+feasibility: not_feasible
+warning: histogram_quantile over Prometheus bucket series requires manual redesign
+---
+

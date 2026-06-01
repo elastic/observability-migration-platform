@@ -1,0 +1,16 @@
+source: query1 = sum:haproxy.backend.response.4xx{*,*,$backend} by {haproxy_service}
+source: query2 = sum:haproxy.backend.response.3xx{*,*,$backend} by {haproxy_service}
+source: query3 = sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service}
+source: query4 = sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service}
+formula: (query3 + query1 + query2) / (query3 + query1 + query2 + query4) * 100
+status: warning
+backend: esql
+kibana_type: xy
+warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query3 = SUM(haproxy_backend_response_2xx), query1 = SUM(haproxy_backend_response_4xx), query2 = SUM(haproxy_backend_response_3xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service
+| EVAL query3_query1_query2_query3_query1_query2_query4_100 = ((((query3 + query1) + query2) / (((query3 + query1) + query2) + query4)) * 100)
+| KEEP time_bucket, haproxy_service, query3_query1_query2_query3_query1_query2_query4_100
+| SORT time_bucket

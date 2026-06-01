@@ -1,0 +1,5 @@
+source: quantile_over_time(0.95, node_cpu_seconds_total[10m])
+feasibility: not_feasible
+warning: quantile_over_time() requires manual redesign
+---
+

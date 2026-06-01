@@ -1,0 +1,9 @@
+source: max:system.mem.used{*} by {host}
+status: ok
+backend: esql
+kibana_type: xy
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = MAX(system_mem_used) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| SORT time_bucket

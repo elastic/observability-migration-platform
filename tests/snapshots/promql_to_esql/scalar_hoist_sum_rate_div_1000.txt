@@ -1,3 +1,4 @@
+source: sum(rate(http_requests_total[5m]) / 1000) by (job)
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---

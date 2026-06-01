@@ -1,3 +1,4 @@
+source: sgn(node_filesystem_avail_bytes)
 feasibility: feasible
 warning: sgn() translated via ES|QL SIGNUM()
 ---

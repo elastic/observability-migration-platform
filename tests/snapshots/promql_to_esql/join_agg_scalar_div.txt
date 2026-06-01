@@ -1,11 +1,5 @@
-feasibility: feasible
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Dropped group_left label enrichment; kept primary metric series only
+source: sum by(name)(podman_container_info * on(id) group_right(name) podman_container_memory_bytes / 1024 / 1024)
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join with scalar arithmetic requires manual redesign; dropping the joined metric would change numeric values
 ---
-TS metrics-*
-| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| WHERE podman_container_info IS NOT NULL
-| STATS podman_container_info_sum = SUM(podman_container_info) BY time_bucket = TBUCKET(5 minute), name
-| EVAL computed_value = ((podman_container_info_sum / 1024) / 1024)
-| KEEP time_bucket, name, computed_value
-| SORT time_bucket ASC
+

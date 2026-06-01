@@ -1,0 +1,6 @@
+source: max_over_time(rate(foo_total[5m])[1h:])
+feasibility: not_feasible
+warning: Contains unsupported pattern: subquery
+warning: max_over_time() requires manual redesign
+---
+

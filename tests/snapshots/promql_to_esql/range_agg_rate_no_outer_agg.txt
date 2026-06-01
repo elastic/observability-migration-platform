@@ -1,3 +1,4 @@
+source: rate(node_cpu_seconds_total{mode="idle"}[5m])
 feasibility: feasible
 ---
 TS metrics-*

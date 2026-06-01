@@ -1,3 +1,4 @@
+source: max(rate(node_network_receive_bytes_total[5m])*8) by (instance)
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---

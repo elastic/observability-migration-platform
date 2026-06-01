@@ -1,3 +1,4 @@
+source: node_memory_MemAvailable_bytes
 feasibility: feasible
 ---
 TS metrics-*

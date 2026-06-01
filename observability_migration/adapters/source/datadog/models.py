@@ -83,8 +83,16 @@ class TagFilter:
     key: str
     value: str
     negated: bool = False
+    # True when the filter came from a Datadog ``key IN (a, b, c)`` /
+    # ``key NOT IN (...)`` list. ``value`` holds the pipe-joined members so it
+    # renders to a native ES|QL ``IN (...)`` instead of a chain of ``==``/OR.
+    is_in_list: bool = False
 
     def __str__(self) -> str:
+        if self.is_in_list:
+            op = "NOT IN" if self.negated else "IN"
+            members = ", ".join(v for v in self.value.split("|") if v)
+            return f"{self.key} {op} ({members})"
         neg = "!" if self.negated else ""
         return f"{neg}{self.key}:{self.value}"
 

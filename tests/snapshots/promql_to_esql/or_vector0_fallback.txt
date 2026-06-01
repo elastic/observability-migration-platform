@@ -1,3 +1,4 @@
+source: up{job='prom'} or vector(0)
 feasibility: feasible
 warning: PromQL 'or' fallback: using left operand only; right-hand side metric ignored
 ---

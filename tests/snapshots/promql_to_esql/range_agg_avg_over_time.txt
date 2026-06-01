@@ -1,3 +1,4 @@
+source: avg(avg_over_time(up{job="prom"}[5m])) by (job)
 feasibility: feasible
 ---
 TS metrics-*

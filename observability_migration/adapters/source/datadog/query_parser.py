@@ -196,11 +196,16 @@ def _parse_scope(scope_str: str) -> list[Any]:
 
 
 def _split_scope(scope_str: str) -> list[str]:
-    """Split scope on commas, respecting quoted strings."""
+    """Split scope on commas, respecting quoted strings and parentheses.
+
+    Parentheses must be honored so a Datadog ``key IN (a, b, c)`` list is not
+    split on its internal commas (which would silently drop the filter).
+    """
     parts: list[str] = []
     current: list[str] = []
     in_quote = False
     quote_char = ""
+    depth = 0
     for ch in scope_str:
         if ch in ('"', "'") and not in_quote:
             in_quote = True
@@ -209,7 +214,13 @@ def _split_scope(scope_str: str) -> list[str]:
         elif ch == quote_char and in_quote:
             in_quote = False
             current.append(ch)
-        elif ch == "," and not in_quote:
+        elif not in_quote and ch == "(":
+            depth += 1
+            current.append(ch)
+        elif not in_quote and ch == ")":
+            depth = max(depth - 1, 0)
+            current.append(ch)
+        elif ch == "," and not in_quote and depth == 0:
             parts.append("".join(current))
             current = []
         else:
@@ -223,7 +234,7 @@ def _parse_boolean_scope(scope_str: str) -> list[Any]:
     filters: list[Any] = []
     for part in _split_on_keyword(scope_str, "AND"):
         part = part.strip().strip(",").strip()
-        if not part or part == "*" or _TEMPLATE_VAR_RE.fullmatch(part):
+        if not part or part == "*":
             continue
         if part.startswith("(") and part.endswith(")"):
             part = part[1:-1].strip()
@@ -234,9 +245,11 @@ def _parse_boolean_scope(scope_str: str) -> list[Any]:
             options = [p.strip() for p in _split_on_keyword(part, "OR") if p.strip()]
             parsed = []
             for option in options:
-                if _TEMPLATE_VAR_RE.fullmatch(option):
-                    continue
-                if ":" not in option and not option.startswith(("!", "-")):
+                if (
+                    ":" not in option
+                    and not option.startswith(("!", "-"))
+                    and not _TEMPLATE_VAR_RE.fullmatch(option)
+                ):
                     continue
                 parsed.append(_parse_single_filter(option))
             if parsed and all(
@@ -305,7 +318,27 @@ def _split_on_keyword(text: str, keyword: str) -> list[str]:
     return parts
 
 
+_IN_LIST_RE = re.compile(
+    r"^(?P<key>[^:!\s][^:]*?)\s+(?P<op>NOT\s+IN|IN)\s*\((?P<members>[^)]*)\)\s*$",
+    re.IGNORECASE,
+)
+
+
 def _parse_single_filter(part: str) -> TagFilter:
+    in_match = _IN_LIST_RE.match(part.strip())
+    if in_match:
+        members = [
+            m.strip().strip("'\"")
+            for m in in_match.group("members").split(",")
+            if m.strip()
+        ]
+        return TagFilter(
+            key=in_match.group("key").strip(),
+            value="|".join(members),
+            negated=in_match.group("op").upper().startswith("NOT"),
+            is_in_list=True,
+        )
+
     negated = False
     if part.startswith("!") or part.startswith("-"):
         negated = True

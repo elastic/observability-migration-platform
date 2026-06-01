@@ -1,0 +1,7 @@
+source: topk(10, sum(rate(http_requests_total[5m])) by (handler))
+status: migrated_with_warnings
+chart_type: bar
+dimension: handler
+metrics: ['value']
+warning: Translated grouped topk() as latest-bucket ES|QL top N
+warning: Approximated bargauge as bar chart

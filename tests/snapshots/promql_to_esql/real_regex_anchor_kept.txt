@@ -1,3 +1,4 @@
+source: http_requests_total{service="web",status!~".*cam(era)?$"}
 feasibility: feasible
 warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
 ---

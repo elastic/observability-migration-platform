@@ -4,7 +4,7 @@ widgets: 27
 panels: 21
 controls: 1
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 15, 'requires_manual': 2, 'skipped': 6, 'warning': 2}
+statuses: {'not_feasible': 2, 'ok': 12, 'requires_manual': 2, 'skipped': 6, 'warning': 5}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title='Dropped connections, last 15m'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

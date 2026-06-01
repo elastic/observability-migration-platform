@@ -1,3 +1,4 @@
+source: ln(node_memory_usage)
 feasibility: feasible
 warning: ln() translated via exact ES|QL equivalent
 ---

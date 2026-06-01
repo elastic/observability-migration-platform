@@ -1,3 +1,4 @@
+source: abs(node_memory_usage)
 feasibility: feasible
 warning: abs() translated via exact ES|QL equivalent
 ---

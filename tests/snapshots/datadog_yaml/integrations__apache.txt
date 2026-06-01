@@ -4,7 +4,7 @@ widgets: 22
 panels: 22
 controls: 1
 filters: 0
-statuses: {'not_feasible': 1, 'ok': 19, 'requires_manual': 1, 'warning': 1}
+statuses: {'not_feasible': 1, 'ok': 16, 'requires_manual': 1, 'warning': 4}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title='Rate of requests'; kind=lens; type=line; dimension=@timestamp; metrics=['apache_net_request_per_s']; primary=

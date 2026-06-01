@@ -1,0 +1,6 @@
+source: rate(foo_total[5m] offset 1h)
+feasibility: not_feasible
+warning: Contains unsupported pattern: offset
+warning: rate() requires manual redesign
+---
+

@@ -1570,6 +1570,7 @@ def bargauge_panel_rule(context):
             "bar",
             metric_fields=series_fields,
             by_cols=primary.output_group_fields,
+            warnings=primary.warnings,
         )
         context.kibana_type = "bar"
         _append_unique(context.translation.warnings, "Approximated bargauge as bar chart")
@@ -1579,6 +1580,7 @@ def bargauge_panel_rule(context):
             "bar",
             metric_col=primary.output_metric_field or None,
             by_cols=primary.output_group_fields,
+            warnings=primary.warnings,
         )
         context.kibana_type = "bar"
         _append_unique(context.translation.warnings, "Approximated bargauge as bar chart")
@@ -1612,6 +1614,7 @@ def xy_panel_rule(context):
             mode=mode,
             legend_format_template=composite_template,
             legend_labels=legend_labels if composite_template else None,
+            warnings=primary.warnings,
         )
     else:
         context.yaml_panel["esql"] = _build_esql_xy_panel(
@@ -1622,6 +1625,7 @@ def xy_panel_rule(context):
             mode=mode,
             legend_format_template=composite_template,
             legend_labels=legend_labels if composite_template else None,
+            warnings=primary.warnings,
         )
     context.handled = True
     return f"mapped to {context.kibana_type} panel"
@@ -1703,6 +1707,7 @@ def fallback_line_panel_rule(context):
         by_cols=primary.output_group_fields,
         legend_format_template=composite_template,
         legend_labels=legend_labels if composite_template else None,
+        warnings=primary.warnings,
     )
     _append_unique(
         primary.warnings,
@@ -2943,9 +2948,35 @@ def _append_eval_before_trailing_sort(query, eval_line):
     return query + " " + eval_line
 
 
+def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings):
+    """Warn when an XY panel has more grouping dimensions than it can display.
+
+    A Kibana XY chart breaks the series down by a single field. When the ES|QL
+    query groups by two or more non-time dimensions, only the first becomes the
+    visual breakdown and the rest are not represented on the chart, so series
+    that differ only in a dropped dimension are visually merged. Surface that as
+    a warning rather than silently rendering a different shape than the source.
+    """
+    if warnings is None:
+        return
+    extra = [
+        col
+        for col in (by_cols or [])
+        if col != dimension_field and col != breakdown_field
+    ]
+    if extra:
+        _append_unique(
+            warnings,
+            "XY chart shows a single breakdown; additional grouping "
+            f"dimension(s) {extra} are in the query but not on the chart, "
+            "so series differing only by those are visually merged",
+        )
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
                          time_fields=None, mode=None,
-                         legend_format_template=None, legend_labels=None):
+                         legend_format_template=None, legend_labels=None,
+                         warnings=None):
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
@@ -2956,6 +2987,7 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
     if time_fields is None:
         time_fields = shape.time_fields
     dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,
@@ -2977,7 +3009,8 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
 
 def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
                                 time_fields=None, mode=None,
-                                legend_format_template=None, legend_labels=None):
+                                legend_format_template=None, legend_labels=None,
+                                warnings=None):
     """Build an XY panel from a single merged ES|QL query."""
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
@@ -2987,6 +3020,7 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
     if time_fields is None:
         time_fields = shape.time_fields
     dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,

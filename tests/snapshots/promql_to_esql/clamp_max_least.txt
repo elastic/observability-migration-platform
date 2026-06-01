@@ -1,3 +1,4 @@
+source: clamp_max(node_filesystem_avail_bytes, 100)
 feasibility: feasible
 warning: clamp_max() translated via ES|QL LEAST()
 ---

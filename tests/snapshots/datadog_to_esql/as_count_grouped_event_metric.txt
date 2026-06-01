@@ -1,0 +1,11 @@
+source: sum:rabbitmq.queues.created.count{$node_name} by {rabbitmq_node}.as_count()
+status: warning
+backend: esql
+kibana_type: xy
+warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+warning: as_count interval semantics are approximated in ES|QL
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = SUM(rabbitmq_queues_created_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| SORT time_bucket

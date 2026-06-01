@@ -1,0 +1,12 @@
+source: irate(node_network_receive_bytes_total[5m]) * 8
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_network_receive_bytes_total IS NOT NULL
+| STATS node_network_receive_bytes_total_irate = IRATE(node_network_receive_bytes_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (node_network_receive_bytes_total_irate * 8)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC

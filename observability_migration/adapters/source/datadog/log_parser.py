@@ -445,6 +445,44 @@ def _parse_attr_range(text: str) -> LogRange:
 # ES|QL / KQL translation helpers
 # ---------------------------------------------------------------------------
 
+# KQL only recognizes a backslash escape in front of these characters (plus
+# whitespace and the reserved keywords). A backslash before anything else —
+# most commonly Datadog's escaped forward slash ``\/`` — is a hard parse error
+# in the Elasticsearch KQL grammar ("token recognition error"). Datadog log
+# search escapes a broader set of characters, so we must drop the backslashes
+# that KQL does not understand when bridging a free-text term into KQL().
+_KQL_ESCAPABLE_CHARS = set('\\():<>"*{}')
+
+
+def _normalize_kql_escapes(value: str) -> str:
+    """Drop backslashes that KQL cannot parse, keeping valid KQL escapes.
+
+    e.g. Datadog ``felix\\/int_dataplane.go`` -> ``felix/int_dataplane.go``
+    (forward slash never needs escaping in KQL), while a genuine ``\\(`` or
+    ``\\"`` escape is preserved.
+    """
+    if "\\" not in value:
+        return value
+    out: list[str] = []
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = value[i + 1]
+            if nxt in _KQL_ESCAPABLE_CHARS or nxt.isspace():
+                out.append(ch)
+                out.append(nxt)
+            else:
+                # backslash KQL would choke on; keep only the escaped char
+                out.append(nxt)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def log_ast_to_kql(node: Any, field_map: dict[str, str] | None = None) -> str:
     """Convert a log search AST to a KQL string for use in ES|QL WHERE KQL().
 
@@ -460,9 +498,10 @@ def log_ast_to_kql(node: Any, field_map: dict[str, str] | None = None) -> str:
     if isinstance(node, LogTerm):
         if _TEMPLATE_VAR_RE.search(node.value):
             return ""
+        value = _normalize_kql_escapes(node.value)
         if node.quoted:
-            return f'"{node.value}"'
-        return node.value
+            return f'"{value}"'
+        return value
 
     if isinstance(node, LogAttributeFilter):
         if _TEMPLATE_VAR_RE.search(node.value):
@@ -477,10 +516,11 @@ def log_ast_to_kql(node: Any, field_map: dict[str, str] | None = None) -> str:
         return f"{attr} >= {node.low} AND {attr} <= {node.high}"
 
     if isinstance(node, LogWildcard):
+        pattern = _normalize_kql_escapes(node.pattern)
         if node.attribute:
             attr = fm.get(node.attribute, node.attribute)
-            return f"{attr}: {node.pattern}"
-        return node.pattern
+            return f"{attr}: {pattern}"
+        return pattern
 
     if isinstance(node, LogBoolOp):
         parts = [p for p in (log_ast_to_kql(c, fm) for c in node.children) if p]

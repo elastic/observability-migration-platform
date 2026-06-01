@@ -1150,6 +1150,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertLess(where_idx, stats_idx)
         self.assertNotIn("| WHERE up_count == 1", translated.esql_query)
 
+    def test_xy_panel_with_extra_grouping_dimension_warns(self):
+        # A query grouped by two non-time dimensions can only show one as the XY
+        # breakdown; the dropped dimension must be surfaced, not hidden.
+        panel = {
+            "title": "Pods",
+            "type": "timeseries",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": "sum(kube_pod_info) by (namespace, pod)"}],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        # Only one field is used as the visual breakdown.
+        self.assertIn("breakdown", yaml_panel["esql"])
+        self.assertTrue(
+            any("not on the chart" in w for w in result.reasons),
+            f"Expected dropped-dimension warning, got {result.reasons}",
+        )
+
+    def test_xy_panel_with_single_grouping_dimension_does_not_warn(self):
+        # A single non-time grouping dimension maps cleanly to the breakdown;
+        # there must be no dropped-dimension warning.
+        panel = {
+            "title": "Requests",
+            "type": "timeseries",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": 'sum(rate(http_requests_total[5m])) by (job)'}],
+        }
+        _, result = self.translate_panel(panel)
+        self.assertFalse(
+            any("not on the chart" in w for w in result.reasons),
+            f"Did not expect dropped-dimension warning, got {result.reasons}",
+        )
+
     def test_multi_target_post_filters_are_applied_per_series(self):
         panel = {
             "id": 99,
@@ -1277,6 +1310,44 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_metric_name_introspection_is_marked_not_feasible(self):
         translated = self.translate('topk(10, count by (__name__)({__name__=~".+"}))', panel_type="bargauge")
         self.assertEqual(translated.feasibility, "not_feasible")
+
+    def test_stdvar_aggregation_is_marked_not_feasible(self):
+        # stdvar() is population variance; ES|QL has no variance aggregation and
+        # STATS cannot square STDDEV() inline. It must not silently degrade to AVG.
+        translated = self.translate("stdvar(node_cpu_seconds_total) by (instance)")
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("stdvar" in w for w in translated.warnings),
+            f"Expected stdvar warning, got {translated.warnings}",
+        )
+        self.assertNotIn("AVG(", translated.esql_query or "")
+
+    def test_group_aggregation_is_marked_not_feasible(self):
+        # group() returns the constant 1 per series group (label-set extraction),
+        # discarding the value. Translating it as AVG(metric) returns real values
+        # and is semantically wrong, so it must degrade to not_feasible.
+        translated = self.translate("group(up) by (job)")
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("group" in w for w in translated.warnings),
+            f"Expected group warning, got {translated.warnings}",
+        )
+        self.assertNotIn("AVG(up)", translated.esql_query or "")
+
+    def test_stddev_aggregation_uses_valid_esql_std_dev_function(self):
+        # ES|QL's standard-deviation aggregation is STD_DEV (with an underscore);
+        # STDDEV does not exist and is rejected by the cluster. The translator
+        # must emit the valid function name.
+        translated = self.translate("stddev by (job) (http_request_duration_seconds)")
+        self.assertNotEqual(translated.feasibility, "not_feasible", translated.warnings)
+        self.assertIn("STD_DEV(", translated.esql_query or "")
+        # The invalid no-underscore form must never be emitted.
+        import re as _re
+
+        self.assertIsNone(
+            _re.search(r"\bSTDDEV\s*\(", translated.esql_query or ""),
+            f"Emitted invalid STDDEV function: {translated.esql_query}",
+        )
 
     def test_live_gauge_selector_uses_direct_ts_without_avg_warning(self):
         self.seed_field_caps(
@@ -2478,7 +2549,13 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        self.assertEqual(result.status, "migrated")
+        # Grouped by (instance, quantile): one dimension drives the XY
+        # breakdown and the other is surfaced as a dropped-dimension warning.
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertTrue(
+            any("not on the chart" in w for w in result.reasons),
+            f"Expected dropped-dimension warning, got {result.reasons}",
+        )
         metric = yaml_panel["esql"]["metrics"][0]
         self.assertEqual(metric["label"], "Queue length")
         self.assertEqual(metric["axis"], "right")
@@ -2662,12 +2739,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             '/ scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertEqual(translated.feasibility, "feasible")
-        self.assertIn('| WHERE mode == "system"', translated.esql_query)
-        self.assertIn("BY time_bucket = TBUCKET(5 minute), cpu", translated.esql_query)
-        self.assertIn("denominator = COUNT(*) BY time_bucket", translated.esql_query)
-        self.assertIn("| EVAL computed_value =", translated.esql_query)
-        self.assertIn("| KEEP time_bucket, computed_value", translated.esql_query)
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("divergent filters/groupings" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
         # sum(increase(A) / increase(B)) computes a per-element ratio then
@@ -2702,6 +2778,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         q = translated.esql_query or ""
         self.assertIn("RLIKE", q)
         self.assertIn("idle", q)
+        self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), cpu", q)
+        self.assertIn("| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket", q)
 
     def test_rule_catalog_exposes_binary_expr_rule(self):
         catalog = migrate.build_rule_catalog(self.rule_pack)
@@ -10037,13 +10115,11 @@ class TestMetricsPathLabelIgnored(unittest.TestCase):
 
 
 class TestJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
-    """group_left join-wrapped aggregations must participate in multi-target fusion.
+    """group_left join-wrapped aggregations must not silently drop join semantics.
 
     PromQL expressions like sum(rate(A) * on(ns,pod) group_left(w,wt) B) by (pod)
-    parse to family='unknown' with extra['vector_matching'] set.  _build_formula_plan
-    must strip the join RHS and treat the fragment as a regular aggregate so that:
-      1. Multi-target table panels fuse 6 network metrics into one 6-column query
-      2. Ratio targets (usage / requests) become valid EVAL expressions
+    use the RHS both for label enrichment and filtering. Stripping that RHS can
+    keep a query renderable but changes numeric values or selected series.
     """
 
     def setUp(self):
@@ -10066,11 +10142,11 @@ class TestJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
         )
 
     def test_join_wrapped_rate_translates_to_valid_esql(self):
-        """A single join-wrapped rate target must produce a valid TS STATS query."""
+        """A single join-wrapped rate target must not silently drop the RHS."""
         expr = self._JOIN_TMPL.format(metric="container_network_receive_bytes_total")
         result = self._translate(expr)
-        self.assertIn("RATE(container_network_receive_bytes_total", result.esql_query)
-        self.assertIn('service.name == "kubelet"', result.esql_query)
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertTrue(any("vector-matching join" in w for w in result.warnings), result.warnings)
 
     def test_six_network_targets_fuse_into_single_query(self):
         """Current Network Usage: 6 join-wrapped network targets must fuse into a single multi-STATS query."""
@@ -10092,21 +10168,16 @@ class TestJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
             "fieldConfig": {"defaults": {}, "overrides": []},
             "options": {},
         }
-        yaml_panel, _ = migrate.translate_panel(
+        yaml_panel, result = migrate.translate_panel(
             panel,
             datasource_index="metrics-*",
             esql_index="metrics-*",
             rule_pack=self.rule_pack,
             resolver=self.resolver,
         )
-        esql_metrics = [m["field"] for m in yaml_panel.get("esql", {}).get("metrics", [])]
-        self.assertEqual(len(esql_metrics), 6, f"Expected 6 metrics, got {len(esql_metrics)}: {esql_metrics}")
-        query = yaml_panel["esql"]["query"]
-        # All 6 metrics appear in a single STATS line
-        stats_lines = [line for line in query.splitlines() if line.strip().startswith("| STATS")]
-        self.assertEqual(len(stats_lines), 1, f"Expected 1 STATS line, got {len(stats_lines)}: {stats_lines}")
-        for m in metrics:
-            self.assertIn(m, query, f"{m} missing from fused query")
+        self.assertNotIn("esql", yaml_panel)
+        self.assertEqual(result.status, "not_feasible")
+        self.assertTrue(any("vector-matching join" in reason for reason in result.reasons), result.reasons)
 
     def test_ratio_of_join_wrapped_targets_produces_eval(self):
         """CPU usage / CPU requests ratio must translate to a STATS + EVAL expression."""
@@ -10124,10 +10195,8 @@ class TestJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
             ") by (pod)"
         )
         result = self._translate(ratio_expr)
-        self.assertIn("| EVAL", result.esql_query, f"Expected EVAL in query:\n{result.esql_query}")
-        # Both source metrics must appear in the STATS
-        self.assertIn("`node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate`", result.esql_query)
-        self.assertIn("kube_pod_container_resource_requests", result.esql_query)
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertTrue(any("vector-matching join" in w for w in result.warnings), result.warnings)
 
 
 class TestImageLabelOtelMapping(unittest.TestCase):
@@ -10449,6 +10518,16 @@ class TestUnaryMinusOverBinaryExpr(unittest.TestCase):
         r = self._translate("-(irate(node_disk_written_bytes_total[5m]))")
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
 
+    def test_negate_grouped_rate_preserves_sign(self):
+        """- sum(rate(A)) by (label) must preserve the negative sign."""
+        r = self._translate(
+            '- sum(rate(node_network_transmit_bytes_total{device!~"(veth|azv|lxc).*"}[5m])) by (device)'
+        )
+        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
+        q = r.esql_query or ""
+        self.assertIn("| EVAL computed_value = (0 - node_network_transmit_bytes_total", q)
+        self.assertIn("| KEEP time_bucket, device, computed_value", q)
+
     def test_negate_scalar_still_works(self):
         """Unary minus on scalar literal must produce negative scalar."""
         r = self._translate("sum(-1 * rate(http_requests_total[5m])) by (job)")
@@ -10556,8 +10635,10 @@ class TestPhantomGrafanaVarStripping(unittest.TestCase):
 class TestJoinAggScalarDiv(unittest.TestCase):
     """sum(A * group_right B / k) pattern — Podman container memory dashboards.
 
-    The outer sum must hoist the scalar divisions out and strip the join RHS,
-    yielding sum(A) / k rather than not_feasible."""
+    Aggregating over the result of a vector-matching multiplication is not
+    linear. Stripping the join RHS would keep a query shape but produce wrong
+    values, so the migration must require manual redesign.
+    """
 
     def setUp(self):
         self.rule_pack = migrate.RulePackConfig()
@@ -10575,20 +10656,16 @@ class TestJoinAggScalarDiv(unittest.TestCase):
             " * on(id) group_right(name) podman_container_memory_bytes"
             " / 1024 / 1024)"
         )
-        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn("1024", r.esql_query or "", "scalar division should appear in EVAL")
-        self.assertTrue(
-            any("enrichment" in w for w in r.warnings),
-            f"Expected dropped-enrichment warning, got {r.warnings}",
-        )
+        self.assertEqual(r.feasibility, "not_feasible")
+        self.assertTrue(any("vector-matching join" in w for w in r.warnings), r.warnings)
 
     def test_sum_join_div_1024_once(self):
         """sum(A * group_right B / 1024) — single scalar division."""
         r = self._translate(
             "sum(container_info * on(id) group_right(name) memory_bytes / 1024)"
         )
-        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn("1024", r.esql_query or "")
+        self.assertEqual(r.feasibility, "not_feasible")
+        self.assertTrue(any("vector-matching join" in w for w in r.warnings), r.warnings)
 
     def test_max_join_times_rate_div_scalar(self):
         """max(rate(A) * group_left(label) B / 8) — group_left variant."""
@@ -10596,8 +10673,8 @@ class TestJoinAggScalarDiv(unittest.TestCase):
             "max(rate(node_network_receive_bytes_total[5m])"
             " * on(instance) group_left(nodename) node_uname_info / 8)"
         )
-        self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn("8", r.esql_query or "")
+        self.assertEqual(r.feasibility, "not_feasible")
+        self.assertTrue(any("vector-matching join" in w for w in r.warnings), r.warnings)
 
     def test_sum_over_two_series_still_not_feasible(self):
         """sum(A / B) with two real series must remain not_feasible."""

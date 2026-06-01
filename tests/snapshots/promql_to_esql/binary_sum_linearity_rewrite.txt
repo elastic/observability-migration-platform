@@ -1,3 +1,4 @@
+source: sum(node_memory_MemFree_bytes + node_memory_Cached_bytes) by (instance)
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---

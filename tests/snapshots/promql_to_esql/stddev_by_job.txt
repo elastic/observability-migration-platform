@@ -1,0 +1,8 @@
+source: stddev by (job) (http_request_duration_seconds)
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_request_duration_seconds IS NOT NULL
+| STATS http_request_duration_seconds = STD_DEV(http_request_duration_seconds) BY time_bucket = TBUCKET(5 minute), service.name
+| SORT time_bucket ASC

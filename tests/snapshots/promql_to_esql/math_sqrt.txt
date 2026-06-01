@@ -1,3 +1,4 @@
+source: sqrt(node_memory_usage)
 feasibility: feasible
 warning: sqrt() translated via exact ES|QL equivalent
 ---

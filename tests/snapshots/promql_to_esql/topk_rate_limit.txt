@@ -1,0 +1,12 @@
+source: topk(5, rate(http_requests_total[5m]))
+feasibility: feasible
+warning: topk() without group labels: collapsed to single-series top N; add preferred_group_labels hint for per-series breakdown
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS _bucket_value = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS value = LAST(_bucket_value, time_bucket)
+| SORT value DESC
+| LIMIT 5

@@ -1,0 +1,11 @@
+source: avg:flink.task.Shuffle.Netty.Input.Buffers.inPoolUsage{*} by {task_id,subtask_index}*100
+status: ok
+backend: esql
+kibana_type: xy
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query0 = AVG(flink_task_Shuffle_Netty_Input_Buffers_inPoolUsage) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), task_id, subtask_index
+| EVAL query0_100 = (query0 * 100)
+| KEEP time_bucket, task_id, subtask_index, query0_100
+| SORT time_bucket

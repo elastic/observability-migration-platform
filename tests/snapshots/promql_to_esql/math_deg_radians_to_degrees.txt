@@ -1,3 +1,4 @@
+source: deg(node_memory_usage)
 feasibility: feasible
 warning: deg() translated via exact ES|QL equivalent
 ---

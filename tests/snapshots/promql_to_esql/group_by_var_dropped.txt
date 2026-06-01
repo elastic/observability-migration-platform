@@ -1,3 +1,4 @@
+source: sum(kube_pod_info) by (namespace, label_Env)
 feasibility: feasible
 ---
 TS metrics-*
