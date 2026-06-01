@@ -1,13 +1,14 @@
 source: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * ON(instance) GROUP_LEFT(nodename) node_uname_info
 feasibility: feasible
-warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: Dropped group_left label enrichment; kept primary metric series only
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL
-| STATS node_memory_MemTotal_bytes = AVG(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes = AVG(node_memory_MemAvailable_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS node_memory_MemTotal_bytes = AVG(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes = AVG(node_memory_MemAvailable_bytes) BY time_bucket = TBUCKET(5 minute)
 | EVAL computed_value = (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
 | KEEP time_bucket, computed_value
 | SORT time_bucket ASC

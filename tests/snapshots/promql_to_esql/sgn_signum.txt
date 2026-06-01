@@ -1,0 +1,10 @@
+source: sgn(node_filesystem_avail_bytes)
+feasibility: feasible
+warning: sgn() translated via ES|QL SIGNUM()
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_filesystem_avail_bytes IS NOT NULL
+| STATS node_filesystem_avail_bytes = node_filesystem_avail_bytes BY time_bucket = TBUCKET(5 minute)
+| EVAL node_filesystem_avail_bytes = SIGNUM(node_filesystem_avail_bytes)
+| SORT time_bucket ASC

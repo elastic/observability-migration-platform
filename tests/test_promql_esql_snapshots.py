@@ -211,6 +211,66 @@ CASES: list[tuple[str, str, str]] = [
         "sum(kube_pod_info) by (namespace, label_Env)",
         "timeseries",
     ),
+    # --- feasibility expansion: exact 1:1 ES|QL function maps ---------------
+    # clamp_max(v, hi) == LEAST(v, hi)
+    (
+        "clamp_max_least",
+        "clamp_max(node_filesystem_avail_bytes, 100)",
+        "timeseries",
+    ),
+    # clamp(v, lo, hi) == GREATEST(LEAST(v, hi), lo)
+    (
+        "clamp_greatest_least",
+        "clamp(node_filesystem_avail_bytes, 0, 100)",
+        "timeseries",
+    ),
+    # sgn(v) == SIGNUM(v)
+    (
+        "sgn_signum",
+        "sgn(node_filesystem_avail_bytes)",
+        "timeseries",
+    ),
+    # quantile(phi, m) by (..) == PERCENTILE(m, phi*100)
+    (
+        "quantile_by_percentile",
+        "quantile(0.95, node_filesystem_avail_bytes) by (job)",
+        "timeseries",
+    ),
+    # --- elementwise math / trig wrappers: exact ES|QL function maps -------
+    (
+        "math_abs",
+        "abs(node_memory_usage)",
+        "timeseries",
+    ),
+    (
+        "math_sqrt",
+        "sqrt(node_memory_usage)",
+        "timeseries",
+    ),
+    # ln(v) -> natural LOG(v)
+    (
+        "math_ln_natural_log",
+        "ln(node_memory_usage)",
+        "timeseries",
+    ),
+    # log2(v) -> LOG(2, v)
+    (
+        "math_log2",
+        "log2(node_memory_usage)",
+        "timeseries",
+    ),
+    # deg(v) -> v * 180 / PI()
+    (
+        "math_deg_radians_to_degrees",
+        "deg(node_memory_usage)",
+        "timeseries",
+    ),
+    # nested wrappers apply innermost-first: ABS then SQRT
+    (
+        "math_nested_sqrt_abs",
+        "sqrt(abs(node_memory_usage))",
+        "timeseries",
+    ),
     # --- set operators -------------------------------------------------------
     (
         "or_same_metric_static_filters",
@@ -422,11 +482,6 @@ CASES: list[tuple[str, str, str]] = [
         "group(up) by (job)",
         "timeseries",
     ),
-    (
-        "quantile_aggregation_not_feasible",
-        "quantile(0.95, http_request_duration_seconds) by (job)",
-        "timeseries",
-    ),
     # --- scalar/time arithmetic and rounding ---------------------------------
     (
         "round_rate",
@@ -445,11 +500,6 @@ CASES: list[tuple[str, str, str]] = [
     ),
     # --- additional hard blockers (degrade gracefully) -----------------------
     (
-        "clamp_max_not_feasible",
-        "clamp_max(node_filesystem_avail_bytes, 100)",
-        "timeseries",
-    ),
-    (
         "quantile_over_time_not_feasible",
         "quantile_over_time(0.95, node_cpu_seconds_total[10m])",
         "timeseries",
@@ -467,11 +517,6 @@ CASES: list[tuple[str, str, str]] = [
     (
         "count_values_not_feasible",
         'count_values("version", build_info)',
-        "timeseries",
-    ),
-    (
-        "sgn_not_feasible",
-        "sgn(node_cpu_seconds_total - 1)",
         "timeseries",
     ),
     (

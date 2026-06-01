@@ -2,7 +2,7 @@ source: count(up == 1)
 feasibility: feasible
 warning: count() over a comparison is approximated as document COUNT(*); multi-sample series may be over-counted
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE up == 1
 | STATS up_count = COUNT(*)

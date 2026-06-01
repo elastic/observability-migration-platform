@@ -1,5 +1,0 @@
-source: sgn(node_cpu_seconds_total - 1)
-feasibility: not_feasible
-warning: sgn() requires manual redesign
----
-

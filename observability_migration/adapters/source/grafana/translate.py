@@ -44,11 +44,11 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
-    _field_is_proven_tsds_gauge,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
+    _gauge_can_use_ts,
     _gauge_fallback_for_counter_range_func,
     _grouping_parts,
     _inline_filters_into_stats_expr,
@@ -58,6 +58,7 @@ from .promql import (
     _resolve_metric_field,
     _summary_mode_from_metadata,
     classify_promql_complexity,
+    gauge_default_agg_warning,
     preprocess_grafana_macros,
 )
 from .rules import (
@@ -70,6 +71,32 @@ from .rules import (
     _append_unique,
 )
 from .semantic_planner import RuntimeCapabilities, plan_grafana_metric_contract
+
+# Exact ES|QL renderings for PromQL elementwise math/trig wrappers. ``{m}`` is the
+# metric field. Verified on-cluster: every PromQL function maps to an exact ES|QL
+# function or closed-form expression (ln -> natural LOG, log2 -> LOG(2, x),
+# deg/rad -> the radian<->degree conversions).
+_MATH_FN_ESQL = {
+    "abs": "ABS({m})",
+    "ceil": "CEIL({m})",
+    "floor": "FLOOR({m})",
+    "sqrt": "SQRT({m})",
+    "exp": "EXP({m})",
+    "ln": "LOG({m})",
+    "log2": "LOG(2, {m})",
+    "log10": "LOG10({m})",
+    "acos": "ACOS({m})",
+    "asin": "ASIN({m})",
+    "atan": "ATAN({m})",
+    "cos": "COS({m})",
+    "sin": "SIN({m})",
+    "tan": "TAN({m})",
+    "cosh": "COSH({m})",
+    "sinh": "SINH({m})",
+    "tanh": "TANH({m})",
+    "deg": "({m} * 180 / PI())",
+    "rad": "({m} * PI() / 180)",
+}
 
 
 def _default_instance_field(rp):
@@ -1602,6 +1629,19 @@ def range_agg_family_rule(context):
     return "translated range aggregation expression"
 
 
+def _agg_stats_expr(outer, inner_expr, frag):
+    """Render an aggregation call, special-casing quantile -> PERCENTILE(expr, phi*100).
+
+    PromQL quantile(phi, m) is the phi-quantile across the grouped series, which is
+    exactly ES|QL PERCENTILE(m, phi*100). All other aggregations are AGG(expr).
+    """
+    if frag is not None and frag.outer_agg == "quantile":
+        phi = frag.extra.get("quantile_phi")
+        if phi is not None:
+            return f"PERCENTILE({inner_expr}, {_format_scalar_value(phi * 100)})"
+    return f"{outer}({inner_expr})"
+
+
 @QUERY_TRANSLATORS.register("simple_agg_family", priority=9)
 def simple_agg_family_rule(context):
     frag = context.fragment
@@ -1637,11 +1677,12 @@ def simple_agg_family_rule(context):
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
         metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         filter_value = _format_scalar_value(pre_agg_filter["value"])
-        # Issue #8: when the filtered metric is a proven TSDS gauge, the pre-agg
-        # filter must run under TS so that the outer SUM/AVG/MAX aggregates one
-        # value per (series, bucket) instead of every per-sample doc.
-        is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
-        pre_source = "TS" if is_proven_tsds_gauge else "FROM"
+        # Issue #8: when the filtered metric is a TSDS gauge, the pre-agg filter must
+        # run under TS so that the outer SUM/AVG/MAX aggregates one value per (series,
+        # bucket) instead of every per-sample doc. TSDS is proven by the resolver or, when
+        # unknown, assumed per ``assume_tsds_gauges`` (the migration default).
+        gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rp)
+        pre_source = "TS" if gauge_uses_ts else "FROM"
         pre_time_filter = rp.ts_time_filter if pre_source == "TS" else rp.from_time_filter
         pre_bucket = rp.ts_bucket if pre_source == "TS" else rp.from_bucket
         lines = [
@@ -1652,14 +1693,14 @@ def simple_agg_family_rule(context):
         ]
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})")
+            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else f"{OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())}({gauge_physical_metric})"
+            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -1717,8 +1758,8 @@ def simple_agg_family_rule(context):
         context.translation_complete = True
         return "translated count of counter metric"
 
-    is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
-    source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
+    gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rp)
+    source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
@@ -1732,7 +1773,7 @@ def simple_agg_family_rule(context):
         inner_expr = physical_metric
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
-    stats_expr = f"{outer}({inner_expr})"
+    stats_expr = _agg_stats_expr(outer, inner_expr, frag)
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     group_by_parts, output_group = _grouping_parts(bucket, group_fields)
     eval_line, final_alias = _frag_eval_line(alias, frag)
@@ -1798,17 +1839,17 @@ def simple_metric_family_rule(context):
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-    can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
-    # Issue #8: when the field is a proven TSDS gauge but ``_can_use_direct_ts_gauge``
-    # rejects it (group_fields present, or caller disabled the path), TS is still
-    # the correct source — ``FROM`` against a TSDS sums every per-sample doc and
-    # inflates the value. Wrap with default AVG so the result collapses cleanly
-    # whether grouping is present or not.
+    can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag, rp)
+    # Issue #8: when the field is a TSDS gauge but ``_can_use_direct_ts_gauge`` rejects it
+    # (group_fields present, or caller disabled the path), TS is still the correct source —
+    # ``FROM`` against a TSDS sums every per-sample doc and inflates the value. Wrap with
+    # default AVG so the result collapses cleanly whether grouping is present or not. TSDS
+    # is proven by the resolver or, when unknown, assumed per ``assume_tsds_gauges``.
     can_use_ts_aggregated_gauge = (
         (not is_counter)
         and (not can_use_direct_ts_gauge)
         and (not (frag.extra.get("wrapped_scalar") if frag else False))
-        and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        and _gauge_can_use_ts(frag.metric, resolver, rp)
     )
 
     if is_counter:
@@ -1836,10 +1877,10 @@ def simple_metric_family_rule(context):
         default_agg = rp.default_gauge_agg.upper()
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
         stats_expr = f"{default_agg}({physical_metric})"
-        # No explicit PromQL aggregator was given; default to AVG so each
-        # (group_field, bucket) cell collapses cleanly when multiple series
-        # land in the same cell.
-        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+        # No explicit PromQL aggregator was given; default to the gauge aggregator. With
+        # grouping labels this is a faithful per-series downsample; without them it collapses
+        # series and the warning says so (and is recorded as a semantic loss).
+        _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
@@ -1850,7 +1891,7 @@ def simple_metric_family_rule(context):
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
-            _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+            _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     eval_line, final_alias = _frag_eval_line(alias, frag)
@@ -2148,6 +2189,35 @@ def value_wrapper_transforms_rule(context):
         lines.insert(_eval_insert_idx(lines), eval_clause)
         _append_unique(context.warnings, "clamp_min() approximated with ES|QL GREATEST()")
         applied.append("clamp_min")
+
+    # clamp_max() → EVAL value = LEAST(value, max). For clamp(v, lo, hi) both
+    # clamp_min and clamp_max are set; applying GREATEST then LEAST yields
+    # GREATEST(LEAST(v, hi), lo) == clamp(v, lo, hi) (bounds are order-independent).
+    clamp_max = frag.extra.get("clamp_max_value")
+    if clamp_max is not None:
+        val = _format_scalar_value(clamp_max)
+        eval_clause = f"| EVAL {metric_field} = LEAST({metric_field}, {val})"
+        lines.insert(_eval_insert_idx(lines), eval_clause)
+        _append_unique(context.warnings, "clamp_max() translated via ES|QL LEAST()")
+        applied.append("clamp_max")
+
+    # sgn() → EVAL value = SIGNUM(value) (exact equivalent)
+    if frag.extra.get("has_sgn"):
+        eval_clause = f"| EVAL {metric_field} = SIGNUM({metric_field})"
+        lines.insert(_eval_insert_idx(lines), eval_clause)
+        _append_unique(context.warnings, "sgn() translated via ES|QL SIGNUM()")
+        applied.append("sgn")
+
+    # Elementwise math/trig wrappers → EVAL value = FN(value), applied in
+    # evaluation order (innermost first). All are exact ES|QL equivalents.
+    for math_fn in frag.extra.get("math_fns", []):
+        template = _MATH_FN_ESQL.get(math_fn)
+        if not template:
+            continue
+        eval_clause = f"| EVAL {metric_field} = {template.format(m=metric_field)}"
+        lines.insert(_eval_insert_idx(lines), eval_clause)
+        _append_unique(context.warnings, f"{math_fn}() translated via exact ES|QL equivalent")
+        applied.append(math_fn)
 
     # sort() / sort_desc() → set the output sort direction.
     # For two-stage topk, replace the LAST "| SORT <field>" line (which controls

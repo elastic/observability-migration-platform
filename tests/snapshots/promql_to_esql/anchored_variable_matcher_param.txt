@@ -1,12 +1,11 @@
 source: kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0
 feasibility: feasible
-warning: No explicit aggregation; using AVG (correct for gauge metrics)
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE k8s.namespace.name RLIKE ?Namespace
 | WHERE phase == "Running"
 | WHERE kube_pod_status_phase IS NOT NULL
-| STATS kube_pod_status_phase = AVG(kube_pod_status_phase) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS kube_pod_status_phase = kube_pod_status_phase BY time_bucket = TBUCKET(5 minute)
 | WHERE kube_pod_status_phase > 0
 | SORT time_bucket ASC

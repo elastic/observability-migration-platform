@@ -1,0 +1,12 @@
+source: clamp(node_filesystem_avail_bytes, 0, 100)
+feasibility: feasible
+warning: clamp_min() approximated with ES|QL GREATEST()
+warning: clamp_max() translated via ES|QL LEAST()
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_filesystem_avail_bytes IS NOT NULL
+| STATS node_filesystem_avail_bytes = node_filesystem_avail_bytes BY time_bucket = TBUCKET(5 minute)
+| EVAL node_filesystem_avail_bytes = GREATEST(node_filesystem_avail_bytes, 0)
+| EVAL node_filesystem_avail_bytes = LEAST(node_filesystem_avail_bytes, 100)
+| SORT time_bucket ASC

@@ -85,6 +85,7 @@ from .promql import (
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
 from .schema import SchemaResolver
+from .series_labels import _metrics_in_expr, build_metric_series_labels
 from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
 PANEL_TYPE_MAP = {
@@ -298,7 +299,7 @@ def _target_summary_mode(panel_type, target):
     return str(target.get("format") or "").lower() == "table"
 
 
-def _target_translation_hints(panel, panel_type, target):
+def _target_translation_hints(panel, panel_type, target, metric_series_labels=None):
     summary_mode = _target_summary_mode(panel_type, target)
     hints = {
         "summary_mode": summary_mode,
@@ -330,7 +331,30 @@ def _target_translation_hints(panel, panel_type, target):
         hints["static_legend_label"] = legend_template.strip()
     if isinstance(legend_template, str) and len(legend_labels) >= 2:
         hints["legend_format_template"] = legend_template
+
+    # Offline backfill: when the panel named NO series labels of its own, recover them
+    # from the dashboard-wide per-metric label map (other panels' by()/filters, template
+    # variables). Tagged "dashboard_inferred" so the inference is auditable.
+    #
+    # Skip single-value panels (stat/gauge/bargauge/piechart -> summary_mode): they
+    # intentionally render one current value, so adding an inferred breakdown would change
+    # the panel's type/intent. Their own explicit legend/by() labels still apply above.
+    if not summary_mode and not preferred_group_labels and metric_series_labels:
+        inferred = _inferred_labels_for_target(target, metric_series_labels)
+        if inferred:
+            hints["preferred_group_labels"] = inferred
+            hints["preferred_group_labels_origin"] = "dashboard_inferred"
     return hints
+
+
+def _inferred_labels_for_target(target, metric_series_labels):
+    """Look up a target's metric in the dashboard-wide series-label map."""
+    expr = str(target.get("expr", "") or "")
+    for metric in _metrics_in_expr(expr):
+        labels = metric_series_labels.get(metric)
+        if labels:
+            return list(labels)
+    return []
 
 
 def _humanize_identifier(raw):
@@ -1694,7 +1718,7 @@ def fallback_line_panel_rule(context):
 
 
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                    llm_endpoint="", llm_model="", llm_api_key=""):
+                    llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
     rule_pack = rule_pack or RulePackConfig()
     panel_type = panel.get("type", "unknown")
@@ -1906,7 +1930,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 panel_type=panel_type,
                 rule_pack=rule_pack,
                 resolver=target_resolver,
-                translation_hints=_target_translation_hints(panel, panel_type, target),
+                translation_hints=_target_translation_hints(panel, panel_type, target, metric_series_labels),
                 datasource_type=target_datasource.get("type", ""),
                 datasource_uid=target_datasource.get("uid", ""),
                 datasource_name=target_datasource.get("name", ""),
@@ -2290,37 +2314,56 @@ def _build_multi_target_series_query(translations):
         return None
 
     base = translations[0]
-    plans = []
-    all_specs = []
-    warnings = []
-
     post_filters: dict[int, dict] = {}
     comp_ops = {"==": "==", "!=": "!=", ">": ">", "<": "<", ">=": ">=", "<=": "<="}
-    for idx, translation in enumerate(translations, start=1):
-        pf = None
-        if translation.fragment and translation.fragment.extra.get("post_filter"):
-            pf = translation.fragment.extra.pop("post_filter")
-            post_filters[idx] = pf
-        alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
-        plan = _build_formula_plan(
-            translation.fragment,
-            translation.resolver,
-            translation.rule_pack,
-            alias_hint=alias_hint,
-            summary_mode=_summary_mode_from_metadata(translation.metadata),
-            preferred_group_labels=translation.metadata.get("preferred_group_labels"),
-            allow_direct_ts_gauge=False,
-            preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
-        )
-        if pf is not None:
-            translation.fragment.extra["post_filter"] = pf
-        if not plan or not plan.specs:
-            return None
-        plans.append((translation, plan))
-        all_specs.extend(plan.specs)
-        for warning in plan.warnings:
-            if warning not in warnings:
-                warnings.append(warning)
+
+    def _build_plans(allow_tsds_gauge_promotion):
+        plans = []
+        all_specs = []
+        warnings = []
+        for idx, translation in enumerate(translations, start=1):
+            pf = None
+            if translation.fragment and translation.fragment.extra.get("post_filter"):
+                pf = translation.fragment.extra.pop("post_filter")
+                post_filters[idx] = pf
+            alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
+            plan = _build_formula_plan(
+                translation.fragment,
+                translation.resolver,
+                translation.rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=_summary_mode_from_metadata(translation.metadata),
+                preferred_group_labels=translation.metadata.get("preferred_group_labels"),
+                allow_direct_ts_gauge=False,
+                preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            )
+            if pf is not None:
+                translation.fragment.extra["post_filter"] = pf
+            if not plan or not plan.specs:
+                return None
+            plans.append((translation, plan))
+            all_specs.extend(plan.specs)
+            for warning in plan.warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+        return plans, all_specs, warnings
+
+    built = _build_plans(allow_tsds_gauge_promotion=True)
+    if built is None:
+        return None
+    plans, all_specs, warnings = built
+
+    # When targets resolve to mixed source commands (e.g. an uptime/`MAX` target stays
+    # FROM while an assumed-TSDS gauge target promotes to TS), the shared pipeline can't
+    # fuse them. Rebuild once with gauge->TS promotion disabled so every target shares the
+    # common FROM denominator. Mirrors the binary-expr reconciliation in
+    # ``_build_formula_plan``. Fused multiplicity-invariant aggregators (AVG/MAX/MIN) are
+    # correct on FROM; non-idempotent ones keep TS when not mixed.
+    if len({spec.source_type for spec in all_specs}) > 1:
+        rebuilt = _build_plans(allow_tsds_gauge_promotion=False)
+        if rebuilt is not None and len({spec.source_type for spec in rebuilt[1]}) == 1:
+            plans, all_specs, warnings = rebuilt
 
     shared = _build_shared_measure_pipeline(base.index, all_specs)
     if not shared:
@@ -4365,6 +4408,7 @@ def _translate_panel_group(
     llm_endpoint="",
     llm_model="",
     llm_api_key="",
+    metric_series_labels=None,
 ):
     """Translate a group of Grafana panels, returning (yaml_panels, panel_results)."""
     yaml_panels: list[dict] = []
@@ -4385,6 +4429,7 @@ def _translate_panel_group(
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            metric_series_labels=metric_series_labels,
         )
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
@@ -4444,6 +4489,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     all_panels = _flatten_dashboard_panels(dashboard)
     result.total_panels = len(all_panels)
 
+    # Offline per-metric series-label map: lets bare gauge selectors that name no labels of
+    # their own recover per-series grouping from other panels / template variables.
+    metric_series_labels = build_metric_series_labels(dashboard)
+
     variables = dashboard.get("templating", {}).get("list", [])
     control_variable_names = _pre_scan_control_variables(variables)
 
@@ -4488,6 +4537,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            metric_series_labels=metric_series_labels,
         )
         result.yaml_panel_results.extend(panel_results)
 

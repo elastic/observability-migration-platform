@@ -1,0 +1,10 @@
+source: log2(node_memory_usage)
+feasibility: feasible
+warning: log2() translated via exact ES|QL equivalent
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_memory_usage IS NOT NULL
+| STATS node_memory_usage = node_memory_usage BY time_bucket = TBUCKET(5 minute)
+| EVAL node_memory_usage = LOG(2, node_memory_usage)
+| SORT time_bucket ASC
