@@ -75,9 +75,11 @@ from .promql import (
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
+    grafana_template_var_name,
     substitute_grafana_range_macros,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
+from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
 from .schema import SchemaResolver
 from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
@@ -315,6 +317,13 @@ def _target_translation_hints(panel, panel_type, target):
     if legend_contributed and not style_labels:
         hints["preferred_group_labels_origin"] = "legend"
     legend_template = target.get("legendFormat", "")
+    if (
+        isinstance(legend_template, str)
+        and legend_template.strip()
+        and legend_template.strip() != "__auto"
+        and not legend_labels
+    ):
+        hints["static_legend_label"] = legend_template.strip()
     if isinstance(legend_template, str) and len(legend_labels) >= 2:
         hints["legend_format_template"] = legend_template
     return hints
@@ -582,6 +591,76 @@ def _promql_grouping_has_template_variable(expr):
     )
 
 
+def _promql_label_matcher_has_template_variable(expr):
+    return bool(
+        re.search(
+            rf"(?P<op>=~|!~|=|!=)(?P<quote>[\"'])\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*(?P=quote)",
+            str(expr or ""),
+        )
+    )
+
+
+_NATIVE_PROMQL_LABEL_MATCHER_RE = re.compile(
+    r"(?P<prefix>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*)"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)(?P<suffix>\s*)$",
+    re.DOTALL,
+)
+
+
+def _promql_label_matcher_vars_to_params(expr):
+    """Rewrite full-value Grafana label matcher variables to native params."""
+
+    def rewrite_selector(selector_text):
+        parts = []
+        changed = False
+        for part in _split_top_level_csv(selector_text):
+            matcher = _NATIVE_PROMQL_LABEL_MATCHER_RE.match(part)
+            if not matcher:
+                parts.append(part)
+                continue
+            var_name = grafana_template_var_name(matcher.group("value"))
+            if not var_name or var_name.startswith("__"):
+                parts.append(part)
+                continue
+            parts.append(f"{matcher.group('prefix')}?{var_name}{matcher.group('suffix')}")
+            changed = True
+        return ", ".join(parts) if changed else selector_text
+
+    pieces = []
+    start = 0
+    idx = 0
+    text = str(expr or "")
+    while idx < len(text):
+        if text[idx] != "{":
+            idx += 1
+            continue
+        pieces.append(text[start:idx])
+        end = idx + 1
+        depth = 1
+        in_quote = None
+        while end < len(text) and depth:
+            char = text[end]
+            if in_quote:
+                if char == in_quote and text[end - 1] != "\\":
+                    in_quote = None
+            elif char in ('"', "'"):
+                in_quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            end += 1
+        if depth:
+            pieces.append(text[idx:])
+            return "".join(pieces)
+        selector = text[idx + 1:end - 1]
+        pieces.append("{" + rewrite_selector(selector) + "}")
+        start = end
+        idx = end
+    pieces.append(text[start:])
+    return "".join(pieces)
+
+
 def _trim_wrapping_parens(expr):
     text = str(expr or "").strip()
     while text.startswith("(") and text.endswith(")"):
@@ -659,7 +738,7 @@ def _promql_has_known_server_bug(expr):
     return False
 
 
-def _clean_promql_for_native_with_state(expr):
+def _clean_promql_for_native_with_state(expr, runtime_features=None):
     """Strip Grafana template variables from a PromQL expression so it can be
     sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
     had_bare_variable = False
@@ -677,6 +756,9 @@ def _clean_promql_for_native_with_state(expr):
     expr = re.sub(r"='([^']*)'", r'="\1"', expr)
     expr = re.sub(r"!~'([^']*)'", r'!~"\1"', expr)
     expr = re.sub(r"=~'([^']*)'", r'=~"\1"', expr)
+
+    if is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS):
+        expr = _promql_label_matcher_vars_to_params(expr)
 
     # Replace $variable references inside label selectors with wildcards.
     expr = re.sub(rf'=~"\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*"', '=~".*"', expr)
@@ -711,8 +793,8 @@ def _clean_promql_for_native_with_state(expr):
     return expr, had_bare_variable
 
 
-def _clean_promql_for_native(expr):
-    cleaned, _ = _clean_promql_for_native_with_state(expr)
+def _clean_promql_for_native(expr, runtime_features=None):
+    cleaned, _ = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
     return cleaned
 
 
@@ -756,7 +838,7 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
-                              legend_format=None):
+                              legend_format=None, runtime_features=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -778,9 +860,9 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     For single-value panel types (metric, gauge) the ``_timeseries`` extraction
     is skipped because aggregated scalars don't have that column.
     """
-    if not can_use_native_promql(promql_expr):
+    if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
-    cleaned = _clean_promql_for_native(promql_expr)
+    cleaned = _clean_promql_for_native(promql_expr, runtime_features=runtime_features)
     step = _DEFAULT_NATIVE_PROMQL_STEP
     base = (
         f'PROMQL index={index} step={step} '
@@ -834,9 +916,14 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     return base
 
 
-def can_use_native_promql(promql_expr):
+def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
+        return False
+    if (
+        _promql_label_matcher_has_template_variable(promql_expr)
+        and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)
+    ):
         return False
     if _promql_grouping_has_template_variable(promql_expr):
         return False
@@ -1022,7 +1109,16 @@ def _translate_panel_native_promql(
 
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
-    if not can_use_native_promql(expr):
+    runtime_features = getattr(rule_pack, "runtime_features", {})
+    if not can_use_native_promql(expr, runtime_features=runtime_features):
+        if (
+            _promql_label_matcher_has_template_variable(expr)
+            and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)
+        ):
+            _append_unique(
+                panel_notes,
+                "Native PROMQL skipped: target does not support PromQL label matcher params yet",
+            )
         return None
     # Pre-flight type check: if the source PromQL applies a counter-style
     # range function (``rate``/``irate``/``increase``) to a metric that
@@ -1048,14 +1144,18 @@ def _translate_panel_native_promql(
     legend_labels = _extract_legend_labels(legend_format)
 
     index = datasource_index or "metrics-prometheus-*"
-    cleaned_expr, had_bare_variable = _clean_promql_for_native_with_state(expr)
+    cleaned_expr, had_bare_variable = _clean_promql_for_native_with_state(
+        expr,
+        runtime_features=runtime_features,
+    )
     _, group_cols = _native_promql_result_shape(expr)
     if kibana_type in ("metric", "gauge") and group_cols:
         return None
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
-                                             legend_format=legend_format)
+                                             legend_format=legend_format,
+                                             runtime_features=runtime_features)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1159,9 +1259,18 @@ def _translate_multi_target_native_promql(
 
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
-        if not can_use_native_promql(expr):
+        runtime_features = getattr(rule_pack, "runtime_features", {})
+        if not can_use_native_promql(expr, runtime_features=runtime_features):
+            if (
+                _promql_label_matcher_has_template_variable(expr)
+                and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)
+            ):
+                _append_unique(
+                    panel_notes,
+                    "Native PROMQL skipped: target does not support PromQL label matcher params yet",
+                )
             return None
-        cleaned, bare = _clean_promql_for_native_with_state(expr)
+        cleaned, bare = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
         had_bare_variable = had_bare_variable or bare
         target_fragments.append(_parse_fragment(cleaned or expr))
 
@@ -1954,10 +2063,14 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
 
     yaml_panel = _normalize_esql_panel_query(yaml_panel, primary.rule_pack)
+    metric_labels = dict(primary.metadata.get("multi_series_metric_labels") or {})
+    static_legend_label = primary.metadata.get("static_legend_label")
+    if static_legend_label and primary.output_metric_field:
+        metric_labels.setdefault(primary.output_metric_field, static_legend_label)
     enrich_yaml_panel_display(
         yaml_panel,
         panel,
-        metric_labels=primary.metadata.get("multi_series_metric_labels"),
+        metric_labels=metric_labels or None,
     )
     if yaml_panel.get("esql", {}).get("query"):
         primary.esql_query = yaml_panel["esql"]["query"]

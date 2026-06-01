@@ -132,6 +132,7 @@ class RulePackConfig:
     skip_panel_types: list = field(default_factory=list)
     index_rewrites: list = field(default_factory=list)
     native_promql: bool = False
+    runtime_features: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.native_promql:
