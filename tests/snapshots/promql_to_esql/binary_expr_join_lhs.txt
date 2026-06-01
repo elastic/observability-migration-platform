@@ -1,5 +1,6 @@
 feasibility: feasible
-warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: Dropped group_left label enrichment; kept primary metric series only
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---

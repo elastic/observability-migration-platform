@@ -2026,6 +2026,19 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertEqual(hints.get("preferred_group_labels"), ["job"])
         self.assertEqual(hints.get("preferred_group_labels_origin"), "legend")
 
+    def test_target_hints_no_inference_for_single_value_panels(self):
+        # Single-value panels (gauge/stat/bargauge) intentionally collapse to one value;
+        # cross-panel inference must NOT add a breakdown that changes the panel type.
+        target = {"expr": "go_goroutines", "legendFormat": ""}
+        for panel_type in ("gauge", "stat", "singlestat", "bargauge"):
+            hints = panels._target_translation_hints(
+                {"type": panel_type}, panel_type, target, {"go_goroutines": ["instance"]}
+            )
+            self.assertNotIn(
+                "preferred_group_labels", hints,
+                f"{panel_type} must not receive inferred grouping",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

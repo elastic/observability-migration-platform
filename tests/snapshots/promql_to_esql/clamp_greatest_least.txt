@@ -1,0 +1,12 @@
+feasibility: feasible
+warning: Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: clamp_min() approximated with ES|QL GREATEST()
+warning: clamp_max() translated via ES|QL LEAST()
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_filesystem_avail_bytes IS NOT NULL
+| STATS node_filesystem_avail_bytes = AVG(node_filesystem_avail_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| EVAL node_filesystem_avail_bytes = GREATEST(node_filesystem_avail_bytes, 0)
+| EVAL node_filesystem_avail_bytes = LEAST(node_filesystem_avail_bytes, 100)
+| SORT time_bucket ASC

@@ -1279,7 +1279,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.source_type, "FROM")
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("AVG(node_systemd_units)", translated.esql_query)
-        self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
+        # Bare gauge with no series labels collapses to a single AVG line — say so honestly.
+        self.assertTrue(any("Collapsed all series" in warning for warning in translated.warnings))
 
     def test_issue8_simple_sum_gauge_on_proven_tsds_uses_ts(self):
         # Issue #8: sum(gauge_metric) on a TSDS must emit TS, not FROM. With FROM
@@ -1938,7 +1939,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(translated.source_type, "FROM")
         self.assertIn("AVG(ambiguous_gauge)", translated.esql_query)
-        self.assertTrue(any("No explicit aggregation" in warning for warning in translated.warnings))
+        # Bare gauge, no series labels: the default-AVG path is taken and the honest
+        # collapse warning is emitted (no explicit aggregation was given in the source).
+        self.assertTrue(
+            any("Collapsed all series" in warning for warning in translated.warnings)
+        )
 
     def test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts(self):
         """When the translator generates a multi-target TS query and then

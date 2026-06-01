@@ -4,4 +4,4 @@ status: migrated_with_warnings
 chart_type: datatable
 metrics: ['ALERTS']
 warning: ALERTS{} is a Prometheus meta-metric exposing per-alert label sets; ES|QL aggregation collapses individual alerts into a single value
-warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: Collapsed all series of `ALERTS` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.

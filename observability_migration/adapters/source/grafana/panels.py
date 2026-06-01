@@ -335,7 +335,11 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
     # Offline backfill: when the panel named NO series labels of its own, recover them
     # from the dashboard-wide per-metric label map (other panels' by()/filters, template
     # variables). Tagged "dashboard_inferred" so the inference is auditable.
-    if not preferred_group_labels and metric_series_labels:
+    #
+    # Skip single-value panels (stat/gauge/bargauge/piechart -> summary_mode): they
+    # intentionally render one current value, so adding an inferred breakdown would change
+    # the panel's type/intent. Their own explicit legend/by() labels still apply above.
+    if not summary_mode and not preferred_group_labels and metric_series_labels:
         inferred = _inferred_labels_for_target(target, metric_series_labels)
         if inferred:
             hints["preferred_group_labels"] = inferred
