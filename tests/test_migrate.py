@@ -222,6 +222,280 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("Could not extract metric name", result.warnings)
 
+    def test_rule_pack_runtime_feature_profile_records_support_metadata(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            is_feature_supported,
+            set_runtime_feature,
+        )
+
+        self.assertFalse(is_feature_supported(self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
+
+        set_runtime_feature(
+            self.rule_pack,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=True,
+            source="probe",
+            confidence="verified",
+            level="syntax",
+            reason="target accepted PromQL label matcher params",
+        )
+
+        self.assertTrue(is_feature_supported(self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
+        self.assertEqual(
+            self.rule_pack.runtime_features[PROMQL_LABEL_MATCHER_PARAMS],
+            {
+                "supported": True,
+                "source": "probe",
+                "confidence": "verified",
+                "level": "syntax",
+                "reason": "target accepted PromQL label matcher params",
+            },
+        )
+
+    def test_native_promql_rejects_exact_template_label_matcher(self):
+        self.assertFalse(panels.can_use_native_promql('cpu{host="$host"}'))
+        with self.assertRaises(ValueError):
+            panels.build_native_promql_query('cpu{host="$host"}', index="metrics-*")
+
+    def test_native_promql_rejects_regex_template_label_matcher(self):
+        self.assertFalse(panels.can_use_native_promql('cpu{service=~"$services"}'))
+        with self.assertRaises(ValueError):
+            panels.build_native_promql_query('cpu{service=~"$services"}', index="metrics-*")
+
+    def test_native_promql_rejects_braced_template_label_matcher(self):
+        self.assertFalse(panels.can_use_native_promql('cpu{host="${host}"}'))
+        with self.assertRaises(ValueError):
+            panels.build_native_promql_query('cpu{host="${host}"}', index="metrics-*")
+
+    def test_native_promql_allows_template_label_matcher_when_runtime_feature_supported(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        runtime_features = {PROMQL_LABEL_MATCHER_PARAMS: True}
+
+        self.assertTrue(
+            panels.can_use_native_promql(
+                'cpu{host="$host",service=~"$services"}',
+                runtime_features=runtime_features,
+            )
+        )
+        query = panels.build_native_promql_query(
+            'cpu{host="$host",service=~"$services"}',
+            index="metrics-*",
+            runtime_features=runtime_features,
+        )
+
+        self.assertIn('cpu{host=?host, service=~?services}', query)
+        self.assertNotIn('=~".*"', query)
+
+    def test_esql_preserves_exact_template_label_matcher_as_param_filter(self):
+        result = self.translate('cpu{host="$host"}')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("host == ?host", result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+
+    def test_esql_preserves_regex_template_label_matcher_as_param_filter(self):
+        result = self.translate('cpu{service=~"$services"}')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("service RLIKE ?services", result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+
+    def test_esql_preserves_negative_template_label_matchers_as_param_filters(self):
+        exact_result = self.translate('cpu{host!="$host"}')
+        regex_result = self.translate('cpu{service!~"$services"}')
+
+        self.assertIn("host != ?host", exact_result.esql_query)
+        self.assertIn("NOT (service RLIKE ?services)", regex_result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", exact_result.warnings)
+        self.assertNotIn("Dropped variable-driven label filters during migration", regex_result.warnings)
+
+    def test_esql_preserves_braced_template_label_matcher_as_param_filter(self):
+        result = self.translate('cpu{host="${host}"}')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("host == ?host", result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+
+    def test_esql_preserves_bracket_template_label_matcher_as_param_filter(self):
+        result = self.translate('cpu{instance=~"[[instance]]"}')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("service.instance.id RLIKE ?instance", result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+
+    def test_esql_preserves_multiple_template_label_matchers_as_param_filters(self):
+        result = self.translate('cpu{host="$host",service=~"$services"}')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("host == ?host", result.esql_query)
+        self.assertIn("service RLIKE ?services", result.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+
+    def test_panel_translation_preserves_template_label_matcher_as_param(self):
+        panel = {
+            "title": "CPU by host",
+            "type": "graph",
+            "targets": [{"refId": "A", "expr": 'cpu{host="$host"}'}],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertIn("host == ?host", yaml_panel["esql"]["query"])
+        self.assertNotIn("Dropped variable-driven label filters during migration", result.reasons)
+
+    def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
+        panel = {
+            "title": "CPU by host",
+            "type": "graph",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'sum(cpu{host="$host"}) by (host)',
+                    "legendFormat": "Selected host CPU",
+                }
+            ],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertEqual(result.status, "migrated")
+        self.assertNotIn("PROMQL", yaml_panel["esql"]["query"])
+        self.assertIn("host == ?host", yaml_panel["esql"]["query"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Selected host CPU")
+        self.assertIn(
+            "Native PROMQL skipped: target does not support PromQL label matcher params yet",
+            result.notes,
+        )
+
+    def test_panel_template_label_matcher_uses_native_when_runtime_feature_supported(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        panel = {
+            "title": "CPU by host",
+            "type": "graph",
+            "targets": [{"refId": "A", "expr": 'cpu{host="$host"}'}],
+        }
+        rule_pack = rules.RulePackConfig(
+            native_promql=True,
+            runtime_features={PROMQL_LABEL_MATCHER_PARAMS: True},
+        )
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertEqual(result.status, "migrated")
+        self.assertIn("PROMQL", yaml_panel["esql"]["query"])
+        self.assertIn("cpu{host=?host}", yaml_panel["esql"]["query"])
+
+    def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
+        self.seed_field_caps({
+            "process_virtual_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "process_resident_memory_max_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "process_virtual_memory_max_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "instance": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+            "job": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+        })
+        panel = {
+            "title": "Processes Memory",
+            "type": "timeseries",
+            "targets": [
+                {"refId": "A", "expr": 'irate(process_virtual_memory_bytes{instance="$node",job="$job"}[$__rate_interval])'},
+                {"refId": "B", "expr": 'process_resident_memory_max_bytes{instance="$node",job="$job"}'},
+                {"refId": "C", "expr": 'irate(process_virtual_memory_bytes{instance="$node",job="$job"}[$__rate_interval])'},
+                {"refId": "D", "expr": 'irate(process_virtual_memory_max_bytes{instance="$node",job="$job"}[$__rate_interval])'},
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertNotEqual(result.status, "requires_manual")
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("AVG_OVER_TIME(process_resident_memory_max_bytes, 5m)", query)
+        self.assertNotIn("AVG(process_resident_memory_max_bytes)", query)
+
+    def test_missing_legend_label_is_dropped_from_translated_query(self):
+        self.seed_field_caps({
+            "node_interrupts_total": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "instance": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+            "job": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+            "type": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+        })
+        panel = {
+            "title": "Interrupts Detail",
+            "type": "timeseries",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval])',
+                    "legendFormat": "{{ type }} - {{ info }}",
+                }
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertNotEqual(result.status, "requires_manual")
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("type", query)
+        self.assertNotIn(", info", query)
+        self.assertNotIn("COALESCE(info", query)
+
+    def test_scalar_template_variable_in_arithmetic_becomes_query_param(self):
+        self.seed_field_caps({
+            "prometheus_target_interval_length_seconds": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+            "instance": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+            "quantile": {"keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}},
+        })
+
+        result = self.translate(
+            'prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} - $scrape_interval'
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("?scrape_interval", result.esql_query)
+        self.assertNotIn("prometheus.label_scrape_interval.value", result.esql_query)
+
+    def test_filtered_ts_stats_inline_case_inside_timeseries_aggregate(self):
+        expr = promql._inline_filters_into_stats_expr(
+            "SUM_OVER_TIME(machine_cpu_cores, 5m)",
+            ['resource == "cpu"'],
+        )
+
+        self.assertEqual(
+            expr,
+            'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
+        )
+
+    def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
+        expr = promql._inline_filters_into_stats_expr(
+            "SUM(LAST_OVER_TIME(kube_pod_container_resource_requests))",
+            ['resource == "cpu"'],
+            timeseries_window="5m",
+        )
+
+        self.assertIsNone(expr)
+
     def test_resolve_label_prefers_source_field_when_target_has_both(self):
         """If the target has both `instance` AND `service.instance.id`, the
         resolver must keep `instance` (source-faithful) instead of rewriting."""
@@ -2218,6 +2492,41 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(generated["schema"]["label_candidates"], {"status": ["state"]})
         self.assertEqual(generated["_validation_hints"]["unresolved_labels"], {"quantile": 3})
 
+    def test_run_esql_query_supplies_placeholder_values_for_dashboard_params(self):
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"columns": [{"name": "value"}], "values": [[1]]}
+        session = mock.Mock()
+        session.post.return_value = response
+
+        result = esql_validate._run_esql_query(
+            "TS metrics-* | WHERE cluster == ?cluster | WHERE node RLIKE ?node",
+            "http://localhost:9200",
+            session=session,
+        )
+
+        self.assertTrue(result["ok"])
+        payload = session.post.call_args.kwargs["json"]
+        self.assertEqual(payload["params"], [{"cluster": ".*"}, {"node": ".*"}])
+
+    def test_run_esql_query_can_limit_validation_result_size(self):
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"columns": [{"name": "value"}], "values": [[1]]}
+        session = mock.Mock()
+        session.post.return_value = response
+
+        result = esql_validate._run_esql_query(
+            "TS metrics-* | STATS value = AVG(cpu)",
+            "http://localhost:9200",
+            session=session,
+            result_limit=1,
+        )
+
+        self.assertTrue(result["ok"])
+        payload = session.post.call_args.kwargs["json"]
+        self.assertTrue(payload["query"].endswith("| LIMIT 1"))
+
     def test_validate_query_with_fixes_can_narrow_wildcard_index(self):
         class StubResolver:
             _index_pattern = "metrics-*"
@@ -2272,6 +2581,31 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result["status"], "fixed_empty")
         self.assertEqual(result["analysis"]["result_rows"], 0)
         self.assertEqual(result["analysis"]["narrowed_to_index"], "metrics-prometheus-synthetic")
+
+    def test_validate_query_with_fixes_does_not_mark_param_dependent_empty_as_manual(self):
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return ["metrics-prometheus-synthetic"]
+
+        query = (
+            "TS metrics-*\n"
+            "| WHERE instance == ?node\n"
+            "| STATS x = AVG(foo) BY time_bucket = TBUCKET(5 minute)"
+        )
+
+        def fake_run(candidate_query, _es_url, **kwargs):
+            if "metrics-prometheus-synthetic" in candidate_query:
+                return {"ok": True, "error": "", "rows": 0, "columns": ["x"], "values": []}
+            return {"ok": False, "error": "Unknown index [metrics-*]", "rows": 0, "columns": []}
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            result = migrate.validate_query_with_fixes(query, "http://localhost:9200", StubResolver())
+
+        self.assertEqual(result["status"], "fixed")
+        self.assertEqual(result["analysis"]["result_rows"], 0)
+        self.assertTrue(result["analysis"]["param_dependent_rows"])
 
     def test_narrow_limit_caps_candidates_probed(self):
         """narrow_limit prevents unbounded index-probing when the resolver has many candidates."""
@@ -2568,6 +2902,29 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "fixed")
         self.assertIn("TBUCKET(1 minute)", result["query"])
+
+    def test_validate_query_with_fixes_rewrites_ts_count_star_to_count_field(self):
+        query = (
+            "TS metrics-*\n"
+            "| WHERE up == 1\n"
+            "| STATS up_count = COUNT(*)"
+        )
+
+        def fake_run(candidate_query, _es_url, **kwargs):
+            if "COUNT(up)" in candidate_query:
+                return {"ok": True, "error": "", "rows": 1, "columns": ["up_count"], "values": [[2]]}
+            return {
+                "ok": False,
+                "error": "Found 1 problem\nline 3:20: count_star [COUNT(*)] can't be used with TS command; use count on a field instead",
+                "rows": 0,
+                "columns": [],
+            }
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            result = migrate.validate_query_with_fixes(query, "http://localhost:9200", resolver=None)
+
+        self.assertEqual(result["status"], "fixed")
+        self.assertIn("COUNT(up)", result["query"])
 
     def test_run_esql_query_materializes_dashboard_time_params_for_validation(self):
         captured = {}
@@ -3023,6 +3380,278 @@ class TranslatorRegressionTests(unittest.TestCase):
         ):
             self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
 
+    def test_detect_target_runtime_features_uses_capability_names(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        with (
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                return_value=True,
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.get",
+            ) as get,
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.post",
+            ) as post,
+        ):
+            get.return_value = SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "nodes": {
+                        "node-1": {
+                            "capabilities": [
+                                PROMQL_LABEL_MATCHER_PARAMS,
+                            ]
+                        }
+                    }
+                },
+                text="",
+            )
+            post.return_value = SimpleNamespace(status_code=200, json=lambda: {"columns": [{"name": "value"}]}, text="")
+
+            profile = _detect_target_runtime_features("https://es.example", "apikey")
+
+        self.assertTrue(profile[PROMQL_COMMAND_V0]["supported"])
+        self.assertEqual(profile[PROMQL_COMMAND_V0]["source"], "probe")
+        self.assertTrue(profile[PROMQL_LABEL_MATCHER_PARAMS]["supported"])
+        self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "capabilities+probe")
+        post.assert_called_once()
+
+    def test_detect_target_runtime_features_probe_rejection_overrides_capability(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        with (
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                return_value=True,
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.get",
+            ) as get,
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.post",
+            ) as post,
+        ):
+            get.return_value = SimpleNamespace(
+                status_code=200,
+                json=lambda: {"nodes": {"node-1": {"capabilities": [PROMQL_LABEL_MATCHER_PARAMS]}}},
+                text="",
+            )
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {"error": "mismatched input '?_job' expecting STRING"},
+                text="mismatched input '?_job' expecting STRING",
+            )
+
+            profile = _detect_target_runtime_features("https://es.example", "apikey")
+
+        self.assertFalse(profile[PROMQL_LABEL_MATCHER_PARAMS]["supported"])
+        self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "capabilities+probe")
+
+    def test_detect_target_runtime_features_disables_label_params_on_parser_rejection(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        with (
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                return_value=True,
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.get",
+            ) as get,
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.post",
+            ) as post,
+        ):
+            get.return_value = SimpleNamespace(status_code=410, json=lambda: {}, text="api_not_available_exception")
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {"error": "mismatched input '?_job' expecting STRING"},
+                text="mismatched input '?_job' expecting STRING",
+            )
+
+            profile = _detect_target_runtime_features("https://es.example", "apikey")
+
+        self.assertFalse(profile[PROMQL_LABEL_MATCHER_PARAMS]["supported"])
+        self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "probe")
+        self.assertIn("rejects", profile[PROMQL_LABEL_MATCHER_PARAMS]["reason"])
+
+    def test_apply_native_promql_records_runtime_feature_profile(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            is_feature_supported,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="auto",
+        )
+        rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
+            PROMQL_LABEL_MATCHER_PARAMS: {"supported": False, "source": "probe", "confidence": "verified"},
+        }
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value=profile,
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.runtime_features, profile)
+        self.assertFalse(is_feature_supported(rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
+
+    def test_apply_native_promql_force_on_records_detected_subfeatures(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="force_on",
+        )
+        rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
+            PROMQL_LABEL_MATCHER_PARAMS: {"supported": True, "source": "capabilities", "confidence": "verified"},
+        }
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value=profile,
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.runtime_features, profile)
+
+    def test_run_validation_jobs_parallel_preserves_report_order(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        first_result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        second_result = SimpleNamespace(dashboard_title="B", dashboard_uid="b")
+        first_panel = SimpleNamespace(esql_query="FROM one", title="One", source_panel_id="1")
+        second_panel = SimpleNamespace(esql_query="FROM two", title="Two", source_panel_id="2")
+
+        def fake_validate(query, *_args, **_kwargs):
+            return {
+                "status": "pass",
+                "query": query,
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            }
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            side_effect=fake_validate,
+        ) as validate:
+            outputs = _run_validation_jobs(
+                [(first_result, first_panel), (second_result, second_panel)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=2,
+            )
+
+        self.assertEqual([item[2]["query"] for item in outputs], ["FROM one", "FROM two"])
+        self.assertEqual(validate.call_count, 2)
+
+    def test_run_validation_jobs_prewarms_resolver_caches_before_parallel_work(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        resolver = mock.Mock()
+        panel = SimpleNamespace(esql_query="FROM one", title="One", source_panel_id="1")
+        result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            return_value={
+                "status": "pass",
+                "query": "FROM one",
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ):
+            _run_validation_jobs(
+                [(result, panel)],
+                es_url="http://localhost:9200",
+                resolver=resolver,
+                es_api_key=None,
+                narrow_limit=10,
+                workers=2,
+            )
+
+        resolver._discover_fields.assert_called_once()
+        resolver._discover_concrete_indexes.assert_called_once()
+
+    def test_run_validation_jobs_deduplicates_identical_queries(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        first_result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        second_result = SimpleNamespace(dashboard_title="B", dashboard_uid="b")
+        first_panel = SimpleNamespace(esql_query="FROM shared", title="One", source_panel_id="1")
+        second_panel = SimpleNamespace(esql_query="FROM shared", title="Two", source_panel_id="2")
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            return_value={
+                "status": "pass",
+                "query": "FROM shared",
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ) as validate:
+            outputs = _run_validation_jobs(
+                [(first_result, first_panel), (second_result, second_panel)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=2,
+            )
+
+        self.assertEqual(len(outputs), 2)
+        self.assertEqual([item[2]["query"] for item in outputs], ["FROM shared", "FROM shared"])
+        self.assertEqual(validate.call_count, 1)
+
     def test_resolve_native_promql_uses_detection_when_auto(self):
         from observability_migration.adapters.source.grafana.cli import (
             _resolve_native_promql,
@@ -3033,13 +3662,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             es_api_key="apikey",
         )
         with mock.patch(
-            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
-            return_value=True,
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value={"promql_command_v0": {"supported": True}},
         ):
             self.assertTrue(_resolve_native_promql(args))
         with mock.patch(
-            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
-            return_value=False,
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value={"promql_command_v0": {"supported": False}},
         ):
             self.assertFalse(_resolve_native_promql(args))
 
@@ -8495,13 +9124,13 @@ class NativePromqlTests(unittest.TestCase):
 
     def test_build_native_promql_query_normalizes_metric_selector_spacing(self):
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
-        q = build_native_promql_query('node_filesystem_avail_bytes {instance="$node"}', index="metrics-*")
-        self.assertIn('node_filesystem_avail_bytes{instance=~".*"}', q)
+        q = build_native_promql_query('node_filesystem_avail_bytes {instance="node-1"}', index="metrics-*")
+        self.assertIn('node_filesystem_avail_bytes{instance="node-1"}', q)
 
-    def test_build_native_promql_query_replaces_double_bracket_variable(self):
-        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
-        q = build_native_promql_query('rate(foo{instance=~"[[instance]]"}[5m])', index="metrics-*")
-        self.assertIn('instance=~".*"', q)
+    def test_native_promql_rejects_double_bracket_label_variable(self):
+        self.assertFalse(panels.can_use_native_promql('rate(foo{instance=~"[[instance]]"}[5m])'))
+        with self.assertRaises(ValueError):
+            panels.build_native_promql_query('rate(foo{instance=~"[[instance]]"}[5m])', index="metrics-*")
 
     def test_build_native_promql_query_collapses_newlines(self):
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
@@ -8758,12 +9387,12 @@ class NativePromqlTests(unittest.TestCase):
         self.assertEqual(result.query_ir.get("source_expression"), expr)
 
     def test_query_ir_clean_expression_uses_cleaned_native_promql(self):
-        expr = 'node_filesystem_avail_bytes {instance="$node"}'
+        expr = 'node_filesystem_avail_bytes {instance="node-1"}'
         panel = self._make_panel(expr)
         _, result = self.translate_panel(panel)
         self.assertEqual(
             result.query_ir.get("clean_expression"),
-            'node_filesystem_avail_bytes{instance=~".*"}',
+            'node_filesystem_avail_bytes{instance="node-1"}',
         )
 
     def test_query_ir_target_query_is_promql_command(self):
@@ -9442,6 +10071,35 @@ class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
         # Left operand has the static status filter — it should appear in its suffix
         self.assertIn("status", left_suffix, f"Left suffix should contain 'status': {left_suffix!r}")
 
+    def test_variable_matcher_alias_suffix_uses_label_not_internal_param(self):
+        from observability_migration.adapters.source.grafana.promql import (
+            _matcher_alias_suffix,
+            _parse_fragment,
+            preprocess_grafana_macros,
+        )
+
+        frag = _parse_fragment(
+            preprocess_grafana_macros(
+                'rate(nginx_ingress_controller_requests{controller_pod=~"$controller"}[5m])',
+                self.rule_pack,
+            )
+        )
+
+        self.assertEqual(_matcher_alias_suffix(frag), "controller_pod_rate")
+
+    def test_metric_kind_override_drives_non_suffix_counter_rate(self):
+        self.rule_pack.metric_kinds["nginx_ingress_controller_requests"] = "counter"
+        result = migrate.translate_promql_to_esql(
+            'sum(rate(nginx_ingress_controller_requests{controller_pod=~"$controller"}[5m])) by (controller)',
+            esql_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertNotIn("AVG_OVER_TIME(nginx_ingress_controller_requests, 5m)", result.esql_query)
+        self.assertIn("RATE(nginx_ingress_controller_requests, 5m)", result.esql_query)
+
 
 class TestScalarAggregationHoisting(unittest.TestCase):
     """agg(X op k) where k is a scalar literal must translate by hoisting
@@ -9709,8 +10367,8 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
     the leading "^" previously bypassed startswith("label_") and leaked into
     RLIKE as WHERE namespace RLIKE "^label_Namespace$".
 
-    Bug C: status!~".*cam(era)?$" — trailing "$" is a regex end-anchor, NOT
-    a Grafana variable; the old "$" in value check incorrectly dropped it.
+    Bug C: status!~".*cam(era)?$" — trailing "$" is a PromQL regex
+    end-anchor. ES|QL RLIKE treats it as a literal, so it must be stripped.
     """
 
     def setUp(self):
@@ -9722,8 +10380,8 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
             expr, esql_index="metrics-*", rule_pack=self.rule_pack, resolver=self.resolver,
         )
 
-    def test_anchored_var_matcher_not_in_rlike(self):
-        """^$Namespace$ preprocesses to ^label_Namespace$; must not emit RLIKE."""
+    def test_anchored_var_matcher_becomes_param_filter(self):
+        """^$Namespace$ strips anchors and becomes a dashboard param filter."""
         r = self._translate(
             'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0'
         )
@@ -9733,26 +10391,26 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
             r.esql_query or "",
             "preprocessed variable label should not appear in WHERE RLIKE clause",
         )
-        self.assertTrue(
-            any("variable" in w.lower() and "filter" in w.lower() for w in r.warnings),
-            f"Expected dropped-variable-filter warning, got {r.warnings}",
-        )
+        self.assertIn("k8s.namespace.name RLIKE ?Namespace", r.esql_query or "")
+        self.assertNotIn("Dropped variable-driven label filters during migration", r.warnings)
 
-    def test_real_regex_end_anchor_preserved(self):
-        """status!~".*cam(era)?$" — real end-anchor must survive into RLIKE."""
+    def test_real_regex_end_anchor_stripped_for_esql(self):
+        """status!~".*cam(era)?$" — end-anchor must not become literal $."""
         r = self._translate('http_requests_total{service="web",status!~".*cam(era)?$"}')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
         self.assertIn(
-            'RLIKE ".*cam(era)?$"',
+            'RLIKE ".*cam(era)?"',
             r.esql_query or "",
-            "real regex end-anchor must appear verbatim in RLIKE filter",
+            "PromQL regex end-anchor should be stripped for ES|QL RLIKE",
         )
+        self.assertNotIn('RLIKE ".*cam(era)?$"', r.esql_query or "")
 
     def test_dollar_end_anchor_without_word_char_not_a_var(self):
-        """Regex "end$" — bare end-anchor with no following word char is kept."""
+        """Regex "end$" — bare end-anchor is stripped, not treated as a var."""
         r = self._translate('http_requests_total{status!~".*end$"}')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn('RLIKE ".*end$"', r.esql_query or "")
+        self.assertIn('RLIKE ".*end"', r.esql_query or "")
+        self.assertNotIn('RLIKE ".*end$"', r.esql_query or "")
 
 
 class TestGroupByVarLabelDropped(unittest.TestCase):

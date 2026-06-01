@@ -343,6 +343,11 @@ class SchemaResolver:
         return has_conflicting_types(self.field_capability(field_name))
 
     def is_counter(self, metric_name):
+        kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
+        if kind == "counter":
+            return True
+        if kind == "gauge":
+            return False
         if any(metric_name.endswith(s) for s in self._rule_pack.counter_suffixes):
             return True
         if is_counter_metric_field(self.field_capability(metric_name)):

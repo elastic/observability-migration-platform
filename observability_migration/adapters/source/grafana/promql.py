@@ -19,6 +19,11 @@ def _is_counter_fallback(metric_name, rule_pack):
     """Heuristic counter detection when no schema resolver is available."""
     if not metric_name:
         return False
+    kind = str(getattr(rule_pack, "metric_kinds", {}).get(metric_name, "")).strip().lower()
+    if kind == "counter":
+        return True
+    if kind == "gauge":
+        return False
     suffixes = getattr(rule_pack, "counter_suffixes", ["_total"])
     return any(metric_name.endswith(s) for s in suffixes)
 
@@ -218,6 +223,59 @@ _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
     ("__range_s", "3600"),
     ("__range", "1h"),
 )
+_GRAFANA_PARAM_VALUE_PREFIX = "__obs_migration_param_"
+_GRAFANA_FULL_VAR_VALUE_RE = re.compile(
+    r"^\s*(?:"
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
+    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
+    r")\s*$"
+)
+_PROMQL_LABEL_MATCHER_RE = re.compile(
+    r"(?P<prefix>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*)"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)(?P<suffix>\s*)$",
+    re.DOTALL,
+)
+
+
+def grafana_template_var_name(token: str) -> str | None:
+    """Return the Grafana variable name when *token* is exactly one variable."""
+    match = _GRAFANA_FULL_VAR_VALUE_RE.match(str(token or ""))
+    if not match:
+        return None
+    return match.group("braced") or match.group("plain") or match.group("bracket")
+
+
+def _has_unescaped_trailing_dollar(value: str) -> bool:
+    if not value.endswith("$"):
+        return False
+    backslashes = 0
+    idx = len(value) - 2
+    while idx >= 0 and value[idx] == "\\":
+        backslashes += 1
+        idx -= 1
+    return backslashes % 2 == 0
+
+
+def _strip_promql_regex_anchors(value: str) -> str:
+    """Drop PromQL regex anchors that ES|QL RLIKE treats as literals."""
+    text = str(value or "")
+    if text.startswith("^"):
+        text = text[1:]
+    if _has_unescaped_trailing_dollar(text):
+        text = text[:-1]
+    return text
+
+
+def _grafana_param_value(name: str) -> str:
+    return f"{_GRAFANA_PARAM_VALUE_PREFIX}{name}"
+
+
+def _grafana_param_name(value: str) -> str | None:
+    if not str(value or "").startswith(_GRAFANA_PARAM_VALUE_PREFIX):
+        return None
+    name = str(value)[len(_GRAFANA_PARAM_VALUE_PREFIX):]
+    return name or None
 
 
 def substitute_grafana_range_macros(expr):
@@ -229,6 +287,68 @@ def substitute_grafana_range_macros(expr):
         result = re.sub(rf"\$\{{{name}\}}", replacement, result)
         result = re.sub(rf"\${name}\b", replacement, result)
     return result
+
+
+def _parameterize_grafana_label_matchers(expr: str) -> str:
+    """Preserve full-value Grafana label matcher variables as parseable params."""
+
+    def rewrite_selector(selector_text):
+        parts = []
+        changed = False
+        for part in _split_top_level_csv(selector_text):
+            matcher = _PROMQL_LABEL_MATCHER_RE.match(part)
+            if not matcher:
+                parts.append(part)
+                continue
+            is_regex = "=~" in matcher.group("prefix") or "!~" in matcher.group("prefix")
+            value = matcher.group("value")
+            var_name = grafana_template_var_name(_strip_promql_regex_anchors(value) if is_regex else value)
+            if not var_name or var_name.startswith("__"):
+                parts.append(part)
+                continue
+            parts.append(
+                f"{matcher.group('prefix')}{matcher.group('quote')}"
+                f"{_grafana_param_value(var_name)}{matcher.group('quote')}"
+                f"{matcher.group('suffix')}"
+            )
+            changed = True
+        if not changed:
+            return selector_text
+        return ", ".join(parts)
+
+    pieces = []
+    start = 0
+    idx = 0
+    while idx < len(expr):
+        if expr[idx] != "{":
+            idx += 1
+            continue
+        pieces.append(expr[start:idx])
+        end = idx + 1
+        quote = ""
+        escaped = False
+        while end < len(expr):
+            char = expr[end]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in ('"', "'"):
+                quote = char
+            elif char == "}":
+                break
+            end += 1
+        if end >= len(expr) or expr[end] != "}":
+            pieces.append(expr[idx:])
+            return "".join(pieces)
+        pieces.append("{" + rewrite_selector(expr[idx + 1 : end]) + "}")
+        idx = end + 1
+        start = idx
+    pieces.append(expr[start:])
+    return "".join(pieces)
 
 
 def preprocess_grafana_macros(expr, rule_pack=None):
@@ -248,6 +368,7 @@ def preprocess_grafana_macros(expr, rule_pack=None):
     result = substitute_grafana_range_macros(expr)
     for pattern, replacement in replacements:
         result = re.sub(pattern, replacement, result)
+    result = _parameterize_grafana_label_matchers(result)
     result = re.sub(r"\[\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*\]", f"[{default_window}]", result)
     # Subquery form [$var:$var] — must run BEFORE the general $var→label_var
     # pass so both halves are still recognisable as variables.
@@ -269,8 +390,6 @@ def preprocess_grafana_macros(expr, rule_pack=None):
         result,
     )
 
-    result = re.sub(r'\{([^}]*?)(\w+)=~"\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
-    result = re.sub(r'\{([^}]*?)(\w+)="\$(\w+)"([^}]*?)\}', r'{\1\2=~".*"\4}', result)
     # ${var} and ${var:format} — Grafana advanced variable interpolation.
     # Must run before the bare $var substitution so the opening brace isn't
     # left as a dangling token that confuses the PromQL AST parser.
@@ -625,6 +744,18 @@ def _matcher_to_esql(matcher, resolver):
     value = matcher["value"]
     if not label:
         return None
+    if op in {"=~", "!~"}:
+        value = _strip_promql_regex_anchors(value)
+    param_name = _grafana_param_name(value)
+    if param_name:
+        if op == "=":
+            return f"{label} == ?{param_name}"
+        if op == "!=":
+            return f"{label} != ?{param_name}"
+        if op == "=~":
+            return f"{label} RLIKE ?{param_name}"
+        if op == "!~":
+            return f"NOT ({label} RLIKE ?{param_name})"
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
     # false-positives on regex end-of-string anchors like ".*cam(era)?$".
@@ -1535,14 +1666,20 @@ def _build_esql(context):
 def _frag_filters(frag, resolver):
     """Build ES|QL WHERE clauses from fragment matchers using the resolver."""
     filters = _selector_filters(frag.matchers, resolver)
-    had_vars = any(
-        bool(re.search(r"\$\w", m.get("value", "")))
-        or (m.get("op") == "=~" and m.get("value", "").strip() == ".*")
-        or m.get("value", "").startswith("label_")
-        or m.get("value", "").startswith("^label_")
-        for m in frag.matchers
-    )
+    had_vars = any(_matcher_has_dropped_variable(m) for m in frag.matchers)
     return filters, had_vars
+
+
+def _matcher_has_dropped_variable(m):
+    value = str(m.get("value", ""))
+    if _grafana_param_name(value):
+        return False
+    return (
+        bool(re.search(r"\$\w", value))
+        or (m.get("op") == "=~" and value.strip() == ".*")
+        or value.startswith("label_")
+        or value.startswith("^label_")
+    )
 
 
 def _summary_mode_from_metadata(metadata):
@@ -1561,6 +1698,19 @@ def _merge_group_fields(explicit_fields, preferred_fields, preferred_origin=None
     return merged
 
 
+def _filter_missing_resolved_fields(fields, resolver):
+    """Drop resolved fields when live schema discovery proves they are absent."""
+    if not fields or resolver is None or not hasattr(resolver, "field_exists"):
+        return list(fields or [])
+    kept = []
+    for field_name in fields:
+        exists = resolver.field_exists(field_name)
+        if exists is False:
+            continue
+        kept.append(field_name)
+    return kept
+
+
 def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
     """Resolve fragment group labels through the resolver.
 
@@ -1571,6 +1721,8 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
     explicit = resolver.resolve_labels(raw) if resolver else list(raw)
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    if preferred_origin == "legend":
+        preferred = _filter_missing_resolved_fields(preferred, resolver)
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
 
 
@@ -1664,11 +1816,11 @@ def _rename_measure_alias(spec, new_alias):
 def _is_variable_driven_matcher(m):
     """Return True for matchers that originate from Grafana template variables.
 
-    ``preprocess_grafana_macros`` converts ``=~"$var"`` inside ``{}`` to
-    ``=~".*"`` (match-all catch-all) and converts remaining ``$var`` tokens to
-    ``label_var``.  Both forms are variable-driven and should not contribute to
-    the alias suffix — they are the same across binary-expression operands and
-    would produce identical suffixes even when a static distinguishing matcher
+    ``preprocess_grafana_macros`` preserves full-value matcher variables as
+    parameter sentinels and converts remaining ``$var`` tokens to ``label_var``.
+    These forms are variable-driven and should not contribute to the alias
+    suffix — they are the same across binary-expression operands and would
+    produce identical suffixes even when a static distinguishing matcher
     (e.g. ``status!~"[4-5].*"``) is present.
 
     Also handles anchored forms like ``^label_Container$`` that arise when the
@@ -1676,7 +1828,13 @@ def _is_variable_driven_matcher(m):
     """
     v = str(m.get("value", ""))
     # label_Var (bare preprocessed variable) or ^label_Var* (anchored form)
-    return v == ".*" or v.startswith("label_") or v.startswith("$") or v.startswith("^label_")
+    return (
+        v == ".*"
+        or v.startswith("label_")
+        or v.startswith("$")
+        or v.startswith("^label_")
+        or _grafana_param_name(v) is not None
+    )
 
 
 def _is_phantom_grafana_var(frag):
@@ -1713,7 +1871,10 @@ def _matcher_alias_suffix(frag):
     parts = []
     for matcher in source:
         label = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["label"]).strip("_")
-        value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
+        if _is_variable_driven_matcher(matcher):
+            value = ""
+        else:
+            value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
         if label or value:
             parts.append("_".join(part for part in (label, value) if part))
     if frag.range_func:
@@ -2011,7 +2172,7 @@ def _common_filters(specs):
     return common
 
 
-def _inline_filters_into_stats_expr(stats_expr, filters):
+def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m"):
     if not filters:
         return stats_expr
     match = re.match(r"^(?P<agg>[A-Z_]+)\((?P<inner>.+)\)$", stats_expr or "")
@@ -2020,6 +2181,13 @@ def _inline_filters_into_stats_expr(stats_expr, filters):
     agg = match.group("agg")
     inner = match.group("inner").strip()
     condition = " and ".join(f"({filter_expr})" for filter_expr in filters)
+    ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
+    if agg.endswith("_OVER_TIME") and ts_match:
+        field = ts_match.group("field").strip()
+        window = ts_match.group("window").strip()
+        return f"{agg}(CASE({condition}, {field}, NULL), {window})"
+    if re.fullmatch(r"LAST_OVER_TIME\(.+\)", inner):
+        return None
     if inner == "*":
         if agg == "COUNT":
             return f"SUM(CASE({condition}, 1, 0))"
@@ -2052,15 +2220,21 @@ def _build_shared_measure_pipeline(index, specs):
         if existing != signature:
             return None
     specs = unique_specs
+    specs = _normalize_mixed_ts_stats_exprs(specs)
 
     base = specs[0]
     common_filters = _common_filters(specs)
     group_fields = (["time_bucket"] if base.bucket_expr else []) + base.group_fields
     by_parts = ([base.bucket_expr] if base.bucket_expr else []) + base.group_fields
     stats_terms = []
+    timeseries_window = _timeseries_stats_window(specs)
     for spec in specs:
         scoped_filters = [filter_expr for filter_expr in spec.filters if filter_expr not in common_filters]
-        scoped_expr = _inline_filters_into_stats_expr(spec.stats_expr, scoped_filters)
+        scoped_expr = _inline_filters_into_stats_expr(
+            spec.stats_expr,
+            scoped_filters,
+            timeseries_window=timeseries_window,
+        )
         if not scoped_expr:
             return None
         stats_terms.append(f"{spec.alias} = {scoped_expr}")
@@ -2086,6 +2260,60 @@ def _build_shared_measure_pipeline(index, specs):
             parts.append(f"| EVAL {spec.final_alias} = {spec.eval_expr}")
         metric_fields.append(spec.final_alias)
     return parts, group_fields, metric_fields
+
+
+def _timeseries_stats_window(specs):
+    for spec in specs:
+        match = re.search(r"\b[A-Z_]+_OVER_TIME\([^,]+,\s*([^)]+)\)", spec.stats_expr or "")
+        if match:
+            return match.group(1).strip()
+    return "5m"
+
+
+def _normalize_mixed_ts_stats_exprs(specs):
+    """Avoid mixing TS aggregates and regular aggregates in one TS STATS."""
+    if not specs or specs[0].source_type != "TS":
+        return specs
+    if not any(re.search(r"\b[A-Z_]+_OVER_TIME\(", spec.stats_expr or "") for spec in specs):
+        return specs
+    window = _timeseries_stats_window(specs)
+    outer_to_ts = {
+        "AVG": "AVG_OVER_TIME",
+        "SUM": "SUM_OVER_TIME",
+        "MIN": "MIN_OVER_TIME",
+        "MAX": "MAX_OVER_TIME",
+        "COUNT": "COUNT_OVER_TIME",
+    }
+    normalized = []
+    for spec in specs:
+        expr = spec.stats_expr or ""
+        metric_field = str(spec.metric_field or "").strip()
+        if not metric_field:
+            normalized.append(spec)
+            continue
+        match = re.fullmatch(
+            rf"\s*(AVG|SUM|MIN|MAX|COUNT)\(\s*{re.escape(metric_field)}\s*\)\s*",
+            expr,
+        )
+        if not match:
+            normalized.append(spec)
+            continue
+        ts_func = outer_to_ts[match.group(1)]
+        warning = (
+            f"Converted {match.group(1)}({metric_field}) to "
+            f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+        )
+        warnings = list(spec.warnings)
+        if warning not in warnings:
+            warnings.append(warning)
+        normalized.append(
+            dataclasses.replace(
+                spec,
+                stats_expr=f"{ts_func}({metric_field}, {window})",
+                warnings=warnings,
+            )
+        )
+    return normalized
 
 
 def _try_rewrite_set_or_same_metric(
@@ -2410,6 +2638,40 @@ def _build_formula_plan(
                 return rewritten
             return None
 
+        if op_lower in ("+", "-"):
+            left_frag_peek = frag.extra.get("left_frag")
+            right_frag_peek = frag.extra.get("right_frag")
+            phantom_side = None
+            real_side = None
+            phantom_on_left = False
+            if _is_phantom_grafana_var(right_frag_peek):
+                phantom_side = right_frag_peek
+                real_side = left_frag_peek
+            elif _is_phantom_grafana_var(left_frag_peek):
+                phantom_side = left_frag_peek
+                real_side = right_frag_peek
+                phantom_on_left = True
+            if phantom_side is not None and real_side is not None:
+                plan = _build_formula_plan(
+                    real_side,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                )
+                if plan:
+                    var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
+                    param = f"?{var_name}"
+                    expr = f"({param} {frag.binary_op} {plan.expr})" if phantom_on_left else f"({plan.expr} {frag.binary_op} {param})"
+                    warning = f"Grafana variable ${var_name} used as scalar arithmetic parameter ?{var_name}"
+                    if warning not in (plan.warnings or []):
+                        plan.warnings.append(warning)
+                    return FormulaPlan(specs=plan.specs, expr=expr, warnings=list(plan.warnings))
+
         # When a Grafana variable like ``$trends`` is used as a scalar
         # multiplier/divisor (e.g. ``rate(A) * $trends``), the preprocessor
         # converts it to ``label_trends`` — a bare simple_metric with no
@@ -2560,6 +2822,7 @@ __all__ = [
     "_summary_mode_from_metadata",
     "_unique_safe_alias",
     "classify_promql_complexity",
+    "grafana_template_var_name",
     "preprocess_grafana_macros",
     "substitute_grafana_range_macros",
 ]

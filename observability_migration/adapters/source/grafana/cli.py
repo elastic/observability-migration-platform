@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,12 @@ from .preflight import (
 )
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
+from .runtime_features import (
+    PROMQL_COMMAND_V0,
+    PROMQL_LABEL_MATCHER_PARAMS,
+    is_feature_supported,
+    set_runtime_feature,
+)
 from .schema import SchemaResolver
 from .smoke_integration import load_smoke_report, merge_smoke_into_results
 from .transforms import build_redesign_tasks, build_transform_summary, extract_transformations
@@ -166,6 +173,16 @@ def parse_args(argv: list[str] | None = None):
             "Maximum number of concrete index candidates to probe when narrowing a wildcard "
             "index pattern during ES|QL validation (default: 10). Lower values reduce worst-case "
             "validation time per panel at the cost of fewer narrowing attempts."
+        ),
+    )
+    parser.add_argument(
+        "--validate-workers",
+        type=int,
+        default=int(os.getenv("OBS_MIGRATE_VALIDATE_WORKERS", "16")),
+        dest="validate_workers",
+        help=(
+            "Number of concurrent ES|QL validation workers (default: 16). "
+            "Use 1 for fully sequential validation."
         ),
     )
     parser.add_argument(
@@ -656,6 +673,19 @@ _PROMQL_DETECTION_PROBE = (
     "value=(up)"
 )
 
+_PROMQL_LABEL_MATCHER_PARAM_PROBE = (
+    'PROMQL index=metrics-* step=1m '
+    'start="2024-01-01T00:00:00Z" end="2024-01-01T01:00:00Z" '
+    "value=(up{job=?_job})"
+)
+
+
+def _es_headers(api_key: str | None = None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    return headers
+
 
 def _detect_promql_support(
     es_url: str,
@@ -671,16 +701,13 @@ def _detect_promql_support(
     """
     if not es_url:
         return False
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"ApiKey {api_key}"
     url = es_url.rstrip("/") + "/_query"
     payload = {"query": _PROMQL_DETECTION_PROBE}
     try:
         response = requests.post(
             url,
             json=payload,
-            headers=headers,
+            headers=_es_headers(api_key),
             timeout=timeout,
         )
     except Exception as exc:
@@ -717,7 +744,178 @@ def _detect_promql_support(
     return False
 
 
-def _resolve_native_promql(args: argparse.Namespace) -> bool:
+def _capability_payload_contains(payload: Any, capability: str) -> bool:
+    if isinstance(payload, str):
+        return payload == capability
+    if isinstance(payload, dict):
+        return any(_capability_payload_contains(value, capability) for value in payload.values())
+    if isinstance(payload, list | tuple | set):
+        return any(_capability_payload_contains(value, capability) for value in payload)
+    return False
+
+
+def _detect_promql_label_matcher_params(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    url = es_url.rstrip("/") + "/_query"
+    payload = {
+        "query": _PROMQL_LABEL_MATCHER_PARAM_PROBE,
+        "params": [{"_job": "__obs_migration_probe__"}],
+    }
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=_es_headers(api_key),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": f"target probe failed ({exc.__class__.__name__})",
+        }
+
+    status = getattr(response, "status_code", 0)
+    body_text = ""
+    try:
+        body_text = response.text or ""
+    except Exception:
+        body_text = ""
+    lower_text = body_text.lower()
+
+    if status == 200:
+        return {
+            "supported": True,
+            "source": "probe",
+            "confidence": "verified",
+            "level": "syntax",
+            "reason": "target accepted PromQL label matcher params",
+        }
+    if status in (401, 403):
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": "target probe skipped due to auth error",
+        }
+    if "?_job" in lower_text and ("expecting string" in lower_text or "mismatched input" in lower_text):
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "verified",
+            "level": "syntax",
+            "reason": "target parser rejects PromQL label matcher params",
+        }
+    return {
+        "supported": False,
+        "source": "probe",
+        "confidence": "inconclusive",
+        "level": "syntax",
+        "reason": f"target probe returned HTTP {status}",
+    }
+
+
+def _detect_target_runtime_features(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    profile: dict[str, Any] = {}
+
+    promql_supported = _detect_promql_support(es_url, api_key, timeout=timeout)
+    set_runtime_feature(
+        profile,
+        PROMQL_COMMAND_V0,
+        supported=promql_supported is True,
+        source="probe",
+        confidence="verified" if promql_supported is not None else "inconclusive",
+        level="syntax",
+        reason=(
+            "target accepted the ES|QL PROMQL command"
+            if promql_supported is True
+            else "target did not verify ES|QL PROMQL command support"
+        ),
+    )
+
+    if promql_supported is not True:
+        set_runtime_feature(
+            profile,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=False,
+            source="probe",
+            confidence="inconclusive" if promql_supported is None else "verified",
+            level="syntax",
+            reason="PromQL command support is unavailable on the target",
+        )
+        return profile
+
+    headers = _es_headers(api_key)
+    capabilities_url = es_url.rstrip("/") + "/_nodes/capabilities"
+    try:
+        response = requests.get(capabilities_url, headers=headers, timeout=timeout)
+        if getattr(response, "status_code", 0) == 200:
+            payload = response.json()
+            if _capability_payload_contains(payload, PROMQL_LABEL_MATCHER_PARAMS):
+                probe_state = _detect_promql_label_matcher_params(es_url, api_key, timeout)
+                if probe_state.get("supported") is True:
+                    set_runtime_feature(
+                        profile,
+                        PROMQL_LABEL_MATCHER_PARAMS,
+                        supported=True,
+                        source="capabilities+probe",
+                        confidence="verified",
+                        level="syntax",
+                        reason="target capabilities advertise and probe confirms PromQL label matcher params",
+                    )
+                else:
+                    profile[PROMQL_LABEL_MATCHER_PARAMS] = {
+                        **probe_state,
+                        "source": "capabilities+probe",
+                        "reason": (
+                            probe_state.get("reason")
+                            or "target capabilities advertised PromQL label matcher params but probe did not confirm support"
+                        ),
+                    }
+                return profile
+    except Exception:
+        pass
+
+    profile[PROMQL_LABEL_MATCHER_PARAMS] = _detect_promql_label_matcher_params(es_url, api_key, timeout)
+    return profile
+
+
+def _runtime_feature_status_label(state: Any) -> str:
+    if isinstance(state, bool):
+        return "supported" if state else "unsupported"
+    if not isinstance(state, dict):
+        return "unknown"
+    if state.get("supported") is True:
+        return "supported"
+    if state.get("confidence") == "inconclusive":
+        return "inconclusive"
+    return "unsupported"
+
+
+def _print_promql_runtime_profile(runtime_features: dict[str, Any]) -> None:
+    command_state = runtime_features.get(PROMQL_COMMAND_V0, {})
+    label_state = runtime_features.get(PROMQL_LABEL_MATCHER_PARAMS, {})
+    print("  Target PromQL profile:")
+    print(f"    PROMQL command: {_runtime_feature_status_label(command_state)}")
+    print(f"    PROMQL label matcher params: {_runtime_feature_status_label(label_state)}")
+    if (
+        is_feature_supported(runtime_features, PROMQL_COMMAND_V0)
+        and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)
+    ):
+        print("    Label matcher params disabled; affected panels will use ES|QL translation")
+
+
+def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str, Any] | None = None) -> bool:
     """Resolve the effective ``native_promql`` setting for this run.
 
     Precedence:
@@ -736,11 +934,15 @@ def _resolve_native_promql(args: argparse.Namespace) -> bool:
     if not es_url:
         return False
     es_api_key = getattr(args, "es_api_key", "") or None
-    supported = _detect_promql_support(es_url, es_api_key)
-    if supported is True:
+    runtime_features = runtime_features or _detect_target_runtime_features(es_url, es_api_key)
+    if is_feature_supported(runtime_features, PROMQL_COMMAND_V0):
         print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
         return True
-    if supported is False:
+    command_state = runtime_features.get(PROMQL_COMMAND_V0, {})
+    if isinstance(command_state, dict) and command_state.get("confidence") == "inconclusive":
+        print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
+        return False
+    if isinstance(command_state, dict):
         print("  PROMQL ES|QL command not supported on target; falling back to ES|QL translation")
         return False
     print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
@@ -771,7 +973,16 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
     signal over the default-clearing behavior advertised in the
     ``--dataset-filter`` help text.
     """
-    native = _resolve_native_promql(args)
+    mode = getattr(args, "native_promql_flag", "auto")
+    runtime_profile = None
+    if mode != "force_off" and getattr(args, "es_url", ""):
+        runtime_profile = _detect_target_runtime_features(
+            getattr(args, "es_url", "") or "",
+            getattr(args, "es_api_key", "") or None,
+        )
+        rule_pack.runtime_features.update(runtime_profile)
+        _print_promql_runtime_profile(runtime_profile)
+    native = _resolve_native_promql(args, runtime_profile)
     if native:
         rule_pack.native_promql = True
         if not getattr(args, "dataset_filter", ""):
@@ -790,6 +1001,82 @@ def _build_dashboard_run_summary(
         "artifacts_dir": str(output_dir),
         "validation_summary": validation_summary,
     }
+
+
+def _run_validation_jobs(
+    validation_jobs: list[tuple[Any, Any]],
+    *,
+    es_url: str,
+    resolver: Any,
+    es_api_key: str | None,
+    narrow_limit: int,
+    workers: int,
+) -> list[tuple[Any, Any, dict[str, Any]]]:
+    """Validate panel queries, optionally in parallel, preserving report order."""
+    if not validation_jobs:
+        return []
+
+    if hasattr(resolver, "_discover_fields"):
+        resolver._discover_fields()
+    if hasattr(resolver, "_discover_concrete_indexes"):
+        resolver._discover_concrete_indexes()
+
+    unique_jobs: list[tuple[Any, Any]] = []
+    unique_index_by_query: dict[str, int] = {}
+    job_to_unique_index: list[int] = []
+    for job in validation_jobs:
+        query = str(getattr(job[1], "esql_query", "") or "")
+        if query not in unique_index_by_query:
+            unique_index_by_query[query] = len(unique_jobs)
+            unique_jobs.append(job)
+        job_to_unique_index.append(unique_index_by_query[query])
+
+    worker_count = max(1, min(int(workers or 1), len(unique_jobs)))
+
+    def run_one(job: tuple[Any, Any]) -> dict[str, Any]:
+        _result, panel_result = job
+        return validate_query_with_fixes(
+            panel_result.esql_query,
+            es_url,
+            resolver,
+            es_api_key=es_api_key,
+            narrow_limit=narrow_limit,
+            result_limit=1,
+        )
+
+    if worker_count == 1:
+        unique_outputs = []
+        for idx, job in enumerate(unique_jobs, start=1):
+            unique_outputs.append(run_one(job))
+            if idx % 25 == 0 or idx == len(unique_jobs):
+                print(f"    validated {idx}/{len(unique_jobs)} unique queries", flush=True)
+        return [
+            (job[0], job[1], unique_outputs[job_to_unique_index[idx]])
+            for idx, job in enumerate(validation_jobs)
+        ]
+
+    outputs: list[dict[str, Any] | None] = [None] * len(unique_jobs)
+    print(
+        f"    validating {len(unique_jobs)} unique queries "
+        f"({len(validation_jobs)} panel queries) with {worker_count} workers",
+        flush=True,
+    )
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = {
+            pool.submit(run_one, job): idx
+            for idx, job in enumerate(unique_jobs)
+        }
+        for completed, future in enumerate(as_completed(futures), start=1):
+            idx = futures[future]
+            outputs[idx] = future.result()
+            if completed % 25 == 0 or completed == len(unique_jobs):
+                print(f"    validated {completed}/{len(unique_jobs)} unique queries", flush=True)
+
+    return [
+        (job[0], job[1], outputs[job_to_unique_index[idx]])
+        for idx, job in enumerate(validation_jobs)
+        if outputs[job_to_unique_index[idx]] is not None
+    ]
 
 
 def _write_run_summary(
@@ -1271,60 +1558,66 @@ def main(argv: list[str] | None = None):
     validation_records = []
     validation_summary = {}
     if args.validate and args.es_url:
-        print("\n[3/7] Validating ES|QL queries against Elasticsearch...")
-        total_queries = 0
+        print("\n[3/7] Validating ES|QL queries against Elasticsearch...", flush=True)
         passed = 0
         fixed = 0
         fixed_empty = 0
         failed = 0
         manualized_failed = 0
-        for r in results:
-            for pr in r.panel_results:
-                if not pr.esql_query:
-                    continue
-                total_queries += 1
-                validation_result = validate_query_with_fixes(
-                    pr.esql_query, args.es_url, resolver,
-                    es_api_key=args.es_api_key or None,
-                    narrow_limit=getattr(args, "validate_narrow_limit", 10),
-                )
-                status = validation_result["status"]
-                if status == "pass":
-                    passed += 1
-                elif status == "fixed":
-                    fixed += 1
-                    pr.esql_query = validation_result["query"]
-                    if isinstance(pr.query_ir, dict):
-                        pr.query_ir["target_query"] = pr.esql_query
-                        _, fixed_index = _query_source_and_index(pr.esql_query)
-                        if fixed_index:
-                            pr.query_ir["target_index"] = fixed_index
-                elif status == "fixed_empty":
-                    fixed_empty += 1
-                    pr.esql_query = validation_result["query"]
-                    if isinstance(pr.query_ir, dict):
-                        pr.query_ir["target_query"] = pr.esql_query
-                        _, fixed_index = _query_source_and_index(pr.esql_query)
-                        if fixed_index:
-                            pr.query_ir["target_index"] = fixed_index
-                    mark_panel_requires_manual_after_validation(pr, validation_result)
-                elif status == "fail":
-                    failed += 1
-                    manualized_failed += 1
-                    mark_panel_requires_manual_after_failed_validation(pr, validation_result)
+        validation_jobs = [
+            (r, pr)
+            for r in results
+            for pr in r.panel_results
+            if pr.esql_query
+        ]
+        total_queries = len(validation_jobs)
+        validation_outputs = _run_validation_jobs(
+            validation_jobs,
+            es_url=args.es_url,
+            resolver=resolver,
+            es_api_key=args.es_api_key or None,
+            narrow_limit=getattr(args, "validate_narrow_limit", 10),
+            workers=getattr(args, "validate_workers", 4),
+        )
+        for r, pr, validation_result in validation_outputs:
+            status = validation_result["status"]
+            if status == "pass":
+                passed += 1
+            elif status == "fixed":
+                fixed += 1
+                pr.esql_query = validation_result["query"]
+                if isinstance(pr.query_ir, dict):
+                    pr.query_ir["target_query"] = pr.esql_query
+                    _, fixed_index = _query_source_and_index(pr.esql_query)
+                    if fixed_index:
+                        pr.query_ir["target_index"] = fixed_index
+            elif status == "fixed_empty":
+                fixed_empty += 1
+                pr.esql_query = validation_result["query"]
+                if isinstance(pr.query_ir, dict):
+                    pr.query_ir["target_query"] = pr.esql_query
+                    _, fixed_index = _query_source_and_index(pr.esql_query)
+                    if fixed_index:
+                        pr.query_ir["target_index"] = fixed_index
+                mark_panel_requires_manual_after_validation(pr, validation_result)
+            elif status == "fail":
+                failed += 1
+                manualized_failed += 1
+                mark_panel_requires_manual_after_failed_validation(pr, validation_result)
 
-                record = {
-                    "dashboard": r.dashboard_title,
-                    "dashboard_uid": r.dashboard_uid,
-                    "panel": pr.title,
-                    "source_panel_id": pr.source_panel_id,
-                    "status": status,
-                    "query": validation_result["query"],
-                    "error": validation_result["error"],
-                    "fix_attempts": validation_result["fix_attempts"],
-                    "analysis": validation_result["analysis"],
-                }
-                validation_records.append(record)
+            record = {
+                "dashboard": r.dashboard_title,
+                "dashboard_uid": r.dashboard_uid,
+                "panel": pr.title,
+                "source_panel_id": pr.source_panel_id,
+                "status": status,
+                "query": validation_result["query"],
+                "error": validation_result["error"],
+                "fix_attempts": validation_result["fix_attempts"],
+                "analysis": validation_result["analysis"],
+            }
+            validation_records.append(record)
+        for r in results:
             recompute_result_counts(r)
 
         validation_summary = summarize_validation_records(validation_records)

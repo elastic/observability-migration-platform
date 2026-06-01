@@ -16,6 +16,7 @@ from .rules import _append_unique, _merge_mapping_lists
 
 DEFAULT_TSTART_EXPR = "NOW() - 1 hour"
 DEFAULT_TEND_EXPR = "NOW()"
+_QUERY_PARAM_RE = re.compile(r"\?([A-Za-z_][A-Za-z0-9_]*)")
 KNOWN_FIELD_ALIASES = {
     "node_interrupts_total": "node_intr_total",
 }
@@ -53,6 +54,44 @@ def _build_es_headers(es_api_key=None):
     return headers
 
 
+def _validation_params_for_query(query):
+    rendered = materialize_dashboard_time_query(query)
+    names = []
+    for name in _QUERY_PARAM_RE.findall(rendered or ""):
+        if name not in names:
+            names.append(name)
+    return [{name: _validation_param_value(rendered, name)} for name in names]
+
+
+def _validation_param_value(query, name):
+    param = re.escape(name)
+    if re.search(rf"\bRLIKE\s+\?{param}\b", query or "", re.IGNORECASE):
+        return ".*"
+    if re.search(rf"(?:[+\-*/]\s*\?{param}\b|\?{param}\b\s*[+\-*/])", query or ""):
+        return 0
+    return ".*"
+
+
+def _has_dashboard_params(query):
+    rendered = materialize_dashboard_time_query(query)
+    return bool(_QUERY_PARAM_RE.search(rendered or ""))
+
+
+def _limit_query_for_validation(query, result_limit):
+    if result_limit is None:
+        return query
+    try:
+        limit = int(result_limit)
+    except (TypeError, ValueError):
+        return query
+    if limit < 0:
+        return query
+    text = str(query or "").rstrip()
+    if re.search(r"\|\s*LIMIT\s+\d+\s*$", text, re.IGNORECASE):
+        return re.sub(r"(\|\s*LIMIT\s+)\d+\s*$", rf"\g<1>{limit}", text, flags=re.IGNORECASE)
+    return f"{text}\n| LIMIT {limit}"
+
+
 _module_es_api_key = None
 
 
@@ -62,17 +101,22 @@ def configure_es_auth(es_api_key):
     _module_es_api_key = es_api_key
 
 
-def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15):
+def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15, result_limit=None):
     """Execute ES|QL and return validation status plus lightweight result metadata."""
     if not es_url or not query:
         return {"ok": None, "error": "", "rows": 0, "columns": [], "values": [], "metadata": {}}
     query = materialize_dashboard_time_query(query)
+    query = _limit_query_for_validation(query, result_limit)
     api_key = es_api_key or _module_es_api_key
     try:
         client = session or requests
+        payload = {"query": query}
+        params = _validation_params_for_query(query)
+        if params:
+            payload["params"] = params
         resp = client.post(
             f"{es_url}/_query",
-            json={"query": query},
+            json=payload,
             params={"format": "json"},
             headers=_build_es_headers(api_key),
             timeout=timeout,
@@ -89,6 +133,7 @@ def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15):
                 "metadata": {
                     "sampled_rows": min(len(values), 10),
                     "truncated": len(values) > 10,
+                    "result_limit": result_limit,
                 },
             }
         body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
@@ -185,6 +230,7 @@ _NARROW_MAX_CANDIDATES = 10
 def _try_narrow_index_pattern(
     query, es_url, resolver, es_api_key=None, session=None,
     max_candidates=_NARROW_MAX_CANDIDATES, probe_timeout=_NARROW_PROBE_TIMEOUT,
+    result_limit=None,
 ):
     if not resolver or not es_url or not query:
         return None
@@ -205,7 +251,14 @@ def _try_narrow_index_pattern(
         if not candidate or candidate == current_index:
             continue
         narrowed = re.sub(r"^(FROM|TS)\s+\S+", rf"\1 {candidate}", query, count=1)
-        probe = _run_esql_query(narrowed, es_url, es_api_key=es_api_key, session=session, timeout=probe_timeout)
+        run_kwargs = {
+            "es_api_key": es_api_key,
+            "session": session,
+            "timeout": probe_timeout,
+        }
+        if result_limit is not None:
+            run_kwargs["result_limit"] = result_limit
+        probe = _run_esql_query(narrowed, es_url, **run_kwargs)
         if probe["ok"] is True and probe["rows"] > 0:
             return {
                 "query": narrowed,
@@ -391,6 +444,7 @@ def write_suggested_rule_pack(path, validation_summary):
 def validate_query_with_fixes(
     query, es_url, resolver, max_attempts=8, es_api_key=None,
     narrow_limit=_NARROW_MAX_CANDIDATES, narrow_timeout=_NARROW_PROBE_TIMEOUT,
+    result_limit=None,
 ):
     original_query = query
     _, original_index = _query_source_and_index(query)
@@ -406,24 +460,35 @@ def validate_query_with_fixes(
     _narrow_probing_done_for: set[str] = set()
 
     for _ in range(max_attempts + 1):
-        probe = _run_esql_query(current_query, es_url, es_api_key=api_key, session=session)
+        run_kwargs = {"es_api_key": api_key, "session": session}
+        if result_limit is not None:
+            run_kwargs["result_limit"] = result_limit
+        probe = _run_esql_query(current_query, es_url, **run_kwargs)
         ok = probe["ok"]
         err = probe["error"]
         if ok is True:
             _, current_index = _query_source_and_index(current_query)
             narrowed = bool(fix_errors and original_index and current_index and current_index != original_index)
+            param_dependent_rows = _has_dashboard_params(current_query)
             analysis = {
                 **_query_runtime_metadata(current_query),
                 "result_rows": probe["rows"],
                 "result_columns": probe["columns"],
                 "result_values": list(probe.get("values", []) or []),
                 "result_metadata": dict(probe.get("metadata", {}) or {}),
+                "param_dependent_rows": param_dependent_rows,
             }
             if narrowed:
                 analysis["narrowed_from_index"] = original_index
                 analysis["narrowed_to_index"] = current_index
             return {
-                "status": ("fixed_empty" if narrowed and probe["rows"] == 0 else "pass" if not fix_errors else "fixed"),
+                "status": (
+                    "fixed_empty"
+                    if narrowed and probe["rows"] == 0 and not param_dependent_rows
+                    else "pass"
+                    if not fix_errors
+                    else "fixed"
+                ),
                 "query": current_query,
                 "error": "",
                 "analysis": analysis,
@@ -467,6 +532,7 @@ def validate_query_with_fixes(
                 session=session,
                 max_candidates=narrow_limit,
                 probe_timeout=narrow_timeout,
+                result_limit=result_limit,
             )
         if narrowed_query and narrowed_query["query"] not in seen_queries:
             fix_errors.append(err)
@@ -500,6 +566,18 @@ def validate_query_with_fixes(
 
 def _try_fix_esql_field_error(query, error_msg, resolver):
     """Attempt to fix common ES|QL field errors by column-name substitution or type fallback."""
+    if "count_star [COUNT(*)] can't be used with TS command" in error_msg:
+        match = re.search(
+            r"\|\s*WHERE\s+([A-Za-z_][A-Za-z0-9_.]*)\s+(?:IS\s+NOT\s+NULL|==|!=|>=|<=|>|<)",
+            query,
+            re.IGNORECASE,
+        )
+        if match:
+            metric = match.group(1)
+            fixed = re.sub(r"\bCOUNT\(\*\)", f"COUNT({metric})", query, count=1)
+            if fixed != query:
+                return fixed
+
     analysis = analyze_validation_error(query, error_msg, resolver)
     for entry in analysis.get("unknown_columns", []):
         bad_field = entry["name"]

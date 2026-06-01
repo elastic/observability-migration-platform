@@ -306,14 +306,14 @@ class TestMacroDrift(unittest.TestCase):
         self.assertEqual(result_rate, result_interval,
                          "Both macros collapse to 5m — documented limitation")
 
-    def test_variable_in_label_selector_becomes_wildcard(self):
+    def test_variable_in_label_selector_becomes_parameter(self):
         result = promql.preprocess_grafana_macros('foo{job="$job"}')
-        self.assertIn('=~".*"', result)
+        self.assertIn('job="__obs_migration_param_job"', result)
         self.assertNotIn('$job', result)
 
-    def test_variable_exact_match_also_becomes_wildcard(self):
+    def test_variable_regex_match_becomes_parameter(self):
         result = promql.preprocess_grafana_macros('foo{instance=~"$instance"}')
-        self.assertIn('=~".*"', result)
+        self.assertIn('instance=~"__obs_migration_param_instance"', result)
         self.assertNotIn('$instance', result)
 
 
@@ -322,19 +322,17 @@ class TestMacroDrift(unittest.TestCase):
 # =========================================================================
 
 class TestVariableErasure(unittest.TestCase):
-    """Test plan item: Variable erasure test.
+    """Test plan item: Variable preservation/erasure test.
 
-    Variables that materially affect queries must produce warnings
-    when they are dropped during translation, NOT silent 'migrated'.
+    Variables that can be represented as Kibana params must be preserved.
+    Variables that are still dropped should produce warnings.
     """
 
-    def test_variable_in_label_filter_produces_warning(self):
+    def test_variable_in_label_filter_is_preserved_as_parameter(self):
         ctx = _translate('rate(http_requests_total{job="$job"}[5m])')
         self.assertIn("feasible", ctx.feasibility)
-        has_drop_warning = any("variable" in w.lower() or "dropped" in w.lower()
-                               for w in ctx.warnings)
-        self.assertTrue(has_drop_warning,
-                        f"Expected variable-drop warning, got: {ctx.warnings}")
+        self.assertIn("service.name == ?job", ctx.esql_query)
+        self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
     def test_variable_panel_status_is_migrated_with_warnings(self):
         """A panel whose query relies on a variable filter must be
@@ -353,14 +351,14 @@ class TestVariableErasure(unittest.TestCase):
         if ctx.feasibility == "feasible" and ctx.esql_query:
             self.assertNotIn("$job", ctx.esql_query)
             self.assertNotIn("$instance", ctx.esql_query)
+            self.assertIn("service.name == ?job", ctx.esql_query)
+            self.assertIn("service.instance.id == ?instance", ctx.esql_query)
 
-    def test_logql_variable_in_stream_selector_warned(self):
+    def test_logql_variable_in_stream_selector_is_preserved_as_parameter(self):
         ctx = _translate('{service_name="$svc"} |~ "error"', panel_type="logs")
         if ctx.feasibility == "feasible":
-            has_var_warning = any("variable" in w.lower() or "dropped" in w.lower()
-                                  for w in ctx.warnings)
-            self.assertTrue(has_var_warning,
-                            f"LogQL variable drop not warned: {ctx.warnings}")
+            self.assertIn("service.name == ?svc", ctx.esql_query)
+            self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
     def test_clean_template_variables_strips_dollar_syntax(self):
         self.assertNotIn("$", display.clean_template_variables("CPU $instance"))
