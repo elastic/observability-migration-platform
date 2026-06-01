@@ -407,5 +407,28 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
         self.assertGreaterEqual(len(created_templates), 2)
 
 
+class MetricKindOverrideLoadingTests(unittest.TestCase):
+    def test_load_metric_kind_overrides_reads_rule_pack(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rules.yaml"
+            path.write_text(
+                yaml.safe_dump(
+                    {
+                        "query": {
+                            "metric_kinds": {
+                                "kube_pod_container_resource_requests": "gauge",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            overrides = setup_telemetry_data.load_metric_kind_overrides([str(path)])
+        self.assertEqual(overrides["kube_pod_container_resource_requests"], "gauge")
+
+    def test_load_metric_kind_overrides_empty_without_files(self):
+        self.assertEqual(setup_telemetry_data.load_metric_kind_overrides([]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

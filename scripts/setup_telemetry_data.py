@@ -18,6 +18,8 @@ from typing import Any
 from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_telemetry_contract,
+    merge_metric_kind_overrides,
+    metric_kinds_from_prometheus_metadata,
 )
 from observability_migration.core.telemetry_data import (
     generate_documents,
@@ -87,7 +89,63 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "timestamp. Lower this for very high-cardinality contracts."
         ),
     )
+    parser.add_argument(
+        "--rules-file",
+        action="append",
+        default=[],
+        help=(
+            "Rule-pack YAML/JSON file providing authoritative metric_kinds "
+            "(counter/gauge) overrides. Repeat to layer multiple packs."
+        ),
+    )
+    parser.add_argument(
+        "--prometheus-url",
+        default=os.environ.get("PROMETHEUS_URL", ""),
+        help=(
+            "Optional live Prometheus base URL. When set, /api/v1/metadata is "
+            "queried for ground-truth metric types. Rule-pack overrides win over "
+            "live metadata."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _fetch_prometheus_metadata(prometheus_url: str) -> dict[str, Any]:
+    """Fetch Prometheus ``/api/v1/metadata``; return ``{}`` on any failure."""
+    url = f"{prometheus_url.rstrip('/')}/api/v1/metadata"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
+            payload = resp.read()
+        return json.loads(payload) if payload else {}
+    except (urllib.error.URLError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def load_metric_kind_overrides(
+    rules_files: list[str] | None,
+    prometheus_url: str = "",
+) -> dict[str, str]:
+    """Build an authoritative metric-kind override map.
+
+    Composes (most authoritative first) rule-pack ``metric_kinds`` and, when a
+    Prometheus URL is given, live ``/api/v1/metadata`` types. Returns an empty
+    map when no source yields anything so the contract falls back to inference.
+    """
+    rule_pack_kinds: dict[str, str] = {}
+    if rules_files:
+        from observability_migration.adapters.source.grafana.rules import load_rule_pack_files
+
+        pack = load_rule_pack_files(rules_files)
+        rule_pack_kinds = dict(getattr(pack, "metric_kinds", {}) or {})
+
+    metadata_kinds: dict[str, str] = {}
+    if prometheus_url:
+        metadata_kinds = metric_kinds_from_prometheus_metadata(
+            _fetch_prometheus_metadata(prometheus_url)
+        )
+
+    return merge_metric_kind_overrides(rule_pack_kinds, metadata_kinds)
 
 
 def es_request(
@@ -172,10 +230,13 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: ELASTICSEARCH_ENDPOINT and KEY must be set (or pass --es-endpoint/--api-key)")
         return 1
 
+    metric_kind_overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url)
     contract = (
-        build_telemetry_contract(artifact_dirs[0])
+        build_telemetry_contract(artifact_dirs[0], metric_kind_overrides=metric_kind_overrides)
         if len(artifact_dirs) == 1
-        else build_combined_telemetry_contract(artifact_dirs)
+        else build_combined_telemetry_contract(
+            artifact_dirs, metric_kind_overrides=metric_kind_overrides
+        )
     )
     streams = contract.get("streams") or {}
     if not streams:

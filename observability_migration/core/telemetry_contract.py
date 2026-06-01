@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,9 @@ _COUNTER_HINTS = (
     "_bucket",
     "bytes_sent",
     "bytes_rcvd",
-    "requests",
+    # "requests" removed: too broad — matches kube_pod_container_resource_requests
+    # (a gauge for K8s CPU/memory allocation) and breaks SUM(CASE(...)) in ES|QL.
+    # Metrics like nginx_http_requests are caught by the rate() context in PromQL.
     "errors",
     "dropped",
     "accepted",
@@ -121,8 +123,18 @@ _LOOKBACK_SECONDS = {
 }
 
 
-def build_telemetry_contract(artifact_dir: str | Path) -> dict[str, Any]:
-    """Build a producer-facing schema contract from dashboard artifacts."""
+def build_telemetry_contract(
+    artifact_dir: str | Path,
+    *,
+    metric_kind_overrides: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build a producer-facing schema contract from dashboard artifacts.
+
+    ``metric_kind_overrides`` maps a metric field name to an authoritative
+    ``"counter"``/``"gauge"`` classification. Overrides win over every inferred
+    signal (query context and name heuristics) because they come from ground
+    truth — a rule-pack declaration, live source metadata, or ES field caps.
+    """
     artifact_path = Path(artifact_dir)
     streams: dict[str, dict[str, Any]] = {}
     for query, source in _iter_artifact_queries(artifact_path):
@@ -174,6 +186,13 @@ def build_telemetry_contract(artifact_dir: str | Path) -> dict[str, Any]:
                 metric_kind="",
                 source=source,
             )
+        for field_name, relations in _extract_field_relationships(query, set(metrics)).items():
+            info = stream["fields"].get(field_name)
+            if info and info.get("role") == "metric":
+                bucket = info.setdefault("relationships", [])
+                for relation in relations:
+                    if relation not in bucket:
+                        bucket.append(relation)
         for control_field in control_fields:
             _append_unique(stream["control_fields"], control_field)
         for group_field in group_fields:
@@ -195,6 +214,7 @@ def build_telemetry_contract(artifact_dir: str | Path) -> dict[str, Any]:
         )
 
     _propagate_control_fields(streams)
+    _apply_metric_kind_overrides(streams, metric_kind_overrides)
 
     for stream in streams.values():
         seconds = int(stream.pop("_lookback_seconds", 0))
@@ -225,7 +245,99 @@ def build_telemetry_contract(artifact_dir: str | Path) -> dict[str, Any]:
     }
 
 
-def build_combined_telemetry_contract(artifact_dirs: Sequence[str | Path]) -> dict[str, Any]:
+def merge_metric_kind_overrides(*sources: Mapping[str, str] | None) -> dict[str, str]:
+    """Compose metric-kind override maps in descending order of authority.
+
+    Earlier sources win over later ones, so callers pass the most authoritative
+    source first (e.g. rule-pack, then live Prometheus metadata, then ES field
+    caps). Empty/None sources are ignored.
+    """
+    merged: dict[str, str] = {}
+    for source in reversed(sources):
+        if source:
+            merged.update(source)
+    return merged
+
+
+def metric_kinds_from_prometheus_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:
+    """Derive authoritative counter/gauge classifications from Prometheus metadata.
+
+    Accepts either a full ``/api/v1/metadata`` response (``{"data": {...}}``) or
+    the bare ``{metric: [{"type": ...}]}`` mapping. Only unambiguous ``counter``
+    and ``gauge`` types are returned; histogram/summary/untyped and conflicting
+    declarations are skipped so they fall back to inference.
+    """
+    data = metadata.get("data", metadata) if isinstance(metadata, Mapping) else {}
+    result: dict[str, str] = {}
+    for name, entries in (data or {}).items():
+        if not isinstance(entries, list):
+            continue
+        types = {
+            str(entry.get("type", "")).strip().lower()
+            for entry in entries
+            if isinstance(entry, Mapping)
+        }
+        if types == {"counter"}:
+            result[name] = "counter"
+        elif types == {"gauge"}:
+            result[name] = "gauge"
+    return result
+
+
+def metric_kinds_from_field_caps(field_caps: Mapping[str, Any]) -> dict[str, str]:
+    """Derive counter/gauge classifications from an ES ``_field_caps`` response.
+
+    Accepts either the full response (``{"fields": {...}}``) or the bare
+    ``fields`` mapping. A field is ``counter`` when ES marks it as a counter
+    metric, ``gauge`` when its time-series metric kind is gauge; plain numerics
+    without TSDB metadata are skipped.
+    """
+    from observability_migration.core.verification.field_capabilities import (
+        field_capability_from_es_field_caps,
+        is_counter_metric_field,
+    )
+
+    fields = field_caps.get("fields", field_caps) if isinstance(field_caps, Mapping) else {}
+    result: dict[str, str] = {}
+    for name, entry in (fields or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        capability = field_capability_from_es_field_caps(name, dict(entry))
+        if is_counter_metric_field(capability):
+            result[name] = "counter"
+        elif capability.time_series_metric_kind == "gauge":
+            result[name] = "gauge"
+    return result
+
+
+def _apply_metric_kind_overrides(
+    streams: dict[str, dict[str, Any]],
+    overrides: Mapping[str, str] | None,
+) -> None:
+    """Force authoritative counter/gauge classification on named metric fields.
+
+    Only fields already classified as metrics are affected — naming a dimension
+    must not promote it to a metric. The provenance is recorded as ``override``
+    so downstream consumers can distinguish ground truth from inference.
+    """
+    if not overrides:
+        return
+    normalized = {name: str(kind).strip().lower() for name, kind in overrides.items()}
+    for stream in streams.values():
+        for field_name, info in (stream.get("fields") or {}).items():
+            if info.get("role") != "metric":
+                continue
+            kind = normalized.get(field_name)
+            if kind in ("counter", "gauge"):
+                info["metric_kind"] = kind
+                info["kind_source"] = "override"
+
+
+def build_combined_telemetry_contract(
+    artifact_dirs: Sequence[str | Path],
+    *,
+    metric_kind_overrides: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Build one telemetry contract from multiple migrated artifact directories."""
     contracts = [build_telemetry_contract(path) for path in artifact_dirs]
     combined = {
@@ -269,6 +381,12 @@ def build_combined_telemetry_contract(artifact_dirs: Sequence[str | Path]) -> di
                     source=", ".join(field_info.get("sources") or []),
                     requires_native_promql=bool(field_info.get("requires_native_promql")),
                 )
+                relations = field_info.get("relationships")
+                if relations and target["fields"][field_name].get("role") == "metric":
+                    bucket = target["fields"][field_name].setdefault("relationships", [])
+                    for relation in relations:
+                        if relation not in bucket:
+                            bucket.append(relation)
             for key in ("control_fields", "group_fields", "query_sources"):
                 for value in stream.get(key) or []:
                     _append_unique(target[key], value)
@@ -292,6 +410,7 @@ def build_combined_telemetry_contract(artifact_dirs: Sequence[str | Path]) -> di
         for field_name, field_info in stream["fields"].items()
         if field_info["role"] == "dimension"
     }
+    _apply_metric_kind_overrides(combined["streams"], metric_kind_overrides)
     combined["summary"] = {
         "streams": len(combined["streams"]),
         "metric_fields": len(metric_fields),
@@ -565,6 +684,34 @@ def _extract_metrics(query: str) -> dict[str, str]:
             metrics[field_name] = "gauge"
 
     return metrics
+
+
+_RATIO_RE = re.compile(
+    rf"(?:[A-Za-z_]+\s*\()?\s*({_IDENT_RE})\s*\)?\s*/\s*(?:[A-Za-z_]+\s*\()?\s*({_IDENT_RE})\s*\)?"
+)
+
+
+def _extract_field_relationships(query: str, metric_names: set[str]) -> dict[str, list[dict[str, str]]]:
+    """Find numeric relationships between metric fields in a query.
+
+    Currently detects ratios (``A / B``, optionally aggregation-wrapped): the
+    numerator ``A`` is recorded as bounded by denominator ``B`` so synthetic
+    data keeps ``A <= B`` and the panel's percentage stays in range. Only pairs
+    where both sides are known metric fields are recorded.
+    """
+    relationships: dict[str, list[dict[str, str]]] = {}
+    for raw_num, raw_denom in _RATIO_RE.findall(query):
+        numerator = _normalize_field(raw_num)
+        denominator = _normalize_field(raw_denom)
+        if numerator not in metric_names or denominator not in metric_names:
+            continue
+        if numerator == denominator:
+            continue
+        relation = {"type": "ratio_denominator", "field": denominator}
+        bucket = relationships.setdefault(numerator, [])
+        if relation not in bucket:
+            bucket.append(relation)
+    return relationships
 
 
 def _extract_dimensions(query: str) -> set[str]:
@@ -1215,5 +1362,8 @@ __all__ = [
     "build_combined_telemetry_contract",
     "build_schema_change_report",
     "build_telemetry_contract",
+    "merge_metric_kind_overrides",
+    "metric_kinds_from_field_caps",
+    "metric_kinds_from_prometheus_metadata",
     "write_telemetry_contract",
 ]

@@ -147,14 +147,20 @@ def generate_documents(
                     **dimensions,
                 }
                 if is_metrics:
-                    for field_name, info in metric_fields.items():
+                    gauge_values: dict[str, float] = {}
+                    for field_name in _coherence_order(metric_fields):
+                        info = metric_fields[field_name]
                         if info.get("metric_kind") == "counter":
                             key = (concrete_name, field_name, combo_idx)
                             counter_state[key] = counter_state.get(key, float(10 + combo_idx))
                             counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
                             doc[field_name] = round(counter_state[key], 4)
                         else:
-                            doc[field_name] = round(_gauge_value(field_name, hour, combo_idx, rng), 4)
+                            denominator = _ratio_denominator(info)
+                            ceiling = gauge_values.get(denominator) if denominator else None
+                            value = _gauge_value(field_name, hour, combo_idx, rng, ceiling=ceiling)
+                            gauge_values[field_name] = value
+                            doc[field_name] = round(value, 4)
                 else:
                     doc.setdefault("message", _log_message(doc, combo_idx))
                 yield concrete_name, doc
@@ -322,17 +328,49 @@ def _ensure_dimension_value_coverage(
             existing.add(value)
 
 
+_LITERALISH_RE = re.compile(r"^[\w./:@-]+$")
+
+
 def _expand_patterns(field_name: str, patterns: list[str]) -> list[str]:
     values: list[str] = []
     for pattern in patterns:
-        cleaned = pattern.strip()
-        if re.fullmatch(r"\d\.\.", cleaned) or re.fullmatch(r"\dxx", cleaned, re.IGNORECASE):
-            values.append(f"{cleaned[0]}00")
-        elif cleaned and set(cleaned) <= {".", "*"}:
-            values.append(_default_dimension_values(field_name, count=1)[0])
-        elif cleaned:
-            values.append(cleaned.strip("*").replace(".*", "sample"))
+        values.extend(_expand_single_pattern(field_name, pattern))
     return values
+
+
+def _expand_single_pattern(field_name: str, pattern: str) -> list[str]:
+    cleaned = pattern.strip()
+    if not cleaned:
+        return []
+    # Status-code classes (``2..`` / ``5xx``) resolve to a concrete code so the
+    # generated docs satisfy dashboards filtering on a status family.
+    if re.fullmatch(r"\d\.\.", cleaned) or re.fullmatch(r"\dxx", cleaned, re.IGNORECASE):
+        return [f"{cleaned[0]}00"]
+    # Pure wildcards carry no literal signal — fall back to a default sample.
+    if set(cleaned) <= {".", "*", "+", "^", "$"}:
+        return [_default_dimension_values(field_name, count=1)[0]]
+    body = cleaned.removeprefix("^").removesuffix("$")
+    # Unwrap a single enclosing (possibly non-capturing) group, e.g. ``(a|b)``.
+    if body.startswith("(") and body.endswith(")"):
+        inner = body[1:-1].removeprefix("?:")
+        if ")" not in inner and "(" not in inner:
+            body = inner
+    # Alternation — Grafana multi-value template variables become ``a|b|c``.
+    # Only expand when every alternative is a concrete literal.
+    if "|" in body:
+        alternatives = [alt.strip() for alt in body.split("|") if alt.strip()]
+        if alternatives and all(_LITERALISH_RE.fullmatch(alt) for alt in alternatives):
+            return _unique(alternatives)
+    # Literal prefix followed by a trailing glob (``nginx-.*``) — emit distinct
+    # concrete values rather than a single literal "sample".
+    glob = re.fullmatch(r"(.+?)(?:\.\*|\.\+|\*)", body)
+    if glob:
+        prefix = glob.group(1)
+        if _LITERALISH_RE.fullmatch(prefix):
+            return [f"{prefix}{idx}" for idx in range(3)]
+    # Plain literal (or unhandled regex): strip wildcards, keep what's concrete.
+    literal = body.strip("*").replace(".*", "sample")
+    return [literal] if literal else [_default_dimension_values(field_name, count=1)[0]]
 
 
 def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
@@ -361,14 +399,59 @@ def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
     return pool[:count]
 
 
+def _ratio_denominator(info: dict[str, Any]) -> str | None:
+    """Return the denominator field this metric is bounded by, if any."""
+    for relation in info.get("relationships") or []:
+        if relation.get("type") == "ratio_denominator" and relation.get("field"):
+            return relation["field"]
+    return None
+
+
+def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
+    """Order metric fields so each ratio denominator precedes its numerator.
+
+    Falls back to insertion order for unrelated fields, so generation is
+    byte-identical to the unordered path when no relationships are present.
+    Cycles are broken by the visited guard.
+    """
+    ordered: list[str] = []
+    visited: set[str] = set()
+
+    def visit(field_name: str) -> None:
+        if field_name in visited or field_name not in metric_fields:
+            return
+        visited.add(field_name)
+        denominator = _ratio_denominator(metric_fields[field_name])
+        if denominator:
+            visit(denominator)
+        ordered.append(field_name)
+
+    for field_name in metric_fields:
+        visit(field_name)
+    return ordered
+
+
 def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: random.Random) -> float:
     base_rate = 0.5 + (abs(hash(field_name)) % 40) / 10
     return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
 
 
-def _gauge_value(field_name: str, hour: float, combo_idx: int, rng: random.Random) -> float:
+def _gauge_value(
+    field_name: str,
+    hour: float,
+    combo_idx: int,
+    rng: random.Random,
+    *,
+    ceiling: float | None = None,
+) -> float:
     base = 10 + abs(hash(field_name)) % 500
-    return base + combo_idx * 3 + 25 * _diurnal(hour) + rng.random()
+    value = base + combo_idx * 3 + 25 * _diurnal(hour) + rng.random()
+    if ceiling is not None:
+        # Keep a ratio numerator strictly below its denominator while preserving
+        # a diurnal swing, so e.g. "used / total" stays a believable utilisation.
+        fraction = 0.4 + 0.5 * _diurnal(hour)
+        return min(value, ceiling * fraction)
+    return value
 
 
 def _diurnal(hour: float) -> float:
