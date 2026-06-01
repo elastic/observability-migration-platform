@@ -1,0 +1,4 @@
+source: histogram_quantile(0.9, rate(foo_bucket[5m]))
+status: not_feasible
+chart_type: none
+warning: histogram_quantile over Prometheus bucket series requires manual redesign

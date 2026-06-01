@@ -1,3 +1,4 @@
+source: node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names
 feasibility: feasible
 warning: Dropped group_left label enrichment; kept primary metric series only
 ---

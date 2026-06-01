@@ -1,0 +1,4 @@
+source: avg:system.cpu.user{*}
+status: ok
+chart_type: metric
+primary: value

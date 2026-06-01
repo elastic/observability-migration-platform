@@ -750,6 +750,12 @@ def _build_metric_query_spec(
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
+        if _scope_item_has_template_vars(filt):
+            _append_unique_warning(
+                result,
+                "Scope filter with template variable could not be bound exactly; "
+                "apply specific values via Kibana dashboard controls",
+            )
         if isinstance(filt, TagFilter):
             if _has_template_vars(filt.value):
                 _append_unique_warning(
@@ -774,10 +780,10 @@ def _build_metric_query_spec(
             result,
             "rate semantics approximated with delta over observed bucket span",
         )
-    if mq.as_count and not _metric_is_count_like(mq.metric):
+    if mq.as_count:
         _append_unique_warning(
             result,
-            "as_count semantics are approximated for non-count metrics",
+            "as_count interval semantics are approximated in ES|QL",
         )
     if mq.rollup:
         _append_unique_warning(
@@ -1255,6 +1261,10 @@ def _formula_ast_to_esql(
         if fn_name == "round" and len(args) in (1, 2):
             return f"ROUND({', '.join(args)})"
         if fn_name == "default_zero" and len(args) == 1:
+            if warnings is not None:
+                warnings.append(
+                    "default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted"
+                )
             return f"COALESCE({args[0]}, 0)"
         if fn_name == "exclude_null" and len(args) == 1:
             return args[0]
@@ -1276,6 +1286,11 @@ def _formula_ast_to_esql(
                 and isinstance(orig_arg, FormulaRef)
                 and orig_arg.name in derivative_refs
             ):
+                if warnings is not None:
+                    warnings.append(
+                        "rate() on a query reference is approximated with bucket FIRST/LAST deltas; "
+                        "values may differ for non-monotonic gauges"
+                    )
                 alias = _esql_identifier(query_aliases[orig_arg.name])
                 return f"({alias}_last - {alias}_first) / bucket_span_seconds"
             if warnings is not None:
@@ -1318,6 +1333,14 @@ def _metric_scope_to_esql(scope_item: Any, field_map: FieldMapProfile, context: 
         joiner = f" {scope_item.op} "
         return "(" + joiner.join(clauses) + ")"
     return _tag_filter_to_esql(scope_item, field_map, context=context)
+
+
+def _scope_item_has_template_vars(scope_item: Any) -> bool:
+    if isinstance(scope_item, TagFilter):
+        return _has_template_vars(scope_item.key) or _has_template_vars(scope_item.value)
+    if isinstance(scope_item, ScopeBoolOp):
+        return any(_scope_item_has_template_vars(child) for child in scope_item.children)
+    return False
 
 
 def _append_unique_warning(result: TranslationResult, message: str) -> None:
@@ -1819,7 +1842,9 @@ def _build_categorical_esql(
 
 def _format_agg_expr(agg: str, metric_field: str, mq: MetricQuery | None = None) -> str:
     metric_expr = _esql_identifier(metric_field)
-    if mq and (mq.as_rate or _needs_rate(mq)):
+    if mq and mq.as_rate and (mq.space_agg or "").lower() == "count":
+        expr = 'COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1)'
+    elif mq and (mq.as_rate or _needs_rate(mq)):
         expr = _rate_approx_expr(metric_field, mq)
     else:
         if "%" in agg:
@@ -1947,6 +1972,18 @@ def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> 
 
     if value == "*" and not filt.negated:
         return ""
+
+    if getattr(filt, "is_in_list", False):
+        members = [
+            _esql_escape(member)
+            for member in value.split("|")
+            if member and not _has_template_vars(member)
+        ]
+        if not members:
+            return ""
+        rendered = ", ".join(f'"{member}"' for member in members)
+        op = "NOT IN" if filt.negated else "IN"
+        return f"{es_field} {op} ({rendered})"
 
     if "|" in value:
         clauses = []

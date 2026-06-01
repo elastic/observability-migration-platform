@@ -1,0 +1,6 @@
+source: p99:trace.http.request.duration{*} by {resource_name}
+status: ok
+chart_type: line
+dimension: time_bucket
+breakdown: resource_name
+metrics: ['value']

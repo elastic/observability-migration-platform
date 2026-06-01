@@ -481,6 +481,16 @@ class TestLogParser(unittest.TestCase):
         self.assertIn("service", kql)
         self.assertIn("status", kql)
 
+    def test_ast_to_kql_unescapes_datadog_forward_slash(self):
+        # Datadog log searches escape forward slashes (``felix\/int_dataplane.go``)
+        # but KQL has no ``\/`` escape and the Elasticsearch KQL parser rejects it
+        # with a "token recognition error". A forward slash never needs escaping
+        # in KQL, so the backslash must be dropped to produce parseable KQL.
+        lq = parse_log_query("felix\\/int_dataplane.go")
+        kql = log_ast_to_kql(lq.ast)
+        self.assertNotIn("\\/", kql, f"emitted invalid KQL escape: {kql!r}")
+        self.assertIn("felix/int_dataplane.go", kql)
+
     def test_ast_to_esql_where(self):
         lq = parse_log_query("service:web AND status:error")
         esql = log_ast_to_esql_where(lq.ast)
@@ -1188,6 +1198,7 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("response_code LIKE \"2%\"", result.esql_query)
         self.assertIn("OR", result.esql_query)
         self.assertNotIn("`(response_code`", result.esql_query)
+        self.assertTrue(any("template variable" in w.lower() for w in result.warnings), result.warnings)
 
     def test_boolean_scope_or_across_keys_is_preserved(self):
         result = self._translate_metric_widget(
@@ -1195,6 +1206,29 @@ class TestTranslation(unittest.TestCase):
             widget_type="query_value",
         )
         self.assertIn("(service.name == \"web\" OR host.name == \"api\")", result.esql_query)
+
+    def test_scope_in_list_is_translated_to_esql_in(self):
+        # `key IN (a, b, c)` filters to any of the listed values (OR logic).
+        # Previously the comma splitter broke the list and the filter was
+        # silently dropped, returning all series.
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{service IN (web, api, worker)} by {host}",
+            force_esql=True,
+        )
+        self.assertIn(
+            'service.name IN ("web", "api", "worker")',
+            result.esql_query,
+            result.esql_query,
+        )
+
+    def test_scope_not_in_list_is_translated_to_esql_not_in(self):
+        # `key NOT IN (a, b)` excludes the listed values.
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{env:prod AND location NOT IN (atlanta, seattle)}",
+            widget_type="query_value",
+        )
+        self.assertIn('deployment.environment == "prod"', result.esql_query)
+        self.assertIn('location NOT IN ("atlanta", "seattle")', result.esql_query)
 
     def test_single_query_formula_is_applied(self):
         query = "avg:system.cpu.user{*}"
@@ -1417,8 +1451,7 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("LAST(mysql_performance_table_locks_waited, @timestamp)", result.esql_query)
         self.assertIn("(query1_last - query1_first) / bucket_span_seconds", result.esql_query)
         self.assertIn("BUCKET(@timestamp", result.esql_query)
-        # No approximation warning when FIRST/LAST path is used.
-        self.assertFalse(any("rate()" in w for w in result.warnings))
+        self.assertTrue(any("rate()" in w for w in result.warnings), result.warnings)
 
     def test_diff_formula_uses_first_last_for_proper_delta(self):
         query = "sum:redis.net.rejected{*}"
@@ -2314,6 +2347,72 @@ class TestYAMLGeneration(unittest.TestCase):
         generate_dashboard_yaml(dash, [result])
         self.assertEqual(len(result.yaml_panel["esql"]["breakdowns"]), 2)
 
+    def test_timeseries_with_two_group_dims_warns_about_dropped_breakdown(self):
+        # A Datadog timeseries grouped by two tags maps to a Kibana XY chart that
+        # can only break the series down by a single field. The second dimension
+        # is in the ES|QL output but not on the chart, so series differing only by
+        # it are visually merged. That must surface as a warning, not silently.
+        query = "avg:cassandra.gc.minor.collection_time{*} by {cloud_region,host}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            aggregator="avg",
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="GC per region/host",
+            queries=[wq],
+            layout={"x": 0, "y": 0, "width": 12, "height": 4},
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        generate_dashboard_yaml(dash, [result])
+        esql = result.yaml_panel["esql"]
+        # only one breakdown is rendered (the first non-time dimension)
+        self.assertIn("breakdown", esql)
+        self.assertIn(esql["breakdown"]["field"], ("cloud_region", "cloud.region"))
+        # ...so the dropped dimension must be called out in the warnings
+        self.assertTrue(
+            any("not on the chart" in w or "visually merged" in w for w in result.warnings),
+            f"expected a dropped-breakdown warning, got: {result.warnings}",
+        )
+
+    def test_timeseries_with_single_group_dim_does_not_warn(self):
+        # A single grouping dimension fits the XY breakdown exactly: no warning.
+        query = "avg:cassandra.gc.minor.collection_time{*} by {host}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            aggregator="avg",
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="GC per host",
+            queries=[wq],
+            layout={"x": 0, "y": 0, "width": 12, "height": 4},
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        generate_dashboard_yaml(dash, [result])
+        self.assertFalse(
+            any("not on the chart" in w or "visually merged" in w for w in result.warnings),
+            f"did not expect a dropped-breakdown warning, got: {result.warnings}",
+        )
+
     def test_single_chart_expands_to_full_width(self):
         widget = self._make_metric_widget("1", "CPU trend", "timeseries", {"x": 0, "y": 0, "width": 4, "height": 2})
         dash = self._render_dashboard([widget])
@@ -2459,7 +2558,8 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         self.assertEqual(plan.kibana_type, "xy")
 
         result = translate_widget(widget, plan, OTEL_PROFILE)
-        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(any("as_count" in w for w in result.warnings), result.warnings)
         self.assertEqual(result.source_queries, [q1, q2])
         self.assertIn("query1 = SUM(http_requests_errors_total)", result.esql_query)
         self.assertIn("query2 = SUM(http_requests_total)", result.esql_query)

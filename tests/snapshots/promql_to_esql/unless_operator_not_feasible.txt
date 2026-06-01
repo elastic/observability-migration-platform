@@ -1,0 +1,5 @@
+source: rate(http_requests_total[5m]) unless rate(http_errors_total[5m])
+feasibility: not_feasible
+warning: PromQL set operator 'unless' between distinct metrics or aggregations has no honest ES|QL translation; marked not_feasible
+---
+

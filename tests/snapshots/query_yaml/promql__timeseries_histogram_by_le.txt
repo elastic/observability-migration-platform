@@ -1,0 +1,7 @@
+source: sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+breakdown: le
+metrics: ['http_request_duration_seconds_bucket']
+warning: Source PromQL used rate() but http_request_duration_seconds_bucket is typed as gauge in the target index; rendered as AVG_OVER_TIME instead. Fix the ingest mapping to mark this field as a counter to get a true rate.

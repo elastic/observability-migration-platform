@@ -1,0 +1,10 @@
+source: sum by(instance) (irate(node_cpu_guest_seconds_total{mode="user"}[1m])) / on(instance) group_left sum by(instance)(irate(node_cpu_seconds_total[1m]))
+feasibility: feasible
+warning: Approximated PromQL join ratio as same-bucket ES|QL ratio
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS numerator = SUM(CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)), denominator = SUM(IRATE(node_cpu_seconds_total, 1m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| EVAL node_cpu_guest_seconds_total_ratio = numerator / denominator
+| KEEP time_bucket, service.instance.id, node_cpu_guest_seconds_total_ratio
+| SORT time_bucket ASC

@@ -1,3 +1,4 @@
+source: sum(rate(nginx_ingress_controller_requests{controller_pod=~"$controller",status!~"[4-5].*"}[5m])) by (controller) / sum(rate(nginx_ingress_controller_requests{controller_pod=~"$controller"}[5m])) by (controller)
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Source PromQL used rate() but nginx_ingress_controller_requests is typed as gauge in the target index; rendered as AVG_OVER_TIME instead. Fix the ingest mapping to mark this field as a counter to get a true rate.

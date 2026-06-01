@@ -134,7 +134,7 @@ OUTER_AGG_MAP = {
     "max": "MAX",
     "min": "MIN",
     "count": "COUNT",
-    "stddev": "STDDEV",
+    "stddev": "STD_DEV",
 }
 
 SUPPORTED_RANGE_FUNCTIONS = {
@@ -166,10 +166,19 @@ HARD_UNSUPPORTED_CALL_REASONS = {
     "bottomk": "bottomk requires manual redesign",
     "changes": "changes() counts value transitions and has no ES|QL equivalent",
     "count_values": "count_values requires manual redesign",
+    "group": (
+        "group() returns the constant 1 per label set (value-discarding); "
+        "ES|QL has no equivalent and aggregating the metric value instead would "
+        "change the result, so it requires manual redesign"
+    ),
     "histogram_quantile": "histogram_quantile over Prometheus bucket series requires manual redesign",
     "label_join": "label_join requires manual redesign",
     "quantile": "quantile requires manual redesign",
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
+    "stdvar": (
+        "stdvar() is population variance; ES|QL has no variance aggregation and "
+        "STATS cannot square STD_DEV() inline, so it requires manual redesign"
+    ),
     "timestamp": "timestamp() returns sample timestamps and has no ES|QL equivalent",
 }
 
@@ -1193,12 +1202,10 @@ def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
     elif frag.family in {"range_agg", "simple_agg"}:
         pass
     elif frag.family == "join" and frag.binary_op == "*":
-        # Strip the label-enrichment join; push the agg to the primary metric
-        # on the LHS (same side join_family_rule uses in translate.py).
-        left = frag.extra.get("left_frag")
-        if left is None or left.extra.get("not_feasible_reasons"):
-            return None
-        return _push_outer_agg(left, outer_agg, group_labels, group_mode)
+        # Multiplication across a vector-matching join is not linear under an
+        # outer aggregation. Stripping the RHS keeps the query syntactically
+        # migratable but changes the numeric value, so refuse this path.
+        return None
     elif frag.family == "binary_expr" and frag.binary_op in {"/", "*"}:
         # Recursive scalar hoisting through nested binary_expr layers.
         # Handles e.g. agg(join_result / 1024 / 1024).
@@ -1284,6 +1291,20 @@ def _ast_aggregate_fragment(node, expr):
         frag.extra["inner_group"] = list(child.group_labels)
         return frag
 
+    if child.family == "range_agg" and child.metric and child.outer_agg:
+        frag.family = "nested_agg"
+        frag.extra["inner_agg"] = child.outer_agg
+        frag.extra["inner_group"] = list(child.group_labels)
+        return frag
+
+    if child.family == "join":
+        _append_not_feasible_reason(
+            frag,
+            "Aggregating over a PromQL vector-matching join requires manual redesign; "
+            "dropping the joined metric would change numeric values",
+        )
+        return frag
+
     # Handle aggregation over a binary expression between two time-series.
     # SUM is linear so sum(A ± B) = sum(A) ± sum(B); push the aggregation
     # down to each operand and return a binary_expr the pipeline can handle.
@@ -1337,6 +1358,13 @@ def _ast_aggregate_fragment(node, expr):
                     if _contains_join_frag(vector_side):
                         new_binary.extra["stripped_join"] = True
                     return new_binary
+                if _contains_join_frag(vector_side):
+                    _append_not_feasible_reason(
+                        frag,
+                        "Aggregating over a PromQL vector-matching join with scalar arithmetic requires manual redesign; "
+                        "dropping the joined metric would change numeric values",
+                    )
+                    return frag
             # Two true time-series operands — multiplication/division is not
             # linearisable: agg(A op B) ≠ agg(A) op agg(B).
             _append_not_feasible_reason(
@@ -1462,16 +1490,12 @@ def _ast_from_node(node, expr=None):
             frag.is_scalar = True
             frag.scalar_value = -child.scalar_value
             return frag
-        if child.family == "binary_expr":
-            # Rewrite -(A op B) as 0 - (A op B) so _make_binary_fragment
-            # preserves left_frag/right_frag; without this, _copy_fragment_summary
-            # drops those extra keys and the formula plan cannot extract a metric name.
-            zero = _new_fragment("0", family="scalar")
-            zero.is_scalar = True
-            zero.scalar_value = 0.0
-            return _make_binary_fragment(expr, zero, "-", child)
-        frag = _copy_fragment_summary(_new_fragment(expr), child)
-        return frag
+        # Rewrite -(vector_expr) as 0 - vector_expr so downstream formula
+        # planning preserves the sign instead of copying the child unchanged.
+        zero = _new_fragment("0", family="scalar")
+        zero.is_scalar = True
+        zero.scalar_value = 0.0
+        return _make_binary_fragment(expr, zero, "-", child)
 
     if node_type == "NumberLiteral":
         frag = _new_fragment(expr, family="scalar")

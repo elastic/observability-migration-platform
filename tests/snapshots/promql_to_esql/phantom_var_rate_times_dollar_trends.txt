@@ -1,6 +1,8 @@
+source: rate(node_network_receive_bytes_total{instance=~"$instance"}[5m]) * $trends
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Grafana variable $trends used as scalar multiplier/divisor was dropped; chart values unscaled
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

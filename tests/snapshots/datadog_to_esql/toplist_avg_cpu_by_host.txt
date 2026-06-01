@@ -1,0 +1,10 @@
+source: avg:system.cpu.user{*} by {host}
+status: ok
+backend: esql
+kibana_type: table
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = AVG(system_cpu_user) BY host.name
+| SORT value DESC
+| LIMIT 10

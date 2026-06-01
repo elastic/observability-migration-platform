@@ -1,0 +1,6 @@
+source: avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100
+status: migrated
+chart_type: line
+dimension: time_bucket
+breakdown: service.instance.id
+metrics: ['node_cpu_seconds_total_calc']

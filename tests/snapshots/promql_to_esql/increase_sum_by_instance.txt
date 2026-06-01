@@ -1,0 +1,8 @@
+source: sum(increase(http_requests_total[5m])) by (instance)
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = SUM(INCREASE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| SORT time_bucket ASC

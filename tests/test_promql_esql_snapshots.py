@@ -4,8 +4,10 @@
 """Snapshot tests for the PromQL → ES|QL translation pipeline.
 
 Each test case translates a canonical PromQL expression and compares the result
-(feasibility, warnings, and ES|QL query text) against a stored snapshot file in
-``tests/snapshots/promql_to_esql/``.
+(source PromQL, feasibility, warnings, and ES|QL query text) against a stored
+snapshot file in ``tests/snapshots/promql_to_esql/``. The leading ``source:``
+line records the original PromQL so each snapshot documents the full
+``from this -> to this`` translation in one place.
 
 Updating snapshots
 ------------------
@@ -209,12 +211,286 @@ CASES: list[tuple[str, str, str]] = [
         "sum(kube_pod_info) by (namespace, label_Env)",
         "timeseries",
     ),
+    # --- set operators -------------------------------------------------------
+    (
+        "or_same_metric_static_filters",
+        'http_requests_total{instance="i",status=~"4.."} or http_requests_total{instance="i",status=~"5.."}',
+        "timeseries",
+    ),
+    (
+        "or_cross_metric_left_fallback",
+        "rate(http_requests_total[5m]) or rate(http_errors_total[5m])",
+        "timeseries",
+    ),
+    (
+        "and_operator_not_feasible",
+        "http_requests_total and http_other_total",
+        "timeseries",
+    ),
+    # --- explicit hard blockers ---------------------------------------------
+    (
+        "histogram_quantile_not_feasible",
+        "histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))",
+        "timeseries",
+    ),
+    (
+        "subquery_not_feasible",
+        "max_over_time(rate(foo_total[5m])[1h:])",
+        "timeseries",
+    ),
+    (
+        "offset_not_feasible",
+        "rate(foo_total[5m] offset 1h)",
+        "timeseries",
+    ),
+    # --- ranking -------------------------------------------------------------
+    (
+        "topk_rate_limit",
+        "topk(5, rate(http_requests_total[5m]))",
+        "timeseries",
+    ),
+    (
+        "topk_grouped_sum_rate",
+        "topk(10, sum(rate(http_requests_total[5m])) by (handler))",
+        "timeseries",
+    ),
+    (
+        "bottomk_grouped_not_feasible",
+        "bottomk(3, sum by (job) (rate(foo_total[5m])))",
+        "timeseries",
+    ),
+    # --- real dashboard arithmetic and semantic boundaries -------------------
+    (
+        "memory_percent_formula",
+        "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+        "timeseries",
+    ),
+    (
+        "sum_subtraction_linearity",
+        'sum(node_memory_MemTotal_bytes{cluster="$cluster",job="$job"} - node_memory_MemAvailable_bytes{cluster="$cluster",job="$job"})',
+        "timeseries",
+    ),
+    (
+        "per_element_ratio_not_feasible",
+        'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) / increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)',
+        "timeseries",
+    ),
+    # --- schema and label handling ------------------------------------------
+    (
+        "otel_dotted_labels",
+        'sum by (service.name) (rate(http_requests_total{http.response.status_code=~"5..",http.request.method="POST"}[5m]))',
+        "timeseries",
+    ),
+    (
+        "recording_rule_colon_metric",
+        "sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{namespace='default'})",
+        "timeseries",
+    ),
+    (
+        "label_replace_copy_label",
+        'label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")',
+        "timeseries",
+    ),
+    (
+        "label_replace_extract_label",
+        'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")',
+        "timeseries",
+    ),
+    # --- nested aggregations and uptime joins --------------------------------
+    (
+        "nested_agg_avg_sum_rate",
+        'avg(sum by (cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal"}[5m])))',
+        "timeseries",
+    ),
+    (
+        "uptime_join",
+        'time() - (alertmanager_build_info{instance=~"$instance"} * on (instance, cluster) group_left process_start_time_seconds{instance=~"$instance"})',
+        "timeseries",
+    ),
+    # --- dashboard arithmetic and scalar wrappers ---------------------------
+    (
+        "scalar_rate_over_nested_count",
+        'sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[5m])) / scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))',
+        "stat",
+    ),
+    (
+        "cpu_idle_percent_by_instance",
+        '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+        "timeseries",
+    ),
+    (
+        "cross_metric_sum_ratio",
+        'sum(kube_pod_container_resource_requests{resource="cpu", cluster="$cluster"}) / sum(machine_cpu_cores{cluster="$cluster"})',
+        "timeseries",
+    ),
+    (
+        "disk_used_percent_divergent_filter",
+        '100 - ((node_filesystem_avail_bytes{mountpoint!~".*pods.*"} / node_filesystem_size_bytes) * 100)',
+        "gauge",
+    ),
+    (
+        "unary_minus_sum_rate_by_device",
+        '- sum(rate(node_network_transmit_bytes_total{device!~"(veth|azv|lxc).*"}[5m])) by (device)',
+        "timeseries",
+    ),
+    # --- additional range functions and comparison filters -------------------
+    (
+        "increase_sum_by_instance",
+        "sum(increase(http_requests_total[5m])) by (instance)",
+        "timeseries",
+    ),
+    (
+        "irate_scalar_multiply_bits",
+        "irate(node_network_receive_bytes_total[5m]) * 8",
+        "timeseries",
+    ),
+    (
+        "post_agg_increase_gt_zero",
+        "sum(increase(prometheus_rule_evaluation_failures_total[5m])) by (instance) > 0",
+        "timeseries",
+    ),
+    (
+        "histogram_bucket_rate_by_le",
+        "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)",
+        "timeseries",
+    ),
+    # --- count/comparison, set operators, joins, and blockers ----------------
+    (
+        "count_up_equals_one",
+        "count(up == 1)",
+        "stat",
+    ),
+    (
+        "nested_count_distinct_cpu",
+        'count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))',
+        "stat",
+    ),
+    (
+        "unless_operator_not_feasible",
+        "rate(http_requests_total[5m]) unless rate(http_errors_total[5m])",
+        "timeseries",
+    ),
+    (
+        "join_ratio_group_left_denominator",
+        'sum by(instance) (irate(node_cpu_guest_seconds_total{mode="user"}[1m])) / on(instance) group_left sum by(instance)(irate(node_cpu_seconds_total[1m]))',
+        "timeseries",
+    ),
+    (
+        "__name__introspection_not_feasible",
+        'topk(10, count by (__name__)({__name__=~".+"}))',
+        "bargauge",
+    ),
+    (
+        "changes_not_feasible",
+        "changes(prometheus_config_last_reload_success_timestamp_seconds[10m])",
+        "timeseries",
+    ),
+    # --- additional range functions over gauges ------------------------------
+    (
+        "max_over_time_gauge",
+        "max_over_time(node_memory_MemAvailable_bytes[1h])",
+        "timeseries",
+    ),
+    (
+        "min_over_time_grouped",
+        "min by (instance) (min_over_time(up[5m]))",
+        "timeseries",
+    ),
+    (
+        "delta_gauge_range",
+        "delta(node_filesystem_avail_bytes[1h])",
+        "timeseries",
+    ),
+    (
+        "deriv_gauge_range",
+        "deriv(node_filesystem_avail_bytes[1h])",
+        "timeseries",
+    ),
+    # --- aggregation operators: STDDEV maps, others must not silently AVG -----
+    (
+        "stddev_by_job",
+        "stddev by (job) (http_request_duration_seconds)",
+        "timeseries",
+    ),
+    (
+        "stdvar_aggregation_not_feasible",
+        "stdvar(node_cpu_seconds_total) by (instance)",
+        "timeseries",
+    ),
+    (
+        "group_aggregation_not_feasible",
+        "group(up) by (job)",
+        "timeseries",
+    ),
+    (
+        "quantile_aggregation_not_feasible",
+        "quantile(0.95, http_request_duration_seconds) by (job)",
+        "timeseries",
+    ),
+    # --- scalar/time arithmetic and rounding ---------------------------------
+    (
+        "round_rate",
+        "round(rate(http_requests_total[5m]))",
+        "timeseries",
+    ),
+    (
+        "time_modulo_seconds",
+        "time() % 86400",
+        "stat",
+    ),
+    (
+        "avg_idle_percent_by_instance",
+        'avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100',
+        "timeseries",
+    ),
+    # --- additional hard blockers (degrade gracefully) -----------------------
+    (
+        "clamp_max_not_feasible",
+        "clamp_max(node_filesystem_avail_bytes, 100)",
+        "timeseries",
+    ),
+    (
+        "quantile_over_time_not_feasible",
+        "quantile_over_time(0.95, node_cpu_seconds_total[10m])",
+        "timeseries",
+    ),
+    (
+        "predict_linear_not_feasible",
+        "predict_linear(node_filesystem_avail_bytes[1h], 4*3600)",
+        "timeseries",
+    ),
+    (
+        "absent_not_feasible",
+        'absent(up{job="prometheus"})',
+        "stat",
+    ),
+    (
+        "count_values_not_feasible",
+        'count_values("version", build_info)',
+        "timeseries",
+    ),
+    (
+        "sgn_not_feasible",
+        "sgn(node_cpu_seconds_total - 1)",
+        "timeseries",
+    ),
+    (
+        "vector_scalar_not_feasible",
+        "vector(1)",
+        "stat",
+    ),
 ]
 
 
-def _render_snapshot(feasibility: str, warnings: list[str], query: str | None) -> str:
-    """Render a snapshot to a canonical text form."""
-    lines = [f"feasibility: {feasibility}"]
+def _render_snapshot(
+    source: str, feasibility: str, warnings: list[str], query: str | None
+) -> str:
+    """Render a snapshot to a canonical text form.
+
+    The ``source`` line records the original PromQL expression so each snapshot
+    documents the full ``from this -> to this`` translation in one place.
+    """
+    lines = [f"source: {source}", f"feasibility: {feasibility}"]
     for w in warnings:
         lines.append(f"warning: {w}")
     lines.append("---")
@@ -252,7 +528,9 @@ class TestPromQLESQLSnapshots(unittest.TestCase):
             rule_pack=self._rule_pack,
             resolver=self._resolver,
         )
-        actual = _render_snapshot(result.feasibility, result.warnings, result.esql_query)
+        actual = _render_snapshot(
+            expr, result.feasibility, result.warnings, result.esql_query
+        )
         snapshot_path = SNAPSHOT_DIR / f"{name}.txt"
 
         if UPDATE_SNAPSHOTS or not snapshot_path.exists():

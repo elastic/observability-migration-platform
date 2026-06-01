@@ -1,0 +1,13 @@
+source: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: No explicit aggregation; using AVG (correct for gauge metrics)
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_memory_MemAvailable_bytes IS NOT NULL OR node_memory_MemTotal_bytes IS NOT NULL
+| STATS node_memory_MemAvailable_bytes = AVG(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes = AVG(node_memory_MemTotal_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| EVAL computed_value = ((1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC

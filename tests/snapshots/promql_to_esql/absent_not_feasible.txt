@@ -1,0 +1,5 @@
+source: absent(up{job="prometheus"})
+feasibility: not_feasible
+warning: absent() checks metric existence and has no ES|QL equivalent
+---
+

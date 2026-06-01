@@ -1,0 +1,10 @@
+source: count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
+feasibility: feasible
+warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE service.instance.id == ?node
+| WHERE service.name == ?job
+| WHERE node_cpu_seconds_total IS NOT NULL
+| STATS node_cpu_seconds_total_count = COUNT_DISTINCT(cpu)

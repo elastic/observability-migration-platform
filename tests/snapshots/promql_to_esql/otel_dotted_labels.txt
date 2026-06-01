@@ -1,0 +1,10 @@
+source: sum by (service.name) (rate(http_requests_total{http.response.status_code=~"5..",http.request.method="POST"}[5m]))
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http.response.status_code RLIKE "5.."
+| WHERE http.request.method == "POST"
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = SUM(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| SORT time_bucket ASC

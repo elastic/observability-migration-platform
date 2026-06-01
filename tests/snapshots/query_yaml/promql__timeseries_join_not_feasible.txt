@@ -1,0 +1,4 @@
+source: max(node_filesystem_avail_bytes / node_filesystem_size_bytes)
+status: not_feasible
+chart_type: none
+warning: Aggregating over a per-element / between two time-series (max(A / B)) cannot be expressed accurately in ES|QL; rewrite as a ratio of aggregates if the series are label-aligned

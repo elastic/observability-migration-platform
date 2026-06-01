@@ -1,0 +1,5 @@
+source: predict_linear(node_filesystem_avail_bytes[1h], 4*3600)
+feasibility: not_feasible
+warning: predict_linear() requires manual redesign
+---
+

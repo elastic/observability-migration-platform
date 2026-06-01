@@ -1,0 +1,5 @@
+source: avg:system.cpu.user{*} by {host}
+status: ok
+chart_type: datatable
+breakdowns: ['host.name']
+metrics: ['value']

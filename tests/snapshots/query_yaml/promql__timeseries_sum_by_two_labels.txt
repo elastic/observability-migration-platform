@@ -1,0 +1,7 @@
+source: sum(kube_pod_info) by (namespace, pod)
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+breakdown: k8s.namespace.name
+metrics: ['kube_pod_info']
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['k8s.pod.name'] are in the query but not on the chart, so series differing only by those are visually merged

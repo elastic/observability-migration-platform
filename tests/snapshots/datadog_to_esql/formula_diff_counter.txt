@@ -1,0 +1,12 @@
+source: query1 = sum:redis.keyspace.hits{*}
+formula: diff(query1)
+status: ok
+backend: esql
+kibana_type: xy
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query1 = SUM(redis_keyspace_hits), query1_first = FIRST(redis_keyspace_hits, @timestamp) WHERE redis_keyspace_hits IS NOT NULL, query1_last = LAST(redis_keyspace_hits, @timestamp) WHERE redis_keyspace_hits IS NOT NULL BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| EVAL diff_query1 = (query1_last - query1_first)
+| KEEP time_bucket, diff_query1
+| SORT time_bucket

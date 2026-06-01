@@ -1,0 +1,8 @@
+source: max_over_time(node_memory_MemAvailable_bytes[1h])
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_memory_MemAvailable_bytes IS NOT NULL
+| STATS node_memory_MemAvailable_bytes = MAX_OVER_TIME(node_memory_MemAvailable_bytes, 1h) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

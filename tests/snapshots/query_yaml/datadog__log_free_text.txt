@@ -1,0 +1,4 @@
+source: connection timeout
+status: ok
+chart_type: datatable
+breakdowns: ['@timestamp', 'message', 'log.level', 'service.name', 'host.name']

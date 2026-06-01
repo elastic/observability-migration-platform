@@ -1,0 +1,10 @@
+source: @response_time:[100 TO 500]
+status: ok
+backend: esql
+kibana_type: table
+---
+FROM logs-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND response_time >= 100 AND response_time <= 500
+| SORT @timestamp DESC
+| KEEP @timestamp, message, log.level, service.name, host.name
+| LIMIT 100

@@ -1,0 +1,15 @@
+source: upstream_services_throughput = count:data_streams.latency{type:kafka AND direction:out AND (pathway_type:edge OR pathway_type:partial_edge) AND $topic AND $env} by {topic,env}.as_rate()
+formula: default_zero(upstream_services_throughput)
+status: warning
+backend: esql
+kibana_type: xy
+warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+warning: rate semantics approximated with delta over observed bucket span
+warning: default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge")
+| STATS upstream_services_throughput = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), topic, deployment.environment
+| EVAL default_zero_upstream_services_throughput = COALESCE(upstream_services_throughput, 0)
+| KEEP time_bucket, topic, deployment.environment, default_zero_upstream_services_throughput
+| SORT time_bucket

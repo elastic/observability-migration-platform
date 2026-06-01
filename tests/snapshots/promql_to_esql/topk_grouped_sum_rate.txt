@@ -1,0 +1,13 @@
+source: topk(10, sum(rate(http_requests_total[5m])) by (handler))
+feasibility: feasible
+warning: Translated grouped topk() as latest-bucket ES|QL top N
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS _bucket_value = SUM(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), handler
+| SORT time_bucket ASC
+| STATS value = LAST(_bucket_value, time_bucket) BY handler
+| KEEP handler, value
+| SORT value DESC
+| LIMIT 10

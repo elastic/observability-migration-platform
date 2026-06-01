@@ -1,0 +1,13 @@
+source: query1 = avg:mysql.performance.user_time{*}
+formula: rate(query1)
+status: warning
+backend: esql
+kibana_type: xy
+warning: rate() on a query reference is approximated with bucket FIRST/LAST deltas; values may differ for non-monotonic gauges
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query1 = AVG(mysql_performance_user_time), query1_first = FIRST(mysql_performance_user_time, @timestamp) WHERE mysql_performance_user_time IS NOT NULL, query1_last = LAST(mysql_performance_user_time, @timestamp) WHERE mysql_performance_user_time IS NOT NULL, bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1 BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| EVAL rate_query1 = (query1_last - query1_first) / bucket_span_seconds
+| KEEP time_bucket, rate_query1
+| SORT time_bucket

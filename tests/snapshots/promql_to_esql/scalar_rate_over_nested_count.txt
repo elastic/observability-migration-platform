@@ -1,0 +1,5 @@
+source: sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[5m])) / scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))
+feasibility: not_feasible
+warning: PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+---
+

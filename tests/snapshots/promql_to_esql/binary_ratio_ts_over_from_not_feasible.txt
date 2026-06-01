@@ -1,3 +1,4 @@
+source: sum(rate(jvm_gc_pause_seconds_sum[1m])) by (application) / on(application) system_cpu_count
 feasibility: not_feasible
 warning: PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
 ---

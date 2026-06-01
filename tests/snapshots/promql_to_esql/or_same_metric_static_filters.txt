@@ -1,0 +1,15 @@
+source: http_requests_total{instance="i",status=~"4.."} or http_requests_total{instance="i",status=~"5.."}
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Rewrote PromQL set-or between same metric as a unified WHERE OR clause
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE service.instance.id == "i"
+| WHERE (status RLIKE "4.." OR status RLIKE "5..")
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total_instance_i_status_4 = MAX(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(5 minute), status
+| EVAL computed_value = http_requests_total_instance_i_status_4
+| KEEP time_bucket, status, computed_value
+| SORT time_bucket ASC

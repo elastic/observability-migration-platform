@@ -1,0 +1,12 @@
+source: - sum(rate(node_network_transmit_bytes_total{device!~"(veth|azv|lxc).*"}[5m])) by (device)
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE NOT (device RLIKE "(veth|azv|lxc).*")
+| WHERE node_network_transmit_bytes_total IS NOT NULL
+| STATS node_network_transmit_bytes_total_device_veth_azv_lxc_rate_sum = SUM(RATE(node_network_transmit_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), device
+| EVAL computed_value = (0 - node_network_transmit_bytes_total_device_veth_azv_lxc_rate_sum)
+| KEEP time_bucket, device, computed_value
+| SORT time_bucket ASC

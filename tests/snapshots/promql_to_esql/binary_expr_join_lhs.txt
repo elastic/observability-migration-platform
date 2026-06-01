@@ -1,3 +1,4 @@
+source: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * ON(instance) GROUP_LEFT(nodename) node_uname_info
 feasibility: feasible
 warning: No explicit aggregation; using AVG (correct for gauge metrics)
 warning: Dropped group_left label enrichment; kept primary metric series only

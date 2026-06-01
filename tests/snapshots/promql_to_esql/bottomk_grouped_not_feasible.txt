@@ -1,0 +1,5 @@
+source: bottomk(3, sum by (job) (rate(foo_total[5m])))
+feasibility: not_feasible
+warning: bottomk requires manual redesign
+---
+

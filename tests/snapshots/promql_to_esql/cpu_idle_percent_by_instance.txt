@@ -1,0 +1,13 @@
+source: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE mode == "idle"
+| WHERE node_cpu_seconds_total IS NOT NULL
+| STATS node_cpu_seconds_total_mode_idle_rate_avg = AVG(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| EVAL node_cpu_seconds_total_mode_idle_rate_avg_calc = node_cpu_seconds_total_mode_idle_rate_avg * 100
+| EVAL computed_value = (100 - node_cpu_seconds_total_mode_idle_rate_avg_calc)
+| KEEP time_bucket, service.instance.id, computed_value
+| SORT time_bucket ASC

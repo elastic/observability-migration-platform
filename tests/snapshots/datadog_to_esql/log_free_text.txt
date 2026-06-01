@@ -1,0 +1,10 @@
+source: connection timeout
+status: ok
+backend: esql_with_kql
+kibana_type: table
+---
+FROM logs-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("connection AND timeout")
+| SORT @timestamp DESC
+| KEEP @timestamp, message, log.level, service.name, host.name
+| LIMIT 100

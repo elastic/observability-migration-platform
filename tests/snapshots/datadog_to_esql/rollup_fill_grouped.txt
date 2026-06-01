@@ -1,0 +1,12 @@
+source: max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}.fill(zero).rollup(avg, 15)
+status: warning
+backend: esql
+kibana_type: xy
+warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+warning: rollup interval is approximated in ES|QL
+warning: fill(zero) only applies to null values in returned rows; empty buckets may still be omitted
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name
+| SORT time_bucket

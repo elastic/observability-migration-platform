@@ -1,0 +1,4 @@
+source: sum(rate(http_requests_total[5m]))
+status: migrated
+chart_type: metric
+primary: http_requests_total
