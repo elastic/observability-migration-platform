@@ -12,6 +12,9 @@ from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_schema_change_report,
     build_telemetry_contract,
+    merge_metric_kind_overrides,
+    metric_kinds_from_field_caps,
+    metric_kinds_from_prometheus_metadata,
 )
 
 
@@ -841,6 +844,287 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("Second", report)
         self.assertIn("metrics-*", report)
         self.assertIn("Total panels", report)
+
+
+    def test_kube_resource_requests_classified_as_gauge_not_counter(self):
+        # kube_pod_container_resource_requests contains the substring "requests"
+        # but it is a K8s gauge (current CPU/memory allocation), not an HTTP request
+        # counter. A bare sum() in PromQL — without rate()/increase() — must not
+        # cause this field to land in the index template as counter_double, because
+        # SUM(CASE(...counter_double...)) is rejected by ES|QL at runtime.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "K8s Global",
+                                "panel": "Global CPU Usage",
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| WHERE kube_pod_container_resource_requests IS NOT NULL\n"
+                                    "| STATS v = SUM(CASE((resource == \"cpu\"),"
+                                    " kube_pod_container_resource_requests, NULL))"
+                                    " BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+                                ),
+                                "source_query": (
+                                    "sum(kube_pod_container_resource_requests{resource=\"cpu\"})"
+                                    " / sum(machine_cpu_cores)"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("kube_pod_container_resource_requests", fields)
+        self.assertEqual(
+            fields["kube_pod_container_resource_requests"]["metric_kind"],
+            "gauge",
+            "kube_pod_container_resource_requests must be gauge; 'requests' in the name "
+            "refers to K8s resource allocation, not an HTTP request counter",
+        )
+
+    def test_http_request_counter_still_classified_as_counter(self):
+        # Removing the broad "requests" hint must not break real HTTP request counters
+        # that don't carry a _total suffix (e.g. nginx_http_requests) when the
+        # translated query itself is a PROMQL query with rate() context.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "NGINX",
+                                "panel": "Requests",
+                                "translated_query": (
+                                    "PROMQL index=metrics-* step=1m"
+                                    " value=(rate(nginx_http_requests[5m]))"
+                                ),
+                                "source_query": "rate(nginx_http_requests[5m])",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("nginx_http_requests", fields)
+        self.assertEqual(
+            fields["nginx_http_requests"]["metric_kind"],
+            "counter",
+            "nginx_http_requests used inside rate() must remain counter",
+        )
+
+
+class MetricKindOverrideTests(unittest.TestCase):
+    def _write_packet(self, tmpdir, translated_query, source_query=""):
+        artifact_dir = Path(tmpdir) / "dashboards"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "verification_packets.json").write_text(
+            json.dumps(
+                {
+                    "packets": [
+                        {
+                            "dashboard": "D",
+                            "panel": "P",
+                            "translated_query": translated_query,
+                            "source_query": source_query,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return artifact_dir
+
+    def test_override_forces_gauge_even_over_rate_context(self):
+        # A metric used inside rate() classifies as counter by query context AND by
+        # the _total suffix heuristic. An explicit override must still win.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._write_packet(
+                tmpdir,
+                "PROMQL index=metrics-* step=1m value=(rate(weird_gauge_total[5m]))",
+            )
+            contract = build_telemetry_contract(
+                artifact_dir, metric_kind_overrides={"weird_gauge_total": "gauge"}
+            )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["weird_gauge_total"]["metric_kind"], "gauge")
+        self.assertEqual(fields["weird_gauge_total"]["kind_source"], "override")
+
+    def test_override_forces_counter_over_heuristic_gauge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._write_packet(
+                tmpdir,
+                "FROM metrics-* | STATS SUM(kube_pod_container_resource_requests) BY pod",
+            )
+            contract = build_telemetry_contract(
+                artifact_dir,
+                metric_kind_overrides={"kube_pod_container_resource_requests": "counter"},
+            )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(
+            fields["kube_pod_container_resource_requests"]["metric_kind"], "counter"
+        )
+
+    def test_override_ignores_dimension_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._write_packet(
+                tmpdir,
+                "FROM metrics-* | STATS AVG(node_load1) BY pod",
+            )
+            # "pod" is a dimension; an override naming it must not turn it into a metric.
+            contract = build_telemetry_contract(
+                artifact_dir, metric_kind_overrides={"pod": "counter"}
+            )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["pod"]["role"], "dimension")
+        self.assertEqual(fields["pod"].get("metric_kind", ""), "")
+
+    def test_combined_contract_applies_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._write_packet(
+                tmpdir,
+                "PROMQL index=metrics-* step=1m value=(rate(weird_gauge_total[5m]))",
+            )
+            contract = build_combined_telemetry_contract(
+                [artifact_dir], metric_kind_overrides={"weird_gauge_total": "gauge"}
+            )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["weird_gauge_total"]["metric_kind"], "gauge")
+
+
+class FieldRelationshipTests(unittest.TestCase):
+    def _contract_from_query(self, translated_query):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {"packets": [{"dashboard": "D", "panel": "P", "translated_query": translated_query}]}
+                ),
+                encoding="utf-8",
+            )
+            return build_telemetry_contract(artifact_dir)
+
+    def test_ratio_records_denominator_relationship(self):
+        contract = self._contract_from_query(
+            "PROMQL index=metrics-* step=1m"
+            " value=(sum(node_memory_used)/sum(node_memory_total))"
+        )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn(
+            {"type": "ratio_denominator", "field": "node_memory_total"},
+            fields["node_memory_used"].get("relationships", []),
+        )
+        # The denominator itself carries no bound.
+        self.assertNotIn("relationships", fields["node_memory_total"])
+
+    def test_no_relationships_key_when_no_ratio(self):
+        contract = self._contract_from_query(
+            "FROM metrics-* | STATS AVG(node_load1) BY pod"
+        )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertNotIn("relationships", fields["node_load1"])
+
+
+class MetricKindFromSourceTests(unittest.TestCase):
+    def test_prometheus_metadata_maps_counter_and_gauge(self):
+        metadata = {
+            "status": "success",
+            "data": {
+                "node_cpu_seconds_total": [{"type": "counter", "help": "", "unit": ""}],
+                "node_load1": [{"type": "gauge", "help": "", "unit": ""}],
+                "http_request_duration_seconds": [{"type": "histogram"}],
+            },
+        }
+        self.assertEqual(
+            metric_kinds_from_prometheus_metadata(metadata),
+            {"node_cpu_seconds_total": "counter", "node_load1": "gauge"},
+        )
+
+    def test_prometheus_metadata_accepts_unwrapped_data(self):
+        self.assertEqual(
+            metric_kinds_from_prometheus_metadata({"x_total": [{"type": "counter"}]}),
+            {"x_total": "counter"},
+        )
+
+    def test_prometheus_metadata_skips_conflicting_types(self):
+        metadata = {"data": {"weird": [{"type": "counter"}, {"type": "gauge"}]}}
+        self.assertEqual(metric_kinds_from_prometheus_metadata(metadata), {})
+
+    def test_field_caps_maps_counter_double_and_gauge(self):
+        field_caps = {
+            "fields": {
+                "requests_total": {"counter_double": {"time_series_metric": "counter"}},
+                "memory_usage": {"double": {"time_series_metric": "gauge"}},
+                "plain_value": {"double": {}},
+            }
+        }
+        self.assertEqual(
+            metric_kinds_from_field_caps(field_caps),
+            {"requests_total": "counter", "memory_usage": "gauge"},
+        )
+
+    def test_merge_overrides_earliest_source_wins(self):
+        rule_pack = {"shared": "counter"}
+        metadata = {"shared": "gauge", "from_meta": "gauge"}
+        field_caps = {"shared": "gauge", "from_meta": "counter", "from_caps": "counter"}
+        self.assertEqual(
+            merge_metric_kind_overrides(rule_pack, metadata, field_caps),
+            {"shared": "counter", "from_meta": "gauge", "from_caps": "counter"},
+        )
+
+    def test_merge_overrides_ignores_empty_sources(self):
+        self.assertEqual(
+            merge_metric_kind_overrides(None, {}, {"a": "counter"}),
+            {"a": "counter"},
+        )
+
+    def test_field_caps_used_as_contract_override(self):
+        # The whole point: field-caps ground truth feeds the override map and wins.
+        overrides = metric_kinds_from_field_caps(
+            {"fields": {"kube_pod_container_resource_requests": {"double": {"time_series_metric": "gauge"}}}}
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "D",
+                                "panel": "P",
+                                "translated_query": (
+                                    "PROMQL index=metrics-* step=1m"
+                                    " value=(rate(kube_pod_container_resource_requests[5m]))"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            contract = build_telemetry_contract(
+                artifact_dir, metric_kind_overrides=overrides
+            )
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(
+            fields["kube_pod_container_resource_requests"]["metric_kind"], "gauge"
+        )
 
 
 if __name__ == "__main__":

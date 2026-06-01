@@ -5,6 +5,7 @@ import datetime
 import unittest
 
 from observability_migration.core.telemetry_data import (
+    _expand_patterns,
     concrete_stream_name,
     generate_documents,
     plan_index_template,
@@ -430,6 +431,77 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertIn("production", environments)
         self.assertIn("staging", environments)
         self.assertIn("development", environments)
+
+
+class CoherentGenerationTests(unittest.TestCase):
+    def test_ratio_numerator_never_exceeds_denominator(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_memory_used": {
+                            "role": "metric",
+                            "metric_kind": "gauge",
+                            "relationships": [
+                                {"type": "ratio_denominator", "field": "node_memory_total"}
+                            ],
+                        },
+                        "node_memory_total": {"role": "metric", "metric_kind": "gauge"},
+                        "host.name": {"role": "dimension"},
+                    },
+                    "required_values": {"host.name": ["a", "b"]},
+                }
+            }
+        }
+        docs = [
+            doc
+            for index, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=2,
+                interval_sec=600,
+                max_combinations=4,
+            )
+            if index == "metrics-generic-default"
+        ]
+        self.assertTrue(docs)
+        for doc in docs:
+            self.assertLessEqual(doc["node_memory_used"], doc["node_memory_total"])
+
+
+class ExpandPatternsTests(unittest.TestCase):
+    def test_alternation_yields_each_alternative(self):
+        # Grafana multi-value template variables translate to regex alternations.
+        # Each alternative is a real value the dashboard filters on.
+        self.assertEqual(
+            _expand_patterns("deployment.environment", ["prod|staging|dev"]),
+            ["prod", "staging", "dev"],
+        )
+
+    def test_parenthesized_alternation_is_unwrapped(self):
+        self.assertEqual(
+            _expand_patterns("k8s.namespace.name", ["(team-a|team-b)"]),
+            ["team-a", "team-b"],
+        )
+
+    def test_prefix_glob_yields_distinct_concrete_values(self):
+        values = _expand_patterns("k8s.pod.name", ["nginx-.*"])
+        self.assertGreaterEqual(len(values), 2)
+        self.assertEqual(len(values), len(set(values)), "values must be distinct")
+        self.assertTrue(all(v.startswith("nginx-") for v in values))
+        # The old literal-munge behaviour produced exactly one "nginx-sample".
+        self.assertNotIn("nginx-sample", values)
+
+    def test_status_code_class_still_maps_to_concrete_code(self):
+        # Regression guard: ``2..``/``5xx`` style classes must keep resolving to a
+        # concrete status code so existing status-code coverage tests hold.
+        self.assertEqual(_expand_patterns("http.response.status_code", ["2.."]), ["200"])
+        self.assertEqual(_expand_patterns("http.response.status_code", ["5xx"]), ["500"])
+
+    def test_pure_wildcard_falls_back_to_default_values(self):
+        values = _expand_patterns("service.name", [".*"])
+        self.assertEqual(len(values), 1)
+        self.assertNotIn(".", values[0])
 
 
 if __name__ == "__main__":

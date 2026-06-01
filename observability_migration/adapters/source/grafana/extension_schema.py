@@ -81,11 +81,22 @@ class QueryConfigModel(_StrictModel):
     label_candidates: dict[str, list[str]] = Field(default_factory=dict)
     ignored_labels: list[str] = Field(default_factory=list)
     index_rewrites: list[IndexRewriteRuleModel] = Field(default_factory=list)
+    metric_kinds: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("label_candidates", mode="before")
     @classmethod
     def normalize_label_candidates(cls, value: Any) -> Any:
         return _normalize_mapping_lists(value)
+
+    @field_validator("metric_kinds")
+    @classmethod
+    def validate_metric_kinds(cls, value: dict[str, str]) -> dict[str, str]:
+        for name, kind in (value or {}).items():
+            if str(kind).strip().lower() not in {"counter", "gauge"}:
+                raise ValueError(
+                    f"metric_kinds[{name!r}] must be 'counter' or 'gauge', got {kind!r}"
+                )
+        return value
 
 
 class PanelConfigModel(_StrictModel):
