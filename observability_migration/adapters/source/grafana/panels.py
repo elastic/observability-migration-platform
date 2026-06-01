@@ -18,7 +18,11 @@ from observability_migration.core.assets.query import QueryIR, build_query_ir, i
 from observability_migration.core.assets.visual import refresh_visual_ir
 from observability_migration.core.reporting.report import MigrationResult, PanelResult, _panel_query_index
 from observability_migration.core.verification.field_capabilities import assess_field_usage
-from observability_migration.targets.kibana.emit.display import clean_template_variables, enrich_yaml_panel_display
+from observability_migration.targets.kibana.emit.display import (
+    clean_template_variables,
+    enrich_yaml_panel_display,
+    grafana_unit_to_yaml_format,
+)
 from observability_migration.targets.kibana.emit.esql_utils import (
     ESQLShape as _ESQLShapeCanonical,
 )
@@ -2072,6 +2076,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         panel,
         metric_labels=metric_labels or None,
     )
+    _apply_series_override_axes(yaml_panel, panel, primary.warnings)
     if yaml_panel.get("esql", {}).get("query"):
         primary.esql_query = yaml_panel["esql"]["query"]
         primary.query_ir = build_query_ir(primary)
@@ -2350,7 +2355,6 @@ def _build_multi_target_series_query(translations):
             parts.append("| SORT time_bucket ASC")
     else:
         output_group_fields = collapsed
-    warnings.append("Merged compatible panel targets into a single ES|QL query")
     return {
         "query": "\n".join(parts),
         "metric_fields": metric_fields,
@@ -2957,6 +2961,71 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             legend_labels=legend_labels,
         )
     return panel
+
+
+def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings: list[str]) -> None:
+    esql = yaml_panel.get("esql")
+    if not isinstance(esql, dict) or esql.get("type") not in {"line", "bar", "area"}:
+        return
+    metrics = esql.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        return
+    overrides = grafana_panel.get("seriesOverrides")
+    if not isinstance(overrides, list) or not overrides:
+        return
+
+    right_format = _grafana_yaxis_metric_format(grafana_panel, "right")
+    for override in overrides:
+        if not isinstance(override, dict) or _grafana_override_axis(override.get("yaxis")) != "right":
+            continue
+        alias = str(override.get("alias") or "").strip()
+        matched = False
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            candidates = {
+                str(metric.get("field") or ""),
+                str(metric.get("label") or ""),
+            }
+            if _series_override_alias_matches(alias, candidates):
+                metric["axis"] = "right"
+                if right_format:
+                    metric["format"] = dict(right_format)
+                matched = True
+        if alias and not matched:
+            _append_unique(
+                warnings,
+                f'Dropped Grafana secondary y-axis assignment for unmatched series override "{alias}"',
+            )
+
+
+def _grafana_override_axis(value) -> str:
+    try:
+        axis = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return "right" if axis == 2 else "left" if axis == 1 else ""
+
+
+def _grafana_yaxis_metric_format(grafana_panel: dict, axis: str) -> dict | None:
+    yaxes = grafana_panel.get("yaxes")
+    axis_idx = 1 if axis == "right" else 0
+    if not isinstance(yaxes, list) or len(yaxes) <= axis_idx or not isinstance(yaxes[axis_idx], dict):
+        return None
+    unit = str(yaxes[axis_idx].get("format") or "")
+    return grafana_unit_to_yaml_format(unit)
+
+
+def _series_override_alias_matches(alias: str, candidates: set[str]) -> bool:
+    if not alias:
+        return False
+    if alias.startswith("/") and alias.endswith("/") and len(alias) > 1:
+        try:
+            pattern = re.compile(alias[1:-1])
+        except re.error:
+            return False
+        return any(candidate and pattern.search(candidate) for candidate in candidates)
+    return alias in candidates
 
 
 def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
