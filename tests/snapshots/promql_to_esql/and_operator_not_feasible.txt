@@ -1,0 +1,5 @@
+source: http_requests_total and http_other_total
+feasibility: not_feasible
+warning: PromQL set operator 'and' between distinct metrics or aggregations has no honest ES|QL translation; marked not_feasible
+---
+

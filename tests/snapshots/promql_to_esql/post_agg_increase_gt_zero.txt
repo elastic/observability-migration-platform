@@ -1,0 +1,9 @@
+source: sum(increase(prometheus_rule_evaluation_failures_total[5m])) by (instance) > 0
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE prometheus_rule_evaluation_failures_total IS NOT NULL
+| STATS prometheus_rule_evaluation_failures_total = SUM(INCREASE(prometheus_rule_evaluation_failures_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| WHERE prometheus_rule_evaluation_failures_total > 0
+| SORT time_bucket ASC

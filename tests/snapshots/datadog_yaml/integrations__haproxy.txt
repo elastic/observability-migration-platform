@@ -4,7 +4,7 @@ widgets: 29
 panels: 23
 controls: 3
 filters: 0
-statuses: {'ok': 21, 'requires_manual': 2, 'skipped': 6}
+statuses: {'ok': 9, 'requires_manual': 2, 'skipped': 6, 'warning': 12}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title='Incoming Success Rate (non-5xx responses)'; kind=markdown

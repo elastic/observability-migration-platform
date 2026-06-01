@@ -1,0 +1,5 @@
+source: quantile(0.95, http_request_duration_seconds) by (job)
+feasibility: not_feasible
+warning: quantile requires manual redesign
+---
+

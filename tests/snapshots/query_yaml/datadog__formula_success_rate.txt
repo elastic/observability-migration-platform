@@ -1,0 +1,8 @@
+source: query1 = sum:haproxy.backend.response.2xx{*} by {haproxy_service}
+source: query2 = sum:haproxy.backend.response.5xx{*} by {haproxy_service}
+formula: query1 / (query1 + query2) * 100
+status: ok
+chart_type: line
+dimension: time_bucket
+breakdown: haproxy_service
+metrics: ['query1_query1_query2_100']

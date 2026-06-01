@@ -1,0 +1,8 @@
+source: delta(node_filesystem_avail_bytes[1h])
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_filesystem_avail_bytes IS NOT NULL
+| STATS node_filesystem_avail_bytes = DELTA(node_filesystem_avail_bytes, 1h) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

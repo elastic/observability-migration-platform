@@ -1,0 +1,5 @@
+source: changes(prometheus_config_last_reload_success_timestamp_seconds[10m])
+feasibility: not_feasible
+warning: changes() counts value transitions and has no ES|QL equivalent
+---
+

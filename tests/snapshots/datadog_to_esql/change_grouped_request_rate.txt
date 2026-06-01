@@ -1,0 +1,13 @@
+source: sum:nginx.net.request_per_s{*} by {service}
+status: warning
+backend: esql
+kibana_type: table
+warning: change calculation is approximated
+---
+FROM metrics-*
+| WHERE @timestamp >= NOW() - 14 days
+| STATS current_value = SUM(nginx_net_request_per_s) WHERE @timestamp >= NOW() - 7 days, previous_value = SUM(nginx_net_request_per_s) WHERE @timestamp >= NOW() - 14 days AND @timestamp < NOW() - 7 days BY service.name
+| WHERE current_value IS NOT NULL AND previous_value IS NOT NULL
+| EVAL value = current_value - previous_value
+| SORT value DESC
+| LIMIT 100

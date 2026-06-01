@@ -4,7 +4,7 @@ widgets: 43
 panels: 34
 controls: 1
 filters: 0
-statuses: {'ok': 26, 'requires_manual': 1, 'skipped': 9, 'warning': 7}
+statuses: {'ok': 15, 'requires_manual': 1, 'skipped': 9, 'warning': 18}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title='Averaged uptime'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

@@ -4,7 +4,7 @@ widgets: 55
 panels: 46
 controls: 3
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 38, 'requires_manual': 4, 'skipped': 9, 'warning': 2}
+statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 4, 'skipped': 9, 'warning': 27}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title=''; kind=markdown

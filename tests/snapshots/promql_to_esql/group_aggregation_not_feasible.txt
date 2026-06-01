@@ -1,0 +1,5 @@
+source: group(up) by (job)
+feasibility: not_feasible
+warning: group() returns the constant 1 per label set (value-discarding); ES|QL has no equivalent and aggregating the metric value instead would change the result, so it requires manual redesign
+---
+

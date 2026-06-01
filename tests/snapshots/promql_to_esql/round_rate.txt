@@ -1,0 +1,10 @@
+source: round(rate(http_requests_total[5m]))
+feasibility: feasible
+warning: round() approximated with ES|QL ROUND()
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = RATE(http_requests_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL http_requests_total = ROUND(http_requests_total)
+| SORT time_bucket ASC

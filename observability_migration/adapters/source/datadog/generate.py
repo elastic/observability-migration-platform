@@ -225,6 +225,30 @@ def _infer_dashboard_filters(
     return [{"field": "data_stream.dataset", "equals": metrics_dataset_filter}]
 
 
+def _warn_dropped_xy_breakdowns(
+    non_time_dims: list[str], result: TranslationResult
+) -> None:
+    """Warn when an XY chart cannot show every grouping dimension.
+
+    A Kibana XY chart (line/bar/area) breaks its series down by a single field.
+    When the source query groups by two or more non-time dimensions, only the
+    first becomes the visual breakdown and the rest are absent from the chart,
+    so series differing only by a dropped dimension are visually merged. Surface
+    that as a warning instead of silently rendering a different shape than the
+    Datadog source.
+    """
+    extra = [d for d in non_time_dims[1:] if d]
+    if not extra:
+        return
+    warning = (
+        "XY chart shows a single breakdown; additional grouping "
+        f"dimension(s) {extra} are in the query but not on the chart, "
+        "so series differing only by those are visually merged"
+    )
+    if warning not in result.warnings:
+        result.warnings.append(warning)
+
+
 def _build_yaml_panel(
     widget: NormalizedWidget,
     result: TranslationResult,
@@ -302,6 +326,7 @@ def _build_esql_panel(
             other_dims = [d for d in dims if d != time_dim]
             if other_dims:
                 esql_block["breakdown"] = _dimension_config(other_dims[0])
+                _warn_dropped_xy_breakdowns(other_dims, result)
         if metrics:
             esql_block["metrics"] = [
                 _metric_config(widget, result, m)
@@ -436,6 +461,7 @@ def _build_lens_panel(
         lens_block["metrics"] = [dict(metric_config)]
         if group_by:
             lens_block["breakdown"] = {"type": "values", "field": group_by[0]}
+            _warn_dropped_xy_breakdowns(group_by, result)
     elif chart_type == "pie" or chart_type == "datatable":
         lens_block["metrics"] = [dict(metric_config)]
         if group_by:

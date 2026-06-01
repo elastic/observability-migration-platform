@@ -1,5 +1,5 @@
-feasibility: feasible
+source: max(rate(node_network_receive_bytes_total[5m]) * on(instance) group_left(nodename) node_uname_info) by (instance)
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join requires manual redesign; dropping the joined metric would change numeric values
 ---
-TS metrics-*
-| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS node_network_receive_bytes_total = MAX(RATE(node_network_receive_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+

@@ -4,7 +4,7 @@ widgets: 17
 panels: 13
 controls: 4
 filters: 0
-statuses: {'ok': 11, 'requires_manual': 2, 'skipped': 4}
+statuses: {'ok': 5, 'requires_manual': 2, 'skipped': 4, 'warning': 6}
 - title=''; kind=markdown
 - title=''; kind=markdown
 - title=''; kind=markdown

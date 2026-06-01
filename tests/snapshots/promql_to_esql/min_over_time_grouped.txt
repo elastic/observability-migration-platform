@@ -1,0 +1,8 @@
+source: min by (instance) (min_over_time(up[5m]))
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE up IS NOT NULL
+| STATS up = MIN(MIN_OVER_TIME(up, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| SORT time_bucket ASC

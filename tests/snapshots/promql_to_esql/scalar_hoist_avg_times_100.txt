@@ -1,5 +1,7 @@
+source: avg(avg_over_time(up[5m]) * 100)
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

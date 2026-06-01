@@ -1,3 +1,4 @@
+source: time() - node_boot_time_seconds{job='node'}
 feasibility: feasible
 warning: Approximated time() - metric as uptime from metric timestamp
 ---

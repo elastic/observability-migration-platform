@@ -1,0 +1,9 @@
+source: sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+feasibility: feasible
+warning: Source PromQL used rate() but http_request_duration_seconds_bucket is typed as gauge in the target index; rendered as AVG_OVER_TIME instead. Fix the ingest mapping to mark this field as a counter to get a true rate.
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_request_duration_seconds_bucket IS NOT NULL
+| STATS http_request_duration_seconds_bucket = SUM(AVG_OVER_TIME(http_request_duration_seconds_bucket, 5m)) BY time_bucket = TBUCKET(5 minute), le
+| SORT time_bucket ASC

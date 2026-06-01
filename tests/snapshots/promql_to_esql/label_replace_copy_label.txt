@@ -1,0 +1,11 @@
+source: label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")
+feasibility: feasible
+warning: label_replace('host') approximated with ES|QL EVAL
+warning: Added outer AVG() around rate because ES|QL requires an outer aggregation when grouping TS functions by label fields
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| EVAL host = service.instance.id
+| SORT time_bucket ASC

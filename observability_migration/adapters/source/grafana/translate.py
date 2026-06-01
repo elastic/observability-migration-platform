@@ -955,44 +955,6 @@ def join_family_rule(context):
     return None
 
 
-def _build_ts_rate_over_count_distinct_pipeline(index, plan):
-    specs = list(getattr(plan, "specs", []) or [])
-    if len(specs) != 2 or "/" not in str(getattr(plan, "expr", "")):
-        return None
-    numerator = next((spec for spec in specs if spec.source_type == "TS"), None)
-    denominator = next((spec for spec in specs if spec.source_type == "FROM" and spec.stats_expr.startswith("COUNT_DISTINCT(")), None)
-    if not numerator or not denominator:
-        return None
-    if numerator.metric_name != denominator.metric_name:
-        return None
-    if numerator.group_fields or denominator.group_fields:
-        return None
-    if not numerator.bucket_expr or not denominator.bucket_expr:
-        return None
-    count_field_match = re.fullmatch(r"COUNT_DISTINCT\(([^)]+)\)", denominator.stats_expr)
-    if not count_field_match:
-        return None
-    count_field = count_field_match.group(1).strip()
-
-    result_alias = "computed_value"
-    expr = str(plan.expr)
-    expr = expr.replace(numerator.alias, "numerator")
-    expr = expr.replace(denominator.alias, "denominator")
-    presence_field = str(numerator.metric_field or numerator.metric_name).strip()
-    parts = [
-        f"TS {index}",
-        f"| WHERE {numerator.time_filter}",
-        *_build_where_lines(numerator.filters),
-        f"| WHERE {presence_field} IS NOT NULL",
-        f"| STATS _per_series_value = {numerator.stats_expr} BY {numerator.bucket_expr}, {count_field}",
-        "| STATS numerator = SUM(_per_series_value), denominator = COUNT(*) BY time_bucket",
-        f"| EVAL {result_alias} = {expr}",
-        f"| KEEP time_bucket, {result_alias}",
-        "| SORT time_bucket ASC",
-    ]
-    return parts, ["time_bucket"], result_alias
-
-
 @QUERY_TRANSLATORS.register("binary_expr_family", priority=6)
 def binary_expr_family_rule(context):
     frag = context.fragment
@@ -1063,18 +1025,14 @@ def binary_expr_family_rule(context):
     if plan.specs:
         shared = _build_shared_measure_pipeline(context.index, plan.specs)
         if not shared:
-            mixed = _build_ts_rate_over_count_distinct_pipeline(context.index, plan)
-            if not mixed:
-                context.feasibility = "not_feasible"
-                context.confidence = 0.0
-                context.translation_complete = True
-                _append_unique(
-                    context.warnings,
-                    "PromQL arithmetic with divergent filters/groupings cannot be translated safely yet",
-                )
-                return "binary expression requires unsafe measure merge; marked not_feasible"
-            parts, output_group_fields, result_alias = mixed
-            context.source_type = "TS"
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            _append_unique(
+                context.warnings,
+                "PromQL arithmetic with divergent filters/groupings cannot be translated safely yet",
+            )
+            return "binary expression requires unsafe measure merge; marked not_feasible"
         else:
             parts, output_group_fields, _ = shared
             result_alias = "computed_value"
@@ -1101,6 +1059,12 @@ def binary_expr_family_rule(context):
         _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
     for warning in plan.warnings:
         _append_unique(context.warnings, warning)
+    non_time_groups = [field for field in context.output_group_fields if field != "time_bucket"]
+    if plan.specs and not non_time_groups:
+        _append_unique(
+            context.warnings,
+            "PromQL series labels were not retained; output is bucket-level and may collapse multiple source series",
+        )
 
     context.parser_backend = "fragment"
     context.metric_name = result_alias
@@ -1198,8 +1162,52 @@ def topk_family_rule(context):
     return "translated grouped topk expression"
 
 
+# Characters that carry special meaning in a regex. If a label_replace regex's
+# literal (non-capture) portion contains any of these, it is not safe to splice
+# verbatim into a GROK pattern, so we degrade gracefully instead of guessing.
+_REGEX_META_CHARS = set(r".^$*+?()[]{}|\\")
+
+
+def _grok_escape_literal(literal: str) -> str | None:
+    """Escape a literal regex fragment for inclusion in a GROK pattern.
+
+    Returns ``None`` if the fragment contains regex metacharacters that cannot be
+    represented as a plain GROK literal (so the caller can degrade gracefully).
+    GROK only treats ``%`` (start of ``%{...}``) specially among ordinary text,
+    so a fragment with no regex metacharacters is GROK-literal-safe once any
+    ``%`` is escaped.
+    """
+    if any(ch in _REGEX_META_CHARS for ch in literal):
+        return None
+    # Escape characters that GROK's Oniguruma layer would otherwise interpret.
+    return literal.replace("%", "\\%")
+
+
+def _build_label_replace_grok(dst, src, regex):
+    """Translate a single-capture label_replace regex to an anchored GROK command.
+
+    PromQL ``label_replace`` matches the *entire* source label value against the
+    regex (it is fully anchored) and ``$1`` extracts the first capture group.
+    ES|QL has no inline regex-extract function, so we use a fully anchored
+    ``GROK`` command. Only patterns of the form ``<literal>(.*)<literal>`` (with
+    literal portions free of regex metacharacters) are translated; anything else
+    returns ``None`` so the caller degrades gracefully rather than emitting a
+    semantically wrong extraction.
+    """
+    # Exactly one greedy capture group, surrounded by optional literal text.
+    match = re.fullmatch(r"(?P<pre>[^()]*)\((?:\.\*)\)(?P<post>[^()]*)", regex)
+    if not match:
+        return None
+    pre = _grok_escape_literal(match.group("pre"))
+    post = _grok_escape_literal(match.group("post"))
+    if pre is None or post is None:
+        return None
+    pattern = f"^{pre}%{{GREEDYDATA:{dst}}}{post}$"
+    return f'| GROK {src} "{pattern}"'
+
+
 def _build_label_replace_eval(dst, replacement, src, regex):
-    """Return an ES|QL EVAL clause for label_replace(), or None if untranslatable."""
+    """Return an ES|QL clause for label_replace(), or None if untranslatable."""
     # Case 1: full copy — replacement captures everything unchanged
     if replacement in ("$1", "$0") and regex in ("(.*)", ".*", "(.+)", ".+"):
         return f"| EVAL {dst} = {src}"
@@ -1207,12 +1215,16 @@ def _build_label_replace_eval(dst, replacement, src, regex):
     if not re.search(r"\$\d+", replacement):
         safe = replacement.replace('"', '\\"')
         return f'| EVAL {dst} = "{safe}"'
-    # Case 3: single capture group substitution
+    # Case 3: single capture group substitution via anchored GROK (ES|QL has no
+    # inline regex-extract function). Only safe literal-bounded patterns qualify.
     if replacement == "$1":
-        safe_regex = regex.replace('"', '\\"')
-        return f'| EVAL {dst} = REGEXP_EXTRACT({src}, "{safe_regex}")'
+        return _build_label_replace_grok(dst, src, regex)
     # Complex multi-group: cannot translate cleanly
     return None
+
+
+def _label_replace_needs_source_label(replacement: str) -> bool:
+    return "$" in str(replacement or "")
 
 
 @QUERY_TRANSLATORS.register("label_replace_family", priority=6)
@@ -1230,15 +1242,22 @@ def label_replace_family_rule(context):
     replacement = frag.extra.get("lr_replacement", "")
     src = frag.extra.get("lr_src", "")
     regex = frag.extra.get("lr_regex", "")
+    resolved_src = context.resolver.resolve_label(src) if (src and context.resolver) else src
 
     # Translate the inner metric expression via a sub-context
+    sub_metadata = dict(context.metadata)
+    if resolved_src and _label_replace_needs_source_label(str(replacement)):
+        preferred = list(sub_metadata.get("preferred_group_labels") or [])
+        if src not in preferred and resolved_src not in preferred:
+            preferred.append(src)
+        sub_metadata["preferred_group_labels"] = preferred
     sub = TranslationContext(
         promql_expr=inner_frag.raw_expr or context.promql_expr,
         data_view=context.data_view,
         index=context.index,
         rule_pack=context.rule_pack,
         resolver=context.resolver,
-        metadata=dict(context.metadata),
+        metadata=sub_metadata,
     )
     sub.fragment = inner_frag
     sub.metadata["fragment_family"] = inner_frag.family
@@ -1248,7 +1267,7 @@ def label_replace_family_rule(context):
     if not sub.esql_query or sub.feasibility == "not_feasible":
         return None  # fall through to not_feasible
 
-    eval_clause = _build_label_replace_eval(dst, replacement, src, regex)
+    eval_clause = _build_label_replace_eval(dst, replacement, resolved_src, regex)
     lines = sub.esql_query.splitlines()
     if eval_clause:
         sort_idx = next(
@@ -1256,9 +1275,13 @@ def label_replace_family_rule(context):
             len(lines),
         )
         lines.insert(sort_idx, eval_clause)
-        warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
-        if "REGEXP_EXTRACT" in eval_clause:
-            warning += "; rows where the regex does not match will produce null (PromQL preserves the original value)"
+        if eval_clause.lstrip().startswith("| GROK"):
+            warning = (
+                f"label_replace({dst!r}) approximated with an anchored ES|QL GROK; "
+                "rows where the regex does not match will produce null (PromQL preserves the original value)"
+            )
+        else:
+            warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
         _append_unique(context.warnings, warning)
     else:
         _append_unique(
@@ -1399,6 +1422,42 @@ def nested_agg_family_rule(context):
         context.output_metric_field = result_alias
         context.translation_complete = True
         return "translated nested count(count()) expression"
+
+    if frag.range_func in AGG_FUNCTION_MAP:
+        esql_inner_name = AGG_FUNCTION_MAP[frag.range_func]
+        is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+        if (
+            not is_counter
+            and frag.range_func in {"rate", "irate", "increase"}
+        ):
+            esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
+            _append_unique(context.warnings, warning.format(metric=frag.metric))
+        prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({physical_metric}, {frag.range_window}))"
+        first_stats_by = (
+            f"{rp.ts_bucket}, {', '.join(inner_group)}"
+            if inner_group
+            else rp.ts_bucket
+        )
+        context.output_group_fields = ["time_bucket"]
+        context.esql_query = "\n".join(
+            [
+                f"TS {context.index}",
+                f"| WHERE {rp.ts_time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS {first_stats_expr} BY {first_stats_by}",
+                f"| STATS {result_alias} = {esql_outer}({inner_alias}) BY time_bucket",
+                "| SORT time_bucket ASC",
+            ]
+        )
+        context.parser_backend = "fragment"
+        context.source_type = "TS"
+        context.metric_name = result_alias
+        context.output_metric_field = result_alias
+        context.translation_complete = True
+        return f"translated nested {frag.outer_agg} over {frag.range_func} expression"
 
     first_stats_expr = (
         f"{inner_alias} = {esql_inner_agg}({physical_metric})"
@@ -1612,6 +1671,11 @@ def simple_agg_family_rule(context):
         context.source_type = pre_source
         context.metric_name = alias
         context.output_metric_field = alias
+        if frag.outer_agg == "count":
+            _append_unique(
+                context.warnings,
+                "count() over a comparison is approximated as document COUNT(*); multi-sample series may be over-counted",
+            )
         frag.extra.pop("post_filter", None)
         context.translation_complete = True
         return "translated aggregation with pre-aggregation comparison filter"

@@ -1,0 +1,9 @@
+source: avg:system.cpu.user{env:prod AND(host:web01 OR host:web02)}
+status: ok
+backend: esql
+kibana_type: metric
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND deployment.environment == "prod" AND (host.name == "web01" OR host.name == "web02")
+| STATS _bucket_value = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS value = LAST(_bucket_value, time_bucket)

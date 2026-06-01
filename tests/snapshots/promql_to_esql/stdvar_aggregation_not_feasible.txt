@@ -1,0 +1,5 @@
+source: stdvar(node_cpu_seconds_total) by (instance)
+feasibility: not_feasible
+warning: stdvar() is population variance; ES|QL has no variance aggregation and STATS cannot square STD_DEV() inline, so it requires manual redesign
+---
+

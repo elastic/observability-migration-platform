@@ -1,0 +1,11 @@
+source: label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")
+feasibility: feasible
+warning: label_replace('short') approximated with an anchored ES|QL GROK; rows where the regex does not match will produce null (PromQL preserves the original value)
+warning: Added outer AVG() around rate because ES|QL requires an outer aggregation when grouping TS functions by label fields
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| GROK service.name "^prefix-%{GREEDYDATA:short}$"
+| SORT time_bucket ASC

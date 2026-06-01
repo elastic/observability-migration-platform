@@ -1,0 +1,9 @@
+source: query1 = avg:system.cpu.user{*}
+formula: forecast(query1, 'linear', 1)
+status: not_feasible
+backend: esql
+kibana_type: xy
+warning: formula function 'forecast' has no ES|QL equivalent — panel may need manual redesign
+warning: translation error: string literal 'linear' is not allowed in an expression position
+---
+

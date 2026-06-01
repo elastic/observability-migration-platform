@@ -1085,11 +1085,13 @@ class TestLabelReplaceTranslation(unittest.TestCase):
         return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
 
     def test_label_replace_copy_whole_label(self):
-        # passthrough regex "(.*)" with "$1" → EVAL host = instance
+        # passthrough regex "(.*)" with "$1" keeps the source label available
+        # through aggregation, then copies it to the new label.
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "host", "$1", "instance", "(.*)")'
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("BY time_bucket = TBUCKET(5 minute), instance", ctx.esql_query)
         self.assertIn("EVAL host = instance", ctx.esql_query)
 
     def test_label_replace_constant_value(self):
@@ -1101,13 +1103,42 @@ class TestLabelReplaceTranslation(unittest.TestCase):
         self.assertIn('EVAL env = "production"', ctx.esql_query)
 
     def test_label_replace_regex_extract(self):
-        # $1 with a real capture group → EVAL short = REGEXP_EXTRACT(job, "prefix-(.*)")
+        # $1 with a literal-prefix capture → anchored GROK (ES|QL has no
+        # REGEXP_EXTRACT function). GROK must be fully anchored to match PromQL's
+        # full-value regex semantics.
         ctx = self._translate(
             'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")'
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
-        self.assertIn("REGEXP_EXTRACT", ctx.esql_query)
-        self.assertIn("prefix-(.*)", ctx.esql_query)
+        self.assertIn("BY time_bucket = TBUCKET(5 minute), job", ctx.esql_query)
+        # REGEXP_EXTRACT is not a valid ES|QL function and must never be emitted.
+        self.assertNotIn("REGEXP_EXTRACT", ctx.esql_query)
+        self.assertIn("GROK job", ctx.esql_query)
+        self.assertIn("%{GREEDYDATA:short}", ctx.esql_query)
+        # Anchored so it matches PromQL's fully-anchored regex behavior.
+        self.assertIn('"^prefix-%{GREEDYDATA:short}$"', ctx.esql_query)
+
+    def test_label_replace_regex_extract_suffix(self):
+        # $1 capture before a literal suffix → anchored GROK.
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "(.*)-worker")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertNotIn("REGEXP_EXTRACT", ctx.esql_query)
+        self.assertIn('"^%{GREEDYDATA:short}-worker$"', ctx.esql_query)
+
+    def test_label_replace_regex_extract_complex_falls_back(self):
+        # A capture pattern with regex metacharacters in the literal portion is
+        # not safely GROK-expressible → degrade gracefully (no invalid function).
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "(.*)\\\\.(svc|local)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertNotIn("REGEXP_EXTRACT", ctx.esql_query)
+        self.assertTrue(
+            any("label_replace" in w.lower() for w in ctx.warnings),
+            f"Expected a label_replace warning, got: {ctx.warnings}",
+        )
 
     def test_label_replace_complex_falls_back_gracefully(self):
         # $1-$2 multi-group replacement → not supported, graceful fallback

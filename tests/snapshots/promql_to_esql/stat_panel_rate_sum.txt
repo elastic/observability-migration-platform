@@ -1,3 +1,4 @@
+source: sum(rate(http_requests_total[5m]))
 feasibility: feasible
 ---
 TS metrics-*

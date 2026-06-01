@@ -1,0 +1,9 @@
+source: rate(http_requests_total[5m]) or rate(http_errors_total[5m])
+feasibility: feasible
+warning: PromQL 'or' fallback: using left operand only; right-hand side metric ignored
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = RATE(http_requests_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

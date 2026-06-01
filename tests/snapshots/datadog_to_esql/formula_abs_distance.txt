@@ -1,0 +1,12 @@
+source: query1 = avg:system.cpu.idle{*}
+formula: abs(query1 - 100)
+status: ok
+backend: esql
+kibana_type: xy
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query1 = AVG(system_cpu_idle) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| EVAL abs_query1_100 = ABS((query1 - 100))
+| KEEP time_bucket, abs_query1_100
+| SORT time_bucket

@@ -1,0 +1,7 @@
+source: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

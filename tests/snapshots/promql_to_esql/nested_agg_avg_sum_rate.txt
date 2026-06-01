@@ -1,0 +1,10 @@
+source: avg(sum by (cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal"}[5m])))
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE NOT (mode RLIKE "idle|iowait|steal")
+| WHERE node_cpu_seconds_total IS NOT NULL
+| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), cpu
+| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket
+| SORT time_bucket ASC

@@ -1,0 +1,11 @@
+source: avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100
+feasibility: feasible
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE mode == "idle"
+| WHERE node_cpu_seconds_total IS NOT NULL
+| STATS node_cpu_seconds_total = AVG(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| EVAL node_cpu_seconds_total_calc = node_cpu_seconds_total * 100
+| KEEP time_bucket, service.instance.id, node_cpu_seconds_total_calc
+| SORT time_bucket ASC

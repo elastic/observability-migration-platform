@@ -1,0 +1,9 @@
+source: avg:system.cpu.user{*}
+status: ok
+backend: esql
+kibana_type: metric
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS _bucket_value = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS value = LAST(_bucket_value, time_bucket)

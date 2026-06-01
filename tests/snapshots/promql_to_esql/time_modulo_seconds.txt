@@ -1,0 +1,4 @@
+source: time() % 86400
+feasibility: feasible
+---
+ROW computed_value = (DATE_DIFF("seconds", TO_DATETIME(0), NOW()) % 86400)

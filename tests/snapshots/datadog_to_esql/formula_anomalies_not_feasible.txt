@@ -1,0 +1,9 @@
+source: query1 = avg:system.cpu.user{*}
+formula: anomalies(query1, 'basic', 2)
+status: not_feasible
+backend: esql
+kibana_type: xy
+warning: formula function 'anomalies' has no ES|QL equivalent — panel may need manual redesign
+warning: translation error: string literal 'basic' is not allowed in an expression position
+---
+

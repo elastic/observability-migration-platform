@@ -1,0 +1,9 @@
+source: min:system.disk.free{*} by {device}
+status: ok
+backend: esql
+kibana_type: xy
+---
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = MIN(system_disk_free) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), device
+| SORT time_bucket
