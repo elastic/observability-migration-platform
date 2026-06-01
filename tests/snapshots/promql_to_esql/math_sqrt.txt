@@ -1,10 +1,9 @@
 feasibility: feasible
-warning: Collapsed all series of `node_memory_usage` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: sqrt() translated via exact ES|QL equivalent
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE node_memory_usage IS NOT NULL
-| STATS node_memory_usage = AVG(node_memory_usage) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS node_memory_usage = node_memory_usage BY time_bucket = TBUCKET(5 minute)
 | EVAL node_memory_usage = SQRT(node_memory_usage)
 | SORT time_bucket ASC

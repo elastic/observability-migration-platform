@@ -102,6 +102,12 @@ class RulePackConfig:
     counter_suffixes: list = field(default_factory=lambda: list(DEFAULT_COUNTER_SUFFIXES))
     default_rate_window: str = "5m"
     default_gauge_agg: str = "AVG"
+    # Migration default: target clusters we provision ingest metrics as TSDS, so when
+    # we cannot prove a gauge field's TSDS status (offline / empty target / field not yet
+    # in the mapping) we assume it IS a TSDS and emit ``TS`` for its aggregations. ``FROM``
+    # over a multi-sample TSDS inflates non-idempotent aggregators (SUM/COUNT) by the
+    # per-bucket sample count. Set False to target a known non-TSDS index (forces FROM).
+    assume_tsds_gauges: bool = True
     ts_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
     from_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
     ts_bucket: str = "time_bucket = TBUCKET(5 minute)"

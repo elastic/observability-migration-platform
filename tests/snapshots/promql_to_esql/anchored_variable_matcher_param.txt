@@ -1,11 +1,10 @@
 feasibility: feasible
-warning: Collapsed all series of `kube_pod_status_phase` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE k8s.namespace.name RLIKE ?Namespace
 | WHERE phase == "Running"
 | WHERE kube_pod_status_phase IS NOT NULL
-| STATS kube_pod_status_phase = AVG(kube_pod_status_phase) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS kube_pod_status_phase = kube_pod_status_phase BY time_bucket = TBUCKET(5 minute)
 | WHERE kube_pod_status_phase > 0
 | SORT time_bucket ASC

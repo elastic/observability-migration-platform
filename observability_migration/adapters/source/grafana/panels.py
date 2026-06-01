@@ -2309,37 +2309,56 @@ def _build_multi_target_series_query(translations):
         return None
 
     base = translations[0]
-    plans = []
-    all_specs = []
-    warnings = []
-
     post_filters: dict[int, dict] = {}
     comp_ops = {"==": "==", "!=": "!=", ">": ">", "<": "<", ">=": ">=", "<=": "<="}
-    for idx, translation in enumerate(translations, start=1):
-        pf = None
-        if translation.fragment and translation.fragment.extra.get("post_filter"):
-            pf = translation.fragment.extra.pop("post_filter")
-            post_filters[idx] = pf
-        alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
-        plan = _build_formula_plan(
-            translation.fragment,
-            translation.resolver,
-            translation.rule_pack,
-            alias_hint=alias_hint,
-            summary_mode=_summary_mode_from_metadata(translation.metadata),
-            preferred_group_labels=translation.metadata.get("preferred_group_labels"),
-            allow_direct_ts_gauge=False,
-            preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
-        )
-        if pf is not None:
-            translation.fragment.extra["post_filter"] = pf
-        if not plan or not plan.specs:
-            return None
-        plans.append((translation, plan))
-        all_specs.extend(plan.specs)
-        for warning in plan.warnings:
-            if warning not in warnings:
-                warnings.append(warning)
+
+    def _build_plans(allow_tsds_gauge_promotion):
+        plans = []
+        all_specs = []
+        warnings = []
+        for idx, translation in enumerate(translations, start=1):
+            pf = None
+            if translation.fragment and translation.fragment.extra.get("post_filter"):
+                pf = translation.fragment.extra.pop("post_filter")
+                post_filters[idx] = pf
+            alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
+            plan = _build_formula_plan(
+                translation.fragment,
+                translation.resolver,
+                translation.rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=_summary_mode_from_metadata(translation.metadata),
+                preferred_group_labels=translation.metadata.get("preferred_group_labels"),
+                allow_direct_ts_gauge=False,
+                preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            )
+            if pf is not None:
+                translation.fragment.extra["post_filter"] = pf
+            if not plan or not plan.specs:
+                return None
+            plans.append((translation, plan))
+            all_specs.extend(plan.specs)
+            for warning in plan.warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+        return plans, all_specs, warnings
+
+    built = _build_plans(allow_tsds_gauge_promotion=True)
+    if built is None:
+        return None
+    plans, all_specs, warnings = built
+
+    # When targets resolve to mixed source commands (e.g. an uptime/`MAX` target stays
+    # FROM while an assumed-TSDS gauge target promotes to TS), the shared pipeline can't
+    # fuse them. Rebuild once with gauge->TS promotion disabled so every target shares the
+    # common FROM denominator. Mirrors the binary-expr reconciliation in
+    # ``_build_formula_plan``. Fused multiplicity-invariant aggregators (AVG/MAX/MIN) are
+    # correct on FROM; non-idempotent ones keep TS when not mixed.
+    if len({spec.source_type for spec in all_specs}) > 1:
+        rebuilt = _build_plans(allow_tsds_gauge_promotion=False)
+        if rebuilt is not None and len({spec.source_type for spec in rebuilt[1]}) == 1:
+            plans, all_specs, warnings = rebuilt
 
     shared = _build_shared_measure_pipeline(base.index, all_specs)
     if not shared:

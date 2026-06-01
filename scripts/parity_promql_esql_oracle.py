@@ -69,6 +69,22 @@ PROMETHEUS_ONLY_LABELS = frozenset(
     {"__name__", "instance", "job", "exported_instance", "exported_job", "cluster", "replica"}
 )
 
+# The translator rewrites well-known Prometheus labels to their OTel/ECS field names
+# (e.g. ``job`` -> ``service.name``). Canonicalize the translated side back to the
+# Prometheus names so series keys align with the native PROMQL output (and so the
+# PROMETHEUS_ONLY_LABELS scrub applies symmetrically to both sides).
+OTEL_TO_PROM_LABELS = {
+    "service.name": "job",
+    "service.instance.id": "instance",
+    "k8s.namespace.name": "namespace",
+    "k8s.pod.name": "pod",
+    "host.name": "instance",
+}
+
+
+def _canonical_label(name: str) -> str:
+    return OTEL_TO_PROM_LABELS.get(name, OTEL_TO_PROM_LABELS.get(name.lower(), name))
+
 # Default corpus pins the metric to a single series ({instance="prometheus-1:9090"})
 # on purpose. Elementwise functions (abs/sqrt/ln/clamp/...) are applied PER SERIES
 # by PromQL, but a bare gauge selector translates to "AVG(metric) BY time_bucket",
@@ -233,6 +249,7 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
         return {}
     numeric = {"double", "long", "integer", "float", "unsigned_long"}
     time_idx = None
+    timeseries_idx = None
     candidates: list[int] = []
     explicit_labels: list[tuple[int, str]] = []
     for i, name in enumerate(columns):
@@ -240,8 +257,13 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
         if "time_bucket" in lname or lname == "@timestamp":
             time_idx = i
             continue
+        if lname == "_timeseries":
+            # TS direct-gauge (STATS field = field BY TBUCKET) carries the series
+            # dimensions here as a JSON label set instead of broken-out columns.
+            timeseries_idx = i
+            continue
         if lname.startswith("labels.") or lname.startswith("prometheus.labels."):
-            label_name = lname.split(".")[-1]
+            label_name = _canonical_label(lname.split(".")[-1])
             if label_name not in PROMETHEUS_ONLY_LABELS:
                 explicit_labels.append((i, label_name))
             continue
@@ -263,7 +285,15 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
         metric_idx = candidates[0]
     if time_idx is None or metric_idx is None:
         return {}
-    label_idxs = list(explicit_labels) + [(i, columns[i]) for i in candidates if i != metric_idx]
+    # Bare label columns (e.g. ``service.name``) are canonicalized to Prometheus names
+    # and scrubbed symmetrically with the native side.
+    label_idxs = list(explicit_labels)
+    for i in candidates:
+        if i == metric_idx:
+            continue
+        canon = _canonical_label(columns[i])
+        if canon not in PROMETHEUS_ONLY_LABELS:
+            label_idxs.append((i, canon))
     bucket: dict[tuple[tuple[str, str], ...], list[tuple[float, float]]] = {}
     for row in rows:
         try:
@@ -274,8 +304,32 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
         if v is None:
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
+        if timeseries_idx is not None:
+            labels.update(_decode_timeseries_labels(row[timeseries_idx]))
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
     return _drop_constants([(dict(k), v) for k, v in bucket.items()])
+
+
+def _decode_timeseries_labels(raw) -> dict[str, str]:
+    """Extract comparable series labels from a TS ``_timeseries`` JSON cell.
+
+    Canonicalizes OTel field names back to Prometheus names and scrubs the
+    auto-attached PROMETHEUS_ONLY_LABELS so keys align with the native side.
+    """
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    labels = payload.get("labels", payload) if isinstance(payload, dict) else {}
+    out: dict[str, str] = {}
+    for name, value in (labels or {}).items():
+        canon = _canonical_label(str(name))
+        if canon in PROMETHEUS_ONLY_LABELS or value is None:
+            continue
+        out[canon] = str(value)
+    return out
 
 
 def _project_to_subset(

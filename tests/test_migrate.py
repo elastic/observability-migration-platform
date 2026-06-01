@@ -344,7 +344,10 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        self.assertEqual(result.status, "migrated_with_warnings")
+        # Bare gauge now assumes TSDS -> TS direct-gauge (STATS field = field), which
+        # preserves per-series rows. No FROM+AVG collapse, so no loss warning: status is
+        # a clean ``migrated`` (was ``migrated_with_warnings`` under the FROM fallback).
+        self.assertEqual(result.status, "migrated")
         self.assertIn("host == ?host", yaml_panel["esql"]["query"])
         self.assertNotIn("Dropped variable-driven label filters during migration", result.reasons)
 
@@ -1096,6 +1099,33 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         translated = self.translate("known_gauge + unknown_gauge")
 
+        # known_gauge is a proven TSDS gauge (TS); unknown_gauge now also assumes TSDS
+        # (migration default) -> both operands share TS, so the arithmetic stays on TS
+        # instead of being demoted to a common FROM. AVG is multiplicity-invariant so the
+        # result is correct either way; TS additionally avoids inflating any SUM/COUNT.
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("AVG(known_gauge)", translated.esql_query)
+        self.assertIn("AVG(unknown_gauge)", translated.esql_query)
+
+    def test_mixed_known_and_unknown_gauge_arithmetic_demotes_to_from_when_opt_out(self):
+        # With assume_tsds_gauges=False, unknown_gauge stays FROM while known_gauge is a
+        # proven TSDS gauge (TS); mixed sources are reconciled down to a common FROM.
+        self.rule_pack.assume_tsds_gauges = False
+        self.seed_field_caps(
+            {
+                "known_gauge": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        translated = self.translate("known_gauge + unknown_gauge")
+
         self.assertNotEqual(translated.feasibility, "not_feasible")
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("AVG(known_gauge)", translated.esql_query)
@@ -1273,13 +1303,30 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
 
-    def test_unknown_gauge_selector_keeps_existing_avg_fallback(self):
+    def test_unknown_gauge_selector_assumes_tsds_direct_ts(self):
+        # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge
+        # (STATS field = field), which preserves per-series rows. No FROM+AVG collapse,
+        # so no honest-loss warning (the series are retained, nothing is dropped).
+        translated = self.translate("node_systemd_units")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn(
+            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            translated.esql_query,
+        )
+        self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
+        self.assertFalse(any("Collapsed all series" in warning for warning in translated.warnings))
+
+    def test_unknown_gauge_selector_keeps_avg_fallback_when_opt_out(self):
+        # Escape hatch: with assume_tsds_gauges=False the bare gauge falls back to the
+        # FROM+AVG collapse and the honest loss warning fires.
+        self.rule_pack.assume_tsds_gauges = False
         translated = self.translate("node_systemd_units")
 
         self.assertEqual(translated.source_type, "FROM")
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("AVG(node_systemd_units)", translated.esql_query)
-        # Bare gauge with no series labels collapses to a single AVG line — say so honestly.
         self.assertTrue(any("Collapsed all series" in warning for warning in translated.warnings))
 
     def test_issue8_simple_sum_gauge_on_proven_tsds_uses_ts(self):
@@ -1425,23 +1472,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("node_filesystem_size_bytes > 1000", translated.esql_query)
         self.assertNotIn("FROM metrics-*", translated.esql_query)
 
-    def test_issue8_pre_agg_filter_unknown_gauge_keeps_from(self):
-        # Without field caps proving TSDS, pre_agg_filter still falls back to FROM.
+    def test_issue8_pre_agg_filter_unknown_gauge_assumes_tsds_ts(self):
+        # Migration default (assume_tsds_gauges=True): with no field caps we still
+        # assume the target is a TSDS we provisioned, so a gauge sum() pre-agg-filter
+        # uses TS. FROM+SUM would inflate by the per-bucket sample count.
         translated = self.translate("sum(unknown_metric > 0)")
 
-        self.assertEqual(translated.source_type, "FROM")
-        self.assertIn("FROM metrics-*", translated.esql_query)
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn("SUM(unknown_metric)", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
 
-    def test_issue8_unknown_gauge_aggregation_keeps_from_fallback(self):
-        # When field caps aren't available, we don't know if the index is TSDS,
-        # so we keep the FROM fallback. This preserves the existing safe-default
-        # behaviour for unproven cases and only flips to TS when we have evidence.
+    def test_issue8_unknown_gauge_aggregation_assumes_tsds_ts(self):
+        # Migration default: target clusters we set up ingest metrics as TSDS, so a
+        # gauge sum() with no field caps assumes TSDS and uses TS (not FROM, which
+        # over-counts multi-sample docs). Set assume_tsds_gauges=False to force FROM.
+        translated = self.translate("sum(unknown_gauge_metric)")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn("TS metrics-*", translated.esql_query)
+        self.assertIn("SUM(unknown_gauge_metric)", translated.esql_query)
+        self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    def test_issue8_unknown_gauge_aggregation_keeps_from_when_opt_out(self):
+        # Escape hatch: a deployment targeting a known non-TSDS index can disable the
+        # assumption, restoring the conservative FROM fallback for unproven gauges.
+        self.rule_pack.assume_tsds_gauges = False
         translated = self.translate("sum(unknown_gauge_metric)")
 
         self.assertEqual(translated.source_type, "FROM")
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("SUM(unknown_gauge_metric)", translated.esql_query)
+
+    def test_issue8_disproven_gauge_keeps_from_even_when_assuming_tsds(self):
+        # If the resolver positively DISPROVES TSDS-gauge (conflicting types), respect
+        # that and use FROM even with assume_tsds_gauges=True — the assumption only
+        # applies when we have no information, never overrides evidence.
+        self.seed_field_caps(
+            {
+                "conflicted_metric": {
+                    "double": {"type": "double", "searchable": True, "aggregatable": True},
+                    "long": {"type": "long", "searchable": True, "aggregatable": True},
+                }
+            }
+        )
+        translated = self.translate("sum(conflicted_metric)")
+
+        self.assertEqual(translated.source_type, "FROM")
+        self.assertIn("SUM(conflicted_metric)", translated.esql_query)
 
     def test_native_promql_panel_records_promql_contract(self):
         self.rule_pack.native_promql = True
@@ -1646,6 +1724,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             TargetQueryContract,
         )
 
+        # Force the FROM path so this exercises the FROM-panel branch of the
+        # blocked-evaluation-not-overridden logic specifically.
+        self.rule_pack.assume_tsds_gauges = False
         panel = {
             "id": 912,
             "type": "graph",
@@ -9438,11 +9519,15 @@ class NativePromqlTests(unittest.TestCase):
         _yaml_panel, result = self.translate_panel(panel)
         query = result.esql_query or ""
         self.assertNotIn("PROMQL index=", query)
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), device", query)
-        self.assertNotIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), interface", query)
-        self.assertEqual(result.query_ir["source_type"], "FROM")
+        # Both targets are gauges and now assume TSDS -> TS/TBUCKET. The test's intent is
+        # group-label resolution: ``device`` is broken out, ``interface`` is not.
+        self.assertIn("BY time_bucket = TBUCKET(5 minute), device", query)
+        self.assertNotIn(", interface", query)
+        self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
-        self.assertEqual(result.contract_evaluation["status"], "degraded_if_forced")
+        # TS is the time-series-faithful source the PromQL contract wants, so the gauge
+        # aggregation is now contract-exact rather than a forced FROM degradation.
+        self.assertEqual(result.contract_evaluation["status"], "exact_now")
         self.assertEqual(result.fulfillment_plan["status"], "not_required")
 
     # ── flag disabled: normal translation ──

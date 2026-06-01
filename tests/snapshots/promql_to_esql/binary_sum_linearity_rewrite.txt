@@ -1,10 +1,10 @@
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---
-FROM metrics-*
+TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE node_memory_MemFree_bytes IS NOT NULL OR node_memory_Cached_bytes IS NOT NULL
-| STATS node_memory_MemFree_bytes_sum = SUM(node_memory_MemFree_bytes), node_memory_Cached_bytes_sum = SUM(node_memory_Cached_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.instance.id
+| STATS node_memory_MemFree_bytes_sum = SUM(node_memory_MemFree_bytes), node_memory_Cached_bytes_sum = SUM(node_memory_Cached_bytes) BY time_bucket = TBUCKET(5 minute), service.instance.id
 | EVAL computed_value = (node_memory_MemFree_bytes_sum + node_memory_Cached_bytes_sum)
 | KEEP time_bucket, service.instance.id, computed_value
 | SORT time_bucket ASC

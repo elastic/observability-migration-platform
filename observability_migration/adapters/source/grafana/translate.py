@@ -44,11 +44,11 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
-    _field_is_proven_tsds_gauge,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
+    _gauge_can_use_ts,
     _gauge_fallback_for_counter_range_func,
     _grouping_parts,
     _inline_filters_into_stats_expr,
@@ -1618,11 +1618,12 @@ def simple_agg_family_rule(context):
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
         metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         filter_value = _format_scalar_value(pre_agg_filter["value"])
-        # Issue #8: when the filtered metric is a proven TSDS gauge, the pre-agg
-        # filter must run under TS so that the outer SUM/AVG/MAX aggregates one
-        # value per (series, bucket) instead of every per-sample doc.
-        is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
-        pre_source = "TS" if is_proven_tsds_gauge else "FROM"
+        # Issue #8: when the filtered metric is a TSDS gauge, the pre-agg filter must
+        # run under TS so that the outer SUM/AVG/MAX aggregates one value per (series,
+        # bucket) instead of every per-sample doc. TSDS is proven by the resolver or, when
+        # unknown, assumed per ``assume_tsds_gauges`` (the migration default).
+        gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rp)
+        pre_source = "TS" if gauge_uses_ts else "FROM"
         pre_time_filter = rp.ts_time_filter if pre_source == "TS" else rp.from_time_filter
         pre_bucket = rp.ts_bucket if pre_source == "TS" else rp.from_bucket
         lines = [
@@ -1693,8 +1694,8 @@ def simple_agg_family_rule(context):
         context.translation_complete = True
         return "translated count of counter metric"
 
-    is_proven_tsds_gauge = (not is_counter) and _field_is_proven_tsds_gauge(frag.metric, resolver)
-    source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
+    gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rp)
+    source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
 
@@ -1774,17 +1775,17 @@ def simple_metric_family_rule(context):
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-    can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag)
-    # Issue #8: when the field is a proven TSDS gauge but ``_can_use_direct_ts_gauge``
-    # rejects it (group_fields present, or caller disabled the path), TS is still
-    # the correct source — ``FROM`` against a TSDS sums every per-sample doc and
-    # inflates the value. Wrap with default AVG so the result collapses cleanly
-    # whether grouping is present or not.
+    can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag, rp)
+    # Issue #8: when the field is a TSDS gauge but ``_can_use_direct_ts_gauge`` rejects it
+    # (group_fields present, or caller disabled the path), TS is still the correct source —
+    # ``FROM`` against a TSDS sums every per-sample doc and inflates the value. Wrap with
+    # default AVG so the result collapses cleanly whether grouping is present or not. TSDS
+    # is proven by the resolver or, when unknown, assumed per ``assume_tsds_gauges``.
     can_use_ts_aggregated_gauge = (
         (not is_counter)
         and (not can_use_direct_ts_gauge)
         and (not (frag.extra.get("wrapped_scalar") if frag else False))
-        and _field_is_proven_tsds_gauge(frag.metric, resolver)
+        and _gauge_can_use_ts(frag.metric, resolver, rp)
     )
 
     if is_counter:

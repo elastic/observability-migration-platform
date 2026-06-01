@@ -193,7 +193,11 @@ class TestGrafanaPackaging(unittest.TestCase):
             )
 
     def test_dashboard_esql_omits_redundant_timestamp_range_where(self):
-        yaml_panel, pr = self._translate_panel("avg(node_load1)")
+        # Force the FROM path (assume_tsds_gauges=False) so this exercises FROM's
+        # BUCKET(@timestamp, ...) redundant-WHERE omission specifically.
+        rp = rules.RulePackConfig()
+        rp.assume_tsds_gauges = False
+        yaml_panel, pr = _translate_panel(_make_panel(1, "avg(node_load1)"), rule_pack=rp)
         esql = yaml_panel["esql"]["query"]
 
         self.assertIn("BUCKET(@timestamp, 50, ?_tstart, ?_tend)", esql)
@@ -203,6 +207,7 @@ class TestGrafanaPackaging(unittest.TestCase):
 
     def test_dashboard_esql_omits_rule_pack_timestamp_range_where(self):
         rp = rules.RulePackConfig()
+        rp.assume_tsds_gauges = False
         rp.from_time_filter = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
         yaml_panel, pr = _translate_panel(_make_panel(1, "avg(node_load1)"), rule_pack=rp)
         esql = yaml_panel["esql"]["query"]
@@ -758,12 +763,16 @@ class TestOutputIntegrity(unittest.TestCase):
         self.assertTrue(ctx.esql_query.startswith("TS "),
                         f"Counter rate should use TS, got: {ctx.esql_query[:50]}")
 
-    def test_gauge_uses_from_source(self):
-        """Gauge metric without rate should use FROM source."""
+    def test_gauge_assumes_tsds_uses_ts_source(self):
+        """Migration default: an unproven gauge assumes TSDS and uses TS (not FROM).
+
+        FROM+aggregation over a multi-sample TSDS inflates non-idempotent aggregators;
+        TS aggregates one value per series per bucket. See RulePackConfig.assume_tsds_gauges.
+        """
         ctx = _translate("avg(node_load1)")
         self.assertEqual(ctx.feasibility, "feasible")
-        self.assertTrue(ctx.esql_query.startswith("FROM "),
-                        f"Gauge should use FROM, got: {ctx.esql_query[:50]}")
+        self.assertTrue(ctx.esql_query.startswith("TS "),
+                        f"Gauge should assume TSDS and use TS, got: {ctx.esql_query[:50]}")
 
     def test_time_filter_present_in_esql(self):
         ctx = _translate("rate(http_requests_total[5m])")
@@ -1669,9 +1678,10 @@ class TestOverTimeFunctions(unittest.TestCase):
         ctx = _translate("rate(foo_total[5m])")
         self.assertTrue(ctx.esql_query.startswith("TS"))
 
-    def test_simple_gauge_still_uses_from(self):
+    def test_simple_gauge_assumes_tsds_uses_ts(self):
+        # Migration default: unproven gauge assumes TSDS -> TS (was FROM).
         ctx = _translate("avg(up)")
-        self.assertTrue(ctx.esql_query.startswith("FROM"))
+        self.assertTrue(ctx.esql_query.startswith("TS"))
 
 
 # =========================================================================
@@ -1790,9 +1800,13 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         self.assertIn("service.name", result.esql_query)
 
     def test_legacy_range_false_summary_keeps_latest_bucket(self):
+        # Force the FROM path so this exercises FROM's BUCKET(@timestamp, ...) summary
+        # collapse specifically (TS uses TBUCKET; covered elsewhere).
+        rp = rules.RulePackConfig()
+        rp.assume_tsds_gauges = False
         panel = _make_panel(1, "avg(node_load1)", panel_type="gauge")
         panel["targets"][0]["range"] = False
-        _yaml_panel, result = _translate_panel(panel)
+        _yaml_panel, result = _translate_panel(panel, rule_pack=rp)
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
         self.assertIn("| SORT time_bucket ASC", result.esql_query)
         # ``MAX(node_load1)`` replaces the previous
@@ -1982,21 +1996,34 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
     dashboard-inferred) they must be grouped and no loss warning emitted.
     """
 
-    def _translate(self, expr, hints=None):
+    def _translate(self, expr, hints=None, assume_tsds_gauges=True):
         rp = rules.RulePackConfig()
+        rp.assume_tsds_gauges = assume_tsds_gauges
         res = schema.SchemaResolver(rp)
         return translate.translate_promql_to_esql(
             expr, esql_index="metrics-*", panel_type="graph",
             rule_pack=rp, resolver=res, translation_hints=hints,
         )
 
-    def test_bare_gauge_no_labels_emits_honest_loss_warning(self):
-        ctx = self._translate("node_xyz_metric")
+    def test_bare_gauge_collapse_emits_honest_loss_warning_on_from_path(self):
+        # The honest collapse warning applies to the lossy FROM+AVG path (no series
+        # labels). With assume_tsds_gauges=False we deliberately take that path.
+        ctx = self._translate("node_xyz_metric", assume_tsds_gauges=False)
+        self.assertEqual(ctx.source_type, "FROM")
         self.assertTrue(any("Collapsed all series" in w for w in ctx.warnings))
         self.assertIsNotNone(ctx.query_ir)
         self.assertTrue(
             any("Collapsed all series" in s for s in ctx.query_ir.semantic_losses)
         )
+
+    def test_bare_gauge_default_uses_ts_and_preserves_series(self):
+        # Migration default: a bare gauge assumes TSDS and uses TS, which preserves
+        # per-series rows natively (STATS field = field BY TBUCKET). No collapse, so
+        # no loss warning.
+        ctx = self._translate("node_xyz_metric")
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("STATS node_xyz_metric = node_xyz_metric", ctx.esql_query)
+        self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
 
     def test_bare_gauge_with_labels_has_no_loss_warning(self):
         ctx = self._translate(

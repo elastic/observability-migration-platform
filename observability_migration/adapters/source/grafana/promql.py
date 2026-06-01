@@ -2010,11 +2010,58 @@ def _field_is_proven_tsds_gauge(metric_name, resolver):
     return capability.type_family == "numeric"
 
 
-def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag):
+def _field_disproven_tsds_gauge(metric_name, resolver):
+    """Return True iff the resolver positively proves the field is NOT a TSDS gauge.
+
+    "Disproven" means the resolver HAS a capability for the field (or its resolved
+    physical name) and that capability is incompatible with a clean TSDS gauge:
+    conflicting types across indices, a non-gauge time-series kind (e.g. counter), or
+    a non-numeric type family. Returns False when the resolver has *no* information for
+    the field (offline, or field not yet in the mapping) — that is the "unknown" state,
+    not a disproof. This lets ``assume_tsds_gauges`` apply only when we lack evidence and
+    never override evidence we do have.
+    """
+    if not metric_name or not resolver:
+        return False
+    capability = resolver.field_capability(metric_name)
+    if capability is None:
+        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+        if resolved and resolved != metric_name:
+            capability = resolver.field_capability(resolved)
+    if not capability:
+        return False
+    if capability.conflicting_types:
+        return True
+    if capability.time_series_metric_kind and capability.time_series_metric_kind != "gauge":
+        return True
+    return capability.type_family != "numeric"
+
+
+def _gauge_can_use_ts(metric_name, resolver, rule_pack):
+    """Decide whether a gauge aggregation may use ``TS`` instead of ``FROM``.
+
+    Three-state policy:
+      * resolver proves a clean TSDS gauge -> True (evidence)
+      * resolver disproves TSDS gauge      -> False (evidence)
+      * no information (offline / unknown)  -> ``rule_pack.assume_tsds_gauges``
+
+    ``TS`` is required for correct gauge aggregation on a TSDS: ``FROM`` sums every
+    per-sample document in a bucket, inflating SUM/COUNT by the sample multiplicity.
+    """
+    if _field_is_proven_tsds_gauge(metric_name, resolver):
+        return True
+    if not getattr(rule_pack, "assume_tsds_gauges", True):
+        return False
+    return not _field_disproven_tsds_gauge(metric_name, resolver)
+
+
+def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):
     if group_fields:
         return False
     if frag and frag.extra.get("wrapped_scalar"):
         return False
+    if rule_pack is not None:
+        return _gauge_can_use_ts(metric_name, resolver, rule_pack)
     return _field_is_proven_tsds_gauge(metric_name, resolver)
 
 
@@ -2072,20 +2119,21 @@ def _build_measure_spec(
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         can_use_direct_ts_gauge = allow_direct_ts_gauge and _can_use_direct_ts_gauge(
-            frag.metric, resolver, group_fields, frag
+            frag.metric, resolver, group_fields, frag, rule_pack
         )
-        # Issue #8: keep TS for proven TSDS gauges whenever the direct-gauge path
-        # isn't available — either because of group_fields or because the caller
-        # disabled it (multi-target fusion uses ``allow_direct_ts_gauge=False``
-        # since ``STATS field = field`` cannot be CASE-wrapped, but ``AVG(field)``
-        # can). ``FROM`` against a TSDS sums every per-sample doc and inflates the
-        # value, so use ``TS`` with the default aggregator instead.
+        # Issue #8: keep TS for TSDS gauges whenever the direct-gauge path isn't
+        # available — either because of group_fields or because the caller disabled it
+        # (multi-target fusion uses ``allow_direct_ts_gauge=False`` since ``STATS field =
+        # field`` cannot be CASE-wrapped, but ``AVG(field)`` can). ``FROM`` against a TSDS
+        # sums every per-sample doc and inflates the value, so use ``TS`` with the default
+        # aggregator instead. Gauge TSDS status is proven by the resolver or, when unknown,
+        # assumed per ``rule_pack.assume_tsds_gauges`` (the migration default).
         can_use_ts_aggregated_gauge = (
             allow_tsds_gauge_promotion
             and (not is_counter)
             and (not can_use_direct_ts_gauge)
             and (not (frag.extra.get("wrapped_scalar") if frag else False))
-            and _field_is_proven_tsds_gauge(frag.metric, resolver)
+            and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
         )
         if is_counter:
             source = "TS"
@@ -2125,14 +2173,15 @@ def _build_measure_spec(
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:
             return None
-        # Issue #8: gauge aggregations against a proven TSDS must use TS, not FROM —
-        # FROM sums every per-sample doc instead of one value per series per bucket.
-        is_proven_tsds_gauge = (
+        # Issue #8: gauge aggregations against a TSDS must use TS, not FROM — FROM sums
+        # every per-sample doc instead of one value per series per bucket. TSDS status is
+        # proven by the resolver or, when unknown, assumed per ``assume_tsds_gauges``.
+        gauge_uses_ts = (
             allow_tsds_gauge_promotion
             and (not is_counter)
-            and _field_is_proven_tsds_gauge(frag.metric, resolver)
+            and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
         )
-        source = "TS" if (is_counter or is_proven_tsds_gauge) else "FROM"
+        source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         if is_counter and frag.outer_agg != "count":
