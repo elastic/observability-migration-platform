@@ -213,6 +213,24 @@ class FormulaPlan:
     warnings: list = field(default_factory=list)
 
 
+_GRAFANA_RANGE_MACRO_REPLACEMENTS = (
+    ("__range_ms", "3600000"),
+    ("__range_s", "3600"),
+    ("__range", "1h"),
+)
+
+
+def substitute_grafana_range_macros(expr):
+    """Expand Grafana range macros before generic template-variable handling."""
+    result = expr
+    result = re.sub(r"\[\s*(?:\$\{__range_ms\}|\$__range_ms)\s*\]", "[3600000ms]", result)
+    result = re.sub(r"\[\s*(?:\$\{__range_s\}|\$__range_s)\s*\]", "[3600s]", result)
+    for name, replacement in _GRAFANA_RANGE_MACRO_REPLACEMENTS:
+        result = re.sub(rf"\$\{{{name}\}}", replacement, result)
+        result = re.sub(rf"\${name}\b", replacement, result)
+    return result
+
+
 def preprocess_grafana_macros(expr, rule_pack=None):
     """Replace Grafana-specific macros with valid PromQL placeholders."""
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
@@ -227,7 +245,7 @@ def preprocess_grafana_macros(expr, rule_pack=None):
         (r"\[\$interval\]", "[5m]"),
         (r"\$__auto_interval_\w+", "5m"),
     ]
-    result = expr
+    result = substitute_grafana_range_macros(expr)
     for pattern, replacement in replacements:
         result = re.sub(pattern, replacement, result)
     result = re.sub(r"\[\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*\]", f"[{default_window}]", result)
@@ -2543,4 +2561,5 @@ __all__ = [
     "_unique_safe_alias",
     "classify_promql_complexity",
     "preprocess_grafana_macros",
+    "substitute_grafana_range_macros",
 ]

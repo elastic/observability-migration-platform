@@ -88,6 +88,34 @@ def _keep(*field_lists) -> str:
     return ", ".join(seen)
 
 
+_GRAFANA_TEMPLATE_VAR_RE = re.compile(
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
+    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
+)
+_RANK_TEMPLATE_LIMIT_RE = re.compile(
+    r"\b(?P<func>topk|bottomk)\s*\(\s*"
+    r"(?P<token>\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}|\$[A-Za-z_][A-Za-z0-9_]*|\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\])"
+    r"\s*,",
+    re.IGNORECASE,
+)
+_GROUPING_TEMPLATE_RE = re.compile(r"\b(?:by|without)\s*\((?P<labels>[^)]*)\)", re.IGNORECASE)
+
+
+def _template_var_name(match) -> str:
+    return match.group("braced") or match.group("plain") or match.group("bracket") or "var"
+
+
+def _template_var_display(name: str) -> str:
+    return f"${name}"
+
+
+def _strip_promql_string_literals(expr: str) -> str:
+    text = str(expr or "")
+    text = re.sub(r'"(?:\\.|[^"])*"', '""', text)
+    return re.sub(r"'(?:\\.|[^'])*'", "''", text)
+
+
 @dataclass
 class TranslationContext:
     promql_expr: str
@@ -378,6 +406,37 @@ def _resolve_logs_message_field(rule_pack, resolver):
     return available[0]
 
 
+@QUERY_PREPROCESSORS.register("template_variable_guardrails", priority=5)
+def template_variable_guardrail_rule(context):
+    expr = _strip_promql_string_literals(context.promql_expr or "")
+    rank_match = _RANK_TEMPLATE_LIMIT_RE.search(expr)
+    if rank_match:
+        func = rank_match.group("func").lower()
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"{func}() with a Grafana template-variable limit cannot be translated automatically; "
+            "top-N time-series requires manual redesign",
+        )
+        return f"{func} template-variable limit requires manual redesign"
+
+    for grouping_match in _GROUPING_TEMPLATE_RE.finditer(expr):
+        var_match = _GRAFANA_TEMPLATE_VAR_RE.search(grouping_match.group("labels") or "")
+        if not var_match:
+            continue
+        var_name = _template_var_name(var_match)
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"BY/WITHOUT clause contains Grafana template variable ({_template_var_display(var_name)}); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+        )
+        return "grouping template variable requires manual redesign"
+    return None
+
+
 @QUERY_PREPROCESSORS.register("grafana_macros", priority=10)
 def grafana_macro_rule(context):
     clean_expr = preprocess_grafana_macros(context.promql_expr, context.rule_pack)
@@ -390,6 +449,8 @@ def grafana_macro_rule(context):
 @QUERY_PREPROCESSORS.register("parse_fragment", priority=20)
 def parse_fragment_rule(context):
     """Parse the cleaned expression into a PromQLFragment."""
+    if context.feasibility == "not_feasible":
+        return None
     context.fragment = _parse_fragment(context.clean_expr or context.promql_expr)
     parse_error = context.fragment.extra.get("parse_error")
     if parse_error:
@@ -2085,6 +2146,10 @@ def post_filter_rule(context):
 def metric_name_required_rule(context):
     if context.feasibility == "not_feasible" or context.metric_name:
         return None
+    if context.fragment and context.fragment.extra.get("parse_error"):
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        return "missing metric name after parse failure"
     context.feasibility = "not_feasible"
     context.confidence = 0.0
     _append_unique(context.warnings, "Could not extract metric name")

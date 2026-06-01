@@ -95,6 +95,133 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
 
+    def test_range_seconds_macro_is_preserved_as_duration_suffix(self):
+        clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[${__range_s}s]))", self.rule_pack)
+        self.assertEqual(clean, "sum(rate(http_requests_total[3600s]))")
+
+        query = panels.build_native_promql_query("sum(rate(http_requests_total[${__range_s}s]))", index="metrics-*")
+        self.assertIn("[3600s]", query)
+        self.assertNotIn("[1s]", query)
+
+    def test_unitless_range_seconds_macro_in_range_selector_gets_seconds_suffix(self):
+        clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[$__range_s]))", self.rule_pack)
+        self.assertEqual(clean, "sum(rate(http_requests_total[3600s]))")
+
+    def test_range_seconds_macro_translates_cleanly_on_esql_path(self):
+        result = self.translate("sum(rate(http_requests_total[${__range_s}s]))")
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertEqual(result.clean_expr, "sum(rate(http_requests_total[3600s]))")
+        self.assertIn("RATE(http_requests_total, 1h)", result.esql_query)
+        self.assertFalse(
+            any(warning.startswith("AST parse failed") for warning in result.warnings),
+            result.warnings,
+        )
+        self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_range_milliseconds_macro_is_preserved_as_duration_suffix(self):
+        clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[${__range_ms}ms]))", self.rule_pack)
+        self.assertEqual(clean, "sum(rate(http_requests_total[3600000ms]))")
+
+        query = panels.build_native_promql_query("sum(rate(http_requests_total[${__range_ms}ms]))", index="metrics-*")
+        self.assertIn("[3600000ms]", query)
+
+    def test_unitless_range_milliseconds_macro_in_range_selector_gets_milliseconds_suffix(self):
+        clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[$__range_ms]))", self.rule_pack)
+        self.assertEqual(clean, "sum(rate(http_requests_total[3600000ms]))")
+
+    def test_topk_template_limit_reports_specific_not_feasible_reason(self):
+        result = self.translate("topk($top_n, rate(process_cpu_seconds_total[$__rate_interval]))")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "topk() with a Grafana template-variable limit cannot be translated automatically; "
+            "top-N time-series requires manual redesign",
+            result.warnings,
+        )
+        self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_topk_builtin_template_limit_reports_specific_not_feasible_reason(self):
+        result = self.translate("topk($__range_s, rate(process_cpu_seconds_total[$__rate_interval]))")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "topk() with a Grafana template-variable limit cannot be translated automatically; "
+            "top-N time-series requires manual redesign",
+            result.warnings,
+        )
+
+    def test_bottomk_template_limit_reports_specific_not_feasible_reason(self):
+        result = self.translate("bottomk($top_n, rate(process_cpu_seconds_total[$__rate_interval]))")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "bottomk() with a Grafana template-variable limit cannot be translated automatically; "
+            "top-N time-series requires manual redesign",
+            result.warnings,
+        )
+        self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_grouping_template_variable_reports_specific_not_feasible_reason(self):
+        result = self.translate(
+            "max(otelcol_exporter_queue_size) by (exporter $grouping) "
+            "/ min(otelcol_exporter_queue_size) by (exporter $grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+        self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
+        expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
+        self.assertFalse(panels.can_use_native_promql(expr))
+        with self.assertRaises(ValueError):
+            panels.build_native_promql_query(expr, index="metrics-*")
+
+        panel = {
+            "title": "Dynamic grouping",
+            "type": "graph",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": expr,
+                }
+            ],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.reasons,
+        )
+        self.assertNotIn("Native PROMQL", " ".join(result.notes))
+
+    def test_grouping_guardrail_ignores_template_text_inside_string_literals(self):
+        result = self.translate('sum(rate(http_requests_total{job=~"foo by ($grouping)"}[5m]))')
+
+        self.assertNotIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_parse_failure_does_not_emit_generic_metric_name_warning(self):
+        result = self.translate("sum(rate([label___range_ss]))")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertTrue(
+            any(warning.startswith("AST parse failed") for warning in result.warnings),
+            result.warnings,
+        )
+        self.assertNotIn("Could not extract metric name", result.warnings)
+
     def test_resolve_label_prefers_source_field_when_target_has_both(self):
         """If the target has both `instance` AND `service.instance.id`, the
         resolver must keep `instance` (source-faithful) instead of rewriting."""
