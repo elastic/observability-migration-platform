@@ -85,6 +85,7 @@ from .promql import (
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
 from .schema import SchemaResolver
+from .series_labels import _metrics_in_expr, build_metric_series_labels
 from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
 PANEL_TYPE_MAP = {
@@ -298,7 +299,7 @@ def _target_summary_mode(panel_type, target):
     return str(target.get("format") or "").lower() == "table"
 
 
-def _target_translation_hints(panel, panel_type, target):
+def _target_translation_hints(panel, panel_type, target, metric_series_labels=None):
     summary_mode = _target_summary_mode(panel_type, target)
     hints = {
         "summary_mode": summary_mode,
@@ -330,7 +331,26 @@ def _target_translation_hints(panel, panel_type, target):
         hints["static_legend_label"] = legend_template.strip()
     if isinstance(legend_template, str) and len(legend_labels) >= 2:
         hints["legend_format_template"] = legend_template
+
+    # Offline backfill: when the panel named NO series labels of its own, recover them
+    # from the dashboard-wide per-metric label map (other panels' by()/filters, template
+    # variables). Tagged "dashboard_inferred" so the inference is auditable.
+    if not preferred_group_labels and metric_series_labels:
+        inferred = _inferred_labels_for_target(target, metric_series_labels)
+        if inferred:
+            hints["preferred_group_labels"] = inferred
+            hints["preferred_group_labels_origin"] = "dashboard_inferred"
     return hints
+
+
+def _inferred_labels_for_target(target, metric_series_labels):
+    """Look up a target's metric in the dashboard-wide series-label map."""
+    expr = str(target.get("expr", "") or "")
+    for metric in _metrics_in_expr(expr):
+        labels = metric_series_labels.get(metric)
+        if labels:
+            return list(labels)
+    return []
 
 
 def _humanize_identifier(raw):
@@ -1689,7 +1709,7 @@ def fallback_line_panel_rule(context):
 
 
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                    llm_endpoint="", llm_model="", llm_api_key=""):
+                    llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
     rule_pack = rule_pack or RulePackConfig()
     panel_type = panel.get("type", "unknown")
@@ -1901,7 +1921,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 panel_type=panel_type,
                 rule_pack=rule_pack,
                 resolver=target_resolver,
-                translation_hints=_target_translation_hints(panel, panel_type, target),
+                translation_hints=_target_translation_hints(panel, panel_type, target, metric_series_labels),
                 datasource_type=target_datasource.get("type", ""),
                 datasource_uid=target_datasource.get("uid", ""),
                 datasource_name=target_datasource.get("name", ""),
@@ -4331,6 +4351,7 @@ def _translate_panel_group(
     llm_endpoint="",
     llm_model="",
     llm_api_key="",
+    metric_series_labels=None,
 ):
     """Translate a group of Grafana panels, returning (yaml_panels, panel_results)."""
     yaml_panels: list[dict] = []
@@ -4351,6 +4372,7 @@ def _translate_panel_group(
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            metric_series_labels=metric_series_labels,
         )
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
@@ -4410,6 +4432,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     all_panels = _flatten_dashboard_panels(dashboard)
     result.total_panels = len(all_panels)
 
+    # Offline per-metric series-label map: lets bare gauge selectors that name no labels of
+    # their own recover per-series grouping from other panels / template variables.
+    metric_series_labels = build_metric_series_labels(dashboard)
+
     variables = dashboard.get("templating", {}).get("list", [])
     control_variable_names = _pre_scan_control_variables(variables)
 
@@ -4454,6 +4480,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             llm_endpoint=llm_endpoint,
             llm_model=llm_model,
             llm_api_key=llm_api_key,
+            metric_series_labels=metric_series_labels,
         )
         result.yaml_panel_results.extend(panel_results)
 
