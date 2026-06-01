@@ -6,7 +6,7 @@ TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE service.instance.id RLIKE ?instance
 | WHERE node_network_receive_bytes_total IS NOT NULL
-| STATS node_network_receive_bytes_total_instance_obs_migratio_rate = RATE(node_network_receive_bytes_total, 5m) BY time_bucket = TBUCKET(5 minute)
-| EVAL computed_value = node_network_receive_bytes_total_instance_obs_migratio_rate
+| STATS node_network_receive_bytes_total_instance_rate = RATE(node_network_receive_bytes_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = node_network_receive_bytes_total_instance_rate
 | KEEP time_bucket, computed_value
 | SORT time_bucket ASC

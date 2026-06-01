@@ -10071,6 +10071,35 @@ class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
         # Left operand has the static status filter — it should appear in its suffix
         self.assertIn("status", left_suffix, f"Left suffix should contain 'status': {left_suffix!r}")
 
+    def test_variable_matcher_alias_suffix_uses_label_not_internal_param(self):
+        from observability_migration.adapters.source.grafana.promql import (
+            _matcher_alias_suffix,
+            _parse_fragment,
+            preprocess_grafana_macros,
+        )
+
+        frag = _parse_fragment(
+            preprocess_grafana_macros(
+                'rate(nginx_ingress_controller_requests{controller_pod=~"$controller"}[5m])',
+                self.rule_pack,
+            )
+        )
+
+        self.assertEqual(_matcher_alias_suffix(frag), "controller_pod_rate")
+
+    def test_metric_kind_override_drives_non_suffix_counter_rate(self):
+        self.rule_pack.metric_kinds["nginx_ingress_controller_requests"] = "counter"
+        result = migrate.translate_promql_to_esql(
+            'sum(rate(nginx_ingress_controller_requests{controller_pod=~"$controller"}[5m])) by (controller)',
+            esql_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertNotIn("AVG_OVER_TIME(nginx_ingress_controller_requests, 5m)", result.esql_query)
+        self.assertIn("RATE(nginx_ingress_controller_requests, 5m)", result.esql_query)
+
 
 class TestScalarAggregationHoisting(unittest.TestCase):
     """agg(X op k) where k is a scalar literal must translate by hoisting

@@ -19,6 +19,11 @@ def _is_counter_fallback(metric_name, rule_pack):
     """Heuristic counter detection when no schema resolver is available."""
     if not metric_name:
         return False
+    kind = str(getattr(rule_pack, "metric_kinds", {}).get(metric_name, "")).strip().lower()
+    if kind == "counter":
+        return True
+    if kind == "gauge":
+        return False
     suffixes = getattr(rule_pack, "counter_suffixes", ["_total"])
     return any(metric_name.endswith(s) for s in suffixes)
 
@@ -1841,7 +1846,10 @@ def _matcher_alias_suffix(frag):
     parts = []
     for matcher in source:
         label = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["label"]).strip("_")
-        value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
+        if _is_variable_driven_matcher(matcher):
+            value = ""
+        else:
+            value = re.sub(r"[^a-zA-Z0-9_]", "_", matcher["value"]).strip("_")[:12]
         if label or value:
             parts.append("_".join(part for part in (label, value) if part))
     if frag.range_func:
