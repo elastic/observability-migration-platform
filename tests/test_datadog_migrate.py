@@ -4809,5 +4809,49 @@ class TestDatadogSummaryView(unittest.TestCase):
         self.assertEqual(nf.source_query, "avg:trace.http.request{*}")
 
 
+class TestDatadogWritesMarkdownSummary(unittest.TestCase):
+    def test_offline_migration_writes_markdown_summary(self):
+        sample = (
+            Path(__file__).parent.parent
+            / "infra"
+            / "datadog"
+            / "dashboards"
+            / "sample_dashboard.json"
+        )
+
+        def _fake_annotate(results, validation_records=None, **kwargs):
+            return {"summary": {"green": 0, "yellow": 0, "red": 0}, "packets": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "in"
+            input_dir.mkdir()
+            shutil.copy(sample, input_dir / "sample_dashboard.json")
+            output_dir = Path(tmpdir) / "out"
+
+            with patch.object(
+                datadog_cli,
+                "annotate_results_with_verification",
+                side_effect=_fake_annotate,
+            ), patch(
+                "observability_migration.adapters.source.datadog.execution.requests.get",
+                side_effect=AssertionError("offline migration must not call the Datadog API"),
+            ):
+                datadog_cli.main(
+                    [
+                        "--source", "files",
+                        "--input-dir", str(input_dir),
+                        "--output-dir", str(output_dir),
+                        "--assets", "dashboards",
+                        "--env-file", "/dev/null",
+                    ]
+                )
+
+            summary_path = output_dir / "dashboards" / "migration_summary.md"
+            self.assertTrue(summary_path.exists())
+            text = summary_path.read_text(encoding="utf-8")
+            self.assertIn("# Migration Summary — Datadog → Kibana", text)
+            self.assertIn("Widgets", text)
+
+
 if __name__ == "__main__":
     unittest.main()
