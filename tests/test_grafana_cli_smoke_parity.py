@@ -1,6 +1,8 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -416,6 +418,52 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 )
 
         self.assertEqual(compiled_yaml_names, ["current-dashboard.yaml"])
+
+    def test_dashboards_only_empty_input_exits_with_clean_message(self):
+        """An empty --input-dir should exit(1) with a helpful message instead of
+        silently reporting "0/0 dashboards compiled successfully"."""
+        rule_pack = SimpleNamespace(
+            logs_index="",
+            native_promql=False,
+            metrics_dataset_filter="",
+            logs_dataset_filter="",
+        )
+        resolver = mock.Mock()
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_input = Path(tmpdir) / "empty_input"
+            empty_input.mkdir()
+            stderr = io.StringIO()
+            with mock.patch.object(
+                grafana_cli,
+                "_load_configured_rule_pack",
+                return_value=rule_pack,
+            ), mock.patch.object(
+                grafana_cli,
+                "SchemaResolver",
+                return_value=resolver,
+            ), contextlib.redirect_stderr(stderr), self.assertRaises(
+                SystemExit
+            ) as ctx:
+                grafana_cli.main(
+                    [
+                        "--assets",
+                        "dashboards",
+                        "--source",
+                        "files",
+                        "--input-dir",
+                        str(empty_input),
+                        "--output-dir",
+                        tmpdir,
+                    ]
+                )
+
+        self.assertEqual(ctx.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("no Grafana dashboards found", message)
+        self.assertIn(str(empty_input), message)
 
     def test_alerts_only_api_forwards_grafana_token_for_legacy_dashboard_reads(self):
         alert_pipeline = ModuleType(

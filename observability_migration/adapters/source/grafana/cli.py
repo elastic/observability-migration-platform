@@ -1441,6 +1441,20 @@ def main(argv: list[str] | None = None):
         )
     else:
         dashboards = extract_dashboards_from_files(args.input_dir)
+    if not dashboards:
+        if args.source == "api":
+            print(
+                f"  ERROR: no dashboards found in Grafana at {GRAFANA_URL}.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  ERROR: no Grafana dashboards found under {args.input_dir}. "
+                "Point --input-dir at a directory of Grafana dashboard JSON "
+                "files (each with a top-level 'panels' or 'rows' key).",
+                file=sys.stderr,
+            )
+        sys.exit(1)
     print(f"  Found {len(dashboards)} dashboards")
 
     print("\n[2/7] Translating dashboards to YAML...")

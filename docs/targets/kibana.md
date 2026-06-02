@@ -25,7 +25,7 @@ For the concrete implementation follow-up in this repo, see
 | Display enrichment | `observability_migration/targets/kibana/emit/display.py` | Common panel display helpers |
 | ES\|QL shape helpers | `observability_migration/targets/kibana/emit/esql_utils.py` | Field extraction and query-shape helpers |
 | Registered target adapter | `observability_migration/targets/kibana/adapter.py` | Shared `TargetAdapter` for compile/upload/smoke/cluster orchestration |
-| Compile / upload / layout validation | `observability_migration/targets/kibana/compile.py` | Wraps `uvx kb-dashboard-cli` and validation scripts |
+| Compile / upload / layout validation | `observability_migration/targets/kibana/compile.py` | Resolves `kb-dashboard-cli` installed-first (uvx fallback); lint/layout run in-process |
 | Serverless API helpers | `observability_migration/targets/kibana/serverless.py` | Serverless-safe dashboard listing, data view CRUD, deletion workaround |
 | Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit |
 | Unified compile / upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate compile`, `obs-migrate upload`, `obs-migrate cluster` |
@@ -46,8 +46,8 @@ functions:
 - `sync_result_queries_to_yaml()` keeps emitted YAML aligned with post-validation query rewrites.
 
 Compilation and upload shell out to `kb-dashboard-cli`, resolved
-**installed-first**: if the console script is on `PATH` (the
-`pip install "obs-migrate[kibana]"` extra, which requires Python 3.12+) it is
+**installed-first**: if the console script is on `PATH` (the `[kibana]` extra,
+installed via `pip install ".[kibana]"`, which requires Python 3.12+) it is
 used directly; otherwise the runtime falls back to a pinned
 `uvx --from kb-dashboard-cli==<version> kb-dashboard-cli`. Lint and layout
 validation now run **in-process** inside the package and no longer shell out to

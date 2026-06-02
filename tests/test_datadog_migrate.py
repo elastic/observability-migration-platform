@@ -15,6 +15,8 @@ Covers:
 """
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -2960,6 +2962,19 @@ class TestDatadogExtractionContracts(unittest.TestCase):
                 api_key="api-key",
                 app_key="app-key",
             )
+
+    def test_extract_empty_input_dir_exits_with_clean_message(self):
+        """An empty/no-JSON input dir should exit(1) with a helpful message, not a traceback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = argparse.Namespace(source="files", input_dir=tmpdir)
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(stderr):
+                datadog_cli._extract(args)
+        self.assertEqual(ctx.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("no Datadog dashboards found", message)
+        self.assertIn(tmpdir, message)
+        self.assertNotIn("Traceback", message)
 
 
 class TestDatadogAssetStatusIntegration(unittest.TestCase):

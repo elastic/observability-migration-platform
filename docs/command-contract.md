@@ -53,7 +53,7 @@ For contributor workflows, install the dev extra and enable local git hooks:
 Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
 `obs-migrate compile` and `obs-migrate upload`) resolve the tool
 **installed-first**: install the Kibana tools in-venv with
-`pip install "obs-migrate[kibana]"` (requires Python 3.12+), otherwise the
+`.venv/bin/pip install ".[kibana]"` (requires Python 3.12+), otherwise the
 runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
 `obs-migrate doctor` to see which path is active.
 
@@ -177,6 +177,12 @@ KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=a
 `obs-migrate migrate` compiles dashboard YAML to NDJSON during dashboard runs for
 both Grafana and Datadog. Alerts-only runs do not emit dashboard YAML or
 compiled output.
+
+When a dashboard run discovers no input dashboards (for example
+`--input-dir` points at an empty directory, or none of its files match the
+expected source shape), `obs-migrate migrate` exits non-zero with a message
+naming the directory and the expected JSON shape, rather than reporting
+`0/0 dashboards compiled successfully`.
 
 ### Field Profile Contract
 

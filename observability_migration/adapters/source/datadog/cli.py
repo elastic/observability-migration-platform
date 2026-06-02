@@ -187,7 +187,12 @@ def _run_dashboard_pipeline(
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
     if not raw_dashboards:
-        print("  ERROR: no dashboards found")
+        print(
+            f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
+            "Point --input-dir at a directory of Datadog dashboard JSON "
+            "exports (each with a top-level 'widgets' key).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"  Found {len(raw_dashboards)} dashboard(s)\n")
@@ -398,7 +403,16 @@ def _translate_widget(
 def _extract(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Extract dashboards based on source type."""
     if args.source == "files":
-        return extract_dashboards_from_files(args.input_dir)
+        try:
+            return extract_dashboards_from_files(args.input_dir)
+        except FileNotFoundError:
+            print(
+                f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
+                "Point --input-dir at a directory of Datadog dashboard JSON "
+                "exports (each with a top-level 'widgets' key).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if args.source == "api":
         creds = load_credentials_from_env(args.env_file)
