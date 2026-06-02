@@ -16,6 +16,7 @@ Improvements over original:
   - Static structural validation (chart-type vs query shape, declared fields vs parsed fields)
 """
 import glob
+import importlib.util as _ilu
 import json
 import os
 import re
@@ -26,6 +27,17 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import yaml
+
+# Reconstruct Lens panels into ES|QL so they validate like native ES|QL panels.
+# This script is run directly (not imported as a package), so load the sibling
+# module by path rather than via a package-relative import.
+_lr_spec = _ilu.spec_from_file_location(
+    "lens_reconstruct",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "lens_reconstruct.py"),
+)
+assert _lr_spec is not None and _lr_spec.loader is not None
+lens_reconstruct = _ilu.module_from_spec(_lr_spec)
+_lr_spec.loader.exec_module(lens_reconstruct)
 
 ES_ENDPOINT = os.environ["ELASTICSEARCH_ENDPOINT"].rstrip("/")
 API_KEY = os.environ["KEY"]
@@ -569,6 +581,57 @@ def _expected_columns(esql: dict) -> list[str]:
     return cols
 
 
+def _lens_metric_fields(lens: dict) -> list[str]:
+    """Return the metric (not breakdown) field names referenced by a Lens dict.
+
+    Counter typing only matters for the aggregated metric; breakdown fields are
+    grouping keys, never aggregated.
+    """
+    fields: list[str] = []
+    metrics = lens.get("metrics")
+    if isinstance(metrics, list):
+        for m in metrics:
+            if isinstance(m, dict) and m.get("field"):
+                fields.append(m["field"])
+    primary = lens.get("primary")
+    if isinstance(primary, dict) and primary.get("field"):
+        fields.append(primary["field"])
+    return fields
+
+
+def _counter_fields(fields: set[str]) -> set[str]:
+    """Return the subset of ``fields`` the cluster types as counters.
+
+    A counter (``time_series_metric: counter``) cannot be aggregated on the
+    FROM command with a bare SUM/AVG; the reconstruction needs to know which
+    fields require the TS form. One batched ``_field_caps`` POST (body, not URL,
+    to avoid URL-length limits) covers every Lens metric field at once.
+    """
+    if not fields:
+        return set()
+    body = json.dumps({"fields": sorted(fields)}).encode()
+    req = Request(
+        f"{ES_ENDPOINT}/metrics-*/_field_caps?include_unmapped=false",
+        data=body, headers=HEADERS, method="POST",
+    )
+    counters: set[str] = set()
+    try:
+        with urlopen(req, timeout=60, context=CTX) as resp:
+            data = json.loads(resp.read())
+        for field, types in data.get("fields", {}).items():
+            for type_name, meta in types.items():
+                if type_name == "unmapped":
+                    continue
+                if meta.get("time_series_metric") == "counter":
+                    counters.add(field)
+                    break
+    except Exception:
+        # On probe failure, degrade to gauge assumption (FROM form). Worst case
+        # the counter panels report the same failure they would have anyway.
+        return set()
+    return counters
+
+
 def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -> None:
     for p in panels:
         if "section" in p:
@@ -589,7 +652,16 @@ def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -
                 "_esql_raw": esql,
             })
         elif "lens" in p:
-            entries.append({**base, "kind": "lens", "query": None, "expected_cols": []})
+            # Defer ES|QL reconstruction until after a batch counter-field probe
+            # (collect_panels) so counter-typed metrics get the TS form.
+            entries.append({
+                **base,
+                "kind": "lens",
+                "query": None,
+                "expected_cols": [],
+                "is_lens": True,
+                "_lens_raw": p["lens"],
+            })
         # markdown → no entry (nothing to validate)
 
 
@@ -604,7 +676,39 @@ def collect_panels() -> list[dict]:
         for dash in doc.get("dashboards", []):
             title = dash.get("name") or dash.get("title") or yf.split("/")[-1]
             _walk_panels(dash.get("panels", []), all_panels, slug, title)
+
+    _reconstruct_lens_panels(all_panels)
     return all_panels
+
+
+def _reconstruct_lens_panels(entries: list[dict]) -> None:
+    """Reconstruct deferred Lens entries into ES|QL, counter-aware.
+
+    Runs after the walk so a single batched ``_field_caps`` probe classifies
+    every Lens metric field's counter-ness before reconstruction. Mutates each
+    Lens entry in place: success fills ``query``/``expected_cols``/``chart_type``;
+    failure records ``unsupported_reason``.
+    """
+    lens_entries = [e for e in entries if e.get("is_lens") and "_lens_raw" in e]
+    if not lens_entries:
+        return
+
+    metric_fields: set[str] = set()
+    for e in lens_entries:
+        metric_fields.update(_lens_metric_fields(e["_lens_raw"]))
+    counters = _counter_fields(metric_fields)
+
+    for e in lens_entries:
+        lens = e.pop("_lens_raw")
+        query, cols, reason = lens_reconstruct.lens_to_esql(lens, counter_fields=counters)
+        if query:
+            e["query"] = query
+            e["expected_cols"] = cols
+            e["chart_type"] = lens.get("type", "")
+        else:
+            e["query"] = None
+            e["expected_cols"] = []
+            e["unsupported_reason"] = reason
 
 
 # ---------------------------------------------------------------------------
@@ -654,12 +758,20 @@ def _missing_columns(result: dict, expected: list[str]) -> list[str]:
 def main() -> int:
     panels = collect_panels()
 
-    esql_panels = [p for p in panels if p["kind"] == "esql" and p.get("query")]
-    lens_panels  = [p for p in panels if p["kind"] == "lens"]
+    # Reconstructed Lens panels carry a query and validate exactly like ES|QL
+    # panels; unsupported Lens panels (no query) are reported with their reason.
+    esql_panels = [p for p in panels
+                   if (p["kind"] == "esql" or p.get("is_lens")) and p.get("query")]
+    lens_unsupported = [p for p in panels if p.get("is_lens") and not p.get("query")]
 
-    # Static structural validation (no ES call needed)
+    # Static structural validation (no ES call needed). Reconstructed Lens
+    # panels are skipped: the reconstruction parses migrator-authored ES|QL
+    # idioms it never emits and guarantees declared==projected by construction,
+    # so the static check would be redundant and false-positive-prone.
     static_issues_all: list[dict] = []
     for p in esql_panels:
+        if p.get("is_lens"):
+            continue
         issues = static_structural_issues(p)
         if issues:
             static_issues_all.append({**p, "static_issues": issues})
@@ -669,8 +781,10 @@ def main() -> int:
     total_panels = len(esql_panels)
     reused = total_panels - len(unique_queries)
 
+    lens_validated = [p for p in esql_panels if p.get("is_lens")]
     print(f"Panels:        {len(panels)} total  "
-          f"({total_panels} esql, {len(lens_panels)} lens [skipped])")
+          f"({total_panels} validated incl. {len(lens_validated)} lens, "
+          f"{len(lens_unsupported)} lens unsupported)")
     print(f"Unique queries: {len(unique_queries)}  ({reused} reused across panels)")
     print(f"Workers:       {WORKERS_SMALL} small (FROM/ROW)  {WORKERS_LARGE} large (TS/PROMQL)")
     print(f"Static issues: {len(static_issues_all)} panels with structural problems")
@@ -716,8 +830,9 @@ def main() -> int:
         result = query_results.get(p["query"], {"ok": False, "error": "missing result"})
         label  = f"[{p['slug']}] {p['dashboard']} / {p['panel']}"
 
-        # Static structural issues (reported regardless of ES outcome)
-        s_issues = static_structural_issues(p)
+        # Static structural issues (reported regardless of ES outcome).
+        # Reconstructed Lens panels skip this check (see note above).
+        s_issues = [] if p.get("is_lens") else static_structural_issues(p)
         if s_issues:
             for issue in s_issues:
                 print(f"  ⚑ {label}")
@@ -750,11 +865,12 @@ def main() -> int:
             passed += 1
             print(f"  ✓ {label}")
 
-    # --- Lens summary -------------------------------------------------------
-    if lens_panels:
-        print(f"\n  [LENS SKIP] {len(lens_panels)} panels not yet translatable:")
-        for lp in lens_panels:
+    # --- Lens unsupported summary ------------------------------------------
+    if lens_unsupported:
+        print(f"\n  [LENS UNSUPPORTED] {len(lens_unsupported)} panels could not be reconstructed:")
+        for lp in lens_unsupported:
             print(f"    [{lp['slug']}] {lp['dashboard']} / {lp['panel']}")
+            print(f"      {lp.get('unsupported_reason', 'unknown')}")
 
     # --- Summary ------------------------------------------------------------
     print()
@@ -763,7 +879,7 @@ def main() -> int:
     print(f"FAILED:  {len(failed)}")
     print(f"WARN:    {len(warnings)}  (schema / zero-row)")
     print(f"STATIC:  {len(static_warn)}  (structural issues detected before ES call)")
-    print(f"SKIPPED: {len(lens_panels)} lens panels")
+    print(f"LENS:    {len(lens_validated)} validated, {len(lens_unsupported)} unsupported")
     print("=" * 70)
 
     if failed:
@@ -793,7 +909,8 @@ def main() -> int:
             "failed": failed,
             "warnings": warnings,
             "static_warnings": static_warn,
-            "lens_skipped": lens_panels,
+            "lens_skipped": lens_unsupported,
+            "lens_validated": len(lens_validated),
         }, f, indent=2)
     print(f"\nFull results: {out_path}")
     return len(failed)
