@@ -9,6 +9,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from observability_migration.core.reporting.summary_md import (
+    AttentionItem,
+    DashboardRow,
+    GapSummary,
+    SummaryTotals,
+    SummaryView,
+)
+
 from .models import DashboardResult
 
 
@@ -453,3 +461,108 @@ def save_detailed_report(
         encoding="utf-8",
     )
     print(f"  Detailed report saved: {output_path}")
+
+
+def build_summary_view(results, *, review_queue=None, run_id: str = "") -> SummaryView:
+    """Build a normalized SummaryView from a Datadog DashboardResult list."""
+    import time as _time
+
+    review_queue = review_queue or []
+
+    def _renderable(dr):
+        return [pr for pr in dr.panel_results if pr.kibana_type != "group"]
+
+    def _gate(pr, name):
+        return (pr.verification_packet or {}).get("semantic_gate") == name
+
+    for dr in results:
+        dr.recompute_counts()
+
+    elements_total = sum(len(_renderable(dr)) for dr in results)
+    groups_total = sum(1 for dr in results for pr in dr.panel_results if pr.kibana_type == "group")
+    totals = SummaryTotals(
+        dashboards=len(results),
+        elements_total=elements_total,
+        migrated=sum(dr.migrated for dr in results),
+        warnings=sum(dr.migrated_with_warnings for dr in results),
+        manual=sum(dr.requires_manual for dr in results),
+        not_feasible=sum(dr.not_feasible for dr in results),
+        skipped=max(sum(dr.skipped for dr in results) - groups_total, 0),
+        green=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Green")),
+        yellow=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Yellow")),
+        red=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Red")),
+        compiled_ok=sum(1 for dr in results if dr.compiled),
+        compiled_total=len(results),
+        uploaded_ok=sum(1 for dr in results if dr.uploaded),
+        upload_attempted=sum(1 for dr in results if dr.upload_attempted),
+    )
+
+    risk_by_title = {item.get("dashboard"): item.get("risk_score") for item in review_queue}
+
+    dashboards: list[DashboardRow] = []
+    attention: list[AttentionItem] = []
+    warning_items: list[AttentionItem] = []
+    for dr in results:
+        renderable = _renderable(dr)
+        dashboards.append(
+            DashboardRow(
+                title=dr.dashboard_title,
+                elements=len(renderable),
+                migrated=dr.migrated,
+                warnings=dr.migrated_with_warnings,
+                manual=dr.requires_manual,
+                not_feasible=dr.not_feasible,
+                compiled=dr.compiled,
+                compile_error=dr.compile_error,
+                risk_score=risk_by_title.get(dr.dashboard_title),
+                rollout_state="",
+            )
+        )
+        seen: set = set()
+        for pr in renderable:
+            query = "; ".join(pr.source_queries) if pr.source_queries else ""
+            if pr.status in ("not_feasible", "requires_manual", "blocked"):
+                attention.append(
+                    AttentionItem(
+                        dashboard=dr.dashboard_title,
+                        panel=pr.title,
+                        status=pr.status,
+                        reasons=list(pr.reasons),
+                        source_query=query,
+                    )
+                )
+                seen.add(pr.title)
+            elif pr.status == "warning" or (pr.status == "ok" and pr.warnings):
+                warning_items.append(
+                    AttentionItem(
+                        dashboard=dr.dashboard_title,
+                        panel=pr.title,
+                        status="warning",
+                        reasons=list(pr.reasons) or list(pr.warnings),
+                    )
+                )
+        for pr in renderable:
+            if _gate(pr, "Red") and pr.title not in seen:
+                query = "; ".join(pr.source_queries) if pr.source_queries else ""
+                attention.append(
+                    AttentionItem(
+                        dashboard=dr.dashboard_title,
+                        panel=pr.title,
+                        status="red",
+                        reasons=list(pr.reasons),
+                        source_query=query,
+                    )
+                )
+                seen.add(pr.title)
+
+    return SummaryView(
+        source="datadog",
+        element_noun="widget",
+        run_id=run_id,
+        timestamp=_time.time(),
+        totals=totals,
+        dashboards=dashboards,
+        attention=attention,
+        warnings=warning_items,
+        gaps=GapSummary(),
+    )

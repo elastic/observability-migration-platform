@@ -9,8 +9,6 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUN_MIGRATION_SCRIPT = ROOT / "scripts" / "run_migration.sh"
-VALIDATE_DASHBOARD_YAML_SCRIPT = ROOT / "scripts" / "validate_dashboard_yaml.sh"
-VALIDATE_DASHBOARD_LAYOUT_SCRIPT = ROOT / "scripts" / "validate_dashboard_layout.py"
 VALIDATE_PANEL_QUERIES_SCRIPT = ROOT / "scripts" / "validate_panel_queries.py"
 SETUP_TELEMETRY_DATA_SCRIPT = ROOT / "scripts" / "setup_telemetry_data.py"
 GENERATE_ALERT_SUPPORT_REPORT_SCRIPT = ROOT / "scripts" / "generate_alert_support_report.py"
@@ -22,7 +20,6 @@ SCRIPTS = [
     "generate_alert_support_report.py",
     "generate_telemetry_contract.py",
     "setup_telemetry_data.py",
-    "validate_dashboard_layout.py",
     "validate_panel_queries.py",
     "verify_alert_rule_uploads.py",
 ]
@@ -34,7 +31,6 @@ SHELL_SCRIPTS = [
     "run_migration.sh",
     "start_local_lab.sh",
     "stop_local_lab.sh",
-    "validate_dashboard_yaml.sh",
 ]
 
 
@@ -50,18 +46,6 @@ class ScriptHelpCliTests(unittest.TestCase):
         self.assertNotIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/yaml"', script_text)
 
     def test_helper_scripts_default_to_dashboard_scoped_layouts(self):
-        yaml_help = subprocess.run(
-            ["bash", str(VALIDATE_DASHBOARD_YAML_SCRIPT), "--help"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        layout_help = subprocess.run(
-            [sys.executable, str(VALIDATE_DASHBOARD_LAYOUT_SCRIPT), "--help"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
         panel_help = subprocess.run(
             [sys.executable, str(VALIDATE_PANEL_QUERIES_SCRIPT), "--help"],
             cwd=ROOT,
@@ -69,8 +53,6 @@ class ScriptHelpCliTests(unittest.TestCase):
             text=True,
         )
 
-        self.assertIn("migration_output/dashboards/yaml", yaml_help.stdout)
-        self.assertIn("migration_output/dashboards/compiled", layout_help.stdout)
         self.assertIn("migration_output_native/dashboards/yaml", panel_help.stdout)
 
     def test_alert_support_scripts_use_canonical_alert_assets_and_paths(self):

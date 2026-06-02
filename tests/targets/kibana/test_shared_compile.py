@@ -3,9 +3,6 @@
 
 """Tests for shared Kibana target compile path."""
 
-import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,146 +46,6 @@ class TestSharedCompileBehavior(unittest.TestCase):
             self.assertTrue((compiled_dir / "a").is_dir())
             self.assertTrue((compiled_dir / "b").is_dir())
 
-    def test_lint_dashboard_yaml_uses_repo_script(self):
-        with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
-            shared_compile.lint_dashboard_yaml("/tmp/generated-yaml")
-
-        cmd = run_command.call_args.args[0]
-        self.assertEqual(cmd[0], "bash")
-        self.assertTrue(cmd[1].endswith("scripts/validate_dashboard_yaml.sh"))
-        self.assertEqual(cmd[2], "/tmp/generated-yaml")
-
-    def test_validate_dashboard_yaml_reports_non_json_linter_output_without_traceback(self):
-        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "yaml"
-            yaml_dir.mkdir()
-            (yaml_dir / "bad.yaml").write_text("dashboards: []\n", encoding="utf-8")
-            bin_dir = Path(tmpdir) / "bin"
-            bin_dir.mkdir()
-            fake_uvx = bin_dir / "uvx"
-            fake_uvx.write_text(
-                "#!/usr/bin/env bash\n"
-                "echo 'not json from package manager'\n"
-                "echo 'Error loading dashboards: invalid gauge thresholds' >&2\n"
-                "exit 1\n",
-                encoding="utf-8",
-            )
-            fake_uvx.chmod(0o755)
-            env = os.environ.copy()
-            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-            env["PYTHON"] = sys.executable
-
-            proc = subprocess.run(
-                ["bash", str(script), str(yaml_dir)],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-            )
-
-        combined_output = proc.stdout + proc.stderr
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("Error loading dashboards: invalid gauge thresholds", combined_output)
-        self.assertIn("Linter did not produce JSON for bad.yaml", combined_output)
-        self.assertNotIn("Traceback", combined_output)
-        self.assertNotIn("JSONDecodeError", combined_output)
-
-    def test_validate_dashboard_yaml_ignores_esql_warnings_for_native_promql_panels(self):
-        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "yaml"
-            yaml_dir.mkdir()
-            (yaml_dir / "promql.yaml").write_text(
-                "dashboards:\n"
-                "- name: Authentik\n"
-                "  panels:\n"
-                "  - title: LDAP Requests\n"
-                "    esql:\n"
-                "      query: PROMQL index=metrics-* step=1m value=(group by (type) (authentik_outpost_ldap_requests_sum))\n",
-                encoding="utf-8",
-            )
-            bin_dir = Path(tmpdir) / "bin"
-            bin_dir.mkdir()
-            fake_uvx = bin_dir / "uvx"
-            fake_uvx.write_text(
-                "#!/usr/bin/env bash\n"
-                "cat <<'JSON'\n"
-                "[{\"severity\":\"warning\",\"rule_id\":\"esql-group-by-syntax\","
-                "\"dashboard_name\":\"Authentik\",\"panel_title\":\"LDAP Requests\","
-                "\"message\":\"GROUP BY is not valid ES|QL\"}]\n"
-                "JSON\n",
-                encoding="utf-8",
-            )
-            fake_uvx.chmod(0o755)
-            env = os.environ.copy()
-            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-            env["PYTHON"] = sys.executable
-
-            proc = subprocess.run(
-                ["bash", str(script), str(yaml_dir)],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-            )
-
-        combined_output = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 0, combined_output)
-        self.assertIn("Dashboard YAML validation passed.", combined_output)
-
-    def test_validate_dashboard_yaml_keeps_esql_warnings_for_esql_panels(self):
-        script = Path(__file__).resolve().parents[3] / "scripts" / "validate_dashboard_yaml.sh"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "yaml"
-            yaml_dir.mkdir()
-            (yaml_dir / "esql.yaml").write_text(
-                "dashboards:\n"
-                "- name: Authentik\n"
-                "  panels:\n"
-                "  - title: LDAP Requests\n"
-                "    esql:\n"
-                "      query: FROM metrics-* | STATS value = SUM(requests) GROUP BY type\n",
-                encoding="utf-8",
-            )
-            bin_dir = Path(tmpdir) / "bin"
-            bin_dir.mkdir()
-            fake_uvx = bin_dir / "uvx"
-            fake_uvx.write_text(
-                "#!/usr/bin/env bash\n"
-                "cat <<'JSON'\n"
-                "[{\"severity\":\"warning\",\"rule_id\":\"esql-group-by-syntax\","
-                "\"dashboard_name\":\"Authentik\",\"panel_title\":\"LDAP Requests\","
-                "\"message\":\"GROUP BY is not valid ES|QL\"}]\n"
-                "JSON\n",
-                encoding="utf-8",
-            )
-            fake_uvx.chmod(0o755)
-            env = os.environ.copy()
-            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-            env["PYTHON"] = sys.executable
-
-            proc = subprocess.run(
-                ["bash", str(script), str(yaml_dir)],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-            )
-
-        combined_output = proc.stdout + proc.stderr
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("esql-group-by-syntax", combined_output)
-
-    def test_validate_compiled_layout_uses_repo_script(self):
-        with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
-            shared_compile.validate_compiled_layout("/tmp/compiled")
-
-        cmd = run_command.call_args.args[0]
-        self.assertEqual(cmd[0], sys.executable)
-        self.assertTrue(cmd[1].endswith("scripts/validate_dashboard_layout.py"))
-        self.assertEqual(cmd[2], "/tmp/compiled")
-
     def test_upload_yaml_uses_space_aware_url_and_api_key(self):
         with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
             shared_compile.upload_yaml(
@@ -208,6 +65,45 @@ class TestSharedCompileBehavior(unittest.TestCase):
 
     def test_detect_space_id_from_url_without_space_returns_empty(self):
         self.assertEqual(shared_compile.detect_space_id_from_kibana_url("http://localhost:5601"), "")
+
+
+class TestCompileUsesResolverAndModules(unittest.TestCase):
+    def test_no_repo_root_helper(self):
+        self.assertFalse(hasattr(shared_compile, "_repo_root"))
+
+    def test_compile_yaml_uses_kbtool_resolver(self):
+        with (
+            mock.patch(
+                "observability_migration.targets.kibana.compile.tool_argv",
+                return_value=["kb-dashboard-cli"],
+            ) as argv,
+            mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run,
+        ):
+            shared_compile.compile_yaml("d.yaml", "out")
+        argv.assert_called_once_with("kb-dashboard-cli")
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[0], "kb-dashboard-cli")
+        self.assertIn("compile", cmd)
+
+    def test_lint_delegates_to_lint_module(self):
+        with mock.patch(
+            "observability_migration.targets.kibana.compile.lint_module.lint_dashboard_yaml",
+            return_value=(True, "passed"),
+        ) as lint_fn:
+            ok, output = shared_compile.lint_dashboard_yaml("yamldir")
+        lint_fn.assert_called_once()
+        self.assertTrue(ok)
+        self.assertEqual(output, "passed")
+
+    def test_layout_delegates_to_layout_module(self):
+        with mock.patch(
+            "observability_migration.targets.kibana.compile.layout_module.validate_compiled_layout",
+            return_value=(True, "layout ok"),
+        ) as layout_fn:
+            ok, output = shared_compile.validate_compiled_layout("compiled")
+        layout_fn.assert_called_once()
+        self.assertTrue(ok)
+        self.assertEqual(output, "layout ok")
 
 
 if __name__ == "__main__":

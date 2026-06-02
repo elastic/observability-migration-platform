@@ -19,18 +19,37 @@ top.
 
 ## Quick Start
 
-Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`
-(provides `uvx`, used by compile and lint commands).
+Requires Python 3.11+. On **Python 3.12+** the `[kibana]` extra bundles the
+Kibana compile/lint tooling directly in your environment, so nothing else
+is needed:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[all]"
-.venv/bin/obs-migrate --help
+.venv/bin/pip install ".[all]"        # grafana + datadog + kibana tooling
+.venv/bin/obs-migrate doctor          # confirm the environment is ready
 ```
 
-Use `.[grafana]` or `.[datadog]` for a single-source install, or
-`pip install -e .` for core only. `python -m observability_migration` is
-equivalent to the `obs-migrate` entry point.
+`obs-migrate doctor` reports whether the Kibana tooling resolves from the
+installed extra or a `uvx` fallback:
+
+```text
+obs-migrate doctor
+  pinned kb-dashboard tool version: 0.4.1
+  uv on PATH: yes
+  kb-dashboard-cli: available (installed)
+  kb-dashboard-lint: available (installed)
+```
+
+On **Python 3.11** the Kibana tools are not installed by the extra (they
+require 3.12+); compile and lint instead shell out to a pinned `uvx`
+invocation, so install [`uv`](https://docs.astral.sh/uv/) on `PATH`. The
+same fallback applies on 3.12+ if you skip the `[kibana]` extra. `doctor`
+will print `(uvx fallback)` in that case.
+
+Use `.[grafana]`, `.[datadog]`, or `.[kibana]` for a narrower install, or
+`pip install .` for core only. Add `-e` for an editable/dev checkout.
+`python -m observability_migration` is equivalent to the `obs-migrate`
+entry point.
 
 For full command walkthroughs, env-file setup, and end-to-end flows, see
 [`docs/command-contract.md`](docs/command-contract.md).

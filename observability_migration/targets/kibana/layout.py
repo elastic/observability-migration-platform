@@ -1,14 +1,15 @@
-#!/usr/bin/env python3
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Validate compiled dashboard layout bounds and overlap invariants."""
+"""In-process compiled-dashboard layout validation.
+
+Validates compiled dashboard layout bounds and overlap invariants without
+shelling out to a script, so the logic ships inside the installed wheel.
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from pathlib import Path
 
 GRID_WIDTH = 48
@@ -155,30 +156,22 @@ def _validate_panels(title: str, panels: list[dict]) -> list[str]:
     return errors
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate compiled dashboard layout from JSON or NDJSON output.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "input_path",
-        nargs="?",
-        default="migration_output/dashboards/compiled",
-        help="Compiled dashboard file or directory to inspect.",
-    )
-    args = parser.parse_args()
+def validate_compiled_layout(compiled_dir) -> tuple[bool, str]:
+    """Validate the layout of compiled dashboards under ``compiled_dir``.
 
-    input_path = Path(args.input_path)
+    Returns ``(ok, output)`` mirroring the previous script-backed helper.
+    """
+    input_path = Path(compiled_dir)
+    lines: list[str] = []
+
     if not input_path.exists():
-        print(f"ERROR: Input path not found: {input_path}", file=sys.stderr)
-        return 1
+        return False, f"ERROR: Input path not found: {input_path}"
 
     files = _iter_input_files(input_path)
     if not files:
-        print(f"ERROR: No JSON or NDJSON files found in {input_path}", file=sys.stderr)
-        return 1
+        return False, f"ERROR: No JSON or NDJSON files found in {input_path}"
 
-    print("Validating dashboard layout...")
+    lines.append("Validating dashboard layout...")
 
     dashboards_checked = 0
     failed = 0
@@ -186,40 +179,35 @@ def main() -> int:
         dashboards, load_errors = _load_dashboard_panels(file_path)
         if load_errors:
             failed += 1
-            print(f"--- {file_path} ---")
+            lines.append(f"--- {file_path} ---")
             for err in load_errors:
-                print(f"  FAIL: {err}")
+                lines.append(f"  FAIL: {err}")
             continue
         if not dashboards:
             continue
         for title, panels in dashboards:
             dashboards_checked += 1
             file_errors = _validate_panels(title, panels)
-            print(f"--- {file_path} :: {title} ---")
+            lines.append(f"--- {file_path} :: {title} ---")
             if not file_errors:
-                print("  PASS")
+                lines.append("  PASS")
                 continue
             failed += 1
             for err in file_errors:
-                print(f"  FAIL: {err}")
+                lines.append(f"  FAIL: {err}")
 
     if dashboards_checked == 0:
-        print(
-            f"ERROR: No dashboard saved objects with attributes.panelsJSON were found in {input_path}",
-            file=sys.stderr,
+        lines.append(
+            f"ERROR: No dashboard saved objects with attributes.panelsJSON were found in {input_path}"
         )
-        return 1
+        return False, "\n".join(lines)
 
     if failed:
-        print(
-            f"\nERROR: Layout validation failed for {failed} dashboard artifact(s).",
-            file=sys.stderr,
-        )
-        return 1
+        lines.append(f"\nERROR: Layout validation failed for {failed} dashboard artifact(s).")
+        return False, "\n".join(lines)
 
-    print(f"\nLayout validation passed for {dashboards_checked} dashboard artifact(s).")
-    return 0
+    lines.append(f"\nLayout validation passed for {dashboards_checked} dashboard artifact(s).")
+    return True, "\n".join(lines)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+__all__ = ["GRID_WIDTH", "validate_compiled_layout"]

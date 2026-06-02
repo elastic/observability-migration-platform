@@ -8,21 +8,19 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
 from observability_migration.core.assets.visual import refresh_visual_ir
+from observability_migration.targets.kibana import layout as layout_module
+from observability_migration.targets.kibana import lint as lint_module
+from observability_migration.targets.kibana._kbtool import tool_argv
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_columns
 
 COMMAND_TIMEOUT_SECONDS = 90
 VALIDATION_TIMEOUT_SECONDS = 120
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def _run_command(cmd, timeout):
@@ -34,9 +32,7 @@ def _run_command(cmd, timeout):
 
 
 def compile_yaml(yaml_path, output_dir):
-    cmd = [
-        "uvx",
-        "kb-dashboard-cli",
+    cmd = tool_argv("kb-dashboard-cli") + [
         "compile",
         "--input-file",
         str(yaml_path),
@@ -58,13 +54,11 @@ def compile_all(yaml_dir, compiled_dir):
 
 
 def lint_dashboard_yaml(yaml_dir):
-    script = _repo_root() / "scripts" / "validate_dashboard_yaml.sh"
-    return _run_command(["bash", str(script), str(yaml_dir)], timeout=VALIDATION_TIMEOUT_SECONDS)
+    return lint_module.lint_dashboard_yaml(yaml_dir)
 
 
 def validate_compiled_layout(compiled_dir):
-    script = _repo_root() / "scripts" / "validate_dashboard_layout.py"
-    return _run_command([sys.executable, str(script), str(compiled_dir)], timeout=VALIDATION_TIMEOUT_SECONDS)
+    return layout_module.validate_compiled_layout(compiled_dir)
 
 
 def detect_space_id_from_kibana_url(kibana_url):
@@ -96,9 +90,7 @@ def kibana_url_for_space(kibana_url, space_id=""):
 
 def upload_yaml(yaml_path, output_dir, kibana_url, space_id="", kibana_api_key=""):
     upload_url = kibana_url_for_space(kibana_url, space_id)
-    cmd = [
-        "uvx",
-        "kb-dashboard-cli",
+    cmd = tool_argv("kb-dashboard-cli") + [
         "compile",
         "--input-file",
         str(yaml_path),

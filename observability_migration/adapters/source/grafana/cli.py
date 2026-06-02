@@ -25,12 +25,14 @@ from observability_migration.core.cli_contract import (
 )
 from observability_migration.core.reporting.report import (
     MigrationResult,
+    build_summary_view,
     mark_panel_requires_manual_after_failed_validation,
     mark_panel_requires_manual_after_validation,
     print_report,
     recompute_result_counts,
     save_detailed_report,
 )
+from observability_migration.core.reporting.summary_md import save_markdown_summary
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
 from observability_migration.targets.kibana.compile import (
     compile_all,
@@ -1441,6 +1443,20 @@ def main(argv: list[str] | None = None):
         )
     else:
         dashboards = extract_dashboards_from_files(args.input_dir)
+    if not dashboards:
+        if args.source == "api":
+            print(
+                f"  ERROR: no dashboards found in Grafana at {GRAFANA_URL}.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  ERROR: no Grafana dashboards found under {args.input_dir}. "
+                "Point --input-dir at a directory of Grafana dashboard JSON "
+                "files (each with a top-level 'panels' or 'rows' key).",
+                file=sys.stderr,
+            )
+        sys.exit(1)
     print(f"  Found {len(dashboards)} dashboards")
 
     print("\n[2/7] Translating dashboards to YAML...")
@@ -1907,6 +1923,25 @@ def main(argv: list[str] | None = None):
         with extras_path.open("w") as fh:
             _json.dump(manifest_extras, fh, indent=2)
         print(f"  Feature gap report: {extras_path}")
+
+    try:
+        rollout_run_id = (
+            rollout_plan.get("run_id", "")
+            if isinstance(rollout_plan, dict)
+            else getattr(rollout_plan, "run_id", "")
+        )
+        summary_view = build_summary_view(
+            results,
+            compile_results,
+            review_queue=review_queue,
+            gap_data=manifest_extras,
+            run_id=rollout_run_id,
+        )
+        summary_md_path = base_dir / "migration_summary.md"
+        save_markdown_summary(summary_view, summary_md_path)
+        print(f"  Migration summary: {summary_md_path}")
+    except Exception as exc:  # best-effort: never fail a migration on the summary
+        print(f"  Migration summary: skipped ({exc})")
 
     print_report(results, compile_results)
 

@@ -7,8 +7,19 @@ Thanks for contributing to `obs-migrate`.
 - Read `README.md` for the public project overview.
 - Use `docs/README.md` for the full documentation map.
 - Use `docs/command-contract.md` for canonical commands.
+- See `AGENTS.md` for automation/repo-working rules (including the `make`
+  build/test/lint targets and the commit workflow).
 
 ## Setup
+
+The `make` targets sync a locked `uv` dev environment that matches CI; this is
+the preferred path (`uv` must be on `PATH`):
+
+```bash
+make sync   # uv sync --locked --all-extras
+```
+
+Or set up a plain virtualenv directly:
 
 ```bash
 python3 -m venv .venv
@@ -64,6 +75,15 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
   pointer to the refresh command.
 - Every successful workflow run uploads the CycloneDX SBOM as a
   downloadable artifact named `sbom-cyclonedx`.
+
+## Releasing
+
+1. One-time: register `obs-migrate` on PyPI and add a Trusted Publisher for
+   this repo + `.github/workflows/release.yml` (environment `pypi`).
+2. Bump `version` in `pyproject.toml`; commit via PR.
+3. Tag the merge commit `vX.Y.Z` and push the tag. The release workflow builds,
+   publishes to PyPI via OIDC, and attaches the wheel/sdist + SBOM to a GitHub
+   Release.
 
 ## Docs And Structure Rules
 

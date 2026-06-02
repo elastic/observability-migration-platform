@@ -14,6 +14,14 @@ from typing import Any
 from observability_migration.adapters.source.grafana.rules import _append_unique
 from observability_migration.core.assets.operational import OperationalIR
 from observability_migration.core.assets.visual import VisualIR
+from observability_migration.core.reporting.summary_md import (
+    AttentionItem,
+    DashboardRow,
+    GapSummary,
+    GapTask,
+    SummaryTotals,
+    SummaryView,
+)
 
 
 def _ir_to_dict(obj: Any) -> dict:
@@ -483,12 +491,162 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
         json.dump(report, f, indent=2)
 
 
+def _gap_tasks_from_grafana(gap_data: dict) -> list[GapTask]:
+    """Map the Grafana feature-gap report dict to a normalized GapTask list."""
+    tasks: list[GapTask] = []
+    if not isinstance(gap_data, dict):
+        return tasks
+    for t in (gap_data.get("transformation_redesign", {}) or {}).get("tasks", []) or []:
+        tasks.append(
+            GapTask(
+                category="transformation",
+                dashboard=t.get("dashboard", ""),
+                item=t.get("panel", ""),
+                detail=t.get("transform_id", "") or t.get("task_type", ""),
+                kibana_alternative=t.get("kibana_alternative", ""),
+                complexity=t.get("complexity", ""),
+            )
+        )
+    for a in (gap_data.get("annotations", {}) or {}).get("items", []) or []:
+        if a.get("kibana_action") in ("unsupported", "manual"):
+            tasks.append(
+                GapTask(
+                    category="annotation",
+                    dashboard="",
+                    item=a.get("name", ""),
+                    detail=a.get("description", ""),
+                    kibana_alternative="",
+                )
+            )
+    return tasks
+
+
+def build_summary_view(
+    results,
+    compile_results,
+    *,
+    review_queue=None,
+    gap_data=None,
+    run_id: str = "",
+) -> SummaryView:
+    """Build a normalized SummaryView from a Grafana/shared MigrationResult list."""
+    import time as _time
+
+    review_queue = review_queue or []
+    gap_data = gap_data or {}
+
+    def _renderable(r):
+        return [pr for pr in r.panel_results if pr.grafana_type != "row"]
+
+    def _gate(pr, name):
+        return (pr.verification_packet or {}).get("semantic_gate") == name
+
+    elements_total = sum(len(_renderable(r)) for r in results)
+    rows_total = sum(1 for r in results for pr in r.panel_results if pr.grafana_type == "row")
+    skipped = sum(r.skipped for r in results) - rows_total
+
+    totals = SummaryTotals(
+        dashboards=len(results),
+        elements_total=elements_total,
+        migrated=sum(r.migrated for r in results),
+        warnings=sum(r.migrated_with_warnings for r in results),
+        manual=sum(r.requires_manual for r in results),
+        not_feasible=sum(r.not_feasible for r in results),
+        skipped=max(skipped, 0),
+        green=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Green")),
+        yellow=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Yellow")),
+        red=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Red")),
+        compiled_ok=sum(1 for _, ok, _ in compile_results if ok),
+        compiled_total=len(compile_results),
+        uploaded_ok=sum(1 for r in results if r.uploaded),
+        upload_attempted=sum(1 for r in results if r.upload_attempted),
+    )
+
+    risk_by_title = {item.get("dashboard"): item.get("risk_score") for item in review_queue}
+
+    dashboards: list[DashboardRow] = []
+    attention: list[AttentionItem] = []
+    warning_items: list[AttentionItem] = []
+    for r in results:
+        renderable = _renderable(r)
+        dashboards.append(
+            DashboardRow(
+                title=r.dashboard_title,
+                elements=len(renderable),
+                migrated=r.migrated,
+                warnings=r.migrated_with_warnings,
+                manual=r.requires_manual,
+                not_feasible=r.not_feasible,
+                compiled=r.compiled,
+                compile_error=r.compile_error,
+                risk_score=risk_by_title.get(r.dashboard_title),
+                rollout_state="",
+            )
+        )
+        seen_attention: set = set()
+        for pr in renderable:
+            if pr.status in ("not_feasible", "requires_manual", "blocked"):
+                attention.append(
+                    AttentionItem(
+                        dashboard=r.dashboard_title,
+                        panel=pr.title,
+                        status=pr.status,
+                        reasons=list(pr.reasons),
+                        source_query=pr.promql_expr,
+                    )
+                )
+                seen_attention.add(pr.title)
+            elif pr.status == "migrated_with_warnings":
+                warning_items.append(
+                    AttentionItem(
+                        dashboard=r.dashboard_title,
+                        panel=pr.title,
+                        status="warning",
+                        reasons=list(pr.reasons),
+                    )
+                )
+        # Red panels not already flagged above are added to the worklist (deduped).
+        for pr in renderable:
+            if _gate(pr, "Red") and pr.title not in seen_attention:
+                attention.append(
+                    AttentionItem(
+                        dashboard=r.dashboard_title,
+                        panel=pr.title,
+                        status="red",
+                        reasons=list(pr.reasons),
+                        source_query=pr.promql_expr,
+                    )
+                )
+                seen_attention.add(pr.title)
+
+    gaps = GapSummary(
+        links=(gap_data.get("links", {}) or {}).get("summary", {}),
+        annotations=(gap_data.get("annotations", {}) or {}).get("summary", {}),
+        transformations=(gap_data.get("transformation_redesign", {}) or {}).get("summary", {}),
+        alerts=(gap_data.get("alert_migration", {}) or {}).get("summary", {}),
+        tasks=_gap_tasks_from_grafana(gap_data),
+    )
+
+    return SummaryView(
+        source="grafana",
+        element_noun="panel",
+        run_id=run_id,
+        timestamp=_time.time(),
+        totals=totals,
+        dashboards=dashboards,
+        attention=attention,
+        warnings=warning_items,
+        gaps=gaps,
+    )
+
+
 __all__ = [
     "MigrationResult",
     "PanelResult",
     "_ir_to_dict",
     "_panel_query_index",
     "build_runtime_summary",
+    "build_summary_view",
     "mark_panel_requires_manual_after_failed_validation",
     "mark_panel_requires_manual_after_validation",
     "pct",

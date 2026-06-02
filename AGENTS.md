@@ -4,11 +4,38 @@ This file is for automation and repo-working guidance. Public user and
 contributor documentation lives in `README.md`, `docs/README.md`, and the root
 governance files.
 
+## Naming
+
+These names all refer to this project; do not treat them as separate things:
+
+- **Observability Migration Platform** — the product/repo name.
+- **`obs-migrate`** — the installable umbrella CLI (`grafana-migrate` and
+  `datadog-migrate` are the per-source entry points).
+- **`observability_migration`** — the Python package.
+- **`mig-to-kbn`** — the engine/upstream identity (and a repo mirror). See the
+  Upstream Boundary note in `CLAUDE.md`.
+
 ## Repo Pointers
 
 - Public docs index: `docs/README.md`
 - Canonical commands: `docs/command-contract.md`
 - Architecture: `docs/architecture.md`
+- Contributor setup, verification, and PR rules: `CONTRIBUTING.md`
+
+## Build, Test, Lint
+
+Use the `Makefile` targets (they sync the locked `uv` dev environment first);
+`uv` must be on `PATH`. Run `make help` to list targets.
+
+```bash
+make sync       # sync the dev virtualenv from uv.lock
+make test       # unit tests (excludes e2e)
+make lint       # ruff + source-header check
+make typecheck  # targeted mypy checks
+```
+
+`CONTRIBUTING.md` documents the equivalent direct `.venv/bin/...` invocations
+and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 
 ## Repo-Specific Working Rules
 

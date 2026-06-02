@@ -39,6 +39,7 @@ from observability_migration.core.cli_contract import (
 )
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
+from observability_migration.core.reporting.summary_md import save_markdown_summary
 from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
@@ -54,7 +55,7 @@ from .models import DashboardResult, NormalizedWidget, TranslationResult
 from .normalize import normalize_dashboard
 from .planner import plan_widget
 from .preflight import PreflightResult, run_preflight
-from .report import print_report, save_detailed_report
+from .report import build_summary_view, print_report, save_detailed_report
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .translate import translate_widget
 from .verification import annotate_results_with_verification, save_verification_packets
@@ -187,7 +188,12 @@ def _run_dashboard_pipeline(
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
     if not raw_dashboards:
-        print("  ERROR: no dashboards found")
+        print(
+            f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
+            "Point --input-dir at a directory of Datadog dashboard JSON "
+            "exports (each with a top-level 'widgets' key).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"  Found {len(raw_dashboards)} dashboard(s)\n")
@@ -353,6 +359,18 @@ def _run_dashboard_pipeline(
                 f"(G:{gates['green']} Y:{gates['yellow']} R:{gates['red']})"
             )
 
+    try:
+        summary_view = build_summary_view(
+            all_results,
+            review_queue=review_queue,
+            run_id=rollout_plan.get("run_id", "") if isinstance(rollout_plan, dict) else "",
+        )
+        summary_md_path = output_dir / "migration_summary.md"
+        save_markdown_summary(summary_view, summary_md_path)
+        print(f"  Migration summary saved: {summary_md_path}")
+    except Exception as exc:  # best-effort: never fail a migration on the summary
+        print(f"  Migration summary: skipped ({exc})")
+
     return {
         "total": len(all_results),
         "artifacts_dir": str(output_dir),
@@ -398,7 +416,16 @@ def _translate_widget(
 def _extract(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Extract dashboards based on source type."""
     if args.source == "files":
-        return extract_dashboards_from_files(args.input_dir)
+        try:
+            return extract_dashboards_from_files(args.input_dir)
+        except FileNotFoundError:
+            print(
+                f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
+                "Point --input-dir at a directory of Datadog dashboard JSON "
+                "exports (each with a top-level 'widgets' key).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if args.source == "api":
         creds = load_credentials_from_env(args.env_file)

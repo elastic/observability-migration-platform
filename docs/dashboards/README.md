@@ -6,11 +6,23 @@ Dashboard authoring flow for local migration work:
   Regenerates `docs/dashboards/schema.json` from `kb-dashboard-core`.
   If `npx` is available, it also writes `docs/dashboards/schema.toon` for easier schema browsing.
 
-- `bash scripts/validate_dashboard_yaml.sh <output-dir>/yaml`
-  Runs `kb-dashboard-lint` against generated dashboard YAML before compile or upload.
+- Dashboard YAML lint and compiled-layout validation now run **automatically**
+  inside `obs-migrate compile`/`migrate` (in-process, via
+  `observability_migration.targets.kibana.{lint,layout}`). They no longer have
+  standalone scripts. To run them ad hoc:
 
-- `python scripts/validate_dashboard_layout.py <output-dir>/compiled`
-  Checks compiled dashboard artifacts for out-of-bounds panels and grid overlaps before upload.
+```python
+from observability_migration.targets.kibana.lint import lint_dashboard_yaml
+ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+
+from observability_migration.targets.kibana.layout import validate_compiled_layout
+ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
+```
+
+  The lint gate calls `kb-dashboard-lint`. Install the Kibana tools in-venv with
+  `.venv/bin/pip install ".[kibana]"` (requires Python 3.12+); on 3.11 the
+  runtime falls back to a pinned `uvx`, so `uv` must be on `PATH`. Run
+  `obs-migrate doctor` to check which path is active.
 
 The migration pipeline now targets the newer dashboard YAML conventions where possible:
 

@@ -1,6 +1,8 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -417,6 +419,52 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
 
         self.assertEqual(compiled_yaml_names, ["current-dashboard.yaml"])
 
+    def test_dashboards_only_empty_input_exits_with_clean_message(self):
+        """An empty --input-dir should exit(1) with a helpful message instead of
+        silently reporting "0/0 dashboards compiled successfully"."""
+        rule_pack = SimpleNamespace(
+            logs_index="",
+            native_promql=False,
+            metrics_dataset_filter="",
+            logs_dataset_filter="",
+        )
+        resolver = mock.Mock()
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_input = Path(tmpdir) / "empty_input"
+            empty_input.mkdir()
+            stderr = io.StringIO()
+            with mock.patch.object(
+                grafana_cli,
+                "_load_configured_rule_pack",
+                return_value=rule_pack,
+            ), mock.patch.object(
+                grafana_cli,
+                "SchemaResolver",
+                return_value=resolver,
+            ), contextlib.redirect_stderr(stderr), self.assertRaises(
+                SystemExit
+            ) as ctx:
+                grafana_cli.main(
+                    [
+                        "--assets",
+                        "dashboards",
+                        "--source",
+                        "files",
+                        "--input-dir",
+                        str(empty_input),
+                        "--output-dir",
+                        tmpdir,
+                    ]
+                )
+
+        self.assertEqual(ctx.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("no Grafana dashboards found", message)
+        self.assertIn(str(empty_input), message)
+
     def test_alerts_only_api_forwards_grafana_token_for_legacy_dashboard_reads(self):
         alert_pipeline = ModuleType(
             "observability_migration.adapters.source.grafana.alert_pipeline"
@@ -745,6 +793,164 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             str(Path(tmpdir) / "dashboards"),
         )
         self.assertTrue(yaml_output_exists)
+
+    def test_dashboards_only_writes_markdown_summary(self):
+        rule_pack = SimpleNamespace(
+            logs_index="",
+            native_promql=False,
+            metrics_dataset_filter="",
+            logs_dataset_filter="",
+        )
+        resolver = mock.Mock()
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+
+        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
+            yaml_path = yaml_dir / "demo-dashboard.yaml"
+            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
+            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+
+        def _fake_compile_all(_yaml_dir, compiled_dir):
+            compiled_leaf = compiled_dir / "demo-dashboard"
+            compiled_leaf.mkdir(parents=True, exist_ok=True)
+            (compiled_leaf / "compiled_dashboards.ndjson").write_text("{}\n", encoding="utf-8")
+            return [("demo-dashboard.yaml", True, "")]
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
+        ), mock.patch.object(
+            grafana_cli, "SchemaResolver", return_value=resolver,
+        ), mock.patch.object(
+            grafana_cli, "extract_dashboards_from_files",
+            return_value=[{"title": "Demo Dashboard", "uid": "demo-uid"}],
+        ), mock.patch.object(
+            grafana_cli, "translate_dashboard", side_effect=_fake_translate_dashboard,
+        ), mock.patch.object(
+            grafana_cli, "_collect_feature_gap_artifacts",
+            return_value={
+                "dashboard_links": [], "panel_links": [], "annotations": [],
+                "transform_tasks": [], "alert_tasks": [],
+                "links_summary": {"dashboard_links": 0, "panel_links": 0, "manual_wiring_needed": 0},
+                "annotations_summary": {"total": 0, "candidate_event_annotations": 0, "manual_needed": 0},
+                "transform_summary": {"total": 0, "by_complexity": {}},
+                "alert_summary": {"total": 0, "by_kibana_type": {}},
+            },
+        ), mock.patch.object(
+            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
+        ), mock.patch.object(
+            grafana_cli, "compile_all", side_effect=_fake_compile_all,
+        ), mock.patch.object(
+            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
+        ), mock.patch.object(
+            grafana_cli, "detect_space_id_from_kibana_url", return_value="",
+        ), mock.patch.object(
+            grafana_cli, "annotate_results_with_verification", return_value={},
+        ), mock.patch.object(
+            grafana_cli, "save_detailed_report",
+        ), mock.patch.object(
+            grafana_cli, "save_migration_manifest",
+        ), mock.patch.object(
+            grafana_cli, "save_verification_packets",
+        ), mock.patch.object(
+            grafana_cli, "build_rollout_plan", return_value={},
+        ), mock.patch.object(
+            grafana_cli, "save_rollout_plan",
+        ), mock.patch.object(
+            grafana_cli, "generate_review_queue", return_value=[],
+        ), mock.patch.object(
+            grafana_cli, "print_report",
+        ):
+            grafana_cli.main(
+                ["--assets", "dashboards", "--source", "files",
+                 "--input-dir", tmpdir, "--output-dir", tmpdir]
+            )
+            summary_path = Path(tmpdir) / "dashboards" / "migration_summary.md"
+            summary_exists = summary_path.exists()
+            summary_text = summary_path.read_text(encoding="utf-8") if summary_exists else ""
+
+        self.assertTrue(summary_exists)
+        self.assertIn("# Migration Summary — Grafana → Kibana", summary_text)
+
+    def test_markdown_summary_failure_is_non_fatal(self):
+        rule_pack = SimpleNamespace(
+            logs_index="",
+            native_promql=False,
+            metrics_dataset_filter="",
+            logs_dataset_filter="",
+        )
+        resolver = mock.Mock()
+        resolver._field_cache = {}
+        resolver._discovered_mappings = {}
+
+        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
+            yaml_path = yaml_dir / "demo-dashboard.yaml"
+            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
+            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+
+        def _fake_compile_all(_yaml_dir, compiled_dir):
+            compiled_leaf = compiled_dir / "demo-dashboard"
+            compiled_leaf.mkdir(parents=True, exist_ok=True)
+            (compiled_leaf / "compiled_dashboards.ndjson").write_text("{}\n", encoding="utf-8")
+            return [("demo-dashboard.yaml", True, "")]
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
+        ), mock.patch.object(
+            grafana_cli, "SchemaResolver", return_value=resolver,
+        ), mock.patch.object(
+            grafana_cli, "extract_dashboards_from_files",
+            return_value=[{"title": "Demo Dashboard", "uid": "demo-uid"}],
+        ), mock.patch.object(
+            grafana_cli, "translate_dashboard", side_effect=_fake_translate_dashboard,
+        ), mock.patch.object(
+            grafana_cli, "_collect_feature_gap_artifacts",
+            return_value={
+                "dashboard_links": [], "panel_links": [], "annotations": [],
+                "transform_tasks": [], "alert_tasks": [],
+                "links_summary": {"dashboard_links": 0, "panel_links": 0, "manual_wiring_needed": 0},
+                "annotations_summary": {"total": 0, "candidate_event_annotations": 0, "manual_needed": 0},
+                "transform_summary": {"total": 0, "by_complexity": {}},
+                "alert_summary": {"total": 0, "by_kibana_type": {}},
+            },
+        ), mock.patch.object(
+            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
+        ), mock.patch.object(
+            grafana_cli, "compile_all", side_effect=_fake_compile_all,
+        ), mock.patch.object(
+            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
+        ), mock.patch.object(
+            grafana_cli, "detect_space_id_from_kibana_url", return_value="",
+        ), mock.patch.object(
+            grafana_cli, "annotate_results_with_verification", return_value={},
+        ), mock.patch.object(
+            grafana_cli, "save_detailed_report",
+        ), mock.patch.object(
+            grafana_cli, "save_migration_manifest",
+        ), mock.patch.object(
+            grafana_cli, "save_verification_packets",
+        ), mock.patch.object(
+            grafana_cli, "build_rollout_plan", return_value={},
+        ), mock.patch.object(
+            grafana_cli, "save_rollout_plan",
+        ), mock.patch.object(
+            grafana_cli, "generate_review_queue", return_value=[],
+        ), mock.patch.object(
+            grafana_cli, "print_report",
+        ), mock.patch.object(
+            grafana_cli, "save_markdown_summary",
+            side_effect=RuntimeError("boom"),
+        ):
+            # Must not raise despite the summary renderer blowing up.
+            grafana_cli.main(
+                ["--assets", "dashboards", "--source", "files",
+                 "--input-dir", tmpdir, "--output-dir", tmpdir]
+            )
+            # The run still completes and writes its root run summary.
+            run_summary_exists = (Path(tmpdir) / "run_summary.json").exists()
+            summary_md_exists = (Path(tmpdir) / "dashboards" / "migration_summary.md").exists()
+
+        self.assertTrue(run_summary_exists)
+        self.assertFalse(summary_md_exists)
 
     def test_upload_routes_through_kibana_target_adapter(self):
         rule_pack = SimpleNamespace(

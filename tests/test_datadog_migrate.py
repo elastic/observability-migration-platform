@@ -15,6 +15,8 @@ Covers:
 """
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -2961,6 +2963,19 @@ class TestDatadogExtractionContracts(unittest.TestCase):
                 app_key="app-key",
             )
 
+    def test_extract_empty_input_dir_exits_with_clean_message(self):
+        """An empty/no-JSON input dir should exit(1) with a helpful message, not a traceback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = argparse.Namespace(source="files", input_dir=tmpdir)
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(stderr):
+                datadog_cli._extract(args)
+        self.assertEqual(ctx.exception.code, 1)
+        message = stderr.getvalue()
+        self.assertIn("no Datadog dashboards found", message)
+        self.assertIn(tmpdir, message)
+        self.assertNotIn("Traceback", message)
+
 
 class TestDatadogAssetStatusIntegration(unittest.TestCase):
     """Verify Datadog models integrate with shared AssetStatus vocabulary."""
@@ -4738,6 +4753,104 @@ class DatadogNormalizeTileSizesTests(unittest.TestCase):
                 min_h,
                 f"type '{vtype}': expected h >= {min_h}, got {panel['size']['h']}",
             )
+
+
+class TestDatadogSummaryView(unittest.TestCase):
+    def _result(self):
+        from observability_migration.adapters.source.datadog.models import (
+            DashboardResult,
+            TranslationResult,
+        )
+
+        dr = DashboardResult(dashboard_id="d1", dashboard_title="DD One", source_file="dd.json")
+        dr.compiled = True
+        ok = TranslationResult(widget_id="1", title="CPU", status="ok")
+        ok.verification_packet = {"semantic_gate": "Green"}
+        nf = TranslationResult(widget_id="2", title="APM thing", status="not_feasible")
+        nf.reasons = ["unsupported data source apm"]
+        nf.source_queries = ["avg:trace.http.request{*}"]
+        nf.verification_packet = {"semantic_gate": "Red"}
+        blocked = TranslationResult(widget_id="3", title="Blocked", status="blocked")
+        blocked.reasons = ["query parse failed"]
+        grp = TranslationResult(widget_id="g", title="Group", status="skipped", kibana_type="group")
+        dr.panel_results = [ok, nf, blocked, grp]
+        dr.total_widgets = 4
+        dr.recompute_counts()
+        return dr
+
+    def test_datadog_view_uses_widget_noun_and_folds_blocked(self):
+        from observability_migration.adapters.source.datadog.report import (
+            build_summary_view,
+        )
+
+        results = [self._result()]
+        review_queue = [
+            {
+                "dashboard": "DD One",
+                "panels": 3,
+                "migrated": 1,
+                "gates": {"green": 1, "yellow": 0, "red": 1},
+                "risk_score": 10,
+            }
+        ]
+        view = build_summary_view(results, review_queue=review_queue, run_id="dd1")
+        self.assertEqual(view.source, "datadog")
+        self.assertEqual(view.element_noun, "widget")
+        # Group excluded from renderable widget total: 3, not 4
+        self.assertEqual(view.totals.elements_total, 3)
+        # blocked + not_feasible both land in attention
+        statuses = sorted(a.status for a in view.attention)
+        self.assertIn("blocked", statuses)
+        self.assertIn("not_feasible", statuses)
+        # group never appears in attention/warnings
+        self.assertFalse(any(a.panel == "Group" for a in view.attention))
+        # Datadog source query list is joined into the attention item
+        nf = next(a for a in view.attention if a.status == "not_feasible")
+        self.assertEqual(nf.source_query, "avg:trace.http.request{*}")
+
+
+class TestDatadogWritesMarkdownSummary(unittest.TestCase):
+    def test_offline_migration_writes_markdown_summary(self):
+        sample = (
+            Path(__file__).parent.parent
+            / "infra"
+            / "datadog"
+            / "dashboards"
+            / "sample_dashboard.json"
+        )
+
+        def _fake_annotate(results, validation_records=None, **kwargs):
+            return {"summary": {"green": 0, "yellow": 0, "red": 0}, "packets": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "in"
+            input_dir.mkdir()
+            shutil.copy(sample, input_dir / "sample_dashboard.json")
+            output_dir = Path(tmpdir) / "out"
+
+            with patch.object(
+                datadog_cli,
+                "annotate_results_with_verification",
+                side_effect=_fake_annotate,
+            ), patch(
+                "observability_migration.adapters.source.datadog.execution.requests.get",
+                side_effect=AssertionError("offline migration must not call the Datadog API"),
+            ):
+                datadog_cli.main(
+                    [
+                        "--source", "files",
+                        "--input-dir", str(input_dir),
+                        "--output-dir", str(output_dir),
+                        "--assets", "dashboards",
+                        "--env-file", "/dev/null",
+                    ]
+                )
+
+            summary_path = output_dir / "dashboards" / "migration_summary.md"
+            self.assertTrue(summary_path.exists())
+            text = summary_path.read_text(encoding="utf-8")
+            self.assertIn("# Migration Summary — Datadog → Kibana", text)
+            self.assertIn("Widgets", text)
 
 
 if __name__ == "__main__":

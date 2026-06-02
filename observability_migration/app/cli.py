@@ -151,6 +151,8 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--chrome-binary", default="")
     migrate.add_argument("--smoke-report", default="")
 
+    sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
+
     compile_cmd = sub.add_parser("compile", help="Compile YAML to NDJSON")
     compile_cmd.add_argument("--yaml-dir", required=True, help="Directory with dashboard YAML files")
     compile_cmd.add_argument("--output-dir", required=True, help="Output directory for NDJSON")
@@ -301,9 +303,33 @@ def main(argv: list[str] | None = None) -> None:
         _run_verify_panels(args)
     elif args.command == "verify-visual":
         _run_verify_visual(args)
+    elif args.command == "doctor":
+        _run_doctor()
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_doctor() -> None:
+    """Report environment readiness for the Kibana compile/lint path."""
+    import shutil
+
+    from observability_migration.targets.kibana._kbtool import (
+        KB_DASHBOARD_TOOL_VERSION,
+        KbToolUnavailableError,
+        tool_argv,
+    )
+
+    print("obs-migrate doctor")
+    print(f"  pinned kb-dashboard tool version: {KB_DASHBOARD_TOOL_VERSION}")
+    print(f"  uv on PATH: {'yes' if shutil.which('uvx') else 'no'}")
+    for tool in ("kb-dashboard-cli", "kb-dashboard-lint"):
+        try:
+            argv = tool_argv(tool)
+            mode = "installed" if argv[0] != "uvx" else "uvx fallback"
+            print(f"  {tool}: available ({mode})")
+        except KbToolUnavailableError as exc:
+            print(f"  {tool}: UNAVAILABLE - {exc}")
 
 
 def _run_verify_panels(args: Any) -> None:

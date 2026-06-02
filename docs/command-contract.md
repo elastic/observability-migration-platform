@@ -50,9 +50,12 @@ For contributor workflows, install the dev extra and enable local git hooks:
 .venv/bin/pre-commit run --all-files
 ```
 
-Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` require `uvx` on
-`PATH`, including `obs-migrate compile`, `obs-migrate upload`, and
-`bash scripts/validate_dashboard_yaml.sh`.
+Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
+`obs-migrate compile` and `obs-migrate upload`) resolve the tool
+**installed-first**: install the Kibana tools in-venv with
+`.venv/bin/pip install ".[kibana]"` (requires Python 3.12+), otherwise the
+runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
+`obs-migrate doctor` to see which path is active.
 
 Datadog live API extraction (`--source api` on the dedicated CLI or Datadog
 `--input-mode api` through `obs-migrate migrate`) also requires the optional
@@ -69,7 +72,9 @@ You can use the migration tooling productively before configuring a target clust
 - Translate exported dashboards into YAML.
 - Pull live dashboards from Grafana or Datadog APIs.
 - Pull Grafana alert artifacts or Datadog monitor artifacts.
-- Review `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, and `rollout_plan.json`.
+- Read `migration_summary.md` for a human-readable verdict, scorecard, and
+  per-dashboard worklist, then drill into `migration_report.json`,
+  `migration_manifest.json`, `verification_packets.json`, and `rollout_plan.json`.
 - Compile generated YAML to NDJSON locally.
 
 Add `--es-url` when you want live target field discovery or emitted-query validation. Add `--kibana-url` when you want upload, target dashboard listing/deletion, smoke validation, or alert-rule payload checks against a real Kibana target.
@@ -91,6 +96,12 @@ Rules:
 Dashboard artifacts are written under `<output-dir>/dashboards`. Alert artifacts
 are written under `<output-dir>/alerts`. Grafana and Datadog both write a root
 `run_summary.json` that records which asset families ran.
+
+Every dashboard run also writes `<output-dir>/dashboards/migration_summary.md`: a
+human-readable Markdown summary (verdict, scorecard, per-dashboard table, must-fix
+worklist, grouped warnings, and non-panel gaps) rendered identically for both
+Grafana and Datadog. It is best-effort — if the summary cannot be rendered the
+migration still completes and the JSON artifacts are unaffected.
 
 ### Audited Asset Flag Matrix
 
@@ -174,6 +185,12 @@ KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=a
 `obs-migrate migrate` compiles dashboard YAML to NDJSON during dashboard runs for
 both Grafana and Datadog. Alerts-only runs do not emit dashboard YAML or
 compiled output.
+
+When a dashboard run discovers no input dashboards (for example
+`--input-dir` points at an empty directory, or none of its files match the
+expected source shape), `obs-migrate migrate` exits non-zero with a message
+naming the directory and the expected JSON shape, rather than reporting
+`0/0 dashboards compiled successfully`.
 
 ### Field Profile Contract
 
@@ -525,12 +542,21 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
-bash scripts/validate_dashboard_yaml.sh migration_output/dashboards/yaml
-.venv/bin/python scripts/validate_dashboard_layout.py migration_output/dashboards/compiled
 ```
 
-`bash scripts/validate_dashboard_yaml.sh` requires `uvx` on `PATH` because it
-shells out to `kb-dashboard-lint`.
+Dashboard YAML lint and compiled-layout validation run automatically inside
+`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+
+```python
+from observability_migration.targets.kibana.lint import lint_dashboard_yaml
+ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+
+from observability_migration.targets.kibana.layout import validate_compiled_layout
+ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
+```
+
+The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
+`obs-migrate[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
 
 ### Data Setup
 
