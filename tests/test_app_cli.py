@@ -862,5 +862,16 @@ class TestUnifiedCliLegacyFlagContract(unittest.TestCase):
                 )
 
 
+class TestDoctorSubcommand(unittest.TestCase):
+    def test_doctor_reports_kb_tool_availability(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            app_cli.main(["doctor"])
+        out = buf.getvalue().lower()
+        self.assertIn("obs-migrate doctor", out)
+        self.assertIn("kb-dashboard-cli", out)
+        self.assertIn("kb-dashboard-lint", out)
+
+
 if __name__ == "__main__":
     unittest.main()
