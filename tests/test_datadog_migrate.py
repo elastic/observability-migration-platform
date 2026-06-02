@@ -16,11 +16,14 @@ Covers:
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest import mock
 from unittest.mock import patch
 
@@ -844,6 +847,29 @@ class TestPlanner(unittest.TestCase):
         plan = plan_widget(w)
         self.assertEqual(plan.backend, "esql")
         self.assertEqual(plan.kibana_type, "table")
+
+    def test_bar_chart_plans_grouped_aggregation_table(self):
+        # Datadog bar_chart is a grouped aggregation (group_by + compute +
+        # sort + limit), structurally identical to a toplist. It must be a
+        # supported widget — not an "unsupported widget type" not_feasible.
+        mq = parse_metric_query("sum:system.net.bytes_rcvd{*} by {host}")
+        wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
+        w = self._make_widget(id="1", widget_type="bar_chart", title="Bars", queries=[wq])
+        plan = plan_widget(w)
+        self.assertIn(plan.backend, ("esql", "lens"))
+        self.assertEqual(plan.kibana_type, "table")
+        self.assertNotIn(
+            "unsupported widget type: bar_chart",
+            plan.reasons,
+        )
+
+    def test_bar_chart_translates_without_not_feasible(self):
+        mq = parse_metric_query("sum:system.net.bytes_rcvd{*} by {host}")
+        wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
+        w = self._make_widget(id="1", widget_type="bar_chart", title="Bars", queries=[wq])
+        result = translate_widget(w, plan_widget(w), OTEL_PROFILE)
+        self.assertNotIn(result.status, ("not_feasible", "blocked"))
+        self.assertEqual(result.kibana_type, "table")
 
     def test_query_table_plans_esql_table(self):
         mq = parse_metric_query("sum:consul.catalog.services_critical{*} by {host}")
@@ -3701,6 +3727,84 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(payload["summary"]["green"], 1)
         self.assertEqual(panel.verification_packet["verification_mode"], "source_target_comparison")
         self.assertEqual(panel.verification_packet["comparison"]["status"], "within_tolerance")
+
+    def _run_main_capturing_verification_creds(self, extra_argv, env_creds):
+        """Run the Datadog CLI on the sample dashboard and capture the
+        Datadog API credentials handed to the verification step.
+
+        Returns the kwargs dict that ``annotate_results_with_verification``
+        was called with so callers can assert whether live source-side
+        execution would have been attempted.
+        """
+        sample = (
+            Path(__file__).parent.parent
+            / "infra"
+            / "datadog"
+            / "dashboards"
+            / "sample_dashboard.json"
+        )
+        captured: dict[str, Any] = {}
+
+        def _fake_annotate(results, validation_records=None, **kwargs):
+            captured.update(kwargs)
+            return {"summary": {"green": 0, "yellow": 0, "red": 0}, "packets": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "in"
+            input_dir.mkdir()
+            shutil.copy(sample, input_dir / "sample_dashboard.json")
+            output_dir = Path(tmpdir) / "out"
+
+            with patch.dict(os.environ, env_creds, clear=False), patch.object(
+                datadog_cli,
+                "annotate_results_with_verification",
+                side_effect=_fake_annotate,
+            ), patch(
+                "observability_migration.adapters.source.datadog.execution.requests.get",
+                side_effect=AssertionError(
+                    "offline migration must not call the Datadog API"
+                ),
+            ):
+                datadog_cli.main(
+                    [
+                        "--source",
+                        "files",
+                        "--input-dir",
+                        str(input_dir),
+                        "--output-dir",
+                        str(output_dir),
+                        "--assets",
+                        "dashboards",
+                        "--env-file",
+                        "/dev/null",
+                        *extra_argv,
+                    ]
+                )
+        return captured
+
+    def test_offline_migration_does_not_use_datadog_api_when_creds_in_env(self):
+        # DD_API_KEY/DD_APP_KEY present in the environment must NOT trigger
+        # blocking live Datadog API calls during plain offline translation.
+        captured = self._run_main_capturing_verification_creds(
+            extra_argv=[],
+            env_creds={"DD_API_KEY": "envkey", "DD_APP_KEY": "envapp"},
+        )
+        self.assertEqual(captured.get("datadog_api_key"), "")
+        self.assertEqual(captured.get("datadog_app_key"), "")
+
+    def test_source_execution_flag_opts_into_datadog_api_creds(self):
+        # With --source-execution the live Datadog credentials are forwarded
+        # to the verification step (the network call is mocked out here).
+        captured = self._run_main_capturing_verification_creds(
+            extra_argv=["--source-execution"],
+            env_creds={"DD_API_KEY": "envkey", "DD_APP_KEY": "envapp"},
+        )
+        self.assertEqual(captured.get("datadog_api_key"), "envkey")
+        self.assertEqual(captured.get("datadog_app_key"), "envapp")
+
+    def test_parse_args_source_execution_defaults_off(self):
+        self.assertFalse(datadog_cli.parse_args([]).source_execution)
+        self.assertTrue(datadog_cli.parse_args(["--source-execution"]).source_execution)
 
     def test_datadog_manifest_and_rollout_capture_artifacts(self):
         panel = TranslationResult(

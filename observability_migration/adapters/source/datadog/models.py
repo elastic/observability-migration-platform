@@ -18,6 +18,7 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "timeseries": "xy",
     "query_value": "metric",
     "toplist": "table",
+    "bar_chart": "table",
     "table": "table",
     "heatmap": "heatmap",
     "distribution": "xy",
@@ -53,7 +54,7 @@ WIDGET_TYPE_MAP: dict[str, str] = {
 }
 
 SUPPORTED_WIDGET_TYPES: set[str] = {
-    "timeseries", "query_value", "toplist", "table", "query_table",
+    "timeseries", "query_value", "toplist", "bar_chart", "table", "query_table",
     "heatmap", "distribution", "change", "scatterplot", "treemap",
     "sunburst", "pie", "geomap", "log_stream", "list_stream",
     "note", "free_text", "image", "iframe", "group",
