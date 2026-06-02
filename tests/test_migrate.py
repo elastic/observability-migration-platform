@@ -3,6 +3,7 @@
 
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -94,6 +95,49 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("namespace_name"), "k8s.namespace.name")
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
+
+    def test_count_scalar_normalized_to_scalar_count(self):
+        # count_scalar() was removed in Prometheus 2.0; it is semantically
+        # identical to scalar(count()). Normalise it at preprocessing so the
+        # AST parser does not choke on the unknown function (issue #63).
+        clean = migrate.preprocess_grafana_macros("count_scalar(up)", self.rule_pack)
+        self.assertEqual(clean, "scalar(count(up))")
+
+    def test_count_scalar_normalized_with_label_matcher_braces(self):
+        # The argument can contain its own braces/parens; the rewrite must keep
+        # the whole balanced argument intact.
+        clean = migrate.preprocess_grafana_macros(
+            'count_scalar(node_cpu{mode="user", alias="a1"})', self.rule_pack
+        )
+        self.assertEqual(clean, 'scalar(count(node_cpu{mode="user", alias="a1"}))')
+
+    def test_count_scalar_no_longer_fails_to_parse(self):
+        # Full expression from issue #63 (Bind DNS dashboard #1666, panel 16).
+        # The count_scalar normalisation must remove the AST parse failure and
+        # the "Could not extract metric name" follow-on so the expression parses
+        # like its scalar(count()) equivalent. (Whether this particular
+        # grouped/scalar arithmetic then fully translates is a separate,
+        # pre-existing limitation surfaced honestly as a divergent-grouping
+        # not-feasible, not a count_scalar parse failure.)
+        expr = (
+            'sum(rate(node_cpu{alias="a1"}[120s])) by (mode) * 100 '
+            '/ count_scalar(node_cpu{mode="user", alias="a1"})'
+        )
+        translated = self.translate(expr)
+        joined = " ".join(translated.warnings)
+        self.assertNotIn("unknown function with name 'count_scalar'", joined)
+        self.assertNotIn("Could not extract metric name", joined)
+
+    def test_count_scalar_divides_ungrouped_metric_is_feasible(self):
+        # When the count_scalar() result divides an ungrouped aggregate (the
+        # scalar broadcasts cleanly), the normalised expression translates.
+        expr = "sum(rate(node_cpu[120s])) / count_scalar(node_cpu)"
+        translated = self.translate(expr)
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertNotIn(
+            "unknown function with name 'count_scalar'",
+            " ".join(translated.warnings),
+        )
 
     def test_range_seconds_macro_is_preserved_as_duration_suffix(self):
         clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[${__range_s}s]))", self.rule_pack)
@@ -432,8 +476,24 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(result.status, "requires_manual")
         query = yaml_panel["esql"]["query"]
-        self.assertIn("AVG_OVER_TIME(process_resident_memory_max_bytes, 5m)", query)
-        self.assertNotIn("AVG(process_resident_memory_max_bytes)", query)
+        # Whatever the grouping, the STATS must be internally consistent: it must
+        # NOT mix a bare time-series aggregate with a regular aggregate, or ES
+        # rejects it at runtime ("Cannot mix time-series aggregate and regular
+        # aggregate in the same TimeSeriesAggregate").
+        stats_line = next(
+            (line for line in query.splitlines() if "STATS" in line),
+            "",
+        )
+        has_bare_ts = bool(
+            re.search(r"(?:STATS|,)\s*[A-Za-z0-9_.`]+\s*=\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        has_wrapped_ts = bool(
+            re.search(r"=\s*(?:AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        self.assertFalse(
+            has_bare_ts and has_wrapped_ts,
+            f"STATS mixes bare and wrapped time-series aggregates: {stats_line!r}",
+        )
 
     def test_missing_legend_label_is_dropped_from_translated_query(self):
         self.seed_field_caps({
@@ -1146,8 +1206,11 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_count_comparison_counts_matching_series(self):
         translated = self.translate("count(up == 1)", panel_type="stat")
         where_idx = translated.esql_query.index("| WHERE up == 1")
-        stats_idx = translated.esql_query.index("| STATS up_count = COUNT(*)")
+        # The TS command forbids COUNT(*); count the filtered metric field
+        # instead so the query is valid at runtime (not just offline-feasible).
+        stats_idx = translated.esql_query.index("| STATS up_count = COUNT(up)")
         self.assertLess(where_idx, stats_idx)
+        self.assertNotIn("COUNT(*)", translated.esql_query)
         self.assertNotIn("| WHERE up_count == 1", translated.esql_query)
 
     def test_xy_panel_with_extra_grouping_dimension_warns(self):

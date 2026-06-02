@@ -115,6 +115,27 @@ def _keep(*field_lists) -> str:
     return ", ".join(seen)
 
 
+def _format_vector_matching_clause(matching: dict) -> str:
+    """Render a PromQL vector-matching modifier the way the source wrote it.
+
+    The parsed ``vector_matching`` dict carries the matcher ``type`` (``Include``
+    for ``on(...)``, ``Exclude`` for ``ignoring(...)``) and the join
+    ``cardinality`` (``OneToMany`` -> ``group_right()``, ``ManyToOne`` ->
+    ``group_left()``). Composing the warning from these fields keeps the message
+    faithful to the original expression instead of always saying ``on(...)``
+    (issue #65).
+    """
+    labels = ", ".join(matching.get("labels") or [])
+    keyword = "ignoring" if matching.get("type") == "Exclude" else "on"
+    clause = f"{keyword}({labels})"
+    cardinality = matching.get("cardinality")
+    if cardinality == "OneToMany":
+        clause += " group_right()"
+    elif cardinality == "ManyToOne":
+        clause += " group_left()"
+    return clause
+
+
 _GRAFANA_TEMPLATE_VAR_RE = re.compile(
     r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
@@ -918,11 +939,12 @@ def join_family_rule(context):
 
     if is_additive_join and has_explicit_on and right_frag.metric and left_frag.metric != right_frag.metric:
         context.feasibility = "not_feasible"
+        match_clause = _format_vector_matching_clause(matching)
         _append_unique(
             context.warnings,
-            f"Cross-metric {frag.binary_op} on({', '.join(matching['labels'])}) join cannot be accurately represented in ES|QL",
+            f"Cross-metric {frag.binary_op} {match_clause} join cannot be accurately represented in ES|QL",
         )
-        return "join with on() requires both sides — marked not_feasible"
+        return "join requires both sides — marked not_feasible"
 
     if left_frag.metric:
         filters, had_vars = _frag_filters(left_frag, resolver)
@@ -1691,16 +1713,21 @@ def simple_agg_family_rule(context):
             *_build_where_lines(filters),
             f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
+        # The TS command rejects ``COUNT(*)`` ("count_star can't be used with TS
+        # command; use count on a field instead"). The WHERE has already
+        # constrained rows to the comparison, so counting the (non-null) metric
+        # field is equivalent and valid. FROM keeps the cheaper ``COUNT(*)``.
+        count_expr = f"COUNT({gauge_physical_metric})" if pre_source == "TS" else "COUNT(*)"
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
+            lines.append(f"| STATS {alias} = {count_expr}" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
+            stats_expr = count_expr if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -2256,6 +2283,39 @@ def value_wrapper_transforms_rule(context):
         context.esql_query = "\n".join(lines)
         return f"applied value wrapper transforms: {', '.join(applied)}"
     return None
+
+
+def _has_or_vector_fallback(frag, _depth=0):
+    """Return True if *frag* or any operand was an ``X or vector(N)`` fallback."""
+    if frag is None or _depth > 8:
+        return False
+    if frag.extra.get("or_vector_fallback"):
+        return True
+    return _has_or_vector_fallback(frag.extra.get("left_frag"), _depth + 1) or _has_or_vector_fallback(
+        frag.extra.get("right_frag"), _depth + 1
+    )
+
+
+@QUERY_POSTPROCESSORS.register("or_vector_fallback_note", priority=94)
+def or_vector_fallback_note_rule(context):
+    """Warn that a stripped ``or vector(N)`` zero-fill is only approximated.
+
+    Dropping the ``vector(N)`` operand keeps the panel translatable, but ES|QL
+    will leave gaps where Grafana would have shown the constant fallback value
+    instead. Surface that honestly rather than hide the semantic gap (issue #66).
+    """
+    frag = context.fragment
+    if not frag or not context.esql_query or context.feasibility == "not_feasible":
+        return None
+    if not _has_or_vector_fallback(frag):
+        return None
+    _append_unique(
+        context.warnings,
+        "Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the "
+        "constant operand; time ranges with no data appear as gaps instead of "
+        "the fallback value",
+    )
+    return "noted or-vector zero-fill approximation"
 
 
 @QUERY_POSTPROCESSORS.register("post_filter", priority=95)

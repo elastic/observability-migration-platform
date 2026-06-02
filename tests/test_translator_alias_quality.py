@@ -209,5 +209,116 @@ class MeasureSpecAliasTests(unittest.TestCase):
         self.assertTrue(spec.alias.startswith("http_requests_total_"))
 
 
+class MixedTimeSeriesStatsTests(unittest.TestCase):
+    """A single TS ``STATS`` must never mix bare and wrapped time-series aggregates.
+
+    Elasticsearch rejects ``TS ... | STATS x = AVG_OVER_TIME(...), y =
+    AVG(AVG_OVER_TIME(...)) BY time_bucket, dim`` at runtime with "Cannot mix
+    time-series aggregate ... and regular aggregate ... in the same
+    TimeSeriesAggregate". This reproduces the multi-target merge that previously
+    left an instant-selector target bare alongside ``irate`` siblings.
+    """
+
+    _BARE_TS = re.compile(r"^[A-Z_]+_OVER_TIME\(")
+    _WRAPPED_TS = re.compile(r"^(?:AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z_]+_OVER_TIME\(")
+
+    def _spec(self, *, stats_expr, alias, metric_field, group_fields):
+        return promql.MeasureSpec(
+            source_type="TS",
+            time_filter="@timestamp >= ?_tstart AND @timestamp <= ?_tend",
+            bucket_expr="time_bucket = TBUCKET(5 minute)",
+            group_fields=list(group_fields),
+            filters=[],
+            alias=alias,
+            stats_expr=stats_expr,
+            final_alias=alias,
+            metric_field=metric_field,
+        )
+
+    def test_bare_ts_target_is_wrapped_when_grouped_with_regular_aggregate(self):
+        specs = [
+            self._spec(
+                stats_expr="AVG(AVG_OVER_TIME(process_virtual_memory_bytes, 5m))",
+                alias="process_virtual_memory_bytes_A",
+                metric_field="process_virtual_memory_bytes",
+                group_fields=["instance", "job"],
+            ),
+            self._spec(
+                stats_expr="AVG_OVER_TIME(process_resident_memory_max_bytes, 5m)",
+                alias="process_resident_memory_max_bytes_B",
+                metric_field="process_resident_memory_max_bytes",
+                group_fields=["instance", "job"],
+            ),
+        ]
+
+        normalized = promql._normalize_mixed_ts_stats_exprs(specs)
+        exprs = [s.stats_expr.strip() for s in normalized]
+
+        # No term may be a bare time-series aggregate now.
+        self.assertFalse(
+            any(self._BARE_TS.match(e) for e in exprs),
+            f"bare time-series aggregate survived: {exprs!r}",
+        )
+        # The instant-selector target is wrapped in a matching outer aggregate.
+        self.assertIn(
+            "AVG(AVG_OVER_TIME(process_resident_memory_max_bytes, 5m))",
+            exprs,
+        )
+
+    def test_shared_pipeline_does_not_mix_bare_and_wrapped_ts_aggregates(self):
+        specs = [
+            self._spec(
+                stats_expr="AVG(AVG_OVER_TIME(process_virtual_memory_bytes, 5m))",
+                alias="process_virtual_memory_bytes_A",
+                metric_field="process_virtual_memory_bytes",
+                group_fields=["instance", "job"],
+            ),
+            self._spec(
+                stats_expr="AVG_OVER_TIME(process_resident_memory_max_bytes, 5m)",
+                alias="process_resident_memory_max_bytes_B",
+                metric_field="process_resident_memory_max_bytes",
+                group_fields=["instance", "job"],
+            ),
+        ]
+
+        result = promql._build_shared_measure_pipeline("metrics-*", specs)
+        self.assertIsNotNone(result)
+        parts, _, _ = result
+        stats_line = next(line for line in parts if line.startswith("| STATS"))
+
+        # A bare TS term appears as ``alias = X_OVER_TIME(`` right after STATS or
+        # a comma; a wrapped term as ``= AGG(X_OVER_TIME(``. The two must not
+        # coexist in one STATS.
+        has_bare = bool(
+            re.search(r"(?:STATS|,)\s*[A-Za-z0-9_.`]+\s*=\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        has_wrapped = bool(
+            re.search(r"=\s*(?:AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        self.assertFalse(
+            has_bare and has_wrapped,
+            f"STATS mixes bare and wrapped time-series aggregates: {stats_line!r}",
+        )
+
+    def test_bucket_only_single_target_keeps_bare_ts_aggregate(self):
+        # Time-bucket-only grouping with a single TS term must keep the bare
+        # form — wrapping it would needlessly change long-standing output and is
+        # not required for validity.
+        specs = [
+            self._spec(
+                stats_expr="MAX_OVER_TIME(node_memory_MemAvailable_bytes, 1h)",
+                alias="node_memory_MemAvailable_bytes",
+                metric_field="node_memory_MemAvailable_bytes",
+                group_fields=[],
+            ),
+        ]
+
+        normalized = promql._normalize_mixed_ts_stats_exprs(specs)
+        self.assertEqual(
+            normalized[0].stats_expr,
+            "MAX_OVER_TIME(node_memory_MemAvailable_bytes, 1h)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -388,9 +388,52 @@ def _parameterize_grafana_label_matchers(expr: str) -> str:
     return "".join(pieces)
 
 
+def _normalize_count_scalar(expr):
+    """Rewrite the removed Prometheus 1.x ``count_scalar(v)`` to ``scalar(count(v))``.
+
+    ``count_scalar`` was dropped in Prometheus 2.0 but lingers in old community
+    dashboards. It is exactly equivalent to ``scalar(count(v))``, which the
+    translator already handles, so this substitution is lossless. The argument
+    may contain its own parentheses/braces, so the closing paren is located by
+    balancing rather than a naive regex (issue #63).
+    """
+    needle = "count_scalar("
+    lowered = expr.lower()
+    idx = lowered.find(needle)
+    if idx == -1:
+        return expr
+    out = []
+    pos = 0
+    while idx != -1:
+        out.append(expr[pos:idx])
+        arg_start = idx + len(needle)
+        depth = 1
+        i = arg_start
+        while i < len(expr) and depth:
+            ch = expr[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth != 0:
+            # Unbalanced parens: leave the original text untouched and stop.
+            out.append(expr[idx:])
+            return "".join(out)
+        inner = expr[arg_start:i]
+        out.append(f"scalar(count({inner}))")
+        pos = i + 1
+        idx = lowered.find(needle, pos)
+    out.append(expr[pos:])
+    return "".join(out)
+
+
 def preprocess_grafana_macros(expr, rule_pack=None):
     """Replace Grafana-specific macros with valid PromQL placeholders."""
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
+    expr = _normalize_count_scalar(expr)
     replacements = [
         (r"\$__rate_interval", "5m"),
         (r"\$__interval", "5m"),
@@ -1531,6 +1574,11 @@ def _ast_binary_fragment(node, expr):
     # builder can either apply the safe same-metric ``or`` rewrite or
     # refuse the translation honestly.
     if op.lower() in _SET_OPERATORS:
+        if op.lower() == "or":
+            survivor = _strip_or_vector_fallback(expr, left, right)
+            if survivor is not None:
+                survivor.extra.setdefault("parser_backend", "ast")
+                return survivor
         frag = _make_binary_fragment(expr, left, op.lower(), right)
         frag.extra.setdefault("parser_backend", "ast")
         if modifier:
@@ -1677,6 +1725,53 @@ def _restore_sanitized_labels(frag, label_map):
     for child in _iter_fragment_children(frag):
         _restore_sanitized_labels(child, label_map)
     return frag
+
+
+def _is_vector_fallback_operand(frag):
+    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback.
+
+    ``vector(N)`` has no series labels; in ``X or vector(N)`` it only fills the
+    gaps where ``X`` has no data with the constant ``N``. It is not a metric in
+    its own right, so when it is the fallback side of an ``or`` we can drop it
+    (issue #66 Pattern A).
+    """
+    if frag is None:
+        return False
+    if frag.extra.get("call_name") != "vector":
+        return False
+    reasons = frag.extra.get("not_feasible_reasons") or []
+    # Only the bare ``vector()`` redesign reason may be present; anything else
+    # means the operand carries real translation work we must not silently drop.
+    return all(r == "vector() requires manual redesign" for r in reasons)
+
+
+def _strip_or_vector_fallback(expr, left_frag, right_frag):
+    """Collapse ``X or vector(N)`` (or the mirror) to ``X`` with a zero-fill note.
+
+    Returns the surviving operand fragment tagged with ``or_vector_fallback`` so
+    the translator can emit the approximation warning, or ``None`` when neither
+    side is a bare ``vector()`` fallback.
+    """
+    survivor = None
+    if _is_vector_fallback_operand(right_frag) and not _is_vector_fallback_operand(left_frag):
+        survivor = left_frag
+    elif _is_vector_fallback_operand(left_frag) and not _is_vector_fallback_operand(right_frag):
+        survivor = right_frag
+    if survivor is None:
+        return None
+    # Drop the vector operand's not-feasible reason from the survivor: it was
+    # only carried because the parser unioned child reasons upward.
+    reasons = [
+        r
+        for r in (survivor.extra.get("not_feasible_reasons") or [])
+        if r != "vector() requires manual redesign"
+    ]
+    if reasons:
+        survivor.extra["not_feasible_reasons"] = reasons
+    else:
+        survivor.extra.pop("not_feasible_reasons", None)
+    survivor.extra["or_vector_fallback"] = True
+    return survivor
 
 
 def _make_binary_fragment(expr, left_frag, op, right_frag):
@@ -2461,48 +2556,123 @@ def _timeseries_stats_window(specs):
     return "5m"
 
 
+_OUTER_TO_TS_AGG = {
+    "AVG": "AVG_OVER_TIME",
+    "SUM": "SUM_OVER_TIME",
+    "MIN": "MIN_OVER_TIME",
+    "MAX": "MAX_OVER_TIME",
+    "COUNT": "COUNT_OVER_TIME",
+}
+_TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+
+
 def _normalize_mixed_ts_stats_exprs(specs):
-    """Avoid mixing TS aggregates and regular aggregates in one TS STATS."""
+    """Keep a single TS ``STATS`` internally consistent.
+
+    Elasticsearch rejects a ``TS ... | STATS`` that mixes a *time-series*
+    aggregate (``AVG_OVER_TIME(...)`` etc.) with a *regular* aggregate
+    (``AVG(...)`` / ``AVG(AVG_OVER_TIME(...))``) in the same
+    ``TimeSeriesAggregate`` ("Cannot mix time-series aggregate ... and regular
+    aggregate ..."). Two valid shapes exist, and which one is legal depends on
+    the grouping:
+
+    * **Bare** time-series aggregate — ``AVG_OVER_TIME(field, w)`` — is only
+      legal when the ``STATS`` groups solely by the time bucket. With any extra
+      grouping dimension ES requires a regular aggregate.
+    * **Wrapped** regular aggregate — ``AVG(AVG_OVER_TIME(field, w))`` — is
+      legal for *both* time-bucket-only and time-bucket-plus-dimensions
+      grouping.
+
+    Single-target translation already follows this invariant. The multi-target
+    merge path, however, can leave one target bare (an instant-selector target
+    such as ``process_resident_memory_max_bytes{...}`` → ``AVG_OVER_TIME(...)``)
+    while its ``irate(...)`` siblings become ``AVG(AVG_OVER_TIME(...))``. That
+    mix passed offline but 400s at runtime.
+
+    Normalization rule:
+
+    * If the panel groups by extra dimensions, **or** any term is already a
+      wrapped regular aggregate, every TS-bearing term is rendered in the
+      universally-valid wrapped form (bare ``X_OVER_TIME`` gets an outer
+      aggregate; a bare regular ``AGG(field)`` gets an ``X_OVER_TIME`` inner).
+    * Otherwise (time-bucket-only grouping, no wrapped terms) the historical
+      bare-TS form is preserved so single-metric / time-bucket-only queries are
+      unchanged.
+    """
     if not specs or specs[0].source_type != "TS":
         return specs
     if not any(re.search(r"\b[A-Z_]+_OVER_TIME\(", spec.stats_expr or "") for spec in specs):
         return specs
     window = _timeseries_stats_window(specs)
-    outer_to_ts = {
-        "AVG": "AVG_OVER_TIME",
-        "SUM": "SUM_OVER_TIME",
-        "MIN": "MIN_OVER_TIME",
-        "MAX": "MAX_OVER_TIME",
-        "COUNT": "COUNT_OVER_TIME",
-    }
+
+    has_extra_group_dims = any(spec.group_fields for spec in specs)
+    has_wrapped_regular_ts = any(
+        re.search(r"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z_]+_OVER_TIME\(", spec.stats_expr or "")
+        for spec in specs
+    )
+    # When grouping by extra dimensions, or when at least one term is already a
+    # regular aggregate, the only universally-valid shape is the wrapped form.
+    prefer_wrapped = has_extra_group_dims or has_wrapped_regular_ts
+
     normalized = []
     for spec in specs:
-        expr = spec.stats_expr or ""
+        expr = (spec.stats_expr or "").strip()
         metric_field = str(spec.metric_field or "").strip()
         if not metric_field:
             normalized.append(spec)
             continue
-        match = re.fullmatch(
-            rf"\s*(AVG|SUM|MIN|MAX|COUNT)\(\s*{re.escape(metric_field)}\s*\)\s*",
+
+        bare_regular = re.fullmatch(
+            rf"(AVG|SUM|MIN|MAX|COUNT)\(\s*{re.escape(metric_field)}\s*\)",
             expr,
         )
-        if not match:
-            normalized.append(spec)
-            continue
-        ts_func = outer_to_ts[match.group(1)]
-        warning = (
-            f"Converted {match.group(1)}({metric_field}) to "
-            f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+        bare_ts = re.fullmatch(
+            rf"([A-Z_]+_OVER_TIME)\(\s*{re.escape(metric_field)}\s*,\s*[^)]+\)",
+            expr,
         )
+
+        if prefer_wrapped:
+            # Target the wrapped ``OUTER(TS_FUNC(field, w))`` form.
+            if bare_ts:
+                ts_func = bare_ts.group(1)
+                outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
+                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                warning = (
+                    f"Wrapped {ts_func}({metric_field}, {window}) in {outer}(...) so "
+                    f"the grouped TS panel target validates (no bare time-series "
+                    f"aggregate mixed with regular aggregates)"
+                )
+            elif bare_regular:
+                outer = bare_regular.group(1)
+                ts_func = _OUTER_TO_TS_AGG[outer]
+                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                warning = (
+                    f"Converted {outer}({metric_field}) to "
+                    f"{outer}({ts_func}({metric_field}, {window})) so the grouped "
+                    f"TS panel target validates"
+                )
+            else:
+                normalized.append(spec)
+                continue
+        else:
+            # Time-bucket-only grouping and no wrapped terms: keep the historical
+            # bare time-series form. Convert a bare regular aggregate to the bare
+            # TS aggregate so it lines up with the other bare TS terms.
+            if not bare_regular:
+                normalized.append(spec)
+                continue
+            ts_func = _OUTER_TO_TS_AGG[bare_regular.group(1)]
+            new_expr = f"{ts_func}({metric_field}, {window})"
+            warning = (
+                f"Converted {bare_regular.group(1)}({metric_field}) to "
+                f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+            )
+
         warnings = list(spec.warnings)
         if warning not in warnings:
             warnings.append(warning)
         normalized.append(
-            dataclasses.replace(
-                spec,
-                stats_expr=f"{ts_func}({metric_field}, {window})",
-                warnings=warnings,
-            )
+            dataclasses.replace(spec, stats_expr=new_expr, warnings=warnings)
         )
     return normalized
 

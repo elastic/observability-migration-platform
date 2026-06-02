@@ -5,4 +5,4 @@ warning: count() over a comparison is approximated as document COUNT(*); multi-s
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE up == 1
-| STATS up_count = COUNT(*)
+| STATS up_count = COUNT(up)

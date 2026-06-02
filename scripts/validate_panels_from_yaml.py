@@ -16,6 +16,7 @@ Improvements over original:
   - Static structural validation (chart-type vs query shape, declared fields vs parsed fields)
 """
 import glob
+import importlib.util as _ilu
 import json
 import os
 import re
@@ -26,6 +27,17 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import yaml
+
+# Reconstruct Lens panels into ES|QL so they validate like native ES|QL panels.
+# This script is run directly (not imported as a package), so load the sibling
+# module by path rather than via a package-relative import.
+_lr_spec = _ilu.spec_from_file_location(
+    "lens_reconstruct",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "lens_reconstruct.py"),
+)
+assert _lr_spec is not None and _lr_spec.loader is not None
+lens_reconstruct = _ilu.module_from_spec(_lr_spec)
+_lr_spec.loader.exec_module(lens_reconstruct)
 
 ES_ENDPOINT = os.environ["ELASTICSEARCH_ENDPOINT"].rstrip("/")
 API_KEY = os.environ["KEY"]
@@ -65,11 +77,152 @@ WORKERS_LARGE =  3   # TS, PROMQL
 # Query execution
 # ---------------------------------------------------------------------------
 
+# ?param -> underlying field, parsed from "WHERE <field> <op> ?param". Grafana
+# dashboard template variables (?node, ?job, ?instance, ?cluster, ...) become
+# ES|QL params; binding them to "" matches nothing, so a panel that is correct
+# for a selected variable value looks like a (false) zero-row result. Sample a
+# real value of the underlying field from the cluster instead — the faithful
+# equivalent of a user picking a value from the dashboard dropdown.
+# Matches both ES|QL comparisons (``instance == ?node``) and PromQL-style label
+# matchers inside a PROMQL selector (``{instance=?instance}``). The operator
+# alternation lists multi-char ops first; the trailing ``=(?!=)`` catches a bare
+# single ``=`` (PromQL equality) without also consuming the ``==`` case.
+_PARAM_FIELD_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_.]*)\s*"
+    r"(?:==|!=|>=|<=|>|<|=~|!~|RLIKE|LIKE|IN|=(?!=))\s*\(?\s*\?(\w+)",
+    re.IGNORECASE,
+)
+
+# Cache sampled field values for the whole run so we hit the cluster at most
+# once per field. None means "looked up, nothing usable".
+_FIELD_VALUE_CACHE: dict[str, str | None] = {}
+
+
+def _param_field_map(query: str) -> dict[str, str]:
+    """Map each ``?param`` to the field it is compared against in the query."""
+    mapping: dict[str, str] = {}
+    for field, param in _PARAM_FIELD_RE.findall(query):
+        mapping.setdefault(param, field)
+    return mapping
+
+
+def _sample_field_value(field: str) -> str | None:
+    """Return the most common non-null value of *field*, or None.
+
+    Cached per field. Used only to bind dashboard-template params, never to
+    alter the query under test.
+    """
+    if field in _FIELD_VALUE_CACHE:
+        return _FIELD_VALUE_CACHE[field]
+    value: str | None = None
+    # ``field`` may be backtick-quoted in the query; the lookup needs it quoted
+    # too, but the bound value is the bare string.
+    quoted = field if field.startswith("`") else f"`{field}`" if "-" in field else field
+    probe = (
+        f"FROM metrics-* | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend "
+        f"| WHERE {quoted} IS NOT NULL | STATS c = COUNT(*) BY {quoted} "
+        f"| SORT c DESC | LIMIT 1"
+    )
+    body = {
+        "query": probe,
+        "params": [{"_tstart": _TSTART}, {"_tend": _TEND}],
+        "columnar": True,
+    }
+    req = Request(
+        f"{ES_ENDPOINT}/_query", data=json.dumps(body).encode(),
+        headers=HEADERS, method="POST",
+    )
+    try:
+        with urlopen(req, timeout=30, context=CTX) as resp:
+            data = json.loads(resp.read())
+            cols = [c["name"] for c in data.get("columns", [])]
+            columns = data.get("values", [])  # columnar: one list per column
+            bare = field.strip("`")
+            idx = next(
+                (i for i, c in enumerate(cols) if c.strip("`") == bare),
+                None,
+            )
+            if idx is not None and idx < len(columns) and columns[idx]:
+                value = columns[idx][0]
+    except Exception:
+        value = None
+    _FIELD_VALUE_CACHE[field] = value
+    return value
+
+
 def _build_params(query: str) -> list | None:
-    names = re.findall(r"\?(\w+)", query)
+    names = set(re.findall(r"\?(\w+)", query))
     if not names:
         return None
-    return [{name: _DEFAULT_PARAMS.get(name, "")} for name in set(names)]
+    field_map = _param_field_map(query)
+    params: list[dict] = []
+    for name in names:
+        if name in _DEFAULT_PARAMS:
+            params.append({name: _DEFAULT_PARAMS[name]})
+            continue
+        field = field_map.get(name)
+        sampled = _sample_field_value(field) if field else None
+        params.append({name: sampled if sampled is not None else ""})
+    return params
+
+
+_DASHBOARD_TIME_FILTER = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+
+
+def _inject_dashboard_time_filter(query: str) -> str:
+    """Bound a query to the dashboard time window, the way Kibana would.
+
+    The migrator deliberately strips the ``@timestamp >= ?_tstart AND
+    @timestamp <= ?_tend`` filter from emitted panel queries because Kibana
+    applies the dashboard time picker implicitly at render time. Running the
+    raw query here — outside Kibana — therefore scans the entire datastream
+    history, which both trips the Serverless ~1 GB per-query circuit breaker on
+    busy metrics and makes zero-row detection meaningless (a panel that is
+    correct for "last 4h" can look non-empty only because it swept all of
+    time). Re-inject the same bound Kibana would apply so validation mirrors
+    real execution.
+
+    * ``TS`` / ``FROM`` get a ``| WHERE @timestamp >= ?_tstart AND @timestamp
+      <= ?_tend`` filter right after the source command.
+    * ``PROMQL`` gets ``start=?_tstart end=?_tend`` options on the command line
+      (per the PROMQL command reference, which documents ``start``/``end`` time
+      range boundaries). The bare ``step=`` only sets resolution, not range.
+    * ``ROW`` has no index to bound.
+
+    Queries that already reference ``@timestamp``/``?_tstart`` (TS/FROM) or
+    already carry ``start=``/``end=`` (PROMQL) are left untouched.
+    """
+    if not query:
+        return query
+    stripped = query.lstrip()
+    first = stripped.split(None, 1)[0].upper() if stripped else ""
+    lines = query.splitlines()
+    if not lines:
+        return query
+
+    if first in ("TS", "FROM"):
+        if "@timestamp" in query or "?_tstart" in query:
+            return query
+        # Insert immediately after the source command (line 0) so the time
+        # bound is applied before any STATS/aggregation.
+        lines.insert(1, _DASHBOARD_TIME_FILTER)
+        return "\n".join(lines)
+
+    if first == "PROMQL":
+        head = lines[0]
+        if re.search(r"\bstart\s*=", head) or re.search(r"\bend\s*=", head):
+            return query
+        # Insert start=/end= right after the PROMQL keyword, before the other
+        # options (index=, step=, value=...).
+        lines[0] = re.sub(
+            r"^(\s*PROMQL)\b",
+            r"\1 start=?_tstart end=?_tend",
+            head,
+            count=1,
+        )
+        return "\n".join(lines)
+
+    return query
 
 
 def _timeout_for(query: str) -> int:
@@ -89,6 +242,10 @@ def _timeout_for(query: str) -> int:
 
 def es_esql(query: str) -> dict:
     """Execute query; return {ok, columns, row_count} or {ok:False, error, reason, raw}."""
+    # Mirror Kibana's dashboard time picker: bound TS/FROM scans to the test
+    # window so we don't false-positive on circuit breakers or sweep all of
+    # history when checking for zero rows.
+    query = _inject_dashboard_time_filter(query)
     timeout = _timeout_for(query)
     url = f"{ES_ENDPOINT}/_query"
     body: dict = {"query": query, "columnar": True}
@@ -360,10 +517,12 @@ def static_structural_issues(panel: dict) -> list[str]:
     declared_metrics = [m.get("field") for m in (esql_block.get("metrics") or []) if m.get("field")]
     declared_bd    = (esql_block.get("breakdown") or {}).get("field")
 
-    projected = set(shape["projected_fields"])
+    # Compare on the unquoted identifier: KEEP/declaration may backtick-quote
+    # hyphenated or reserved names inconsistently, but they name the same column.
+    projected = {_strip_backticks(f) for f in shape["projected_fields"]}
 
     # Dimension field must appear in query output
-    if declared_dim and declared_dim not in projected:
+    if declared_dim and _strip_backticks(declared_dim) not in projected:
         issues.append(
             f"static: declared dimension '{declared_dim}' not found in query output "
             f"(query projects: {sorted(projected)[:6]})"
@@ -371,14 +530,14 @@ def static_structural_issues(panel: dict) -> list[str]:
 
     # Metric fields must appear in query output
     for mf in declared_metrics:
-        if mf not in projected:
+        if _strip_backticks(mf) not in projected:
             issues.append(
                 f"static: declared metric '{mf}' not found in query output "
                 f"(query projects: {sorted(projected)[:6]})"
             )
 
     # Breakdown field must appear in query output
-    if declared_bd and declared_bd not in projected:
+    if declared_bd and _strip_backticks(declared_bd) not in projected:
         issues.append(
             f"static: declared breakdown '{declared_bd}' not found in query output "
             f"(query projects: {sorted(projected)[:6]})"
@@ -422,6 +581,57 @@ def _expected_columns(esql: dict) -> list[str]:
     return cols
 
 
+def _lens_metric_fields(lens: dict) -> list[str]:
+    """Return the metric (not breakdown) field names referenced by a Lens dict.
+
+    Counter typing only matters for the aggregated metric; breakdown fields are
+    grouping keys, never aggregated.
+    """
+    fields: list[str] = []
+    metrics = lens.get("metrics")
+    if isinstance(metrics, list):
+        for m in metrics:
+            if isinstance(m, dict) and m.get("field"):
+                fields.append(m["field"])
+    primary = lens.get("primary")
+    if isinstance(primary, dict) and primary.get("field"):
+        fields.append(primary["field"])
+    return fields
+
+
+def _counter_fields(fields: set[str]) -> set[str]:
+    """Return the subset of ``fields`` the cluster types as counters.
+
+    A counter (``time_series_metric: counter``) cannot be aggregated on the
+    FROM command with a bare SUM/AVG; the reconstruction needs to know which
+    fields require the TS form. One batched ``_field_caps`` POST (body, not URL,
+    to avoid URL-length limits) covers every Lens metric field at once.
+    """
+    if not fields:
+        return set()
+    body = json.dumps({"fields": sorted(fields)}).encode()
+    req = Request(
+        f"{ES_ENDPOINT}/metrics-*/_field_caps?include_unmapped=false",
+        data=body, headers=HEADERS, method="POST",
+    )
+    counters: set[str] = set()
+    try:
+        with urlopen(req, timeout=60, context=CTX) as resp:
+            data = json.loads(resp.read())
+        for field, types in data.get("fields", {}).items():
+            for type_name, meta in types.items():
+                if type_name == "unmapped":
+                    continue
+                if meta.get("time_series_metric") == "counter":
+                    counters.add(field)
+                    break
+    except Exception:
+        # On probe failure, degrade to gauge assumption (FROM form). Worst case
+        # the counter panels report the same failure they would have anyway.
+        return set()
+    return counters
+
+
 def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -> None:
     for p in panels:
         if "section" in p:
@@ -442,7 +652,16 @@ def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -
                 "_esql_raw": esql,
             })
         elif "lens" in p:
-            entries.append({**base, "kind": "lens", "query": None, "expected_cols": []})
+            # Defer ES|QL reconstruction until after a batch counter-field probe
+            # (collect_panels) so counter-typed metrics get the TS form.
+            entries.append({
+                **base,
+                "kind": "lens",
+                "query": None,
+                "expected_cols": [],
+                "is_lens": True,
+                "_lens_raw": p["lens"],
+            })
         # markdown → no entry (nothing to validate)
 
 
@@ -457,7 +676,39 @@ def collect_panels() -> list[dict]:
         for dash in doc.get("dashboards", []):
             title = dash.get("name") or dash.get("title") or yf.split("/")[-1]
             _walk_panels(dash.get("panels", []), all_panels, slug, title)
+
+    _reconstruct_lens_panels(all_panels)
     return all_panels
+
+
+def _reconstruct_lens_panels(entries: list[dict]) -> None:
+    """Reconstruct deferred Lens entries into ES|QL, counter-aware.
+
+    Runs after the walk so a single batched ``_field_caps`` probe classifies
+    every Lens metric field's counter-ness before reconstruction. Mutates each
+    Lens entry in place: success fills ``query``/``expected_cols``/``chart_type``;
+    failure records ``unsupported_reason``.
+    """
+    lens_entries = [e for e in entries if e.get("is_lens") and "_lens_raw" in e]
+    if not lens_entries:
+        return
+
+    metric_fields: set[str] = set()
+    for e in lens_entries:
+        metric_fields.update(_lens_metric_fields(e["_lens_raw"]))
+    counters = _counter_fields(metric_fields)
+
+    for e in lens_entries:
+        lens = e.pop("_lens_raw")
+        query, cols, reason = lens_reconstruct.lens_to_esql(lens, counter_fields=counters)
+        if query:
+            e["query"] = query
+            e["expected_cols"] = cols
+            e["chart_type"] = lens.get("type", "")
+        else:
+            e["query"] = None
+            e["expected_cols"] = []
+            e["unsupported_reason"] = reason
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +731,24 @@ def _zero_row_cause(query: str) -> str:
     return "data may not be seeded for this stream — run: bash scripts/run_seed_data.sh"
 
 
+def _strip_backticks(name: str) -> str:
+    """Normalize an ES|QL identifier for comparison.
+
+    Panel declarations store hyphenated / reserved field names backtick-quoted
+    (``breakdown.field: '`client-id`'``) because the query text requires the
+    quoting, but the ``_query`` response reports the bare column name
+    (``client-id``). Compare on the unquoted form so a correctly-projected
+    column is not reported as missing.
+    """
+    return str(name).strip().strip("`")
+
+
 def _missing_columns(result: dict, expected: list[str]) -> list[str]:
     """Return expected column names absent from the query's actual output."""
     if not result.get("ok") or not expected:
         return []
-    actual = set(result["columns"])
-    return [c for c in expected if c not in actual]
+    actual = {_strip_backticks(c) for c in result["columns"]}
+    return [c for c in expected if _strip_backticks(c) not in actual]
 
 
 # ---------------------------------------------------------------------------
@@ -495,12 +758,20 @@ def _missing_columns(result: dict, expected: list[str]) -> list[str]:
 def main() -> int:
     panels = collect_panels()
 
-    esql_panels = [p for p in panels if p["kind"] == "esql" and p.get("query")]
-    lens_panels  = [p for p in panels if p["kind"] == "lens"]
+    # Reconstructed Lens panels carry a query and validate exactly like ES|QL
+    # panels; unsupported Lens panels (no query) are reported with their reason.
+    esql_panels = [p for p in panels
+                   if (p["kind"] == "esql" or p.get("is_lens")) and p.get("query")]
+    lens_unsupported = [p for p in panels if p.get("is_lens") and not p.get("query")]
 
-    # Static structural validation (no ES call needed)
+    # Static structural validation (no ES call needed). Reconstructed Lens
+    # panels are skipped: the reconstruction parses migrator-authored ES|QL
+    # idioms it never emits and guarantees declared==projected by construction,
+    # so the static check would be redundant and false-positive-prone.
     static_issues_all: list[dict] = []
     for p in esql_panels:
+        if p.get("is_lens"):
+            continue
         issues = static_structural_issues(p)
         if issues:
             static_issues_all.append({**p, "static_issues": issues})
@@ -510,8 +781,10 @@ def main() -> int:
     total_panels = len(esql_panels)
     reused = total_panels - len(unique_queries)
 
+    lens_validated = [p for p in esql_panels if p.get("is_lens")]
     print(f"Panels:        {len(panels)} total  "
-          f"({total_panels} esql, {len(lens_panels)} lens [skipped])")
+          f"({total_panels} validated incl. {len(lens_validated)} lens, "
+          f"{len(lens_unsupported)} lens unsupported)")
     print(f"Unique queries: {len(unique_queries)}  ({reused} reused across panels)")
     print(f"Workers:       {WORKERS_SMALL} small (FROM/ROW)  {WORKERS_LARGE} large (TS/PROMQL)")
     print(f"Static issues: {len(static_issues_all)} panels with structural problems")
@@ -557,8 +830,9 @@ def main() -> int:
         result = query_results.get(p["query"], {"ok": False, "error": "missing result"})
         label  = f"[{p['slug']}] {p['dashboard']} / {p['panel']}"
 
-        # Static structural issues (reported regardless of ES outcome)
-        s_issues = static_structural_issues(p)
+        # Static structural issues (reported regardless of ES outcome).
+        # Reconstructed Lens panels skip this check (see note above).
+        s_issues = [] if p.get("is_lens") else static_structural_issues(p)
         if s_issues:
             for issue in s_issues:
                 print(f"  ⚑ {label}")
@@ -591,11 +865,12 @@ def main() -> int:
             passed += 1
             print(f"  ✓ {label}")
 
-    # --- Lens summary -------------------------------------------------------
-    if lens_panels:
-        print(f"\n  [LENS SKIP] {len(lens_panels)} panels not yet translatable:")
-        for lp in lens_panels:
+    # --- Lens unsupported summary ------------------------------------------
+    if lens_unsupported:
+        print(f"\n  [LENS UNSUPPORTED] {len(lens_unsupported)} panels could not be reconstructed:")
+        for lp in lens_unsupported:
             print(f"    [{lp['slug']}] {lp['dashboard']} / {lp['panel']}")
+            print(f"      {lp.get('unsupported_reason', 'unknown')}")
 
     # --- Summary ------------------------------------------------------------
     print()
@@ -604,7 +879,7 @@ def main() -> int:
     print(f"FAILED:  {len(failed)}")
     print(f"WARN:    {len(warnings)}  (schema / zero-row)")
     print(f"STATIC:  {len(static_warn)}  (structural issues detected before ES call)")
-    print(f"SKIPPED: {len(lens_panels)} lens panels")
+    print(f"LENS:    {len(lens_validated)} validated, {len(lens_unsupported)} unsupported")
     print("=" * 70)
 
     if failed:
@@ -634,7 +909,8 @@ def main() -> int:
             "failed": failed,
             "warnings": warnings,
             "static_warnings": static_warn,
-            "lens_skipped": lens_panels,
+            "lens_skipped": lens_unsupported,
+            "lens_validated": len(lens_validated),
         }, f, indent=2)
     print(f"\nFull results: {out_path}")
     return len(failed)

@@ -295,15 +295,20 @@ def metric_query_value_rule(context: PlanContext) -> str | None:
 @METRIC_PLANNERS.register(
     "datadog.plan.metric_toplist",
     priority=30,
-    summary="Plan Datadog toplists as Lens or ES|QL tables.",
+    summary="Plan Datadog toplists and bar charts as Lens or ES|QL tables.",
 )
 def metric_toplist_rule(context: PlanContext) -> str | None:
-    if context.widget.widget_type != "toplist":
+    # Datadog bar_chart is a grouped scalar aggregation (group_by + compute
+    # + sort + limit) — the same data shape as a toplist, just drawn as bars.
+    # Route it through the toplist grouped-aggregation path so it produces a
+    # faithful ranked table instead of an "unsupported widget" placeholder.
+    if context.widget.widget_type not in ("toplist", "bar_chart"):
         return None
     context.plan.backend = _metric_widget_backend(context)
     context.plan.kibana_type = "table"
-    context.plan.reasons.append(f"top list → {context.plan.backend} table with ORDER BY + LIMIT")
-    return f"selected {context.plan.backend} toplist table"
+    label = "bar chart" if context.widget.widget_type == "bar_chart" else "top list"
+    context.plan.reasons.append(f"{label} → {context.plan.backend} table with ORDER BY + LIMIT")
+    return f"selected {context.plan.backend} {context.widget.widget_type} table"
 
 
 @METRIC_PLANNERS.register(

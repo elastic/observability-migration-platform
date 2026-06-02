@@ -535,6 +535,32 @@ class TestFailureHonesty(unittest.TestCase):
             self.assertTrue(ctx.warnings,
                             "Cross-metric join without warning is a false-success")
 
+    def test_cross_metric_on_join_warning_names_on_modifier(self):
+        """on() joins must keep naming on(...) in the not-feasible warning (issue #65)."""
+        expr = "a_metric + on(namespace) group_left() b_metric"
+        ctx = _translate(expr)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        join_warnings = [w for w in ctx.warnings if "Cross-metric" in w]
+        self.assertTrue(join_warnings, f"expected a cross-metric warning, got {ctx.warnings}")
+        self.assertIn("on(namespace) group_left()", join_warnings[0])
+        self.assertNotIn("ignoring(", join_warnings[0])
+
+    def test_cross_metric_ignoring_group_right_warning_reflects_source(self):
+        """ignoring()+group_right() must be named accurately, not as on() (issue #65)."""
+        expr = (
+            "synapse_event_persisted_position "
+            "- ignoring(index,job,name) group_right() "
+            "synapse_event_processing_positions"
+        )
+        ctx = _translate(expr)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        join_warnings = [w for w in ctx.warnings if "Cross-metric" in w]
+        self.assertTrue(join_warnings, f"expected a cross-metric warning, got {ctx.warnings}")
+        warning = join_warnings[0]
+        self.assertIn("ignoring(index, job, name)", warning)
+        self.assertIn("group_right()", warning)
+        self.assertNotIn("on(", warning)
+
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
         expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"

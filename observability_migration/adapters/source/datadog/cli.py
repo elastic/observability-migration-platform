@@ -280,11 +280,17 @@ def _run_dashboard_pipeline(
     if args.smoke:
         smoke_payload = _smoke_uploaded_dashboards(all_results, output_dir, args, target_adapter)
 
+    # Source-side execution hits the live Datadog API per panel. Keep it
+    # strictly opt-in (--source-execution): otherwise translation must stay
+    # fully offline, even when DD_API_KEY/DD_APP_KEY happen to be in the
+    # environment. Forwarding creds unconditionally makes large offline/
+    # corpus runs block on api.datadoghq.com.
+    source_execution_enabled = getattr(args, "source_execution", False)
     verification_payload = annotate_results_with_verification(
         all_results,
         validation_records,
-        datadog_api_key=dd_creds.get("api_key", ""),
-        datadog_app_key=dd_creds.get("app_key", ""),
+        datadog_api_key=dd_creds.get("api_key", "") if source_execution_enabled else "",
+        datadog_app_key=dd_creds.get("app_key", "") if source_execution_enabled else "",
         datadog_site=dd_creds.get("site", "datadoghq.com"),
     )
     for dashboard_result in all_results:
@@ -1187,6 +1193,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--validate", action="store_true",
         help="Validate emitted ES|QL against Elasticsearch before compile/upload",
+    )
+    parser.add_argument(
+        "--source-execution", action="store_true",
+        help=(
+            "Execute each panel's source query against the live Datadog API "
+            "to build source/target comparison verification packets. Requires "
+            "DD_API_KEY/DD_APP_KEY (env or --env-file). Off by default: "
+            "translation stays fully offline and never calls the Datadog API."
+        ),
     )
     parser.add_argument(
         "--upload", action="store_true",

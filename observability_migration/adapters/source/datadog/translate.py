@@ -298,7 +298,8 @@ def _translate_single_metric(
     top_config = _extract_top_function_config(wq.metric_query)
     is_timeseries = plan.kibana_type == "xy"
     is_heatmap = plan.kibana_type == "heatmap"
-    is_toplist = widget.widget_type == "toplist"
+    # bar_chart shares the toplist grouped-aggregation shape (ranked groups).
+    is_toplist = widget.widget_type in ("toplist", "bar_chart")
     is_table = widget.widget_type in ("table", "query_table") and not is_toplist
     is_partition = plan.kibana_type in ("partition", "treemap")
     reducer = None if is_timeseries or is_heatmap else _request_reducer_for_queries(
@@ -1123,7 +1124,11 @@ def _extract_metric_sort(
 ) -> tuple[str, str, int]:
     sort_field = output_fields[0] if output_fields else ""
     sort_order = "DESC"
-    limit = _extract_toplist_limit(widget) if widget.widget_type == "toplist" else 100
+    limit = (
+        _extract_toplist_limit(widget)
+        if widget.widget_type in ("toplist", "bar_chart")
+        else 100
+    )
 
     for req in widget.raw_definition.get("requests", []):
         if not isinstance(req, dict):
@@ -1506,7 +1511,7 @@ def _build_log_widget_query(
 
     is_stream = widget.widget_type in ("log_stream", "list_stream")
     is_timeseries = plan.kibana_type == "xy"
-    is_toplist = widget.widget_type == "toplist"
+    is_toplist = widget.widget_type in ("toplist", "bar_chart")
     is_scalar = plan.kibana_type == "metric"
 
     group_fields = _infer_log_group_by(widget, field_map)
