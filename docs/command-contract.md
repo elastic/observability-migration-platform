@@ -50,9 +50,12 @@ For contributor workflows, install the dev extra and enable local git hooks:
 .venv/bin/pre-commit run --all-files
 ```
 
-Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` require `uvx` on
-`PATH`, including `obs-migrate compile`, `obs-migrate upload`, and
-`bash scripts/validate_dashboard_yaml.sh`.
+Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
+`obs-migrate compile` and `obs-migrate upload`) resolve the tool
+**installed-first**: install the Kibana tools in-venv with
+`pip install "obs-migrate[kibana]"` (requires Python 3.12+), otherwise the
+runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
+`obs-migrate doctor` to see which path is active.
 
 Datadog live API extraction (`--source api` on the dedicated CLI or Datadog
 `--input-mode api` through `obs-migrate migrate`) also requires the optional
@@ -525,12 +528,21 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
-bash scripts/validate_dashboard_yaml.sh migration_output/dashboards/yaml
-.venv/bin/python scripts/validate_dashboard_layout.py migration_output/dashboards/compiled
 ```
 
-`bash scripts/validate_dashboard_yaml.sh` requires `uvx` on `PATH` because it
-shells out to `kb-dashboard-lint`.
+Dashboard YAML lint and compiled-layout validation run automatically inside
+`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+
+```python
+from observability_migration.targets.kibana.lint import lint_dashboard_yaml
+ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+
+from observability_migration.targets.kibana.layout import validate_compiled_layout
+ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
+```
+
+The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
+`obs-migrate[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
 
 ### Data Setup
 

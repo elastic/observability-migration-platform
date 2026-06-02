@@ -39,13 +39,24 @@ functions:
 
 - `compile_yaml()` and `compile_all()` compile dashboard YAML to NDJSON.
 - `upload_yaml()` compiles and uploads a dashboard through `kb-dashboard-cli`.
-- `lint_dashboard_yaml()` runs `scripts/validate_dashboard_yaml.sh`.
-- `validate_compiled_layout()` runs `scripts/validate_dashboard_layout.py`.
+- `lint_dashboard_yaml()` runs the in-process YAML lint gate
+  (`observability_migration.targets.kibana.lint`).
+- `validate_compiled_layout()` runs the in-process layout validator
+  (`observability_migration.targets.kibana.layout`).
 - `sync_result_queries_to_yaml()` keeps emitted YAML aligned with post-validation query rewrites.
 
-Compilation and upload are implemented via `uvx kb-dashboard-cli`:
+Compilation and upload shell out to `kb-dashboard-cli`, resolved
+**installed-first**: if the console script is on `PATH` (the
+`pip install "obs-migrate[kibana]"` extra, which requires Python 3.12+) it is
+used directly; otherwise the runtime falls back to a pinned
+`uvx --from kb-dashboard-cli==<version> kb-dashboard-cli`. Lint and layout
+validation now run **in-process** inside the package and no longer shell out to
+repo scripts.
 
 ```bash
+# installed extra (3.12+):
+kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
+# or via the pinned uvx fallback (3.11):
 uvx kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
 ```
 
