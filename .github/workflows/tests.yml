@@ -206,3 +206,53 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  package-smoke:
+    name: Clean-install package smoke (${{ matrix.python-version }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.11"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python-version }}"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir dist
+
+      - name: Install wheel into a clean venv
+        run: |
+          python -m venv /tmp/cleanenv
+          if [ "${{ matrix.python-version }}" = "3.12" ]; then
+            /tmp/cleanenv/bin/pip install "$(ls dist/*.whl)[all]"
+          else
+            # 3.11: kb tools require 3.12, so install base + rely on uvx fallback
+            /tmp/cleanenv/bin/pip install "$(ls dist/*.whl)[grafana,datadog]"
+          fi
+
+      - name: Grafana end-to-end (offline) produces NDJSON
+        run: |
+          mkdir -p /tmp/gin && cp infra/grafana/dashboards/home.json /tmp/gin/
+          /tmp/cleanenv/bin/grafana-migrate --source files --input-dir /tmp/gin \
+            --output-dir /tmp/gout --assets dashboards
+          test -f "$(find /tmp/gout -name compiled_dashboards.ndjson | head -1)"
+
+      - name: Datadog end-to-end (offline) produces NDJSON
+        run: |
+          mkdir -p /tmp/ddin && cp infra/datadog/dashboards/sample_dashboard.json /tmp/ddin/
+          /tmp/cleanenv/bin/datadog-migrate --input-dir /tmp/ddin \
+            --output-dir /tmp/ddout --compile
+          test -f "$(find /tmp/ddout -name compiled_dashboards.ndjson | head -1)"
