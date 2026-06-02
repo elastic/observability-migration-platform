@@ -4755,5 +4755,59 @@ class DatadogNormalizeTileSizesTests(unittest.TestCase):
             )
 
 
+class TestDatadogSummaryView(unittest.TestCase):
+    def _result(self):
+        from observability_migration.adapters.source.datadog.models import (
+            DashboardResult,
+            TranslationResult,
+        )
+
+        dr = DashboardResult(dashboard_id="d1", dashboard_title="DD One", source_file="dd.json")
+        dr.compiled = True
+        ok = TranslationResult(widget_id="1", title="CPU", status="ok")
+        ok.verification_packet = {"semantic_gate": "Green"}
+        nf = TranslationResult(widget_id="2", title="APM thing", status="not_feasible")
+        nf.reasons = ["unsupported data source apm"]
+        nf.source_queries = ["avg:trace.http.request{*}"]
+        nf.verification_packet = {"semantic_gate": "Red"}
+        blocked = TranslationResult(widget_id="3", title="Blocked", status="blocked")
+        blocked.reasons = ["query parse failed"]
+        grp = TranslationResult(widget_id="g", title="Group", status="skipped", kibana_type="group")
+        dr.panel_results = [ok, nf, blocked, grp]
+        dr.total_widgets = 4
+        dr.recompute_counts()
+        return dr
+
+    def test_datadog_view_uses_widget_noun_and_folds_blocked(self):
+        from observability_migration.adapters.source.datadog.report import (
+            build_summary_view,
+        )
+
+        results = [self._result()]
+        review_queue = [
+            {
+                "dashboard": "DD One",
+                "panels": 3,
+                "migrated": 1,
+                "gates": {"green": 1, "yellow": 0, "red": 1},
+                "risk_score": 10,
+            }
+        ]
+        view = build_summary_view(results, review_queue=review_queue, run_id="dd1")
+        self.assertEqual(view.source, "datadog")
+        self.assertEqual(view.element_noun, "widget")
+        # Group excluded from renderable widget total: 3, not 4
+        self.assertEqual(view.totals.elements_total, 3)
+        # blocked + not_feasible both land in attention
+        statuses = sorted(a.status for a in view.attention)
+        self.assertIn("blocked", statuses)
+        self.assertIn("not_feasible", statuses)
+        # group never appears in attention/warnings
+        self.assertFalse(any(a.panel == "Group" for a in view.attention))
+        # Datadog source query list is joined into the attention item
+        nf = next(a for a in view.attention if a.status == "not_feasible")
+        self.assertEqual(nf.source_query, "avg:trace.http.request{*}")
+
+
 if __name__ == "__main__":
     unittest.main()
