@@ -1420,24 +1420,11 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "build" },
-    { name = "cyclonedx-bom" },
     { name = "datadog-api-client" },
     { name = "grafana-client" },
-    { name = "hypothesis" },
     { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12'" },
     { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12'" },
-    { name = "mypy" },
-    { name = "pip-licenses" },
-    { name = "pre-commit" },
     { name = "promql-parser" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "setuptools" },
-    { name = "types-pyyaml" },
-    { name = "types-requests" },
-    { name = "wheel" },
 ]
 datadog = [
     { name = "datadog-api-client" },
@@ -1479,7 +1466,6 @@ requires-dist = [
     { name = "lark", specifier = ">=1.2.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.20.1" },
     { name = "obs-migrate", extras = ["datadog"], marker = "extra == 'all'" },
-    { name = "obs-migrate", extras = ["dev"], marker = "extra == 'all'" },
     { name = "obs-migrate", extras = ["grafana"], marker = "extra == 'all'" },
     { name = "obs-migrate", extras = ["kibana"], marker = "extra == 'all'" },
     { name = "pip-licenses", marker = "extra == 'dev'", specifier = ">=5.0.0" },
