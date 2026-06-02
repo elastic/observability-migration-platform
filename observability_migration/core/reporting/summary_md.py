@@ -107,6 +107,15 @@ def _cell(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
+def _inline(text: str) -> str:
+    """Sanitize a value for inline list/prose context (newlines only).
+
+    Unlike table cells, list items do not treat ``|`` as a delimiter, so we
+    leave pipes intact (e.g. "ES|QL" should read naturally).
+    """
+    return str(text).replace("\n", " ")
+
+
 def _code(text: str) -> str:
     """Render text as an inline code span, neutralizing backticks."""
     return "`" + str(text).replace("`", "ʼ") + "`"
@@ -242,10 +251,10 @@ def _render_attention(view: SummaryView) -> list[str]:
         "blocked": "⛔",
     }
     for dash, items in by_dash.items():
-        out.append(f"### {dash}")
+        out.append(f"### {_inline(dash)}")
         for item in items:
             reason = "; ".join(item.reasons) if item.reasons else "needs manual review"
-            out.append(f"- **{badge.get(item.status, '•')} {_cell(item.panel)}** — {_cell(reason)}")
+            out.append(f"- **{badge.get(item.status, '•')} {_inline(item.panel)}** — {_inline(reason)}")
             if item.source_query:
                 out.append(f"  {_code(_truncate(item.source_query))}")
         out.append("")
@@ -264,11 +273,11 @@ def _render_warnings(view: SummaryView) -> list[str]:
         for item in items:
             reason = item.reasons[0] if item.reasons else "warning"
             groups[reason] += 1
-        out.append(f"<details><summary>{_cell(dash)} — {len(items)} warnings</summary>")
+        out.append(f"<details><summary>{_inline(dash)} — {len(items)} warnings</summary>")
         out.append("")
         for reason, count in groups.most_common(_WARNING_GROUP_CAP):
             suffix = f" ×{count}" if count > 1 else ""
-            out.append(f"- {_cell(reason)}{suffix}")
+            out.append(f"- {_inline(reason)}{suffix}")
         extra = len(groups) - _WARNING_GROUP_CAP
         if extra > 0:
             out.append(f"- _+{extra} more — see `migration_report.json`_")
@@ -295,10 +304,10 @@ def _render_gaps(view: SummaryView) -> list[str]:
         out.append(f"### {titles.get(cat, cat.title())} ({len(tasks)})")
         for task in tasks:
             cx = f" _({task.complexity})_" if task.complexity else ""
-            alt = f" → {_cell(task.kibana_alternative)}" if task.kibana_alternative else ""
-            where = f"**{_cell(task.dashboard)}**" if task.dashboard else ""
-            item = f" → *{_cell(task.item)}*" if task.item else ""
-            out.append(f"- {where}{item}: {_cell(task.detail)}{alt}{cx}")
+            alt = f" → {_inline(task.kibana_alternative)}" if task.kibana_alternative else ""
+            where = f"**{_inline(task.dashboard)}**" if task.dashboard else ""
+            item = f" → *{_inline(task.item)}*" if task.item else ""
+            out.append(f"- {where}{item}: {_inline(task.detail)}{alt}{cx}")
         out.append("")
     return out
 
