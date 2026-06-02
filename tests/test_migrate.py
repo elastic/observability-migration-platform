@@ -96,6 +96,49 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
 
+    def test_count_scalar_normalized_to_scalar_count(self):
+        # count_scalar() was removed in Prometheus 2.0; it is semantically
+        # identical to scalar(count()). Normalise it at preprocessing so the
+        # AST parser does not choke on the unknown function (issue #63).
+        clean = migrate.preprocess_grafana_macros("count_scalar(up)", self.rule_pack)
+        self.assertEqual(clean, "scalar(count(up))")
+
+    def test_count_scalar_normalized_with_label_matcher_braces(self):
+        # The argument can contain its own braces/parens; the rewrite must keep
+        # the whole balanced argument intact.
+        clean = migrate.preprocess_grafana_macros(
+            'count_scalar(node_cpu{mode="user", alias="a1"})', self.rule_pack
+        )
+        self.assertEqual(clean, 'scalar(count(node_cpu{mode="user", alias="a1"}))')
+
+    def test_count_scalar_no_longer_fails_to_parse(self):
+        # Full expression from issue #63 (Bind DNS dashboard #1666, panel 16).
+        # The count_scalar normalisation must remove the AST parse failure and
+        # the "Could not extract metric name" follow-on so the expression parses
+        # like its scalar(count()) equivalent. (Whether this particular
+        # grouped/scalar arithmetic then fully translates is a separate,
+        # pre-existing limitation surfaced honestly as a divergent-grouping
+        # not-feasible, not a count_scalar parse failure.)
+        expr = (
+            'sum(rate(node_cpu{alias="a1"}[120s])) by (mode) * 100 '
+            '/ count_scalar(node_cpu{mode="user", alias="a1"})'
+        )
+        translated = self.translate(expr)
+        joined = " ".join(translated.warnings)
+        self.assertNotIn("unknown function with name 'count_scalar'", joined)
+        self.assertNotIn("Could not extract metric name", joined)
+
+    def test_count_scalar_divides_ungrouped_metric_is_feasible(self):
+        # When the count_scalar() result divides an ungrouped aggregate (the
+        # scalar broadcasts cleanly), the normalised expression translates.
+        expr = "sum(rate(node_cpu[120s])) / count_scalar(node_cpu)"
+        translated = self.translate(expr)
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertNotIn(
+            "unknown function with name 'count_scalar'",
+            " ".join(translated.warnings),
+        )
+
     def test_range_seconds_macro_is_preserved_as_duration_suffix(self):
         clean = migrate.preprocess_grafana_macros("sum(rate(http_requests_total[${__range_s}s]))", self.rule_pack)
         self.assertEqual(clean, "sum(rate(http_requests_total[3600s]))")

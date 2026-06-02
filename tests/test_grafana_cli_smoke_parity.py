@@ -1288,6 +1288,36 @@ class TestPromQLOrFallback(unittest.TestCase):
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
         self.assertIn("http_requests_total", ctx.esql_query or "")
 
+    def test_multi_metric_or_vector_zero_fallback_is_feasible(self):
+        """(sum(A) or vector(0)) + (sum(B) or vector(0)) must migrate (issue #66 Pattern A).
+
+        Each ``or vector(N)`` is a zero-fill fallback; stripping the vector
+        operand leaves a translatable multi-metric sum.
+        """
+        ctx = self._translate(
+            "(sum(a_metric) or vector(0)) + (sum(b_metric) or vector(0))"
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("a_metric", ctx.esql_query or "")
+        self.assertIn("b_metric", ctx.esql_query or "")
+        self.assertNotIn(
+            "vector() requires manual redesign", " ".join(ctx.warnings)
+        )
+        self.assertTrue(
+            any("zero-fill" in w.lower() or "vector(" in w.lower() for w in ctx.warnings),
+            f"expected a zero-fill approximation warning; got {ctx.warnings}",
+        )
+
+    def test_multi_metric_divide_by_or_vector_one_is_feasible(self):
+        """sum(A) / (sum(B) or on() vector(1)) must migrate (issue #66 Pattern A)."""
+        ctx = self._translate("sum(a_metric) / (sum(b_metric) or on() vector(1))")
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertIn("a_metric", ctx.esql_query or "")
+        self.assertIn("b_metric", ctx.esql_query or "")
+        self.assertNotIn(
+            "vector() requires manual redesign", " ".join(ctx.warnings)
+        )
+
     def test_and_remains_not_feasible(self):
         """PromQL 'and' (set intersection) has no safe ES|QL equivalent."""
         ctx = self._translate("rate(foo_total[5m]) and rate(bar_total[5m])")
