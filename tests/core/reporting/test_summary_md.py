@@ -231,5 +231,81 @@ class RenderNounTests(unittest.TestCase):
         self.assertNotIn("Panels", md)
 
 
+class GrafanaAdapterTests(unittest.TestCase):
+    def _result(self):
+        from observability_migration.core.reporting.report import (
+            MigrationResult,
+            PanelResult,
+        )
+
+        r = MigrationResult("Alpha", "alpha-uid")
+        r.source_file = "alpha.json"
+        r.compiled = True
+        ok = PanelResult("CPU", "timeseries", "xy", "migrated", 1.0)
+        ok.verification_packet = {"semantic_gate": "Green"}
+        nf = PanelResult("Ratio", "timeseries", "xy", "not_feasible", 0.0)
+        nf.reasons = ["divergent groupings"]
+        nf.promql_expr = "sum(a)/sum(b)"
+        nf.verification_packet = {"semantic_gate": "Red"}
+        warn = PanelResult("Mem", "timeseries", "xy", "migrated_with_warnings", 0.5)
+        warn.reasons = ["label matcher params need manual review"]
+        warn.verification_packet = {"semantic_gate": "Yellow"}
+        row = PanelResult("Section", "row", "", "skipped", 0.0)
+        r.panel_results = [ok, nf, warn, row]
+        r.total_panels = 4  # includes the row
+        r.migrated = 1
+        r.migrated_with_warnings = 1
+        r.not_feasible = 1
+        r.skipped = 1  # the row
+        return r
+
+    def test_build_view_maps_counts_and_attention(self):
+        from observability_migration.core.reporting.report import (
+            build_summary_view as build_grafana_summary_view,
+        )
+
+        results = [self._result()]
+        compile_results = [("alpha.yaml", True, "")]
+        review_queue = [
+            {
+                "dashboard": "Alpha",
+                "uid": "alpha-uid",
+                "panels": 3,
+                "migrated": 1,
+                "gates": {"green": 1, "yellow": 1, "red": 1},
+                "risk_score": 13,
+            }
+        ]
+        view = build_grafana_summary_view(
+            results,
+            compile_results,
+            review_queue=review_queue,
+            gap_data={},
+            run_id="r1",
+        )
+        self.assertEqual(view.source, "grafana")
+        self.assertEqual(view.element_noun, "panel")
+        # Rows excluded from renderable element total: 3 panels, not 4
+        self.assertEqual(view.totals.elements_total, 3)
+        self.assertEqual(view.totals.not_feasible, 1)
+        self.assertEqual(view.totals.green, 1)
+        self.assertEqual(view.totals.red, 1)
+        self.assertEqual(view.totals.compiled_ok, 1)
+        self.assertEqual(view.totals.compiled_total, 1)
+        # Attention has the not-feasible panel; rows never appear
+        nf_panels = [a for a in view.attention if a.status == "not_feasible"]
+        self.assertEqual(len(nf_panels), 1)
+        self.assertEqual(nf_panels[0].panel, "Ratio")
+        self.assertEqual(nf_panels[0].source_query, "sum(a)/sum(b)")
+        self.assertFalse(any(a.panel == "Section" for a in view.attention))
+        # Red-but-not-already-attention panels are added once (no dupes)
+        self.assertEqual(sum(1 for a in view.attention if a.panel == "Ratio"), 1)
+        # Warnings list excludes rows
+        self.assertTrue(all(w.panel != "Section" for w in view.warnings))
+        self.assertEqual(len(view.warnings), 1)
+        # Per-dashboard row carries risk from the review queue
+        self.assertEqual(view.dashboards[0].risk_score, 13)
+
+
 if __name__ == "__main__":
     unittest.main()
