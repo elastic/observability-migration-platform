@@ -96,6 +96,30 @@ The local dashboard workflow may also invoke `kb-dashboard-cli` and
 `kb-dashboard-lint`, but those tools are not themselves tracked artifacts in
 this repository.
 
+### `obs-migrate[kibana]` Extra
+
+The optional `[kibana]` dependency group (installed via
+`pip install ".[kibana]"`, resolved only on **Python 3.12+** per the
+`pyproject.toml` environment markers) declares the following packages so the
+Kibana compile/lint tooling can be installed in-environment instead of fetched
+at runtime via `uvx`:
+
+- `kb-dashboard-cli`, `kb-dashboard-lint`, and their transitive
+  `kb-dashboard-core`, `kb-dashboard-tools`, and `kb-dashboard-docs` — all
+  published by `strawgate/kb-yaml-to-lens` under the **MIT License**
+  (bundled text: `licenses/MIT-strawgate-kb-yaml-to-lens.txt`).
+- Their further transitive runtime dependencies (e.g. `click` (BSD-3-Clause),
+  `rich-click` (MIT), `elasticsearch` (Apache-2.0), `pygls` (Apache-2.0),
+  `lsprotocol` (MIT)) are likewise permissively licensed and compatible with
+  Elastic License 2.0 redistribution.
+
+These packages are **not** redistributed in source form by this repository and,
+because they resolve only on Python 3.12+, they are **not** present in the
+Python 3.11 dependency inventory/SBOM described below. They remain governed by
+their upstream licenses and are installed directly from PyPI into the user's
+environment. Revisit this section with legal before changing the distribution
+model (for example vendoring or bundling these tools into a shipped artifact).
+
 ## Python Dependency Environment
 
 Python packages resolved from `pyproject.toml` and `uv.lock` are not
@@ -114,6 +138,11 @@ Both files are regenerated deterministically from the locked Python 3.11
 dependency environment and their drift is enforced on every pull request by
 `.github/workflows/license-check.yml`, which also uploads the SBOM as a
 workflow artifact named `sbom-cyclonedx`.
+
+Because the gate runs on Python 3.11, the `[kibana]` extra's `kb-dashboard-*`
+tools (gated to Python 3.12+) are intentionally absent from this 3.11 inventory
+and SBOM; their licenses are documented in the `obs-migrate[kibana]` Extra
+section above.
 
 To regenerate locally (requires Python 3.11 to match CI):
 
