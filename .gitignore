@@ -44,12 +44,17 @@ htmlcov/
 # Cursor
 .cursor/
 
+# Claude
+.claude/
+
 # Generated migration output
 migration_output*/
 datadog_migration_output*/
 audit_output/
 examples/alerting/generated/
 blog_research_migration/
+e2e_datadog_run/
+pipeline_run/
 
 # Smoke / browser audit artifacts (written alongside *_smoke.json reports)
 *_browser_audit/

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 #
-# End-to-end Datadog → Kibana migration for all 6 integration dashboards.
+# End-to-end Datadog → Kibana migration for all 14 sample/integration dashboards.
 #
 # For each dashboard this script:
 #   1. Copies the source JSON to a temp input directory
