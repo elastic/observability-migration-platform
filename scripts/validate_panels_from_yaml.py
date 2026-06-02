@@ -65,11 +65,93 @@ WORKERS_LARGE =  3   # TS, PROMQL
 # Query execution
 # ---------------------------------------------------------------------------
 
+# ?param -> underlying field, parsed from "WHERE <field> <op> ?param". Grafana
+# dashboard template variables (?node, ?job, ?instance, ?cluster, ...) become
+# ES|QL params; binding them to "" matches nothing, so a panel that is correct
+# for a selected variable value looks like a (false) zero-row result. Sample a
+# real value of the underlying field from the cluster instead — the faithful
+# equivalent of a user picking a value from the dashboard dropdown.
+# Matches both ES|QL comparisons (``instance == ?node``) and PromQL-style label
+# matchers inside a PROMQL selector (``{instance=?instance}``). The operator
+# alternation lists multi-char ops first; the trailing ``=(?!=)`` catches a bare
+# single ``=`` (PromQL equality) without also consuming the ``==`` case.
+_PARAM_FIELD_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_.]*)\s*"
+    r"(?:==|!=|>=|<=|>|<|=~|!~|RLIKE|LIKE|IN|=(?!=))\s*\(?\s*\?(\w+)",
+    re.IGNORECASE,
+)
+
+# Cache sampled field values for the whole run so we hit the cluster at most
+# once per field. None means "looked up, nothing usable".
+_FIELD_VALUE_CACHE: dict[str, str | None] = {}
+
+
+def _param_field_map(query: str) -> dict[str, str]:
+    """Map each ``?param`` to the field it is compared against in the query."""
+    mapping: dict[str, str] = {}
+    for field, param in _PARAM_FIELD_RE.findall(query):
+        mapping.setdefault(param, field)
+    return mapping
+
+
+def _sample_field_value(field: str) -> str | None:
+    """Return the most common non-null value of *field*, or None.
+
+    Cached per field. Used only to bind dashboard-template params, never to
+    alter the query under test.
+    """
+    if field in _FIELD_VALUE_CACHE:
+        return _FIELD_VALUE_CACHE[field]
+    value: str | None = None
+    # ``field`` may be backtick-quoted in the query; the lookup needs it quoted
+    # too, but the bound value is the bare string.
+    quoted = field if field.startswith("`") else f"`{field}`" if "-" in field else field
+    probe = (
+        f"FROM metrics-* | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend "
+        f"| WHERE {quoted} IS NOT NULL | STATS c = COUNT(*) BY {quoted} "
+        f"| SORT c DESC | LIMIT 1"
+    )
+    body = {
+        "query": probe,
+        "params": [{"_tstart": _TSTART}, {"_tend": _TEND}],
+        "columnar": True,
+    }
+    req = Request(
+        f"{ES_ENDPOINT}/_query", data=json.dumps(body).encode(),
+        headers=HEADERS, method="POST",
+    )
+    try:
+        with urlopen(req, timeout=30, context=CTX) as resp:
+            data = json.loads(resp.read())
+            cols = [c["name"] for c in data.get("columns", [])]
+            columns = data.get("values", [])  # columnar: one list per column
+            bare = field.strip("`")
+            idx = next(
+                (i for i, c in enumerate(cols) if c.strip("`") == bare),
+                None,
+            )
+            if idx is not None and idx < len(columns) and columns[idx]:
+                value = columns[idx][0]
+    except Exception:
+        value = None
+    _FIELD_VALUE_CACHE[field] = value
+    return value
+
+
 def _build_params(query: str) -> list | None:
-    names = re.findall(r"\?(\w+)", query)
+    names = set(re.findall(r"\?(\w+)", query))
     if not names:
         return None
-    return [{name: _DEFAULT_PARAMS.get(name, "")} for name in set(names)]
+    field_map = _param_field_map(query)
+    params: list[dict] = []
+    for name in names:
+        if name in _DEFAULT_PARAMS:
+            params.append({name: _DEFAULT_PARAMS[name]})
+            continue
+        field = field_map.get(name)
+        sampled = _sample_field_value(field) if field else None
+        params.append({name: sampled if sampled is not None else ""})
+    return params
 
 
 _DASHBOARD_TIME_FILTER = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
