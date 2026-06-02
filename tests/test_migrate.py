@@ -3,6 +3,7 @@
 
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -432,8 +433,24 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(result.status, "requires_manual")
         query = yaml_panel["esql"]["query"]
-        self.assertIn("AVG_OVER_TIME(process_resident_memory_max_bytes, 5m)", query)
-        self.assertNotIn("AVG(process_resident_memory_max_bytes)", query)
+        # Whatever the grouping, the STATS must be internally consistent: it must
+        # NOT mix a bare time-series aggregate with a regular aggregate, or ES
+        # rejects it at runtime ("Cannot mix time-series aggregate and regular
+        # aggregate in the same TimeSeriesAggregate").
+        stats_line = next(
+            (line for line in query.splitlines() if "STATS" in line),
+            "",
+        )
+        has_bare_ts = bool(
+            re.search(r"(?:STATS|,)\s*[A-Za-z0-9_.`]+\s*=\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        has_wrapped_ts = bool(
+            re.search(r"=\s*(?:AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z]+_OVER_TIME\(", stats_line)
+        )
+        self.assertFalse(
+            has_bare_ts and has_wrapped_ts,
+            f"STATS mixes bare and wrapped time-series aggregates: {stats_line!r}",
+        )
 
     def test_missing_legend_label_is_dropped_from_translated_query(self):
         self.seed_field_caps({
@@ -1146,8 +1163,11 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_count_comparison_counts_matching_series(self):
         translated = self.translate("count(up == 1)", panel_type="stat")
         where_idx = translated.esql_query.index("| WHERE up == 1")
-        stats_idx = translated.esql_query.index("| STATS up_count = COUNT(*)")
+        # The TS command forbids COUNT(*); count the filtered metric field
+        # instead so the query is valid at runtime (not just offline-feasible).
+        stats_idx = translated.esql_query.index("| STATS up_count = COUNT(up)")
         self.assertLess(where_idx, stats_idx)
+        self.assertNotIn("COUNT(*)", translated.esql_query)
         self.assertNotIn("| WHERE up_count == 1", translated.esql_query)
 
     def test_xy_panel_with_extra_grouping_dimension_warns(self):

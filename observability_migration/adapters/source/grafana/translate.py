@@ -1691,16 +1691,21 @@ def simple_agg_family_rule(context):
             *_build_where_lines(filters),
             f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
+        # The TS command rejects ``COUNT(*)`` ("count_star can't be used with TS
+        # command; use count on a field instead"). The WHERE has already
+        # constrained rows to the comparison, so counting the (non-null) metric
+        # field is equivalent and valid. FROM keeps the cheaper ``COUNT(*)``.
+        count_expr = f"COUNT({gauge_physical_metric})" if pre_source == "TS" else "COUNT(*)"
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = COUNT(*)" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
+            lines.append(f"| STATS {alias} = {count_expr}" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = "COUNT(*)" if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
+            stats_expr = count_expr if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"

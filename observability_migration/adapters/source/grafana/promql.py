@@ -2461,48 +2461,123 @@ def _timeseries_stats_window(specs):
     return "5m"
 
 
+_OUTER_TO_TS_AGG = {
+    "AVG": "AVG_OVER_TIME",
+    "SUM": "SUM_OVER_TIME",
+    "MIN": "MIN_OVER_TIME",
+    "MAX": "MAX_OVER_TIME",
+    "COUNT": "COUNT_OVER_TIME",
+}
+_TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+
+
 def _normalize_mixed_ts_stats_exprs(specs):
-    """Avoid mixing TS aggregates and regular aggregates in one TS STATS."""
+    """Keep a single TS ``STATS`` internally consistent.
+
+    Elasticsearch rejects a ``TS ... | STATS`` that mixes a *time-series*
+    aggregate (``AVG_OVER_TIME(...)`` etc.) with a *regular* aggregate
+    (``AVG(...)`` / ``AVG(AVG_OVER_TIME(...))``) in the same
+    ``TimeSeriesAggregate`` ("Cannot mix time-series aggregate ... and regular
+    aggregate ..."). Two valid shapes exist, and which one is legal depends on
+    the grouping:
+
+    * **Bare** time-series aggregate — ``AVG_OVER_TIME(field, w)`` — is only
+      legal when the ``STATS`` groups solely by the time bucket. With any extra
+      grouping dimension ES requires a regular aggregate.
+    * **Wrapped** regular aggregate — ``AVG(AVG_OVER_TIME(field, w))`` — is
+      legal for *both* time-bucket-only and time-bucket-plus-dimensions
+      grouping.
+
+    Single-target translation already follows this invariant. The multi-target
+    merge path, however, can leave one target bare (an instant-selector target
+    such as ``process_resident_memory_max_bytes{...}`` → ``AVG_OVER_TIME(...)``)
+    while its ``irate(...)`` siblings become ``AVG(AVG_OVER_TIME(...))``. That
+    mix passed offline but 400s at runtime.
+
+    Normalization rule:
+
+    * If the panel groups by extra dimensions, **or** any term is already a
+      wrapped regular aggregate, every TS-bearing term is rendered in the
+      universally-valid wrapped form (bare ``X_OVER_TIME`` gets an outer
+      aggregate; a bare regular ``AGG(field)`` gets an ``X_OVER_TIME`` inner).
+    * Otherwise (time-bucket-only grouping, no wrapped terms) the historical
+      bare-TS form is preserved so single-metric / time-bucket-only queries are
+      unchanged.
+    """
     if not specs or specs[0].source_type != "TS":
         return specs
     if not any(re.search(r"\b[A-Z_]+_OVER_TIME\(", spec.stats_expr or "") for spec in specs):
         return specs
     window = _timeseries_stats_window(specs)
-    outer_to_ts = {
-        "AVG": "AVG_OVER_TIME",
-        "SUM": "SUM_OVER_TIME",
-        "MIN": "MIN_OVER_TIME",
-        "MAX": "MAX_OVER_TIME",
-        "COUNT": "COUNT_OVER_TIME",
-    }
+
+    has_extra_group_dims = any(spec.group_fields for spec in specs)
+    has_wrapped_regular_ts = any(
+        re.search(r"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z_]+_OVER_TIME\(", spec.stats_expr or "")
+        for spec in specs
+    )
+    # When grouping by extra dimensions, or when at least one term is already a
+    # regular aggregate, the only universally-valid shape is the wrapped form.
+    prefer_wrapped = has_extra_group_dims or has_wrapped_regular_ts
+
     normalized = []
     for spec in specs:
-        expr = spec.stats_expr or ""
+        expr = (spec.stats_expr or "").strip()
         metric_field = str(spec.metric_field or "").strip()
         if not metric_field:
             normalized.append(spec)
             continue
-        match = re.fullmatch(
-            rf"\s*(AVG|SUM|MIN|MAX|COUNT)\(\s*{re.escape(metric_field)}\s*\)\s*",
+
+        bare_regular = re.fullmatch(
+            rf"(AVG|SUM|MIN|MAX|COUNT)\(\s*{re.escape(metric_field)}\s*\)",
             expr,
         )
-        if not match:
-            normalized.append(spec)
-            continue
-        ts_func = outer_to_ts[match.group(1)]
-        warning = (
-            f"Converted {match.group(1)}({metric_field}) to "
-            f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+        bare_ts = re.fullmatch(
+            rf"([A-Z_]+_OVER_TIME)\(\s*{re.escape(metric_field)}\s*,\s*[^)]+\)",
+            expr,
         )
+
+        if prefer_wrapped:
+            # Target the wrapped ``OUTER(TS_FUNC(field, w))`` form.
+            if bare_ts:
+                ts_func = bare_ts.group(1)
+                outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
+                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                warning = (
+                    f"Wrapped {ts_func}({metric_field}, {window}) in {outer}(...) so "
+                    f"the grouped TS panel target validates (no bare time-series "
+                    f"aggregate mixed with regular aggregates)"
+                )
+            elif bare_regular:
+                outer = bare_regular.group(1)
+                ts_func = _OUTER_TO_TS_AGG[outer]
+                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                warning = (
+                    f"Converted {outer}({metric_field}) to "
+                    f"{outer}({ts_func}({metric_field}, {window})) so the grouped "
+                    f"TS panel target validates"
+                )
+            else:
+                normalized.append(spec)
+                continue
+        else:
+            # Time-bucket-only grouping and no wrapped terms: keep the historical
+            # bare time-series form. Convert a bare regular aggregate to the bare
+            # TS aggregate so it lines up with the other bare TS terms.
+            if not bare_regular:
+                normalized.append(spec)
+                continue
+            ts_func = _OUTER_TO_TS_AGG[bare_regular.group(1)]
+            new_expr = f"{ts_func}({metric_field}, {window})"
+            warning = (
+                f"Converted {bare_regular.group(1)}({metric_field}) to "
+                f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+            )
+
         warnings = list(spec.warnings)
         if warning not in warnings:
             warnings.append(warning)
         normalized.append(
-            dataclasses.replace(
-                spec,
-                stats_expr=f"{ts_func}({metric_field}, {window})",
-                warnings=warnings,
-            )
+            dataclasses.replace(spec, stats_expr=new_expr, warnings=warnings)
         )
     return normalized
 
