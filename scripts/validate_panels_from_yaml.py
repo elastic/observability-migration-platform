@@ -72,6 +72,65 @@ def _build_params(query: str) -> list | None:
     return [{name: _DEFAULT_PARAMS.get(name, "")} for name in set(names)]
 
 
+_DASHBOARD_TIME_FILTER = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+
+
+def _inject_dashboard_time_filter(query: str) -> str:
+    """Bound a query to the dashboard time window, the way Kibana would.
+
+    The migrator deliberately strips the ``@timestamp >= ?_tstart AND
+    @timestamp <= ?_tend`` filter from emitted panel queries because Kibana
+    applies the dashboard time picker implicitly at render time. Running the
+    raw query here — outside Kibana — therefore scans the entire datastream
+    history, which both trips the Serverless ~1 GB per-query circuit breaker on
+    busy metrics and makes zero-row detection meaningless (a panel that is
+    correct for "last 4h" can look non-empty only because it swept all of
+    time). Re-inject the same bound Kibana would apply so validation mirrors
+    real execution.
+
+    * ``TS`` / ``FROM`` get a ``| WHERE @timestamp >= ?_tstart AND @timestamp
+      <= ?_tend`` filter right after the source command.
+    * ``PROMQL`` gets ``start=?_tstart end=?_tend`` options on the command line
+      (per the PROMQL command reference, which documents ``start``/``end`` time
+      range boundaries). The bare ``step=`` only sets resolution, not range.
+    * ``ROW`` has no index to bound.
+
+    Queries that already reference ``@timestamp``/``?_tstart`` (TS/FROM) or
+    already carry ``start=``/``end=`` (PROMQL) are left untouched.
+    """
+    if not query:
+        return query
+    stripped = query.lstrip()
+    first = stripped.split(None, 1)[0].upper() if stripped else ""
+    lines = query.splitlines()
+    if not lines:
+        return query
+
+    if first in ("TS", "FROM"):
+        if "@timestamp" in query or "?_tstart" in query:
+            return query
+        # Insert immediately after the source command (line 0) so the time
+        # bound is applied before any STATS/aggregation.
+        lines.insert(1, _DASHBOARD_TIME_FILTER)
+        return "\n".join(lines)
+
+    if first == "PROMQL":
+        head = lines[0]
+        if re.search(r"\bstart\s*=", head) or re.search(r"\bend\s*=", head):
+            return query
+        # Insert start=/end= right after the PROMQL keyword, before the other
+        # options (index=, step=, value=...).
+        lines[0] = re.sub(
+            r"^(\s*PROMQL)\b",
+            r"\1 start=?_tstart end=?_tend",
+            head,
+            count=1,
+        )
+        return "\n".join(lines)
+
+    return query
+
+
 def _timeout_for(query: str) -> int:
     """Tiered timeout based on query mode and complexity."""
     first = query.split()[0].upper() if query else "FROM"
@@ -89,6 +148,10 @@ def _timeout_for(query: str) -> int:
 
 def es_esql(query: str) -> dict:
     """Execute query; return {ok, columns, row_count} or {ok:False, error, reason, raw}."""
+    # Mirror Kibana's dashboard time picker: bound TS/FROM scans to the test
+    # window so we don't false-positive on circuit breakers or sweep all of
+    # history when checking for zero rows.
+    query = _inject_dashboard_time_filter(query)
     timeout = _timeout_for(query)
     url = f"{ES_ENDPOINT}/_query"
     body: dict = {"query": query, "columnar": True}
@@ -360,10 +423,12 @@ def static_structural_issues(panel: dict) -> list[str]:
     declared_metrics = [m.get("field") for m in (esql_block.get("metrics") or []) if m.get("field")]
     declared_bd    = (esql_block.get("breakdown") or {}).get("field")
 
-    projected = set(shape["projected_fields"])
+    # Compare on the unquoted identifier: KEEP/declaration may backtick-quote
+    # hyphenated or reserved names inconsistently, but they name the same column.
+    projected = {_strip_backticks(f) for f in shape["projected_fields"]}
 
     # Dimension field must appear in query output
-    if declared_dim and declared_dim not in projected:
+    if declared_dim and _strip_backticks(declared_dim) not in projected:
         issues.append(
             f"static: declared dimension '{declared_dim}' not found in query output "
             f"(query projects: {sorted(projected)[:6]})"
@@ -371,14 +436,14 @@ def static_structural_issues(panel: dict) -> list[str]:
 
     # Metric fields must appear in query output
     for mf in declared_metrics:
-        if mf not in projected:
+        if _strip_backticks(mf) not in projected:
             issues.append(
                 f"static: declared metric '{mf}' not found in query output "
                 f"(query projects: {sorted(projected)[:6]})"
             )
 
     # Breakdown field must appear in query output
-    if declared_bd and declared_bd not in projected:
+    if declared_bd and _strip_backticks(declared_bd) not in projected:
         issues.append(
             f"static: declared breakdown '{declared_bd}' not found in query output "
             f"(query projects: {sorted(projected)[:6]})"
@@ -480,12 +545,24 @@ def _zero_row_cause(query: str) -> str:
     return "data may not be seeded for this stream — run: bash scripts/run_seed_data.sh"
 
 
+def _strip_backticks(name: str) -> str:
+    """Normalize an ES|QL identifier for comparison.
+
+    Panel declarations store hyphenated / reserved field names backtick-quoted
+    (``breakdown.field: '`client-id`'``) because the query text requires the
+    quoting, but the ``_query`` response reports the bare column name
+    (``client-id``). Compare on the unquoted form so a correctly-projected
+    column is not reported as missing.
+    """
+    return str(name).strip().strip("`")
+
+
 def _missing_columns(result: dict, expected: list[str]) -> list[str]:
     """Return expected column names absent from the query's actual output."""
     if not result.get("ok") or not expected:
         return []
-    actual = set(result["columns"])
-    return [c for c in expected if c not in actual]
+    actual = {_strip_backticks(c) for c in result["columns"]}
+    return [c for c in expected if _strip_backticks(c) not in actual]
 
 
 # ---------------------------------------------------------------------------
