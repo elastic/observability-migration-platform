@@ -72,7 +72,9 @@ You can use the migration tooling productively before configuring a target clust
 - Translate exported dashboards into YAML.
 - Pull live dashboards from Grafana or Datadog APIs.
 - Pull Grafana alert artifacts or Datadog monitor artifacts.
-- Review `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, and `rollout_plan.json`.
+- Read `migration_summary.md` for a human-readable verdict, scorecard, and
+  per-dashboard worklist, then drill into `migration_report.json`,
+  `migration_manifest.json`, `verification_packets.json`, and `rollout_plan.json`.
 - Compile generated YAML to NDJSON locally.
 
 Add `--es-url` when you want live target field discovery or emitted-query validation. Add `--kibana-url` when you want upload, target dashboard listing/deletion, smoke validation, or alert-rule payload checks against a real Kibana target.
@@ -94,6 +96,12 @@ Rules:
 Dashboard artifacts are written under `<output-dir>/dashboards`. Alert artifacts
 are written under `<output-dir>/alerts`. Grafana and Datadog both write a root
 `run_summary.json` that records which asset families ran.
+
+Every dashboard run also writes `<output-dir>/dashboards/migration_summary.md`: a
+human-readable Markdown summary (verdict, scorecard, per-dashboard table, must-fix
+worklist, grouped warnings, and non-panel gaps) rendered identically for both
+Grafana and Datadog. It is best-effort — if the summary cannot be rendered the
+migration still completes and the JSON artifacts are unaffected.
 
 ### Audited Asset Flag Matrix
 

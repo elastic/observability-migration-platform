@@ -154,18 +154,14 @@ def render_markdown(view: SummaryView) -> str:
     lines.append("")
     verdict = _verdict(t)
     if verdict == "❌":
-        lines.append(
-            f"> {verdict} **Blocking errors** — {t.compiled_total - t.compiled_ok} failed to compile."
-        )
+        lines.append(f"> {verdict} **Blocking errors** — {t.compiled_total - t.compiled_ok} failed to compile.")
     elif verdict == "⚠️":
         lines.append(
             f"> {verdict} **Review recommended** — {t.not_feasible} not-feasible, "
             f"{t.red} Red, {t.warnings} with warnings."
         )
     else:
-        lines.append(
-            f"> {verdict} **Clean** — all {t.elements_total} {_plural(noun, t.elements_total)} migrated."
-        )
+        lines.append(f"> {verdict} **Clean** — all {t.elements_total} {_plural(noun, t.elements_total)} migrated.")
     lines.append("")
 
     # 2. Scorecard
