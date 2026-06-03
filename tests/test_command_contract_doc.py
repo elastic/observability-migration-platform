@@ -120,6 +120,17 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("--max-pages", text)
         self.assertIn("rule_listing_truncated", text)
 
+    def test_command_contract_documents_seed_sample_data(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate seed-sample-data", text)
+        self.assertIn("ES-only", text)
+
+    def test_command_contract_documents_remove_sample_data_failclosed(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate remove-sample-data", text)
+        self.assertIn("fail-closed", text)
+        self.assertIn("telemetry-data-", text)
+
     def test_migrate_all_supported_skill_uses_datadog_widget_type(self):
         text = MIGRATE_ALL_SUPPORTED_SKILL.read_text(encoding="utf-8")
         self.assertIn("panels[].datadog_widget_type", text)

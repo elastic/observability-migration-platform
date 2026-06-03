@@ -448,6 +448,65 @@ Exit code is `2` when the cluster is unreachable or no payloads are found, `1`
 when any rule landed enabled / failed to create / failed to clean up, and `0`
 on a clean round trip.
 
+### Seed Sample Data
+
+`obs-migrate seed-sample-data` builds a telemetry contract from one or more
+migrated dashboard artifact directories and ingests synthetic documents into
+Elasticsearch so the migrated panels light up. It is the package-native,
+TLS-aware form of `scripts/setup_telemetry_data.py` (which is now a thin shim
+over the same library) — it ships in the installed wheel and needs no source
+checkout. It is **ES-only** (it does not touch Kibana); pair it with
+`remove-sample-data` to clean up afterward. Exit code is `2` when Elasticsearch
+is unreachable or inputs are invalid, `1` on ingest errors, and `0` otherwise.
+
+```bash
+# Seed synthetic data for a single migrated artifact directory.
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Merge multiple sources and cap cardinality; honors --ca-cert / --insecure.
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir grafana_output/dashboards \
+  --artifact-dir datadog_output/dashboards \
+  --data-hours 6 --interval-sec 30 --max-combinations 8 \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+```
+
+`--es-url`/`--api-key` fall back to `ELASTICSEARCH_ENDPOINT`/`KEY`. Use
+`--purge-foreign-streams` to drop non-seeder streams overlapping the contract
+wildcards before seeding, `--no-recreate` to ingest without recreating
+templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
+metric kinds.
+
+### Remove Sample Data
+
+`obs-migrate remove-sample-data` tears down what `seed-sample-data` created. It
+is **fail-closed**: it only deletes data streams it can positively prove were
+created by the seeder (their backing index template is prefixed
+`telemetry-data-`); foreign or unverifiable streams are skipped, never deleted.
+It is **dry-run by default** — it prints the plan (`deleted_streams`,
+`deleted_templates`, `skipped_not_owned`, `errors`) and deletes nothing; pass
+`--confirm` to actually delete. Exit code is `2` when Elasticsearch is
+unreachable or inputs are invalid, `1` when any delete fails, and `0` otherwise.
+
+```bash
+# Dry run: show which seeder-owned streams/templates would be removed.
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Confirm: delete the seeder-owned streams and templates.
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --confirm
+```
+
 ## Dedicated Source CLIs
 
 Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers around `python -m observability_migration.adapters.source.grafana.cli` and `python -m observability_migration.adapters.source.datadog.cli`.
@@ -686,6 +745,13 @@ The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
 `obs-migrate[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
 
 ### Data Setup
+
+For new use, prefer the package-native
+[`obs-migrate seed-sample-data`](#seed-sample-data) /
+[`obs-migrate remove-sample-data`](#remove-sample-data) subcommands, which ship
+in the installed wheel and honor the shared `--ca-cert`/`--insecure` TLS flags.
+`scripts/setup_telemetry_data.py` is now a thin shim over the same library, kept
+for existing automation:
 
 ```bash
 set -a && source serverless_creds.env && set +a

@@ -84,7 +84,9 @@ package installed. Outputs land under `/tmp/mig-to-kbn-e2e/` (Grafana) and
 ### Data and setup helpers
 
 - `setup_telemetry_data.py` — generate and index synthetic telemetry for a set
-  of migrated dashboard artifacts
+  of migrated dashboard artifacts. Now a thin shim over the package-native
+  `obs-migrate seed-sample-data` / `remove-sample-data` subcommands (see
+  `docs/command-contract.md`); prefer those for new use.
 - `create_grafana_test_alerts.py` — create test alert rules in a Grafana instance
 - `generate_routing_artifacts.py` — emit producer-side routing config
   (OTel Collector / Prometheus relabel / Elastic Agent) so live telemetry uses
