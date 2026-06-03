@@ -41,8 +41,11 @@ htmlcov/
 # Serena
 .serena/
 
-# Cursor
-.cursor/
+# Cursor (ignore everything except shared project skills)
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/**/
 
 # Claude
 .claude/
