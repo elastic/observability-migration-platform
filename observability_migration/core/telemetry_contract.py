@@ -83,6 +83,35 @@ _TRANSLATOR_INTERNAL_PREFIX_RE = re.compile(
     r"^_(?:raw|per_series|timeseries|gauge|bucket|stats|ts)(?:_|\d|$)"
 )
 
+# Dimension *values* harvested from queries are sometimes not real label values
+# but unsubstituted Grafana template variables (``$instance``, ``${job}``) or the
+# migrator's own placeholder tokens (``__obs_migration_param_node``). Seeding
+# documents with these literal strings produces series no migrated panel query
+# can match — the query filters on a sampled real value, never on ``$instance``.
+# Such tokens must be dropped from required value/pattern sets so the seeder
+# falls back to realistic, coherent defaults instead.
+_NON_LITERAL_VALUE_RE = re.compile(
+    r"""
+    ^\s*(?:
+        \$\{?[\w.]+\}?            # Grafana template var: $instance / ${job}
+      | \[\[[\w.]+\]\]            # legacy Grafana template var: [[instance]]
+      | __obs_migration_param_\w* # migrator placeholder token
+    )\s*$
+    """,
+    re.VERBOSE,
+)
+
+
+def _is_literal_dimension_value(value: str) -> bool:
+    """True when *value* is a concrete label value worth seeding.
+
+    Filters unsubstituted template variables and migrator placeholder tokens so
+    they never reach the synthetic seeder as dimension values.
+    """
+    if not value:
+        return False
+    return _NON_LITERAL_VALUE_RE.match(value) is None
+
 _SKIP_FIELDS = {
     "",
     "*",
@@ -112,6 +141,18 @@ _COUNTER_HINTS = (
     "failed",
     "rejected",
     "timeout",
+)
+# Field names that match a counter hint (e.g. ``_total``) but are really gauges
+# reporting a current level — most notably node-exporter memory-pool ``*_Total``
+# series, which sit alongside ``*_Free``/``*_Rsvd`` gauges of the same base.
+# Misclassifying these as counters causes counter/gauge mapping ambiguities at
+# index time (``Cannot use field [...] mapped as [2] incompatible types``).
+_GAUGE_OVERRIDE_RE = re.compile(
+    r"(?:"
+    r"node_memory_hugepages_(?:total|free|rsvd|surp)"
+    r"|hugepages_total"
+    r"|node_memory_[a-z_]*_total"   # node_memory_*_Total pool sizes are gauges
+    r")$"
 )
 _LOOKBACK_SECONDS = {
     "minute": 60,
@@ -166,6 +207,7 @@ def build_telemetry_contract(
         dimensions = _extract_dimensions(query)
         control_fields = _extract_control_fields(query)
         group_fields = _extract_group_fields(query)
+        keyword_multifields = _extract_keyword_multifields(query)
         required_values, required_patterns = _extract_required_filters(query)
         for metric_name, metric_kind in metrics.items():
             _merge_field(
@@ -185,6 +227,7 @@ def build_telemetry_contract(
                 type_family="keyword",
                 metric_kind="",
                 source=source,
+                keyword_multifield=dimension in keyword_multifields,
             )
         for field_name, relations in _extract_field_relationships(query, set(metrics)).items():
             info = stream["fields"].get(field_name)
@@ -380,6 +423,7 @@ def build_combined_telemetry_contract(
                     metric_kind=field_info.get("metric_kind", ""),
                     source=", ".join(field_info.get("sources") or []),
                     requires_native_promql=bool(field_info.get("requires_native_promql")),
+                    keyword_multifield=bool(field_info.get("keyword_multifield")),
                 )
                 relations = field_info.get("relationships")
                 if relations and target["fields"][field_name].get("role") == "metric":
@@ -714,6 +758,24 @@ def _extract_field_relationships(query: str, metric_names: set[str]) -> dict[str
     return relationships
 
 
+def _extract_keyword_multifields(query: str) -> set[str]:
+    """Base dimension names a query references via a ``.keyword`` sub-field.
+
+    ``_normalize_field`` strips the ``.keyword`` suffix so dimensions collapse to
+    their base name; this captures the suffixed form separately so the seeder can
+    emit the aggregatable keyword multi-field that the query actually targets
+    (e.g. ``deployment.environment.keyword``).
+    """
+    bases: set[str] = set()
+    # _IDENT_RE allows dots, so anchor on a base that does NOT itself end in
+    # ``.keyword`` and is followed by the literal suffix.
+    for match in re.finditer(r"(`[^`]+`|[A-Za-z_][\w.-]*?)\.keyword\b", query):
+        base = _normalize_field(match.group(1))
+        if base and not _should_skip_field(base):
+            bases.add(base)
+    return bases
+
+
 def _extract_dimensions(query: str) -> set[str]:
     dimensions: set[str] = set()
     if query.startswith("CONTROL ") or query.startswith("FILTER "):
@@ -853,6 +915,12 @@ def _split_top_level(value: str) -> list[str]:
 
 def _classify_metric(field_name: str) -> str:
     lowered = field_name.lower()
+    if _GAUGE_OVERRIDE_RE.search(lowered):
+        # Known gauges whose names contain a counter hint (``_total`` etc.) but
+        # report a current level, not a monotonic count. Indexing these as
+        # counters creates counter/gauge mapping ambiguities once a sibling field
+        # of the same base is (correctly) a gauge.
+        return "gauge"
     return "counter" if any(hint in lowered for hint in _COUNTER_HINTS) else "gauge"
 
 
@@ -1007,6 +1075,7 @@ def _merge_field(
     metric_kind: str,
     source: str,
     requires_native_promql: bool = False,
+    keyword_multifield: bool = False,
 ) -> None:
     current = fields.setdefault(
         field_name,
@@ -1027,6 +1096,11 @@ def _merge_field(
         current["metric_kind"] = "gauge"
     if requires_native_promql:
         current["requires_native_promql"] = True
+    if keyword_multifield:
+        # A query referenced this dimension as ``<field>.keyword``. Real ES
+        # Datadog/OTel mappings expose that aggregatable keyword sub-field, so
+        # the seeded mapping must too or the column is unknown at query time.
+        current["keyword_multifield"] = True
     _append_unique(current["sources"], source)
 
 
@@ -1039,6 +1113,10 @@ def _merge_required_map(target: dict[str, list[str]], incoming: dict[str, list[s
 
 def _append_required(target: dict[str, list[str]], field_name: str, value: str) -> None:
     if not field_name or _should_skip_field(field_name):
+        return
+    if not _is_literal_dimension_value(value):
+        # Unsubstituted template variables / migrator placeholders are not real
+        # label values; skip them so the seeder uses coherent defaults instead.
         return
     bucket = target.setdefault(field_name, [])
     _append_unique(bucket, value)

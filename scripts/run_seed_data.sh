@@ -90,6 +90,16 @@ echo "" | tee -a "$LOG_FILE"
 DATA_HOURS="${DATA_HOURS:-4}"
 INTERVAL_SEC="${INTERVAL_SEC:-30}"
 
+# Remove leftover data streams that overlap metrics-*/logs-* but were not
+# created by this seeder (old parity/experiment streams). Their incompatible
+# mappings make shared fields conflict across indices, so panels querying the
+# wildcard return zero rows. Default on; set PURGE_FOREIGN_STREAMS=0 to skip.
+PURGE_FOREIGN_STREAMS="${PURGE_FOREIGN_STREAMS:-1}"
+PURGE_FLAG=()
+if [ "$PURGE_FOREIGN_STREAMS" = "1" ]; then
+  PURGE_FLAG=(--purge-foreign-streams)
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 1: dense recent seed (last DATA_HOURS at INTERVAL_SEC cadence)
 # ---------------------------------------------------------------------------
@@ -101,6 +111,7 @@ echo "Phase 1: dense recent seed (${DATA_HOURS}h at ${INTERVAL_SEC}s intervals)"
   --api-key "$KEY" \
   --data-hours "$DATA_HOURS" \
   --interval-sec "$INTERVAL_SEC" \
+  "${PURGE_FLAG[@]}" \
   2>&1 | tee -a "$LOG_FILE"
 
 STATUS=${PIPESTATUS[0]}

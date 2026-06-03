@@ -1154,6 +1154,43 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("_timeseries", query)
         self.assertEqual(panels._native_promql_result_shape(expr), ("value", ["service.name"]))
 
+    def test_native_promql_legend_labels_use_grok_not_backtracking_replace(self):
+        """Series-label extraction from ``_timeseries`` must use a single GROK
+        scan per label, not ``REPLACE(_ts, \"\"\".*\"k\":\"...\".*\"\"\", \"$1\")``
+        chains. The latter backtracks over the whole label blob (leading/trailing
+        ``.*``) plus a full-blob ``REPLACE(REPLACE(...))`` fallback per row, which
+        times out on wide label sets; GROK stays linear in the blob size.
+        """
+        query = panels.build_native_promql_query(
+            "irate(node_interrupts_total[5m])",
+            index="metrics-*",
+            legend_labels=["type", "info"],
+            kibana_type="timeseries",
+        )
+
+        # New, linear extraction: one GROK per label binding the JSON value.
+        self.assertIn('GROK _timeseries """"type":"%{DATA:type}', query)
+        self.assertIn('GROK _timeseries """"info":"%{DATA:info}', query)
+        self.assertTrue(query.rstrip().endswith("| KEEP step, value, type, info"))
+        # The old super-linear pattern must be gone entirely.
+        self.assertNotIn("REPLACE(_ts", query)
+        self.assertNotIn("REPLACE(REPLACE(", query)
+        self.assertNotIn("_raw_", query)
+
+    def test_native_promql_legend_label_with_dotted_name_is_backtick_quoted(self):
+        """A dotted legend label (e.g. ``deployment.environment``) must be
+        regex-escaped inside the GROK pattern and backtick-quoted in KEEP."""
+        query = panels.build_native_promql_query(
+            "irate(some_total[5m])",
+            index="metrics-*",
+            legend_labels=["deployment.environment"],
+            kibana_type="timeseries",
+        )
+        # Dot escaped in the GROK literal prefix ...
+        self.assertIn('"deployment\\.environment":"%{DATA:deployment.environment}', query)
+        # ... and the column backtick-quoted in KEEP.
+        self.assertTrue(query.rstrip().endswith("| KEEP step, value, `deployment.environment`"))
+
     def test_native_promql_rejects_server_unsupported_group_modifiers(self):
         expr = (
             'rate(container_cpu_usage_seconds_total{pod=~"loki.*"}[1m]) '

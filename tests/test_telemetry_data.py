@@ -5,10 +5,12 @@ import datetime
 import unittest
 
 from observability_migration.core.telemetry_data import (
+    _contract_index_patterns,
     _expand_patterns,
     concrete_stream_name,
     generate_documents,
     plan_index_template,
+    purge_foreign_streams,
 )
 
 
@@ -502,6 +504,144 @@ class ExpandPatternsTests(unittest.TestCase):
         values = _expand_patterns("service.name", [".*"])
         self.assertEqual(len(values), 1)
         self.assertNotIn(".", values[0])
+
+
+class _RecordingRequest:
+    """Minimal RequestFn stub that serves canned ``GET /_data_stream`` listings
+    and records DELETE calls so the purge logic can be asserted in isolation."""
+
+    def __init__(self, listings: dict[str, dict]):
+        self._listings = listings
+        self.deletes: list[str] = []
+
+    def __call__(self, method, path, body=None, content_type="application/json"):
+        if method == "GET" and path.startswith("/_data_stream/"):
+            pattern = path[len("/_data_stream/") :]
+            return self._listings.get(pattern, {"data_streams": []})
+        if method == "DELETE" and path.startswith("/_data_stream/"):
+            self.deletes.append(path[len("/_data_stream/") :])
+            return {"acknowledged": True}
+        return {}
+
+
+class PurgeForeignStreamsTests(unittest.TestCase):
+    def test_contract_index_patterns_reduce_to_type_wildcards(self):
+        contract = {
+            "streams": {
+                "metrics-prometheus-*": {},
+                "metrics-*": {},
+                "logs-*": {},
+            }
+        }
+        self.assertEqual(
+            sorted(_contract_index_patterns(contract)), ["logs-*", "metrics-*"]
+        )
+
+    def test_purge_removes_only_non_seeder_streams(self):
+        request = _RecordingRequest(
+            {
+                "metrics-*": {
+                    "data_streams": [
+                        {
+                            "name": "metrics-generic-default",
+                            "template": "telemetry-data-metrics-generic-default",
+                        },
+                        {
+                            "name": "metrics-express.prometheus-parity",
+                            "template": "metrics-prometheus@template",
+                        },
+                        {
+                            "name": "metrics-parity.test-default",
+                            "template": "parity-metrics-parity.test-default",
+                        },
+                    ]
+                },
+                "logs-*": {
+                    "data_streams": [
+                        {
+                            "name": "logs-generic-default",
+                            "template": "telemetry-data-logs-generic-default",
+                        },
+                    ]
+                },
+            }
+        )
+        contract = {"streams": {"metrics-*": {}, "logs-*": {}}}
+
+        deleted = purge_foreign_streams(contract, request)
+
+        self.assertEqual(
+            sorted(deleted),
+            ["metrics-express.prometheus-parity", "metrics-parity.test-default"],
+        )
+        # Seeder-owned streams are never deleted.
+        self.assertNotIn("metrics-generic-default", request.deletes)
+        self.assertNotIn("logs-generic-default", request.deletes)
+
+    def test_purge_is_noop_when_only_seeder_streams_exist(self):
+        request = _RecordingRequest(
+            {
+                "metrics-*": {
+                    "data_streams": [
+                        {
+                            "name": "metrics-generic-default",
+                            "template": "telemetry-data-metrics-generic-default",
+                        }
+                    ]
+                }
+            }
+        )
+        deleted = purge_foreign_streams({"streams": {"metrics-*": {}}}, request)
+        self.assertEqual(deleted, [])
+        self.assertEqual(request.deletes, [])
+
+    def test_purge_dedupes_streams_seen_through_multiple_patterns(self):
+        # Same foreign stream is returned for both wildcards; delete it once.
+        foreign = {
+            "name": "metrics-express.prometheus-parity",
+            "template": "metrics-prometheus@template",
+        }
+        request = _RecordingRequest(
+            {
+                "metrics-*": {"data_streams": [foreign]},
+                "metrics-prometheus-*": {"data_streams": [foreign]},
+            }
+        )
+        contract = {"streams": {"metrics-*": {}, "metrics-prometheus-*": {}}}
+        deleted = purge_foreign_streams(contract, request)
+        self.assertEqual(deleted, ["metrics-express.prometheus-parity"])
+        self.assertEqual(request.deletes, ["metrics-express.prometheus-parity"])
+
+
+class KeywordMultifieldMappingTests(unittest.TestCase):
+    def test_dimension_with_keyword_multifield_emits_subfield(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "http_requests_total": {
+                            "role": "metric",
+                            "metric_kind": "counter",
+                        },
+                        "deployment.environment": {
+                            "role": "dimension",
+                            "keyword_multifield": True,
+                        },
+                        "host.name": {"role": "dimension"},
+                    }
+                }
+            }
+        }
+        props = plan_index_template(
+            "metrics-*", contract["streams"]["metrics-*"]
+        )["template"]["mappings"]["properties"]
+
+        env = props["deployment.environment"]
+        self.assertEqual(env["type"], "keyword")
+        self.assertTrue(env.get("time_series_dimension"))
+        self.assertEqual(env["fields"]["keyword"]["type"], "keyword")
+        # A dimension without the flag gets no sub-field.
+        self.assertNotIn("fields", props["host.name"])
 
 
 if __name__ == "__main__":

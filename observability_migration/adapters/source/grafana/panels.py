@@ -905,21 +905,15 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         return base
 
     if legend_labels:
-        evals = [
-            '| EVAL _ts = COALESCE(_timeseries, "")',
-        ]
-        for lbl in legend_labels:
-            raw = f"_raw_{lbl}"
-            evals.append(
-                f'| EVAL {raw} = CASE(_ts == "", "unknown", '
-                f'REPLACE(_ts, """.*"{lbl}":"([^"]+)".*""", "$1"))'
-            )
-            evals.append(
-                f'| EVAL {lbl} = CASE(STARTS_WITH({raw}, "{{"), '
-                f'REPLACE(REPLACE(_ts, """[{{}}""]""", ""), ",", ", "), '
-                f'{raw})'
-            )
-        keep = ["step", "value"] + list(legend_labels)
+        # Extract each series label from the native ``_timeseries`` JSON with a
+        # single GROK scan per label. GROK reads the string once, so this stays
+        # linear in the blob size; the previous ``REPLACE(_ts, """.*"k":"..."",
+        # "$1")`` chains backtracked over the whole blob (with leading/trailing
+        # ``.*``) and a full-blob ``REPLACE(REPLACE(...))`` fallback per row,
+        # which degraded super-linearly on wide label sets. A label absent from a
+        # given series yields NULL (correct: that series has no such dimension).
+        evals = [_grok_label_extraction(lbl) for lbl in legend_labels]
+        keep = ["step", "value"] + [_esql_identifier(lbl) for lbl in legend_labels]
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
     static_label = (legend_format or "").strip()
@@ -2778,6 +2772,40 @@ def _output_columns_for_composite_legend(esql_query):
 def _escape_esql_double_quoted_literal(text):
     """Escape backslashes and double quotes for an ES|QL double-quoted string."""
     return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+# Regex metacharacters that must be escaped when a literal label name is spliced
+# into the constant prefix of a GROK pattern (GROK patterns are regex-based).
+_GROK_LITERAL_ESCAPE_RE = re.compile(r'([.^$*+?()\[\]{}|\\])')
+
+
+def _esql_identifier(name):
+    """Quote an ES|QL column identifier with backticks only when needed.
+
+    Bare alphanumeric/underscore names are emitted as-is (matching prior output);
+    names with dots or other special characters are backtick-quoted so they are
+    valid in ``EVAL`` targets and ``KEEP`` lists.
+    """
+    text = str(name)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        return text
+    return "`" + text.replace("`", "``") + "`"
+
+
+def _grok_label_extraction(label):
+    """Emit a GROK pipe that pulls a single PromQL series label out of the
+    native ``_timeseries`` JSON string.
+
+    The label appears in the blob as ``"<label>":"<value>"``; GROK reads the
+    string once and binds ``<value>`` to a column named after the label. When the
+    label is not present on a series the column is NULL.
+    """
+    literal = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", str(label))
+    # Triple-quoted ES|QL string so inner double quotes need no escaping. The
+    # pattern is ``"<label>":"%{DATA:<label>}\"`` — DATA (non-greedy) is bounded
+    # by the trailing ``\"`` which matches the JSON value's closing quote.
+    pattern = f'"{literal}":"%{{DATA:{label}}}\\"'
+    return f'| GROK _timeseries """{pattern}"""'
 
 
 def _apply_composite_legend_to_xy_panel(yaml_panel, *,
