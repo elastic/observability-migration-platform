@@ -24,6 +24,7 @@ from observability_migration.core.telemetry_contract import (
 from observability_migration.core.telemetry_data import (
     generate_documents,
     ingest_documents,
+    purge_foreign_streams,
     setup_templates_and_streams,
 )
 
@@ -78,6 +79,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Skip all index template and data stream operations. Use this when the "
             "target streams already exist with the desired mappings and you only "
             "want to ingest more synthetic documents."
+        ),
+    )
+    parser.add_argument(
+        "--purge-foreign-streams",
+        action="store_true",
+        help=(
+            "Before seeding, delete any data stream that overlaps the contract's "
+            "wildcards (e.g. metrics-*/logs-*) but was NOT created by this seeder. "
+            "Leftover experiment/parity streams with incompatible mappings make "
+            "shared fields conflict across indices, so panels querying the wildcard "
+            "return zero rows. Seeder-owned (telemetry-data-*) streams are kept."
         ),
     )
     parser.add_argument(
@@ -251,6 +263,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {stream_name}: {len(stream.get('fields') or {})} fields")
 
     try:
+        if args.purge_foreign_streams:
+            purged = purge_foreign_streams(contract, es_request)
+            if purged:
+                print(f"Purged {len(purged)} foreign data stream(s): {', '.join(purged)}")
+            else:
+                print("No foreign data streams to purge")
         if args.no_recreate:
             print("Skipping index template and data stream creation (--no-recreate)")
         else:

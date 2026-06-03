@@ -73,6 +73,13 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
             routing_path.append(field_name)
         else:
             props[field_name] = {"type": "keyword"}
+        if info.get("keyword_multifield") and props.get(field_name, {}).get("type") == "keyword":
+            # Mirror the aggregatable ``<field>.keyword`` sub-field that real ES
+            # Datadog/OTel mappings expose, so queries referencing it resolve.
+            props[field_name].setdefault("fields", {})["keyword"] = {
+                "type": "keyword",
+                "ignore_above": 1024,
+            }
 
     for field_name in _generated_dimension_fields(stream):
         if field_name.startswith("data_stream.") or field_name in props:
@@ -194,6 +201,71 @@ def setup_templates_and_streams(
         _raise_on_error(template_result, f"create index template {template_name}")
         stream_result = request("PUT", f"/_data_stream/{concrete_name}", None, "application/json")
         _raise_on_error(stream_result, f"create data stream {concrete_name}")
+
+
+_SEEDER_TEMPLATE_PREFIX = "telemetry-data-"
+
+
+def _contract_index_patterns(contract: dict[str, Any]) -> list[str]:
+    """Wildcard index patterns the contract's streams resolve against.
+
+    A migrated dashboard queries a bare wildcard such as ``metrics-*`` /
+    ``logs-*``; that is the surface that must be free of foreign, incompatibly
+    mapped data for panels to resolve.
+    """
+    patterns: list[str] = []
+    for index_pattern in (contract.get("streams") or {}):
+        cleaned = index_pattern.strip()
+        if not cleaned:
+            continue
+        # Reduce a concrete-ish pattern to its type wildcard (metrics-*/logs-*).
+        prefix = cleaned.split("-", 1)[0]
+        if prefix in {"metrics", "logs", "traces"}:
+            _append_pattern(patterns, f"{prefix}-*")
+        else:
+            _append_pattern(patterns, cleaned)
+    return patterns
+
+
+def _append_pattern(patterns: list[str], value: str) -> None:
+    if value and value not in patterns:
+        patterns.append(value)
+
+
+def purge_foreign_streams(
+    contract: dict[str, Any],
+    request: RequestFn,
+) -> list[str]:
+    """Delete data streams that overlap the contract's wildcards but were not
+    created by this seeder.
+
+    Migrated dashboards query bare wildcards (``metrics-*``/``logs-*``). Any
+    leftover data stream that matches the same wildcard but carries a different
+    mapping (e.g. an old parity/experiment stream) makes shared fields conflict
+    across indices (``metric_conflicts_indices``), and ES then refuses to read
+    those fields through the wildcard — panels silently return zero rows or
+    fail. Seeder-owned streams (index template prefixed ``telemetry-data-``) are
+    always preserved; everything else matching the wildcard is removed so the
+    wildcard surface is internally consistent.
+
+    Returns the list of deleted data stream names (empty when nothing matched).
+    """
+    deleted: list[str] = []
+    seen: set[str] = set()
+    for pattern in _contract_index_patterns(contract):
+        listing = request("GET", f"/_data_stream/{pattern}", None, "application/json")
+        for entry in (listing or {}).get("data_streams", []) or []:
+            name = entry.get("name")
+            template = str(entry.get("template") or "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if template.startswith(_SEEDER_TEMPLATE_PREFIX):
+                continue  # seeder-owned; keep
+            result = request("DELETE", f"/_data_stream/{name}", None, "application/json")
+            _raise_on_error(result, f"delete foreign data stream {name}")
+            deleted.append(name)
+    return deleted
 
 
 def ingest_documents(
@@ -615,5 +687,6 @@ __all__ = [
     "generate_documents",
     "ingest_documents",
     "plan_index_template",
+    "purge_foreign_streams",
     "setup_templates_and_streams",
 ]

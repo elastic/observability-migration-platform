@@ -31,6 +31,27 @@ package installed. Outputs land under `/tmp/mig-to-kbn-e2e/` (Grafana) and
 - `run_seed_data.sh` — seed synthetic telemetry into the cluster for the
   migrated artifacts so panels render (calls `setup_telemetry_data.py`)
 
+#### Seeding notes
+
+- **Foreign-stream purge (default on).** Migrated dashboards query bare
+  wildcards (`metrics-*`, `logs-*`). Any leftover data stream matching the same
+  wildcard but mapped differently (old parity/experiment streams) makes shared
+  fields conflict across indices (`metric_conflicts_indices`), and Elasticsearch
+  then refuses to read those fields through the wildcard — panels silently
+  return zero rows. `run_seed_data.sh` passes `--purge-foreign-streams`, which
+  deletes only streams **not** created by the seeder (index template not
+  prefixed `telemetry-data-`); seeder-owned streams are always kept. Set
+  `PURGE_FOREIGN_STREAMS=0` to skip.
+- **7-day history cap (Elasticsearch TSDB limit).** Metrics streams use
+  `index.mode: time_series`, whose `look_back_time` is hard-capped at 7d by
+  Elasticsearch; writes older than that are rejected (`document timestamp ... is
+  outside of ranges of current index`). Panels that compare windows older than
+  7 days (e.g. the NGINX *“Change in overall requests per second”*
+  week-over-week panel, which reads `NOW()-14d … NOW()-7d`) therefore cannot be
+  populated by synthetic seeding without abandoning TSDB counter semantics. The
+  emitted query is correct; this is an environment limitation, not a migration
+  defect.
+
 ### Validation and reporting
 
 - `audit_pipeline.py` — audit every bundled dashboard through the full pipeline

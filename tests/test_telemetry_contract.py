@@ -928,6 +928,135 @@ class TelemetryContractTests(unittest.TestCase):
         )
 
 
+class DimensionValueHygieneTests(unittest.TestCase):
+    def test_template_variables_and_placeholders_are_not_seeded_values(self):
+        """Unsubstituted template vars / migrator placeholders must not become
+        required dimension values — seeding them produces unqueryable series."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Node",
+                                "panels": [
+                                    {
+                                        "title": "Network",
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| WHERE instance == \"$instance\" "
+                                                "AND job == \"__obs_migration_param_job\" "
+                                                "AND env == \"production\"\n"
+                                                "| STATS v = AVG(IRATE(node_network_receive_bytes_total, 5m)) "
+                                                "BY time_bucket = TBUCKET(5 minute), device"
+                                            )
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        metrics = contract["streams"]["metrics-*"]
+        required = metrics.get("required_values") or {}
+        # The template var and placeholder must be dropped entirely...
+        self.assertNotIn("instance", required)
+        self.assertNotIn("job", required)
+        # ...while genuine literal values are still captured.
+        self.assertEqual(required["env"], ["production"])
+
+    def test_legacy_bracket_template_variable_is_filtered(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "PromQL",
+                                "panels": [
+                                    {
+                                        "title": "CPU",
+                                        "esql": {
+                                            "query": (
+                                                "PROMQL index=metrics-* step=1m "
+                                                "value=(node_cpu_seconds_total{instance=\"[[instance]]\","
+                                                "mode=\"idle\"})"
+                                            )
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        metrics = contract["streams"]["metrics-*"]
+        required = metrics.get("required_values") or {}
+        self.assertNotIn("instance", required)
+        self.assertEqual(required["mode"], ["idle"])
+
+
+class MetricKindGaugeOverrideTests(unittest.TestCase):
+    def test_node_memory_hugepages_total_is_gauge_not_counter(self):
+        """``node_memory_HugePages_Total`` ends in ``_Total`` but is a gauge; it
+        must not be classified as a counter (which collides with the sibling
+        ``_Free`` gauge and trips a mapping ambiguity at index time)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Node",
+                                "panels": [
+                                    {
+                                        "title": "HugePages",
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| STATS a = AVG(node_memory_HugePages_Total), "
+                                                "b = AVG(node_memory_HugePages_Free) "
+                                                "BY time_bucket = TBUCKET(5 minute)"
+                                            )
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["node_memory_HugePages_Total"]["metric_kind"], "gauge")
+        self.assertEqual(fields["node_memory_HugePages_Free"]["metric_kind"], "gauge")
+
+
 class MetricKindOverrideTests(unittest.TestCase):
     def _write_packet(self, tmpdir, translated_query, source_query=""):
         artifact_dir = Path(tmpdir) / "dashboards"
@@ -1125,6 +1254,98 @@ class MetricKindFromSourceTests(unittest.TestCase):
         self.assertEqual(
             fields["kube_pod_container_resource_requests"]["metric_kind"], "gauge"
         )
+
+
+class KeywordMultifieldTests(unittest.TestCase):
+    """A dimension referenced as ``<field>.keyword`` (common in migrated Datadog
+    queries) must be flagged so the seeder emits the matching keyword sub-field;
+    otherwise the query fails with ``Unknown column [<field>.keyword]``."""
+
+    def _dd_dashboard(self) -> dict:
+        return {
+            "dashboards": [
+                {
+                    "title": "DD",
+                    "panels": [
+                        {
+                            "title": "Throughput by env",
+                            "esql": {
+                                "query": (
+                                    "FROM metrics-*\n"
+                                    "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
+                                    "| STATS v = SUM(kafka_net_bytes_in_rate) "
+                                    "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), "
+                                    "deployment.environment.keyword\n"
+                                    "| KEEP time_bucket, deployment.environment.keyword, v"
+                                )
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+
+    def test_dimension_referenced_with_keyword_suffix_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(self._dd_dashboard(), sort_keys=False),
+                encoding="utf-8",
+            )
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        # The base dimension is collected (suffix stripped) ...
+        self.assertIn("deployment.environment", fields)
+        self.assertEqual(fields["deployment.environment"]["role"], "dimension")
+        # ... and flagged so a keyword sub-field is seeded.
+        self.assertTrue(fields["deployment.environment"].get("keyword_multifield"))
+        # The bare ``.keyword`` name is never a standalone field.
+        self.assertNotIn("deployment.environment.keyword", fields)
+
+    def test_keyword_multifield_flag_survives_contract_combination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = Path(tmpdir) / "a" / "dashboards" / "yaml"
+            second = Path(tmpdir) / "b" / "dashboards" / "yaml"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            (first / "dash.yaml").write_text(
+                yaml.safe_dump(self._dd_dashboard(), sort_keys=False),
+                encoding="utf-8",
+            )
+            # Second artifact references the same dimension WITHOUT the suffix;
+            # the merged flag must still be set (true wins).
+            (second / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "DD2",
+                                "panels": [
+                                    {
+                                        "title": "Plain env",
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS v = SUM(system_net_bytes_rcvd) "
+                                                "BY deployment.environment"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            combined = build_combined_telemetry_contract([first.parent, second.parent])
+
+        fields = combined["streams"]["metrics-*"]["fields"]
+        self.assertTrue(fields["deployment.environment"].get("keyword_multifield"))
 
 
 if __name__ == "__main__":
