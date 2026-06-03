@@ -70,6 +70,9 @@ Datadog client extra:
 You can use the migration tooling productively before configuring a target cluster.
 
 - Translate exported dashboards into YAML.
+- List bundled sample dashboards with `obs-migrate list-samples` (offline, no
+  credentials), then migrate one with
+  `migrate --source <source> --input-mode files --input-dir <input_dir>`.
 - Pull live dashboards from Grafana or Datadog APIs.
 - Pull Grafana alert artifacts or Datadog monitor artifacts.
 - Read `migration_summary.md` for a human-readable verdict, scorecard, and

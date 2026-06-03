@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from observability_migration.sample_dashboards.catalog import (
     SampleDashboard,
@@ -50,6 +52,54 @@ class SampleCatalogTests(unittest.TestCase):
         for sample in list_samples():
             entry = root.joinpath(sample.relative_dir)
             self.assertTrue(entry.is_dir(), f"missing packaged dir for {sample.id}")
+
+
+class SampleMigrationSmokeTests(unittest.TestCase):
+    def test_grafana_sample_migrates_offline_and_flags_unsupported_panel(self):
+        from observability_migration.app import cli
+
+        sample_id = "grafana-prom-basics"
+        input_dir = resolve_input_dir(sample_id)
+        unsupported_title = next(
+            s for s in list_samples() if s.id == sample_id
+        ).expected_unsupported[0]
+
+        with tempfile.TemporaryDirectory() as out:
+            try:
+                cli.main([
+                    "migrate",
+                    "--source", "grafana",
+                    "--input-mode", "files",
+                    "--input-dir", str(input_dir),
+                    "--output-dir", out,
+                    "--assets", "dashboards",
+                ])
+            except SystemExit as exc:
+                self.assertIn(exc.code, (0, None), f"migrate exited non-zero: {exc.code}")
+            manifest = Path(out) / "dashboards" / "migration_manifest.json"
+            self.assertTrue(manifest.is_file(), f"missing manifest: {manifest}")
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            panels: list[dict] = []
+            for dashboard in manifest_data.get("dashboards", []):
+                panels.extend(dashboard.get("panels", []))
+            if not panels:
+                panels = manifest_data.get("panels", [])
+            matching = [p for p in panels if p.get("title") == unsupported_title]
+            self.assertTrue(
+                matching,
+                f"no panel titled {unsupported_title!r} in manifest",
+            )
+            for panel in matching:
+                self.assertIn(
+                    panel["status"],
+                    ("not_feasible", "requires_manual"),
+                    f"expected degrade status for {unsupported_title!r}, got {panel['status']!r}",
+                )
+                reasons = panel.get("reasons", [])
+                self.assertTrue(
+                    reasons,
+                    f"expected non-empty reasons for {unsupported_title!r}",
+                )
 
 
 if __name__ == "__main__":

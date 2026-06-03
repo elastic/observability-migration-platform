@@ -20,6 +20,11 @@ class CommandContractDocTests(unittest.TestCase):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("--assets {dashboards,alerts,all}", text)
 
+    def test_command_contract_documents_list_samples(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate list-samples", text)
+        self.assertIn("bundled sample dashboards", text)
+
     def test_command_contract_does_not_advertise_dead_unified_flags(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertNotIn("--include", text)
