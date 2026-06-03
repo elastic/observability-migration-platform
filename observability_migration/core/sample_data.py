@@ -13,6 +13,7 @@ that honors the shared ``resolve_tls`` policy.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,10 @@ from observability_migration.core.telemetry_contract import (
     metric_kinds_from_prometheus_metadata,
 )
 from observability_migration.core.telemetry_data import (
+    _SEEDER_TEMPLATE_PREFIX,
     IngestSummary,
     RequestFn,
+    concrete_stream_name,
     generate_documents,
     ingest_documents,
     purge_foreign_streams,
@@ -157,3 +160,84 @@ def seed_sample_data(
         request,
         batch_docs=batch_docs,
     )
+
+
+@dataclass
+class RemoveSummary:
+    dry_run: bool
+    deleted_streams: list[str] = field(default_factory=list)
+    skipped_not_owned: list[str] = field(default_factory=list)
+    deleted_templates: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def _classify_stream(listing: Any, concrete: str) -> str:
+    """Classify a ``GET /_data_stream/<name>`` response.
+
+    Returns one of ``"owned"`` / ``"foreign"`` / ``"absent"`` / ``"unverifiable"``.
+    Anything we cannot positively read is ``"unverifiable"`` so the caller can fail
+    closed and never delete a stream whose ownership was not confirmed.
+    """
+    if isinstance(listing, dict) and listing.get("data_streams"):
+        entry = next(
+            (e for e in listing["data_streams"] if isinstance(e, dict) and e.get("name") == concrete),
+            None,
+        )
+        if entry is None:
+            return "absent"
+        if str(entry.get("template") or "").startswith(_SEEDER_TEMPLATE_PREFIX):
+            return "owned"
+        return "foreign"
+    status = None
+    if isinstance(listing, dict):
+        status = listing.get("status") or (listing.get("error") or {}).get("status")
+    if status == 404:
+        return "absent"
+    if isinstance(listing, dict) and (listing.get("error") or status):
+        return "unverifiable"
+    return "absent"
+
+
+def remove_sample_data(
+    artifact_dirs: list[Path],
+    request: RequestFn,
+    *,
+    dry_run: bool = True,
+) -> RemoveSummary:
+    """Delete only the data streams/templates this seeder created for the artifacts.
+
+    A concrete data stream is deleted only when ownership is positively verified
+    (its backing index template starts with ``telemetry-data-``). Foreign streams
+    are skipped, and any stream whose ownership cannot be read (a non-404 GET error)
+    is left untouched and reported as an error — the teardown fails closed so real
+    data sharing the same wildcard is never deleted. ``dry_run`` reports the plan
+    without writing.
+    """
+    contract = _build_contract(artifact_dirs, None)
+    summary = RemoveSummary(dry_run=dry_run)
+    for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
+        concrete = concrete_stream_name(index_pattern, stream)
+        template = f"{_SEEDER_TEMPLATE_PREFIX}{concrete}"
+        listing = request("GET", f"/_data_stream/{concrete}", None, "application/json")
+        state = _classify_stream(listing, concrete)
+        if state == "foreign":
+            summary.skipped_not_owned.append(concrete)
+            continue
+        if state == "unverifiable":
+            summary.errors.append(
+                f"could not verify ownership of data stream {concrete}; skipped (not deleted)"
+            )
+            continue
+        # state is "owned" or "absent": safe to remove seeder artifacts.
+        if state == "owned":
+            summary.deleted_streams.append(concrete)
+        summary.deleted_templates.append(template)
+        if not dry_run:
+            if state == "owned":
+                stream_res = request("DELETE", f"/_data_stream/{concrete}", None, "application/json")
+                if isinstance(stream_res, dict) and stream_res.get("error"):
+                    summary.errors.append(f"delete data stream {concrete}: {stream_res['error']}")
+            tmpl_res = request("DELETE", f"/_index_template/{template}", None, "application/json")
+            if isinstance(tmpl_res, dict) and tmpl_res.get("error"):
+                summary.errors.append(f"delete index template {template}: {tmpl_res['error']}")
+    return summary

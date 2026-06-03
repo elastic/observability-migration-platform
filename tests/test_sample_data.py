@@ -151,5 +151,122 @@ class SeedOrchestrationEdgeTests(unittest.TestCase):
         self.assertTrue(any(p == "/_bulk" for _, p in calls))
 
 
+class RemoveSampleDataTests(unittest.TestCase):
+    def _artifact(self, tmp):
+        return _write_artifact(
+            Path(tmp) / "dashboards",
+            "FROM logs-*\n| WHERE log.level == \"error\"\n| STATS count = COUNT(*) BY service.name",
+        )
+
+    def test_dry_run_performs_no_writes_and_reports_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+            calls: list[tuple[str, str]] = []
+
+            def request(method, path, body=None, content_type="application/json"):
+                calls.append((method, path))
+                if method == "GET":
+                    name = path.rsplit("/", 1)[-1]
+                    return {"data_streams": [{"name": name, "template": "telemetry-data-" + name}]}
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=True)
+
+        self.assertTrue(summary.dry_run)
+        self.assertTrue(summary.deleted_streams)  # would-delete plan, non-empty
+        self.assertFalse(any(m == "DELETE" for m, _ in calls))
+
+    def test_confirm_deletes_only_seeder_owned_streams(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+            deletes: list[str] = []
+
+            def request(method, path, body=None, content_type="application/json"):
+                if method == "GET":
+                    name = path.rsplit("/", 1)[-1]
+                    # The concrete stream is NOT seeder-owned (real data).
+                    return {"data_streams": [{"name": name, "template": "logs"}]}
+                if method == "DELETE":
+                    deletes.append(path)
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=False)
+
+        self.assertEqual(summary.deleted_streams, [])
+        self.assertTrue(summary.skipped_not_owned)
+        self.assertFalse(any("/_data_stream/" in p for p in deletes))
+
+    def test_confirm_deletes_owned_stream_and_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+            deletes: list[str] = []
+
+            def request(method, path, body=None, content_type="application/json"):
+                if method == "GET":
+                    name = path.rsplit("/", 1)[-1]
+                    return {"data_streams": [{"name": name, "template": "telemetry-data-" + name}]}
+                if method == "DELETE":
+                    deletes.append(path)
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=False)
+
+        self.assertTrue(summary.deleted_streams)
+        self.assertTrue(any(p.startswith("/_data_stream/") for p in deletes))
+        self.assertTrue(any(p.startswith("/_index_template/telemetry-data-") for p in deletes))
+
+    def test_get_error_is_unverifiable_and_deletes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+            deletes: list[str] = []
+
+            def request(method, path, body=None, content_type="application/json"):
+                if method == "GET":
+                    return {"error": {"type": "security_exception"}, "status": 403}
+                if method == "DELETE":
+                    deletes.append(path)
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=False)
+
+        self.assertEqual(summary.deleted_streams, [])
+        self.assertEqual(deletes, [])  # fail closed: nothing deleted on unreadable GET
+        self.assertTrue(summary.errors)
+
+    def test_absent_stream_cleans_orphan_template_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+            deletes: list[str] = []
+
+            def request(method, path, body=None, content_type="application/json"):
+                if method == "GET":
+                    return {"error": {"type": "resource_not_found_exception"}, "status": 404}
+                if method == "DELETE":
+                    deletes.append(path)
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=False)
+
+        self.assertEqual(summary.deleted_streams, [])  # stream was absent; not "deleted"
+        self.assertTrue(summary.deleted_templates)
+        self.assertTrue(any(p.startswith("/_index_template/telemetry-data-") for p in deletes))
+        self.assertFalse(any(p.startswith("/_data_stream/") for p in deletes))  # never delete an absent stream by name
+
+    def test_foreign_skip_does_not_plan_template_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = self._artifact(tmp)
+
+            def request(method, path, body=None, content_type="application/json"):
+                if method == "GET":
+                    name = path.rsplit("/", 1)[-1]
+                    return {"data_streams": [{"name": name, "template": "logs"}]}
+                return {"acknowledged": True}
+
+            summary = sample_data.remove_sample_data([artifact], request, dry_run=True)
+
+        self.assertEqual(summary.deleted_templates, [])
+        self.assertTrue(summary.skipped_not_owned)
+
+
 if __name__ == "__main__":
     unittest.main()
