@@ -883,6 +883,8 @@ def audit_migrated_rules(
 
     all_rules: list[dict[str, Any]] = []
     errors: list[str] = []
+    total_available: int | None = None
+    pages_scanned = 0
     for page in range(1, max_pages + 1):
         payload = lister(
             kibana_url,
@@ -902,8 +904,10 @@ def audit_migrated_rules(
         page_rules = payload.get("data", [])
         if not isinstance(page_rules, list) or not page_rules:
             break
+        pages_scanned = page
         all_rules.extend(rule for rule in page_rules if isinstance(rule, dict))
         total = int(payload.get("total", len(all_rules)) or len(all_rules))
+        total_available = total
         if len(all_rules) >= total:
             break
 
@@ -938,8 +942,20 @@ def audit_migrated_rules(
             else:
                 remediation["failed_rule_ids"].append(rule_id)
 
+    listing_truncated = total_available is not None and len(all_rules) < total_available and not errors
+    listing_warning = ""
+    if listing_truncated:
+        listing_warning = (
+            f"Inspected {len(all_rules)} of {total_available} rules after {pages_scanned} page(s). "
+            "Increase --max-pages to inspect every rule before acting on this result."
+        )
+
     return {
         "total_rules_seen": len(all_rules),
+        "total_rules_available": total_available if total_available is not None else len(all_rules),
+        "pages_scanned": pages_scanned,
+        "listing_truncated": listing_truncated,
+        "listing_warning": listing_warning,
         "migrated_rules_seen": len(migrated_rules),
         "migrated_rule_ids": [str(rule.get("id", "") or "") for rule in migrated_rules],
         "enabled_migrated_rule_ids": [str(rule.get("id", "") or "") for rule in enabled_migrated_rules],

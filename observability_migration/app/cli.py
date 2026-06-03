@@ -946,6 +946,20 @@ def _run_delete_rules(args: Any) -> int:
         return 2
 
     rule_ids = [rid for rid in listing.get("migrated_rule_ids", []) if rid]
+    if listing.get("listing_truncated"):
+        print(
+            json.dumps(
+                {
+                    "error": "rule_listing_truncated",
+                    "listing_truncated": True,
+                    "listing_warning": listing.get("listing_warning", ""),
+                    "would_delete_count": len(rule_ids),
+                    "would_delete_rule_ids": rule_ids,
+                },
+                indent=2,
+            )
+        )
+        return 2
 
     if not args.confirm:
         print(

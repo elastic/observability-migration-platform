@@ -75,7 +75,7 @@ The whole point of a bulk run is the **coverage report**. Read it; do not assume
 |---|---|---|
 | Human-readable verdict + per-dashboard table + must-fix worklist | `full_out/dashboards/migration_summary.md` | verdict, scorecard, must-fix list, grouped warnings |
 | Dashboard coverage buckets | `full_out/dashboards/migration_report.json` | `summary` (counts), readiness buckets |
-| Per-panel status / why a panel didn't migrate | `full_out/dashboards/migration_manifest.json` | `panels[].status`, `panels[].reasons`, `panels[].grafana_type` (Datadog: widget type) |
+| Per-panel status / why a panel didn't migrate | `full_out/dashboards/migration_manifest.json` | `panels[].status`, `panels[].reasons`; Grafana type: `panels[].grafana_type`; Datadog widget type: `panels[].datadog_widget_type` |
 | Which asset families ran | `full_out/run_summary.json` | top-level summary |
 | Alert rule creation results | `full_out/alerts/monitor_rule_upload_results.json` (Datadog) / `full_out/alerts/alert_rule_upload_results.json` (Grafana) | created / failed / skipped |
 

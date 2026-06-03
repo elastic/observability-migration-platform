@@ -222,8 +222,8 @@ and entry points, see [Grafana source adapter](sources/grafana.md).
 
 **TLS for custom-CA / self-signed clusters**
 
-The migration, upload, cluster-management, and alert-rule verification
-commands accept two TLS knobs that apply to their outbound HTTPS connections —
+The migration, upload, cluster-management, alert-rule audit/delete, and
+alert-rule verification commands accept two TLS knobs that apply to their outbound HTTPS connections —
 source (Grafana/Prometheus/Loki), Elasticsearch, Kibana, Datadog, and the Node
 `kb-dashboard-cli` compile/upload step where applicable (mapped to
 `NODE_EXTRA_CA_CERTS` / `NODE_TLS_REJECT_UNAUTHORIZED`):
@@ -397,18 +397,26 @@ fails).
 deleting the rules it created (those tagged `obs-migration` or named
 `[migrated] ...`). It is **dry-run by default** — it lists the rule IDs that
 would be removed without touching them. Pass `--confirm` to actually delete.
-Exit code is `2` when the cluster is unreachable, `1` when any delete fails,
-and `0` otherwise. Unlike `audit-rules --disable-enabled` (which only disables
-enabled rules), this removes the rules entirely; unlike `verify-alert-rules`
-(which only cleans up its own temporary verification rules), this targets the
-migrated rules already in Kibana.
+Exit code is `2` when the cluster is unreachable or the rule listing is
+truncated, `1` when any delete fails, and `0` otherwise. Unlike
+`audit-rules --disable-enabled` (which only disables enabled rules), this
+removes the rules entirely; unlike `verify-alert-rules` (which only cleans up
+its own temporary verification rules), this targets the migrated rules already
+in Kibana.
+
+By default the command scans 20 pages of 100 rules (`--max-pages 20`,
+`--per-page 100`) in the default Kibana space. Use `--space-id <space>` for
+non-default spaces. In large spaces, if the listing hits the scan limit before
+all rules are inspected, the command returns `rule_listing_truncated`, exits
+`2`, and does **not** delete anything. Increase `--max-pages` and rerun the dry
+run before passing `--confirm`.
 
 ```bash
 # Dry run: show which migrated rules would be deleted.
 .venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
 # Confirm: delete the migrated rules.
-.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --confirm
+.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --confirm --max-pages 50
 ```
 
 ### Verify Alert Rules

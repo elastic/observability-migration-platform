@@ -3590,6 +3590,27 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertEqual(result["remediation"]["disabled_rule_ids"], ["rule-1"])
         self.assertEqual(disable_calls, ["rule-1"])
 
+    def test_audit_migrated_rules_reports_truncated_listing(self):
+        from observability_migration.targets.kibana.alerting import audit_migrated_rules
+
+        def _fake_list(kibana_url, *, api_key="", space_id="", timeout=15, per_page=100, page=1, verify=True):
+            return {
+                "data": [{"id": f"rule-{page}", "name": "[migrated] CPU high", "enabled": False, "tags": []}],
+                "total": 3,
+            }
+
+        result = audit_migrated_rules(
+            "http://kibana:5601",
+            per_page=1,
+            max_pages=2,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertTrue(result["listing_truncated"])
+        self.assertEqual(result["total_rules_available"], 3)
+        self.assertEqual(result["total_rules_seen"], 2)
+        self.assertIn("Increase --max-pages", result["listing_warning"])
+
 
 # =====================================================================
 # CLI flag tests

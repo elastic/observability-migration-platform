@@ -14,7 +14,7 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
 ## Safety first
 
 - This deletes target assets. **Confirm with the user** what to remove (which dashboards, alerts, or everything) before running a destructive step.
-- Both revert paths have a **read-only / dry-run first**: list dashboards before deleting, and `delete-rules` is dry-run unless `--confirm`.
+- Dashboard deletion has no dry-run or `--confirm`: list dashboards first, confirm the exact IDs with the user, then run `delete-dashboards`. Alert-rule deletion is safer by default because `delete-rules` is dry-run unless `--confirm`.
 - Reverting does **not** touch the source. The original Grafana/Datadog dashboards and monitors are unaffected.
 
 ## Reverting dashboards
@@ -53,6 +53,8 @@ obs-migrate delete-rules \
 
 Exit codes: `2` if the cluster is unreachable, `1` if any delete fails, `0` otherwise (including a clean dry run).
 
+In very large spaces, `delete-rules` may hit its rule-listing scan limit before it sees every rule. If that happens it returns `rule_listing_truncated`, exits `2`, and does **not** delete anything. Increase `--max-pages` and rerun the dry run before passing `--confirm`.
+
 ### Disable instead of delete
 
 If the user wants to **stop the rules from firing without removing them** (e.g. keep them for review, or re-enable later), disable rather than delete:
@@ -80,6 +82,7 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 ## Honest limits (tell the user)
 
 - **Dashboards delete by id, not by tag.** There is no migration-tag filter for dashboards and no "delete all" flag — list and pass ids.
+- **Dashboard deletion has no dry-run or `--confirm`.** The safe preview is `cluster list-dashboards`; once `delete-dashboards --dashboard-ids ...` runs, it mutates the target.
 - **Serverless dashboards become `[DELETED]` placeholders**, not fully removed objects — that is a target limitation, not a bug.
 - **`delete-rules` only matches migrated rules** (tag `obs-migration` / name `[migrated] ...`). Rules created another way are not in scope; hand-built Kibana rules are untouched.
 - **Source is never modified.** Reverting cleans Kibana only; the user's Grafana/Datadog assets remain as-is.

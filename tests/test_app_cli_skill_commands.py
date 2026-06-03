@@ -3,9 +3,9 @@
 
 """Tests for the package-native discovery/verification subcommands.
 
-These cover the ``schema-report``, ``audit-rules`` and ``verify-alert-rules``
-subcommands that expose previously repo-only scripts through the installed
-``obs-migrate`` CLI.
+These cover the ``schema-report``, ``audit-rules``, ``delete-rules`` and
+``verify-alert-rules`` subcommands that expose previously repo-only scripts
+through the installed ``obs-migrate`` CLI.
 """
 
 import io
@@ -323,6 +323,31 @@ class DeleteRulesSubcommandTests(unittest.TestCase):
             self.assertEqual(app_cli._run_delete_rules(args), 0)
         mock_cleanup.assert_not_called()
 
+    def test_dry_run_prints_candidate_rule_ids(self):
+        args = SimpleNamespace(
+            kibana_url="https://kbn",
+            kibana_api_key="KEY",
+            space_id="",
+            per_page=100,
+            max_pages=20,
+            confirm=False,
+        )
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                app_cli,
+                "audit_migrated_rules",
+                return_value={"migrated_rule_ids": ["rule-1", "rule-2"], "errors": []},
+            ),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(app_cli._run_delete_rules(args), 0)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["would_delete_count"], 2)
+        self.assertEqual(payload["would_delete_rule_ids"], ["rule-1", "rule-2"])
+
     def test_confirm_deletes_migrated_rules(self):
         args = SimpleNamespace(
             kibana_url="https://kbn",
@@ -352,6 +377,32 @@ class DeleteRulesSubcommandTests(unittest.TestCase):
         mock_cleanup.assert_called_once()
         self.assertEqual(mock_cleanup.call_args.args[1], ["rule-1", "rule-2"])
 
+    def test_confirm_with_no_rules_is_clean_noop(self):
+        args = SimpleNamespace(
+            kibana_url="https://kbn",
+            kibana_api_key="KEY",
+            space_id="",
+            per_page=100,
+            max_pages=20,
+            confirm=True,
+        )
+        with (
+            patch.object(
+                app_cli,
+                "audit_migrated_rules",
+                return_value={"migrated_rule_ids": [], "errors": []},
+            ),
+            patch.object(
+                app_cli,
+                "cleanup_rules",
+                return_value={"deleted_count": 0, "failed_rule_ids": []},
+            ) as mock_cleanup,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(app_cli._run_delete_rules(args), 0)
+        mock_cleanup.assert_called_once()
+        self.assertEqual(mock_cleanup.call_args.args[1], [])
+
     def test_confirm_returns_one_when_a_delete_fails(self):
         args = SimpleNamespace(
             kibana_url="https://kbn",
@@ -376,6 +427,36 @@ class DeleteRulesSubcommandTests(unittest.TestCase):
         ):
             self.assertEqual(app_cli._run_delete_rules(args), 1)
 
+    def test_confirm_refuses_to_delete_when_listing_is_truncated(self):
+        args = SimpleNamespace(
+            kibana_url="https://kbn",
+            kibana_api_key="KEY",
+            space_id="",
+            per_page=1,
+            max_pages=2,
+            confirm=True,
+        )
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                app_cli,
+                "audit_migrated_rules",
+                return_value={
+                    "migrated_rule_ids": ["rule-1", "rule-2"],
+                    "errors": [],
+                    "listing_truncated": True,
+                    "listing_warning": "Increase --max-pages to inspect every rule.",
+                },
+            ),
+            patch.object(app_cli, "cleanup_rules") as mock_cleanup,
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(app_cli._run_delete_rules(args), 2)
+        mock_cleanup.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["listing_truncated"])
+        self.assertIn("Increase --max-pages", payload["listing_warning"])
+
     def test_returns_two_on_listing_errors(self):
         args = SimpleNamespace(
             kibana_url="https://kbn",
@@ -396,6 +477,37 @@ class DeleteRulesSubcommandTests(unittest.TestCase):
         ):
             self.assertEqual(app_cli._run_delete_rules(args), 2)
         mock_cleanup.assert_not_called()
+
+    def test_forwards_scope_and_pagination_args_to_listing_and_cleanup(self):
+        args = SimpleNamespace(
+            kibana_url="https://kbn",
+            kibana_api_key="KEY",
+            space_id="ops",
+            per_page=25,
+            max_pages=7,
+            confirm=True,
+        )
+        with (
+            patch.object(
+                app_cli,
+                "audit_migrated_rules",
+                return_value={"migrated_rule_ids": ["rule-1"], "errors": []},
+            ) as mock_audit,
+            patch.object(
+                app_cli,
+                "cleanup_rules",
+                return_value={"deleted_count": 1, "failed_rule_ids": []},
+            ) as mock_cleanup,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(app_cli._run_delete_rules(args), 0)
+
+        self.assertEqual(mock_audit.call_args.kwargs["api_key"], "KEY")
+        self.assertEqual(mock_audit.call_args.kwargs["space_id"], "ops")
+        self.assertEqual(mock_audit.call_args.kwargs["per_page"], 25)
+        self.assertEqual(mock_audit.call_args.kwargs["max_pages"], 7)
+        self.assertEqual(mock_cleanup.call_args.kwargs["api_key"], "KEY")
+        self.assertEqual(mock_cleanup.call_args.kwargs["space_id"], "ops")
 
     def test_threads_tls_verify_to_both_calls(self):
         args = SimpleNamespace(
@@ -424,6 +536,15 @@ class DeleteRulesSubcommandTests(unittest.TestCase):
             self.assertEqual(app_cli._run_delete_rules(args), 0)
         self.assertEqual(mock_audit.call_args.kwargs.get("verify"), "/tmp/ca.pem")
         self.assertEqual(mock_cleanup.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
+    def test_main_dispatches_delete_rules(self):
+        with (
+            patch.object(app_cli, "_run_delete_rules", return_value=0) as mock_run,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            app_cli.main(["delete-rules", "--kibana-url", "https://kbn", "--kibana-api-key", "KEY"])
+        self.assertEqual(cm.exception.code, 0)
+        mock_run.assert_called_once()
 
 
 class SkillCommandHelpTests(unittest.TestCase):

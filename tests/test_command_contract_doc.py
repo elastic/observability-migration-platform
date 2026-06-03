@@ -11,6 +11,8 @@ KIBANA_TARGET_DOC = ROOT / "docs" / "targets" / "kibana.md"
 GRAFANA_SOURCE_DOC = ROOT / "docs" / "sources" / "grafana.md"
 DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
 ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
+MIGRATE_ALL_SUPPORTED_SKILL = ROOT / ".cursor" / "skills" / "migrate-all-supported-assets" / "SKILL.md"
+REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKILL.md"
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -105,6 +107,23 @@ class CommandContractDocTests(unittest.TestCase):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("<output-dir>/alerts/monitor_comparison_results.json", text)
         self.assertNotIn("or\n`monitor_comparison_results.json` for Datadog", text)
+
+    def test_command_contract_documents_delete_rules_guardrails(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate delete-rules", text)
+        self.assertIn("--confirm", text)
+        self.assertIn("--max-pages", text)
+        self.assertIn("rule_listing_truncated", text)
+
+    def test_migrate_all_supported_skill_uses_datadog_widget_type(self):
+        text = MIGRATE_ALL_SUPPORTED_SKILL.read_text(encoding="utf-8")
+        self.assertIn("panels[].datadog_widget_type", text)
+        self.assertNotIn("`panels[].grafana_type` (Datadog: widget type)", text)
+
+    def test_revert_skill_does_not_claim_dashboard_delete_dry_run(self):
+        text = REVERT_MIGRATION_SKILL.read_text(encoding="utf-8")
+        self.assertIn("Dashboard deletion has no dry-run or `--confirm`", text)
+        self.assertNotIn("Both revert paths have a **read-only / dry-run first**", text)
 
     def test_grafana_source_doc_defers_command_examples_to_canonical_contract(self):
         text = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8")
