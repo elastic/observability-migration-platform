@@ -340,7 +340,10 @@ set -a && source serverless_creds.env && set +a
 .venv/bin/obs-migrate cluster detect-serverless --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 ```
 
-On Serverless, `delete-dashboards` clears saved objects into `[DELETED]` placeholders because direct saved-object DELETE is unavailable.
+`delete-dashboards` clears saved objects into `[DELETED]` placeholders by
+overwriting each dashboard with empty content. This Serverless-safe behavior is
+used for every target; use the Kibana UI if you need the placeholder saved
+objects fully removed.
 
 ### Extensions
 

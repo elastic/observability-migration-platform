@@ -50,7 +50,11 @@ def extract_dashboards_from_files(directory: str) -> list[dict[str, Any]]:
         with open(f) as fh:
             try:
                 d = json.load(fh)
-                if "panels" in d or "rows" in d:
+                if isinstance(d, dict) and isinstance(d.get("dashboard"), dict):
+                    dashboard = d["dashboard"]
+                    dashboard["_grafana_meta"] = d.get("meta", {})
+                    d = dashboard
+                if isinstance(d, dict) and ("panels" in d or "rows" in d):
                     d["_source_file"] = f.name
                     dashboards.append(d)
             except json.JSONDecodeError:

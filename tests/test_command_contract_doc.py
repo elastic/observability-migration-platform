@@ -125,6 +125,14 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("Dashboard deletion has no dry-run or `--confirm`", text)
         self.assertNotIn("Both revert paths have a **read-only / dry-run first**", text)
 
+    def test_dashboard_delete_docs_match_clear_placeholder_behavior(self):
+        contract_text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        revert_text = REVERT_MIGRATION_SKILL.read_text(encoding="utf-8")
+        self.assertIn("clears saved objects into `[DELETED]` placeholders", contract_text)
+        self.assertNotIn("On Serverless, `delete-dashboards`", contract_text)
+        self.assertIn("Dashboards become `[DELETED]` placeholders", revert_text)
+        self.assertNotIn("Serverless dashboards become `[DELETED]` placeholders", revert_text)
+
     def test_grafana_source_doc_defers_command_examples_to_canonical_contract(self):
         text = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8")
         self.assertIn("docs/command-contract.md", text)

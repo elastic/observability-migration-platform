@@ -128,12 +128,12 @@ def delete_dashboards(
     timeout: int = 30,
     verify: bool | str = True,
 ) -> dict[str, Any]:
-    """Best-effort dashboard deletion for Serverless.
+    """Best-effort dashboard cleanup using a Serverless-safe overwrite.
 
-    Serverless Kibana blocks DELETE /api/saved_objects/dashboard/{id}.
-    Workaround: re-import each dashboard with an empty panelsJSON and
-    a title prefixed with "[DELETED]", effectively clearing the content.
-    The dashboard object remains but is harmless.
+    The shared CLI uses this path for all targets so cleanup behaves the same
+    on Serverless and non-Serverless Kibana. It re-imports each dashboard with
+    empty panelsJSON and a title prefixed with "[DELETED]", effectively clearing
+    the content. The dashboard object remains but is harmless.
 
     Returns a summary with counts of cleared / failed IDs.
     """
@@ -175,9 +175,9 @@ def delete_dashboards(
         "cleared": cleared,
         "failed": failed,
         "note": (
-            "Serverless Kibana does not support DELETE for saved objects. "
             "Cleared dashboards have been overwritten with empty content. "
-            "To fully remove them, use the Kibana UI."
+            "This Serverless-safe cleanup leaves [DELETED] placeholder saved objects; "
+            "use the Kibana UI to fully remove them."
         ),
     }
 

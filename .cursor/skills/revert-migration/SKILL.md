@@ -35,7 +35,7 @@ obs-migrate cluster delete-dashboards \
 ```
 
 - `delete-dashboards` **requires** `--dashboard-ids`; there is no "delete all" switch. To remove everything, list first and pass the full id set.
-- **Serverless caveat:** on a Serverless target, direct saved-object DELETE is unavailable, so `delete-dashboards` **clears** each dashboard into a `[DELETED]` placeholder rather than removing the object outright. The command prints a note saying so — relay it; the user may still see `[DELETED]` shells in the saved-objects list.
+- **Placeholder caveat:** `delete-dashboards` **clears** each dashboard into a `[DELETED]` placeholder rather than removing the saved object outright. The command prints a note saying so — relay it; the user may still see `[DELETED]` shells in the saved-objects list.
 
 ## Reverting alerting rules
 
@@ -83,7 +83,7 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 
 - **Dashboards delete by id, not by tag.** There is no migration-tag filter for dashboards and no "delete all" flag — list and pass ids.
 - **Dashboard deletion has no dry-run or `--confirm`.** The safe preview is `cluster list-dashboards`; once `delete-dashboards --dashboard-ids ...` runs, it mutates the target.
-- **Serverless dashboards become `[DELETED]` placeholders**, not fully removed objects — that is a target limitation, not a bug.
+- **Dashboards become `[DELETED]` placeholders**, not fully removed objects — that is the command's Serverless-safe behavior, not a bug.
 - **`delete-rules` only matches migrated rules** (tag `obs-migration` / name `[migrated] ...`). Rules created another way are not in scope; hand-built Kibana rules are untouched.
 - **Source is never modified.** Reverting cleans Kibana only; the user's Grafana/Datadog assets remain as-is.
 - **Custom-CA / self-signed clusters:** `cluster` and `delete-rules` accept `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) or `--insecure` (env `OBS_MIGRATE_INSECURE`, testing only).
@@ -91,7 +91,7 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 ## Do NOT
 
 - Do **not** run a destructive delete without confirming the scope with the user first.
-- Do **not** claim a Serverless `delete-dashboards` fully removed the objects — it leaves `[DELETED]` placeholders.
+- Do **not** claim `delete-dashboards` fully removed the objects — it leaves `[DELETED]` placeholders.
 - Do **not** invent a "delete all dashboards" or "delete by tag" dashboard flag — neither exists; use ids.
 - Do **not** use `delete-rules` when the user only wants rules paused — use `audit-rules --disable-enabled` for disable-without-delete.
 - Do **not** touch the source vendor to "undo" — revert is target-only.
