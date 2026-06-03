@@ -159,6 +159,29 @@ class AuditRulesSubcommandTests(unittest.TestCase):
         ), redirect_stdout(io.StringIO()):
             self.assertEqual(app_cli._run_audit_rules(args), 0)
 
+    def test_run_audit_rules_threads_tls_verify(self):
+        args = SimpleNamespace(
+            kibana_url="https://kbn",
+            kibana_api_key="KEY",
+            space_id="",
+            per_page=100,
+            max_pages=20,
+            disable_enabled=False,
+            ca_cert="/tmp/ca.pem",
+            insecure=False,
+        )
+        with patch.object(
+            app_cli,
+            "audit_migrated_rules",
+            return_value={
+                "enabled_migrated_rule_ids": [],
+                "remediation": {"failed_rule_ids": []},
+            },
+        ) as mock_audit, redirect_stdout(io.StringIO()):
+            self.assertEqual(app_cli._run_audit_rules(args), 0)
+
+        self.assertEqual(mock_audit.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
 
 class VerifyAlertRulesSubcommandTests(unittest.TestCase):
     def test_parser_requires_comparison_and_defaults(self):
@@ -204,6 +227,8 @@ class VerifyAlertRulesSubcommandTests(unittest.TestCase):
                 limit=0,
                 keep_rules=False,
                 name_prefix="[verification ",
+                ca_cert="/tmp/ca.pem",
+                insecure=False,
             )
             clean_summary = {
                 "candidate_payloads": 1,
@@ -223,6 +248,7 @@ class VerifyAlertRulesSubcommandTests(unittest.TestCase):
             ):
                 self.assertEqual(app_cli._run_verify_alert_rules(args), 0)
             mock_verify.assert_called_once()
+            self.assertEqual(mock_verify.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 
     def test_run_verify_alert_rules_returns_two_on_preflight_unreachable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -275,7 +301,10 @@ class SkillCommandHelpTests(unittest.TestCase):
         self.assertIn("--disable-enabled", self._help_text("audit-rules"))
 
     def test_verify_alert_rules_help_mentions_comparison(self):
-        self.assertIn("--comparison", self._help_text("verify-alert-rules"))
+        help_text = self._help_text("verify-alert-rules")
+        normalized_help = help_text.replace("-\n", "").replace("\n", " ")
+        self.assertIn("--comparison", help_text)
+        self.assertIn("alerts/monitor_comparison_results.json", normalized_help)
 
 
 if __name__ == "__main__":

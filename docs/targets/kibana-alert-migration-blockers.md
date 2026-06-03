@@ -101,7 +101,7 @@ rows when query fidelity and no-data parity are both unresolved.
 - Structured standings JSON: `examples/alerting/generated/alert_support_standings.json`
 - Grafana raw migration results: `examples/alerting/generated/grafana/alert_migration_results.json`
 - Datadog raw migration results: `examples/alerting/generated/datadog/monitor_migration_results.json`
-- Datadog per-monitor comparison details: `examples/alerting/generated/datadog/monitor_comparison_results.json`
+- Datadog per-monitor comparison details: `examples/alerting/generated/datadog/alerts/monitor_comparison_results.json`
 - Local Kibana ES|QL capability snapshot used by this repo:
   [`docs/targets/kibana-esql-capabilities.md`](./kibana-esql-capabilities.md)
 

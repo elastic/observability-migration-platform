@@ -131,6 +131,7 @@ Datadog.
 | `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana currently supports `otel` only; Datadog also supports source-specific built-ins and YAML profile files. ECS fallback is not implemented in this pass. |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
+| `--dashboard-ids` | Datadog dashboard pipeline | Scope Datadog dashboard extraction by comma-separated dashboard IDs | Only affects Datadog dashboard runs |
 | `--monitor-ids`, `--monitor-query` | Datadog alert pipeline | Scope Datadog monitor extraction | Only affect Datadog alert runs |
 | `--grafana-url`, `--grafana-user`, `--grafana-pass`, `--grafana-token` | Grafana | Grafana API connection (basic auth or bearer token) | Flag-first with env fallback (`GRAFANA_URL` / `GRAFANA_USER` / `GRAFANA_PASS` / `GRAFANA_TOKEN`); forwarded to `grafana-migrate` |
 | `--ca-cert <path>` | Grafana, Datadog | Verify TLS against a custom CA bundle for **all** outbound connections (source, Elasticsearch, Kibana, incl. the Node upload step) | Env fallback `OBS_MIGRATE_CA_CERT`; keeps verification on |
@@ -221,11 +222,11 @@ and entry points, see [Grafana source adapter](sources/grafana.md).
 
 **TLS for custom-CA / self-signed clusters**
 
-All CLIs (`obs-migrate`, `grafana-migrate`, `datadog-migrate`) accept two global
-TLS knobs that apply to **every** outbound HTTPS connection — source
-(Grafana/Prometheus/Loki), Elasticsearch, and Kibana — including the Node
-`kb-dashboard-cli` compile/upload step (mapped to `NODE_EXTRA_CA_CERTS` /
-`NODE_TLS_REJECT_UNAUTHORIZED`):
+The migration, upload, cluster-management, and alert-rule verification
+commands accept two TLS knobs that apply to their outbound HTTPS connections —
+source (Grafana/Prometheus/Loki), Elasticsearch, Kibana, Datadog, and the Node
+`kb-dashboard-cli` compile/upload step where applicable (mapped to
+`NODE_EXTRA_CA_CERTS` / `NODE_TLS_REJECT_UNAUTHORIZED`):
 
 - `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`): verify against a custom CA
   bundle/file; verification stays on. Preferred for private/internal CAs.
@@ -237,17 +238,20 @@ On the dedicated CLIs these flags are honored across schema discovery, ES|QL
 validation, source preflight/execution probes, dashboard upload, smoke
 validation, and the alerting preflight/create/audit paths.
 
-Unified Datadog API mode exposes `--env-file`, `--monitor-ids`, and
-`--monitor-query`, but not `--dashboard-ids`. Datadog API mode still requires
-the optional `datadog-api-client` dependency:
+The repo-oriented `verify-panels` and `verify-visual` parity-rig wrappers do not
+expose these TLS flags today; prefer the package-native migration/upload/smoke
+paths for custom-CA or self-signed target validation.
+
+Unified Datadog API mode exposes `--env-file`, `--dashboard-ids`,
+`--monitor-ids`, and `--monitor-query`. Datadog API mode still requires the
+optional `datadog-api-client` dependency:
 
 ```bash
 .venv/bin/pip install -e ".[datadog]"
 ```
 
 When unified Datadog API mode runs without a dashboard ID list, the extractor
-uses the dashboard list returned by the Datadog API. Use the dedicated
-`datadog-migrate` CLI when you need explicit dashboard scoping.
+uses the dashboard list returned by the Datadog API.
 
 **Source-only / offline evaluation**
 
@@ -304,7 +308,7 @@ set -a && source serverless_creds.env && set +a
 - **Datadog (`input-mode api`)** — Pulls dashboard objects from the Datadog
   API. Alert-capable runs can also pull monitors, emit/validate Kibana rule
   payloads, and optionally create rules with `--create-alert-rules`. Unified
-  mode does not expose the dedicated Datadog `--dashboard-ids` selector.
+  mode also accepts `--dashboard-ids` for explicit dashboard scoping.
 
 ### Compile / Upload
 
@@ -395,8 +399,8 @@ the emitted alert-rule payloads in Kibana **disabled**, confirms none came back
 enabled, then deletes them (unless `--keep-rules`). `--comparison` is required
 and points at a comparison report written by a prior alert-capable migration
 (for example `<output-dir>/alerts/alert_comparison_results.json` for Grafana, or
-`monitor_comparison_results.json` for Datadog). Repeat `--comparison` to verify
-multiple reports.
+`<output-dir>/alerts/monitor_comparison_results.json` for Datadog). Repeat
+`--comparison` to verify multiple reports.
 
 ```bash
 .venv/bin/obs-migrate verify-alert-rules \
@@ -481,7 +485,7 @@ source adapter](sources/datadog.md).
   --data-view "metrics-*"
 
 # Live Datadog API with explicit dashboard scoping
-.venv/bin/python -m observability_migration.adapters.source.datadog.cli \
+.venv/bin/datadog-migrate \
   --source api \
   --env-file datadog_creds.env \
   --dashboard-ids abc-def-123 \

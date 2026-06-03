@@ -334,6 +334,49 @@ class TestUnifiedCliRouting(unittest.TestCase):
         mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_dashboard_ids(self, mock_main):
+        args = SimpleNamespace(
+            input_mode="api",
+            input_dir="",
+            output_dir="datadog_migration_output",
+            data_view="metrics-*",
+            field_profile="otel",
+            logs_index="",
+            compile=False,
+            validate=False,
+            upload=False,
+            preflight=False,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            dashboard_ids="abc-def-123",
+            monitor_ids="",
+            monitor_query="",
+            env_file="",
+            ca_cert="",
+            insecure=False,
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertIn("--dashboard-ids", sys.argv)
+            self.assertIn("abc-def-123", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_dataset_filter_flags(self, mock_main):
         args = SimpleNamespace(
             input_mode="files",
@@ -410,13 +453,17 @@ class TestUnifiedCliRouting(unittest.TestCase):
                 app_cli._run_upload(
                     SimpleNamespace(
                         compiled_dir=str(compiled_dir),
+                        yaml_dir=None,
                         kibana_url="https://kibana.example",
                         kibana_api_key="secret",
                         space_id="shadow",
+                        ca_cert="/tmp/ca.pem",
+                        insecure=False,
                     )
                 )
 
         adapter.upload.assert_called_once()
+        self.assertEqual(adapter.upload.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 
     def test_upload_help_describes_split_dashboard_artifact_shapes(self):
         parser = app_cli._build_parser()

@@ -88,7 +88,7 @@ obs-migrate upload \
 # Creates the emitted rules DISABLED, confirms none came back enabled, then
 # DELETES them (unless --keep-rules). Needs a comparison report from a prior
 # alert-capable migration (e.g. <their-output-dir>/alerts/alert_comparison_results.json
-# for Grafana, or monitor_comparison_results.json for Datadog). --limit caps it.
+# for Grafana, or <their-output-dir>/alerts/monitor_comparison_results.json for Datadog). --limit caps it.
 obs-migrate verify-alert-rules \
   --comparison <their-output-dir>/alerts/alert_comparison_results.json \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" \

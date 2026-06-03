@@ -85,6 +85,7 @@ class VerifyAlertRuleUploadsScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
+                patch.object(module, "collect_emitted_rule_payloads", return_value=[{"payload": {}, "alert_id": "a1", "name": "Alert 1"}]),
                 patch.object(
                     module,
                     "run_alerting_preflight",
@@ -96,7 +97,7 @@ class VerifyAlertRuleUploadsScriptTests(unittest.TestCase):
                         "can_create_index_threshold_rules": False,
                         "can_create_custom_threshold_rules": False,
                     },
-                ),
+                ) as mock_preflight,
                 patch.object(module, "create_rule") as mock_create_rule,
             ):
                 code = module.main(
@@ -107,10 +108,29 @@ class VerifyAlertRuleUploadsScriptTests(unittest.TestCase):
                         "http://localhost:1",
                         "--api-key",
                         "test-key",
+                        "--ca-cert",
+                        "/tmp/ca.pem",
                     ]
                 )
             self.assertEqual(code, 2)
+            self.assertEqual(mock_preflight.call_args.kwargs.get("verify"), "/tmp/ca.pem")
             mock_create_rule.assert_not_called()
+
+    def test_defaults_use_split_alert_artifact_paths(self):
+        module = self._load_script_module()
+        default_paths = [str(path.relative_to(ROOT)) for path in module.DEFAULT_COMPARISON_PATHS]
+        self.assertIn(
+            "examples/alerting/generated/grafana/alerts/alert_comparison_results.json",
+            default_paths,
+        )
+        self.assertIn(
+            "examples/alerting/generated/datadog/alerts/monitor_comparison_results.json",
+            default_paths,
+        )
+        self.assertNotIn(
+            "examples/alerting/generated/datadog/monitor_comparison_results.json",
+            default_paths,
+        )
 
 
 if __name__ == "__main__":

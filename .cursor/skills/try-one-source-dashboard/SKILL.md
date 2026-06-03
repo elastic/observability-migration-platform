@@ -23,8 +23,9 @@ Datadog exposes a dashboard id selector. Pass exactly one id:
 
 ```bash
 export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
-datadog-migrate \
-  --source api \
+obs-migrate migrate \
+  --source datadog \
+  --input-mode api \
   --dashboard-ids abc-def-123 \
   --output-dir try_one_out \
   --assets dashboards \
@@ -32,7 +33,7 @@ datadog-migrate \
   --data-view "metrics-*"
 ```
 
-The `--dashboard-ids` selector lives on the dedicated `datadog-migrate` CLI. The unified `obs-migrate migrate --source datadog --input-mode api` path does **not** expose `--dashboard-ids`, so use `datadog-migrate` when you need to scope by id before any target exists.
+The `--dashboard-ids` selector scopes the live Datadog API run to the one dashboard you want to try. The dedicated `datadog-migrate --source api --dashboard-ids <id>` form also works, but prefer the unified `obs-migrate migrate` command in new package-first guidance.
 
 ### Grafana — by single-dashboard export (no API id selector)
 

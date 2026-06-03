@@ -17,9 +17,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path = [path for path in sys.path if path != str(ROOT)]
 sys.path.insert(0, str(ROOT))
 
+from observability_migration.core.http import resolve_tls  # noqa: E402, I001
+
 # create_rule / run_alerting_preflight are imported here (not only used inline)
 # so existing tests can patch them on this module to intercept the round trip.
-from observability_migration.targets.kibana.alerting import (  # noqa: E402, I001
+from observability_migration.targets.kibana.alerting import (  # noqa: E402
     collect_emitted_rule_payloads,
     create_rule,
     run_alerting_preflight,
@@ -28,8 +30,8 @@ from observability_migration.targets.kibana.alerting import (  # noqa: E402, I00
 
 
 DEFAULT_COMPARISON_PATHS = [
-    ROOT / "examples/alerting/generated/grafana/alert_comparison_results.json",
-    ROOT / "examples/alerting/generated/datadog/monitor_comparison_results.json",
+    ROOT / "examples/alerting/generated/grafana/alerts/alert_comparison_results.json",
+    ROOT / "examples/alerting/generated/datadog/alerts/monitor_comparison_results.json",
 ]
 DEFAULT_NAME_PREFIX = "[verification "
 
@@ -70,6 +72,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_NAME_PREFIX,
         help="Prefix for temporary verification rule names.",
     )
+    parser.add_argument(
+        "--ca-cert",
+        default=os.getenv("OBS_MIGRATE_CA_CERT", ""),
+        help="Path to a custom CA certificate (bundle) used to verify TLS. Defaults to OBS_MIGRATE_CA_CERT.",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        default=str(os.getenv("OBS_MIGRATE_INSECURE", "") or "").strip().lower() in {"1", "true", "yes", "on"},
+        help="Disable TLS certificate verification. Defaults to OBS_MIGRATE_INSECURE.",
+    )
     return parser.parse_args(argv)
 
 
@@ -96,7 +109,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"error": "no_emitted_rule_payloads"}, indent=2))
         return 2
 
-    preflight = run_alerting_preflight(args.kibana_url, api_key=args.api_key, space_id=args.space_id)
+    verify = resolve_tls(ca_cert=args.ca_cert, insecure=bool(args.insecure))
+    preflight = run_alerting_preflight(
+        args.kibana_url,
+        api_key=args.api_key,
+        space_id=args.space_id,
+        verify=verify,
+    )
     summary = verify_emitted_rule_uploads(
         args.kibana_url,
         payloads,
@@ -105,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         keep_rules=bool(args.keep_rules),
         name_prefix=args.name_prefix,
         preflight=preflight,
+        verify=verify,
         # Inject the script-module bindings so test patches on this module
         # (run_alerting_preflight / create_rule) still intercept the round trip.
         create_rule_fn=create_rule,

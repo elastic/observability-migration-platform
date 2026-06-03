@@ -101,6 +101,11 @@ class CommandContractDocTests(unittest.TestCase):
             text,
         )
 
+    def test_command_contract_uses_split_datadog_alert_comparison_path(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("<output-dir>/alerts/monitor_comparison_results.json", text)
+        self.assertNotIn("or\n`monitor_comparison_results.json` for Datadog", text)
+
     def test_grafana_source_doc_defers_command_examples_to_canonical_contract(self):
         text = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8")
         self.assertIn("docs/command-contract.md", text)

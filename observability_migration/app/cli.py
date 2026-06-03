@@ -156,6 +156,8 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Comma-separated Datadog monitor IDs to extract (Datadog only)")
     migrate.add_argument("--monitor-query", default="",
                          help="Datadog monitor search query (Datadog only)")
+    migrate.add_argument("--dashboard-ids", default="",
+                         help="Comma-separated Datadog dashboard IDs to extract (Datadog only)")
     migrate.add_argument("--env-file", default="",
                          help="Path to credentials .env file (Datadog)")
     migrate.add_argument(
@@ -406,7 +408,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "(unless --keep-rules). This is a self-cleaning write check. The comparison "
             "JSON is written by an alert-capable migration run (for example "
             "'<output-dir>/alerts/alert_comparison_results.json' for Grafana or "
-            "'monitor_comparison_results.json' for Datadog)."
+            "'<output-dir>/alerts/monitor_comparison_results.json' for Datadog)."
         ),
     )
     verify_alert_rules_cmd.add_argument(
@@ -723,6 +725,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--monitor-ids", args.monitor_ids])
     if getattr(args, "monitor_query", ""):
         legacy_argv.extend(["--monitor-query", args.monitor_query])
+    if getattr(args, "dashboard_ids", ""):
+        legacy_argv.extend(["--dashboard-ids", args.dashboard_ids])
     if getattr(args, "env_file", ""):
         legacy_argv.extend(["--env-file", args.env_file])
     if getattr(args, "ca_cert", ""):
