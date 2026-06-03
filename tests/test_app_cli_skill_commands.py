@@ -15,6 +15,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
 from observability_migration.app import cli as app_cli
@@ -614,6 +615,60 @@ class ListSamplesSubcommandTests(unittest.TestCase):
             cli.main(["list-samples"])
         self.assertEqual(ctx.exception.code, 0)
         self.assertTrue(json.loads(stdout.getvalue()))
+
+
+class SeedSampleDataSubcommandTests(unittest.TestCase):
+    def test_main_dispatches_seed_and_threads_args_and_tls(self):
+        from observability_migration.app import cli
+
+        captured = {}
+
+        def fake_make_es_request(es_url, api_key, *, verify=True, timeout=120):
+            captured["es_url"] = es_url
+            captured["api_key"] = api_key
+            captured["verify"] = verify
+            return "REQ"
+
+        class FakeSummary:
+            ok = 5
+            errors = 0
+            docs_per_stream = {"logs-generic-default": 5}
+            error_samples: list = []
+
+        def fake_seed(artifact_dirs, request, **kwargs):
+            captured["artifact_dirs"] = [str(p) for p in artifact_dirs]
+            captured["request"] = request
+            captured["kwargs"] = kwargs
+            return FakeSummary()
+
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with (
+                mock.patch.object(cli, "make_es_request", side_effect=fake_make_es_request),
+                mock.patch.object(cli, "seed_sample_data", side_effect=fake_seed),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main([
+                    "seed-sample-data",
+                    "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test",
+                    "--api-key", "k",
+                    "--insecure",
+                    "--max-combinations", "3",
+                ])
+
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(captured["es_url"], "https://es.test")
+            self.assertEqual(captured["verify"], False)  # --insecure
+            self.assertEqual(captured["request"], "REQ")
+            self.assertEqual(captured["artifact_dirs"], [artifact_dir])
+            self.assertEqual(captured["kwargs"]["max_combinations"], 3)
+
+    def test_missing_es_url_returns_2(self):
+        from observability_migration.app import cli
+
+        with tempfile.TemporaryDirectory() as artifact_dir, self.assertRaises(SystemExit) as ctx:
+            cli.main(["seed-sample-data", "--artifact-dir", artifact_dir, "--api-key", "k"])
+        self.assertEqual(ctx.exception.code, 2)
 
 
 if __name__ == "__main__":

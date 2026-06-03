@@ -25,6 +25,12 @@ import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.sample_data import (
+    NetworkError,
+    load_metric_kind_overrides,
+    make_es_request,
+    seed_sample_data,
+)
 from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_schema_change_report,
@@ -476,6 +482,33 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    seed_cmd = sub.add_parser(
+        "seed-sample-data",
+        help="Seed synthetic Elasticsearch data for migrated dashboard artifacts so "
+             "their panels light up. ES-only; pair with remove-sample-data to clean up.",
+        description=(
+            "Build a telemetry contract from one or more migrated dashboard artifact "
+            "directories and ingest synthetic documents into Elasticsearch so migrated "
+            "panels render. ES-only (does not touch Kibana). Exit code is 2 when ES is "
+            "unreachable or inputs are invalid, 1 on ingest errors, 0 otherwise."
+        ),
+    )
+    seed_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                          help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+    seed_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                          help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    seed_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    seed_cmd.add_argument("--data-hours", type=float, default=2.0, help="Hours of synthetic data to generate.")
+    seed_cmd.add_argument("--interval-sec", type=int, default=60, help="Seconds between generated samples.")
+    seed_cmd.add_argument("--batch-docs", type=int, default=5000, help="Documents per bulk request.")
+    seed_cmd.add_argument("--max-combinations", type=int, default=12, help="Max dimension combinations per stream per timestamp.")
+    seed_cmd.add_argument("--no-recreate", action="store_true", help="Skip template/data-stream creation; only ingest.")
+    seed_cmd.add_argument("--purge-foreign-streams", action="store_true",
+                          help="Delete non-seeder streams overlapping the contract wildcards before seeding.")
+    seed_cmd.add_argument("--rules-file", action="append", default=[], help="Rule-pack file with metric_kinds overrides. Repeat to layer.")
+    seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
+    _add_tls_arguments(seed_cmd)
+
     return parser
 
 
@@ -512,6 +545,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_verify_alert_rules(args))
     elif args.command == "list-samples":
         sys.exit(_run_list_samples(args))
+    elif args.command == "seed-sample-data":
+        sys.exit(_run_seed_sample_data(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -1052,6 +1087,41 @@ def _run_verify_alert_rules(args: Any) -> int:
     ):
         return 1
     return 0
+
+
+def _run_seed_sample_data(args: Any) -> int:
+    """Seed synthetic Elasticsearch data for migrated dashboard artifacts (ES-only)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    artifact_dirs = [Path(p) for p in args.artifact_dir]
+    missing = [str(p) for p in artifact_dirs if not p.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_artifact_dirs", "paths": missing}, indent=2))
+        return 2
+    if args.data_hours <= 0 or args.interval_sec <= 0 or args.max_combinations <= 0:
+        print(json.dumps({"error": "--data-hours/--interval-sec/--max-combinations must be > 0"}, indent=2))
+        return 2
+
+    verify = _tls_verify(args)
+    overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        summary = seed_sample_data(
+            artifact_dirs, request,
+            data_hours=args.data_hours, interval_sec=args.interval_sec,
+            batch_docs=args.batch_docs, max_combinations=args.max_combinations,
+            no_recreate=args.no_recreate, purge_foreign=args.purge_foreign_streams,
+            metric_kind_overrides=overrides,
+        )
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+    except RuntimeError as exc:
+        print(json.dumps({"error": "seed_failed", "detail": str(exc)}, indent=2))
+        return 2
+    print(json.dumps({"ingested": summary.ok, "errors": summary.errors, "docs_per_stream": summary.docs_per_stream}, indent=2))
+    return 0 if not summary.errors else 1
 
 
 def _run_list_samples(args: Any) -> int:
