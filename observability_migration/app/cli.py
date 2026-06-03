@@ -33,6 +33,7 @@ from observability_migration.core.telemetry_contract import (
 )
 from observability_migration.targets.kibana.alerting import (
     audit_migrated_rules,
+    cleanup_rules,
     collect_emitted_rule_payloads,
     verify_emitted_rule_uploads,
 )
@@ -398,6 +399,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_tls_arguments(audit_rules_cmd)
 
+    delete_rules_cmd = sub.add_parser(
+        "delete-rules",
+        help="Delete the alerting rules created by a migration (tagged "
+             "'obs-migration' or named '[migrated] ...'). Dry-run by default; "
+             "pass --confirm to actually delete.",
+        description=(
+            "Revert the alert-rule half of a migration by deleting the rules it "
+            "created (those tagged 'obs-migration' or named '[migrated] ...'). "
+            "Read-only by default: it lists the rules that would be removed. Pass "
+            "--confirm to delete them. Exit code is 2 when the cluster is "
+            "unreachable, 1 when any delete fails, and 0 otherwise."
+        ),
+    )
+    delete_rules_cmd.add_argument("--kibana-url", required=True)
+    delete_rules_cmd.add_argument("--kibana-api-key", default="")
+    delete_rules_cmd.add_argument("--space-id", default="")
+    delete_rules_cmd.add_argument("--per-page", type=int, default=100, help="Rules to fetch per page.")
+    delete_rules_cmd.add_argument("--max-pages", type=int, default=20, help="Maximum pages to fetch.")
+    delete_rules_cmd.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually delete the migrated rules. Without this flag the command "
+             "only reports which rules would be deleted (dry run).",
+    )
+    _add_tls_arguments(delete_rules_cmd)
+
     verify_alert_rules_cmd = sub.add_parser(
         "verify-alert-rules",
         help="Round-trip verify emitted alert-rule payloads against Kibana: create "
@@ -466,6 +493,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_schema_report(args))
     elif args.command == "audit-rules":
         sys.exit(_run_audit_rules(args))
+    elif args.command == "delete-rules":
+        sys.exit(_run_delete_rules(args))
     elif args.command == "verify-alert-rules":
         sys.exit(_run_verify_alert_rules(args))
     elif args.command == "doctor":
@@ -898,6 +927,59 @@ def _run_audit_rules(args: Any) -> int:
     if args.disable_enabled:
         return 0 if not result["remediation"]["failed_rule_ids"] else 1
     return 0 if not result["enabled_migrated_rule_ids"] else 1
+
+
+def _run_delete_rules(args: Any) -> int:
+    """Delete migrated Kibana alerting rules (dry-run unless --confirm)."""
+    verify = _tls_verify(args)
+    listing = audit_migrated_rules(
+        args.kibana_url,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        per_page=args.per_page,
+        max_pages=args.max_pages,
+        disable_enabled=False,
+        verify=verify,
+    )
+    if listing.get("errors"):
+        print(json.dumps({"errors": listing["errors"]}, indent=2))
+        return 2
+
+    rule_ids = [rid for rid in listing.get("migrated_rule_ids", []) if rid]
+
+    if not args.confirm:
+        print(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "would_delete_count": len(rule_ids),
+                    "would_delete_rule_ids": rule_ids,
+                    "note": "Re-run with --confirm to delete these rules.",
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    cleanup = cleanup_rules(
+        args.kibana_url,
+        rule_ids,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        verify=verify,
+    )
+    print(
+        json.dumps(
+            {
+                "dry_run": False,
+                "requested_count": len(rule_ids),
+                "deleted_count": cleanup["deleted_count"],
+                "failed_rule_ids": cleanup["failed_rule_ids"],
+            },
+            indent=2,
+        )
+    )
+    return 0 if not cleanup["failed_rule_ids"] else 1
 
 
 def _run_verify_alert_rules(args: Any) -> int:

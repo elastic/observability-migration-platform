@@ -391,6 +391,26 @@ fails).
 .venv/bin/obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled
 ```
 
+### Delete Rules
+
+`obs-migrate delete-rules` reverts the alert-rule half of a migration by
+deleting the rules it created (those tagged `obs-migration` or named
+`[migrated] ...`). It is **dry-run by default** — it lists the rule IDs that
+would be removed without touching them. Pass `--confirm` to actually delete.
+Exit code is `2` when the cluster is unreachable, `1` when any delete fails,
+and `0` otherwise. Unlike `audit-rules --disable-enabled` (which only disables
+enabled rules), this removes the rules entirely; unlike `verify-alert-rules`
+(which only cleans up its own temporary verification rules), this targets the
+migrated rules already in Kibana.
+
+```bash
+# Dry run: show which migrated rules would be deleted.
+.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+
+# Confirm: delete the migrated rules.
+.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --confirm
+```
+
 ### Verify Alert Rules
 
 `obs-migrate verify-alert-rules` is the package-native form of
