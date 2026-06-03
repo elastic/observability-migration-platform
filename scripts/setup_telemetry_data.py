@@ -2,39 +2,27 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Set up source-agnostic telemetry data from migrated artifact requirements."""
+"""Set up source-agnostic telemetry data from migrated artifact requirements.
+
+Thin shim over ``observability_migration.core.sample_data``: this script keeps the
+historical positional / ``DASHBOARD_YAML_DIR`` CLI surface, but the contract build,
+stream setup, document generation, ingest, and ES/TLS handling all live in the
+library (shared with ``obs-migrate seed-sample-data``). Prefer the subcommand for
+new use; this entry point remains for existing automation.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import ssl
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any
 
-from observability_migration.core.telemetry_contract import (
-    build_combined_telemetry_contract,
-    build_telemetry_contract,
-    merge_metric_kind_overrides,
-    metric_kinds_from_prometheus_metadata,
+from observability_migration.core.sample_data import (
+    NetworkError,
+    load_metric_kind_overrides,
+    make_es_request,
+    seed_sample_data,
 )
-from observability_migration.core.telemetry_data import (
-    generate_documents,
-    ingest_documents,
-    purge_foreign_streams,
-    setup_templates_and_streams,
-)
-
-ES_ENDPOINT = os.environ.get("ELASTICSEARCH_ENDPOINT", "")
-API_KEY = os.environ.get("KEY", "")
-HEADERS = {
-    "Authorization": f"ApiKey {API_KEY}",
-    "Content-Type": "application/json",
-}
-CTX = ssl.create_default_context()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -122,91 +110,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _fetch_prometheus_metadata(prometheus_url: str) -> dict[str, Any]:
-    """Fetch Prometheus ``/api/v1/metadata``; return ``{}`` on any failure."""
-    url = f"{prometheus_url.rstrip('/')}/api/v1/metadata"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
-            payload = resp.read()
-        return json.loads(payload) if payload else {}
-    except (urllib.error.URLError, json.JSONDecodeError, ValueError):
-        return {}
-
-
-def load_metric_kind_overrides(
-    rules_files: list[str] | None,
-    prometheus_url: str = "",
-) -> dict[str, str]:
-    """Build an authoritative metric-kind override map.
-
-    Composes (most authoritative first) rule-pack ``metric_kinds`` and, when a
-    Prometheus URL is given, live ``/api/v1/metadata`` types. Returns an empty
-    map when no source yields anything so the contract falls back to inference.
-    """
-    rule_pack_kinds: dict[str, str] = {}
-    if rules_files:
-        from observability_migration.adapters.source.grafana.rules import load_rule_pack_files
-
-        pack = load_rule_pack_files(rules_files)
-        rule_pack_kinds = dict(getattr(pack, "metric_kinds", {}) or {})
-
-    metadata_kinds: dict[str, str] = {}
-    if prometheus_url:
-        metadata_kinds = metric_kinds_from_prometheus_metadata(
-            _fetch_prometheus_metadata(prometheus_url)
-        )
-
-    return merge_metric_kind_overrides(rule_pack_kinds, metadata_kinds)
-
-
-def es_request(
-    method: str,
-    path: str,
-    body: Any | None = None,
-    content_type: str = "application/json",
-) -> dict[str, Any]:
-    url = f"{ES_ENDPOINT.rstrip('/')}{path}"
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode() if isinstance(body, dict) else body
-    headers = {**HEADERS}
-    if content_type:
-        headers["Content-Type"] = content_type
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, context=CTX, timeout=120) as resp:
-            payload = resp.read()
-            return json.loads(payload) if payload else {"acknowledged": True}
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode(errors="replace")
-        if exc.code == 404 and method == "DELETE":
-            return {"acknowledged": True}
-        print(f"  HTTP {exc.code}: {payload[:300]}")
-        try:
-            return json.loads(payload) if payload else {"error": {"status": exc.code}}
-        except json.JSONDecodeError:
-            return {"error": {"status": exc.code, "reason": payload[:300]}}
-    except urllib.error.URLError as exc:
-        raise NetworkError(str(exc.reason)) from exc
-
-
-class NetworkError(RuntimeError):
-    """Raised when the Elasticsearch endpoint cannot be reached at all."""
-
-
 def main(argv: list[str] | None = None) -> int:
-    global ES_ENDPOINT
-    global API_KEY
-    global HEADERS
-
     args = parse_args(argv)
-    ES_ENDPOINT = args.es_endpoint
-    API_KEY = args.api_key
-    HEADERS = {
-        "Authorization": f"ApiKey {API_KEY}",
-        "Content-Type": "application/json",
-    }
+    es_endpoint = args.es_endpoint
+    api_key = args.api_key
 
     raw_dirs = list(args.artifact_dir or [])
     if not raw_dirs and os.environ.get("DASHBOARD_YAML_DIR", ""):
@@ -237,51 +144,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_combinations <= 0:
         print("ERROR: --max-combinations must be greater than 0")
         return 1
-
-    if not ES_ENDPOINT or not API_KEY:
+    if not es_endpoint or not api_key:
         print("ERROR: ELASTICSEARCH_ENDPOINT and KEY must be set (or pass --es-endpoint/--api-key)")
         return 1
 
-    metric_kind_overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url)
-    contract = (
-        build_telemetry_contract(artifact_dirs[0], metric_kind_overrides=metric_kind_overrides)
-        if len(artifact_dirs) == 1
-        else build_combined_telemetry_contract(
-            artifact_dirs, metric_kind_overrides=metric_kind_overrides
-        )
-    )
-    streams = contract.get("streams") or {}
-    if not streams:
-        print(f"ERROR: no telemetry requirements discovered in {', '.join(str(path) for path in artifact_dirs)}")
-        return 1
+    overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url)
+    request = make_es_request(es_endpoint, api_key)
 
     print("=== Common Telemetry Data Setup ===")
     print(f"Artifact dirs: {', '.join(str(path) for path in artifact_dirs)}")
-    print(f"Streams: {len(streams)}")
-    print("Stream field counts:")
-    for stream_name, stream in sorted(streams.items()):
-        print(f"  {stream_name}: {len(stream.get('fields') or {})} fields")
-
     try:
-        if args.purge_foreign_streams:
-            purged = purge_foreign_streams(contract, es_request)
-            if purged:
-                print(f"Purged {len(purged)} foreign data stream(s): {', '.join(purged)}")
-            else:
-                print("No foreign data streams to purge")
-        if args.no_recreate:
-            print("Skipping index template and data stream creation (--no-recreate)")
-        else:
-            setup_templates_and_streams(contract, es_request, recreate=True)
-        summary = ingest_documents(
-            generate_documents(
-                contract,
-                data_hours=args.data_hours,
-                interval_sec=args.interval_sec,
-                max_combinations=args.max_combinations,
-            ),
-            es_request,
+        summary = seed_sample_data(
+            artifact_dirs,
+            request,
+            data_hours=args.data_hours,
+            interval_sec=args.interval_sec,
             batch_docs=args.batch_docs,
+            max_combinations=args.max_combinations,
+            no_recreate=args.no_recreate,
+            purge_foreign=args.purge_foreign_streams,
+            metric_kind_overrides=overrides,
         )
     except NetworkError as exc:
         print(f"Setup failed: cannot reach Elasticsearch endpoint: {exc}")
