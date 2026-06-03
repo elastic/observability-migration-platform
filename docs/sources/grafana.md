@@ -217,9 +217,15 @@ Use that doc for:
   artifacts are written under `<output-dir>/alerts`.
 - `--native-promql` prefers native PromQL over ES|QL translation for compatible
   panels.
-- `--source api` (or unified `--input-mode api`) pulls dashboard documents
-  through the env-driven HTTP basic-auth path; `--grafana-token` is the bearer
-  token alternative for API access.
+- `--source api` (or unified `--input-mode api`) pulls dashboard documents over
+  HTTP basic auth. Connection details are **flag-first with env fallback**:
+  `--grafana-url` / `--grafana-user` / `--grafana-pass` default to `GRAFANA_URL`
+  / `GRAFANA_USER` / `GRAFANA_PASS`; `--grafana-token` (env `GRAFANA_TOKEN`) is
+  the bearer-token alternative.
+- `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env
+  `OBS_MIGRATE_INSECURE`) control TLS verification for all outbound connections
+  (Grafana, Elasticsearch, Kibana, and the Node upload step). Prefer `--ca-cert`
+  for private CAs; `--insecure` disables verification for testing only.
 - `--dataset-filter` and `--logs-dataset-filter` control the emitted dashboard
   filters when you need non-default dataset wiring.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes

@@ -74,11 +74,12 @@ class SchemaResolver:
     _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
 
-    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None):
+    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None, verify: bool | str = True):
         self._rule_pack = rule_pack
         self._es_url = es_url
         self._index_pattern = index_pattern or "metrics-*"
         self._es_api_key = es_api_key
+        self._verify = verify
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
@@ -116,6 +117,7 @@ class SchemaResolver:
                 params={"fields": "*"},
                 headers=self._es_headers(),
                 timeout=10,
+                verify=self._verify,
             )
             if resp.status_code == 200:
                 self._field_cache = resp.json().get("fields", {})
@@ -209,6 +211,7 @@ class SchemaResolver:
                 f"{self._es_url}/_resolve/index/{self._index_pattern}",
                 headers=self._es_headers(),
                 timeout=10,
+                verify=self._verify,
             )
             if resp.status_code != 200:
                 return

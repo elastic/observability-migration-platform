@@ -35,17 +35,27 @@ obs-migrate migrate \
 
 (Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below.
 
-## Where to read it
+## Get the purpose-built per-panel mapping table (start here)
 
-These artifacts are written by the CLI itself, so they exist for **package users** — no `scripts/` directory required. All under `migration_output/dashboards/`:
+The most direct answer to "how do my fields map?" is the **schema-change report**, a per-panel `dashboard │ panel │ source_fields │ target_stream │ target_fields` table. It ships in the installed package as the `obs-migrate schema-report` subcommand (no source checkout, no `scripts/` directory needed):
+
+```bash
+obs-migrate schema-report \
+  --artifact-dir migration_output/dashboards \
+  --output schema_change_report.md
+```
+
+Point `--artifact-dir` at the per-source `dashboards/` output (the dir containing `yaml/` and `verification_packets.json`). Repeat `--artifact-dir` to merge several sources into one report. Add `--contract-out telemetry_contract.json` to also emit the machine-readable telemetry producer contract. Open `schema_change_report.md` and read the table.
+
+## Where else the same information lives
+
+These artifacts are also written by the migration run itself, under `migration_output/dashboards/`:
 
 | What | File | Notes |
 |---|---|---|
-| **Required target fields + whether they exist** | `required_target_contract.json` | each field has a `status` (e.g. `confirmed`/`missing`) when `--es-url` was used. **Start here** for "which fields are missing/renamed". |
+| **Required target fields + whether they exist** | `required_target_contract.json` | each field has a `status` (e.g. `confirmed`/`missing`) when `--es-url` was used. Best for "which fields are missing/renamed". |
 | Per-panel translation detail (source vs. translated query) | `verification_packets.json` | **Open the file to read the exact key names** rather than assuming them — packet shape varies. |
 | Must-fix worklist | `migration_summary.md` | human-readable verdict + actions |
-
-> Repo checkout only: a purpose-built per-panel source→target table (`dashboard │ panel │ source_fields │ target_stream │ target_fields`) can be generated with `python scripts/generate_telemetry_contract.py migration_output/dashboards --schema-report schema_change_report.md`. **This script is not shipped in the installed package** — do not tell package users to run it. For them, the `required_target_contract.json` + `verification_packets.json` above carry the same source-vs-target information.
 
 ## Customize / override the mapping
 
@@ -81,10 +91,11 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 - Do **not** assert `verification_packets.json` field/key names from memory — open the file and read them. Packet keys are easy to get subtly wrong.
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
-- Do **not** tell package users to run `scripts/generate_telemetry_contract.py` — it ships only in a repo checkout; use the shipped artifacts instead.
+- Do **not** reach for repo-only scripts for the schema report: `obs-migrate schema-report` is the package-native command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
 
 ## See also
 
+- `obs-migrate schema-report --help` — the per-panel source→target table command (shipped in the package).
 - `docs/sources/grafana.md` (SchemaResolver + rule packs) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
 - `assess-migration-readiness` skill — `missing` fields/metrics show up there as blockers/actions.
 - `obs-migrate extensions --help` and `grafana-migrate --help` — rule-pack and `--rules-file` options for the installed version.

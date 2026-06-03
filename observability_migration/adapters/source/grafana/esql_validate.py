@@ -12,6 +12,8 @@ from pathlib import Path
 import requests
 import yaml
 
+from observability_migration.core.http import apply_tls
+
 from .rules import _append_unique, _merge_mapping_lists
 
 DEFAULT_TSTART_EXPR = "NOW() - 1 hour"
@@ -22,9 +24,9 @@ KNOWN_FIELD_ALIASES = {
 }
 
 
-def validate_esql(query, es_url, index_pattern="metrics-*", es_api_key=None):
+def validate_esql(query, es_url, index_pattern="metrics-*", es_api_key=None, verify: bool | str = True):
     """Validate an ES|QL query against Elasticsearch. Returns (ok, error_message)."""
-    probe = _run_esql_query(query, es_url, es_api_key=es_api_key)
+    probe = _run_esql_query(query, es_url, es_api_key=es_api_key, verify=verify)
     return probe["ok"], probe["error"]
 
 
@@ -101,7 +103,15 @@ def configure_es_auth(es_api_key):
     _module_es_api_key = es_api_key
 
 
-def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15, result_limit=None):
+def _run_esql_query(
+    query,
+    es_url,
+    es_api_key=None,
+    session=None,
+    timeout=15,
+    result_limit=None,
+    verify: bool | str = True,
+):
     """Execute ES|QL and return validation status plus lightweight result metadata."""
     if not es_url or not query:
         return {"ok": None, "error": "", "rows": 0, "columns": [], "values": [], "metadata": {}}
@@ -114,12 +124,17 @@ def _run_esql_query(query, es_url, es_api_key=None, session=None, timeout=15, re
         params = _validation_params_for_query(query)
         if params:
             payload["params"] = params
+        post_kwargs = {
+            "json": payload,
+            "params": {"format": "json"},
+            "headers": _build_es_headers(api_key),
+            "timeout": timeout,
+        }
+        if session is None:
+            post_kwargs["verify"] = verify
         resp = client.post(
             f"{es_url}/_query",
-            json=payload,
-            params={"format": "json"},
-            headers=_build_es_headers(api_key),
-            timeout=timeout,
+            **post_kwargs,
         )
         if resp.status_code == 200:
             body = resp.json()
@@ -445,6 +460,7 @@ def validate_query_with_fixes(
     query, es_url, resolver, max_attempts=8, es_api_key=None,
     narrow_limit=_NARROW_MAX_CANDIDATES, narrow_timeout=_NARROW_PROBE_TIMEOUT,
     result_limit=None,
+    verify: bool | str = True,
 ):
     original_query = query
     _, original_index = _query_source_and_index(query)
@@ -455,6 +471,7 @@ def validate_query_with_fixes(
     original_analysis = {}
     api_key = es_api_key or _module_es_api_key
     session = requests.Session()
+    apply_tls(session, verify)
     # Track the last index pattern for which narrow probing was attempted so we
     # don't re-probe the same wildcard pattern on every field-fix iteration.
     _narrow_probing_done_for: set[str] = set()

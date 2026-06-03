@@ -172,6 +172,7 @@ class TestEnsureDataView(unittest.TestCase):
             api_key="",
             space_id="",
             timeout=30,
+            verify=True,
         )
 
 

@@ -29,6 +29,7 @@ def build_source_execution_summary(
     app_key: str = "",
     site: str = "datadoghq.com",
     timeout: int = _TIMEOUT,
+    verify: bool | str = True,
 ) -> SourceExecutionSummary:
     query_language = str(getattr(panel_result, "query_language", "") or "").lower()
     source_queries = [
@@ -42,7 +43,7 @@ def build_source_execution_summary(
         return _build_log_execution(
             source_queries, query_language=query_language,
             api_key=api_key, app_key=app_key, site=site, timeout=timeout,
-            panel_result=panel_result,
+            panel_result=panel_result, verify=verify,
         )
 
     if query_language != "datadog_metric":
@@ -76,13 +77,13 @@ def build_source_execution_summary(
         return _build_single_metric_execution(
             query, query_language=query_language,
             api_key=api_key, app_key=app_key, site=site, timeout=timeout,
-            panel_result=panel_result,
+            panel_result=panel_result, verify=verify,
         )
 
     return _build_multi_metric_execution(
         source_queries, query_language=query_language,
         api_key=api_key, app_key=app_key, site=site, timeout=timeout,
-        panel_result=panel_result,
+        panel_result=panel_result, verify=verify,
     )
 
 
@@ -95,8 +96,11 @@ def _build_single_metric_execution(
     site: str,
     timeout: int,
     panel_result: Any,
+    verify: bool | str = True,
 ) -> SourceExecutionSummary:
-    result = _execute_metric_query(query, api_key=api_key, app_key=app_key, site=site, timeout=timeout)
+    result = _execute_metric_query(
+        query, api_key=api_key, app_key=app_key, site=site, timeout=timeout, verify=verify,
+    )
     if result.status != "pass":
         return SourceExecutionSummary(
             status="fail",
@@ -127,13 +131,19 @@ def _build_multi_metric_execution(
     site: str,
     timeout: int,
     panel_result: Any,
+    verify: bool | str = True,
 ) -> SourceExecutionSummary:
     per_query_timeout = max(timeout // len(queries), 5)
     all_results: list[SourceQueryResult] = []
     errors: list[str] = []
     for query in queries:
         result = _execute_metric_query(
-            query, api_key=api_key, app_key=app_key, site=site, timeout=per_query_timeout,
+            query,
+            api_key=api_key,
+            app_key=app_key,
+            site=site,
+            timeout=per_query_timeout,
+            verify=verify,
         )
         all_results.append(result)
         if result.status != "pass":
@@ -206,6 +216,7 @@ def _build_log_execution(
     site: str,
     timeout: int,
     panel_result: Any,
+    verify: bool | str = True,
 ) -> SourceExecutionSummary:
     query = queries[0] if queries else ""
     if not api_key or not app_key:
@@ -224,7 +235,9 @@ def _build_log_execution(
             query="",
             reason="Log query is empty; cannot execute",
         )
-    result = _execute_log_query(query, api_key=api_key, app_key=app_key, site=site, timeout=timeout)
+    result = _execute_log_query(
+        query, api_key=api_key, app_key=app_key, site=site, timeout=timeout, verify=verify,
+    )
     if result.status != "pass":
         return SourceExecutionSummary(
             status="fail",
@@ -251,6 +264,7 @@ def _execute_metric_query(
     app_key: str,
     site: str,
     timeout: int,
+    verify: bool | str = True,
 ) -> SourceQueryResult:
     base_url = _datadog_api_base(site)
     now = int(time.time())
@@ -266,6 +280,7 @@ def _execute_metric_query(
             params=params,
             headers=_auth_headers(api_key, app_key),
             timeout=timeout,
+            verify=verify,
         )
         elapsed = int((time.monotonic() - t0) * 1000)
         body = resp.json()
@@ -323,6 +338,7 @@ def _execute_log_query(
     app_key: str,
     site: str,
     timeout: int,
+    verify: bool | str = True,
 ) -> SourceQueryResult:
     base_url = _datadog_api_base(site)
     now = int(time.time())
@@ -341,6 +357,7 @@ def _execute_log_query(
             json=body,
             headers={**_auth_headers(api_key, app_key), "Content-Type": "application/json"},
             timeout=timeout,
+            verify=verify,
         )
         elapsed = int((time.monotonic() - t0) * 1000)
         resp_body = resp.json()

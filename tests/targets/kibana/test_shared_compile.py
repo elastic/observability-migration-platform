@@ -3,6 +3,7 @@
 
 """Tests for shared Kibana target compile path."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,6 +63,23 @@ class TestSharedCompileBehavior(unittest.TestCase):
         self.assertIn("http://localhost:5601/s/shadow", cmd)
         self.assertIn("--kibana-api-key", cmd)
         self.assertIn("secret-key", cmd)
+
+    def test_upload_yaml_scopes_node_tls_env_to_subprocess(self):
+        with mock.patch.dict(
+            os.environ,
+            {"NODE_EXTRA_CA_CERTS": "", "NODE_TLS_REJECT_UNAUTHORIZED": ""},
+            clear=False,
+        ), mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
+            shared_compile.upload_yaml(
+                "dash.yaml",
+                "compiled-out",
+                "https://kibana.example",
+                verify="/tmp/ca.pem",
+            )
+
+        env = run_command.call_args.kwargs["env"]
+        self.assertEqual(env["NODE_EXTRA_CA_CERTS"], "/tmp/ca.pem")
+        self.assertEqual(os.environ.get("NODE_EXTRA_CA_CERTS", ""), "")
 
     def test_detect_space_id_from_url_without_space_returns_empty(self):
         self.assertEqual(shared_compile.detect_space_id_from_kibana_url("http://localhost:5601"), "")

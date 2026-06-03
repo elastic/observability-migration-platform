@@ -23,6 +23,7 @@ from observability_migration.core.cli_contract import (
     dashboard_output_dir,
     normalize_requested_assets,
 )
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.reporting.report import (
     MigrationResult,
     build_summary_view,
@@ -105,6 +106,31 @@ GRAFANA_USER = os.getenv("GRAFANA_USER", "admin")
 GRAFANA_PASS = os.getenv("GRAFANA_PASS", "admin")
 KIBANA_URL = os.getenv("KIBANA_URL", "http://localhost:5601")
 ES_URL = os.getenv("ES_URL", "")
+
+
+def _env_truthy_default(name: str) -> bool:
+    """Default for a store_true flag backed by an environment variable."""
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _grafana_conn(args: argparse.Namespace) -> tuple[str, str, str]:
+    """Resolve Grafana (url, user, pass), preferring CLI flags over env defaults.
+
+    Falls back to the module-level env-derived globals when an argument is
+    absent (e.g. an ``argparse.Namespace`` built without the new flags).
+    """
+    url = getattr(args, "grafana_url", None) or GRAFANA_URL
+    user = getattr(args, "grafana_user", None) or GRAFANA_USER
+    password = getattr(args, "grafana_pass", None) or GRAFANA_PASS
+    return url, user, password
+
+
+def _resolve_tls_from_args(args: argparse.Namespace) -> bool | str:
+    """Resolve the requests ``verify`` setting from --ca-cert / --insecure args."""
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
 
 
 def parse_args(argv: list[str] | None = None):
@@ -405,6 +431,35 @@ def parse_args(argv: list[str] | None = None):
         "--grafana-token", default=os.getenv("GRAFANA_TOKEN", ""),
         help="Grafana bearer token for API access (alternative to user/pass basic auth)",
     )
+    parser.add_argument(
+        "--grafana-url", default=GRAFANA_URL,
+        help="Grafana base URL for API extraction (defaults to GRAFANA_URL env var)",
+    )
+    parser.add_argument(
+        "--grafana-user", default=GRAFANA_USER,
+        help="Grafana username for HTTP basic auth (defaults to GRAFANA_USER env var)",
+    )
+    parser.add_argument(
+        "--grafana-pass", default=GRAFANA_PASS,
+        help="Grafana password for HTTP basic auth (defaults to GRAFANA_PASS env var)",
+    )
+    parser.add_argument(
+        "--ca-cert", default=os.getenv("OBS_MIGRATE_CA_CERT", ""),
+        help=(
+            "Path to a custom CA certificate (bundle) used to verify TLS for all "
+            "outbound connections (Elasticsearch, Kibana, Grafana, Prometheus/Loki). "
+            "Defaults to OBS_MIGRATE_CA_CERT env var."
+        ),
+    )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        default=_env_truthy_default("OBS_MIGRATE_INSECURE"),
+        help=(
+            "Disable TLS certificate verification for all outbound connections. "
+            "Insecure — for testing or trusted migration environments only. "
+            "Defaults to OBS_MIGRATE_INSECURE env var."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -416,6 +471,7 @@ def _handle_list_dashboards(args):
         args.kibana_url,
         api_key=args.kibana_api_key,
         space_id=getattr(args, "shadow_space", ""),
+        verify=_resolve_tls_from_args(args),
     )
     print(f"\n  Found {len(dashboards)} dashboard(s) in Kibana:\n")
     for d in dashboards:
@@ -436,6 +492,7 @@ def _handle_delete_dashboards(args):
         ids,
         api_key=args.kibana_api_key,
         space_id=getattr(args, "shadow_space", ""),
+        verify=_resolve_tls_from_args(args),
     )
     print(f"\n  Cleared {len(result['cleared'])} dashboard(s)")
     if result["failed"]:
@@ -460,6 +517,7 @@ def _ensure_grafana_data_views(args):
             data_view_patterns=patterns,
             api_key=args.kibana_api_key,
             space_id=getattr(args, "shadow_space", ""),
+            verify=_resolve_tls_from_args(args),
         )
         for dv in created:
             print(f"    OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
@@ -528,6 +586,7 @@ def _smoke_uploaded_dashboards(
             browser_audit=args.browser_audit,
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
+            verify=_resolve_tls_from_args(args),
         )
     except Exception as exc:
         message = str(exc)
@@ -660,11 +719,13 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
 
 def extract_dashboards_for_alerts(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.source == "api":
+        url, user, password = _grafana_conn(args)
         return extract_dashboards_from_grafana(
-            GRAFANA_URL,
-            GRAFANA_USER,
-            GRAFANA_PASS,
+            url,
+            user,
+            password,
             token=getattr(args, "grafana_token", "") or "",
+            verify=_resolve_tls_from_args(args),
         )
     return extract_dashboards_from_files(args.input_dir)
 
@@ -693,6 +754,7 @@ def _detect_promql_support(
     es_url: str,
     api_key: str | None = None,
     timeout: float = 5.0,
+    verify: bool | str = True,
 ) -> bool | None:
     """Probe the cluster to see if the ES|QL ``PROMQL`` source command is available.
 
@@ -711,6 +773,7 @@ def _detect_promql_support(
             json=payload,
             headers=_es_headers(api_key),
             timeout=timeout,
+            verify=verify,
         )
     except Exception as exc:
         print(f"  WARNING: PROMQL command detection failed ({exc.__class__.__name__}): {exc}")
@@ -760,6 +823,7 @@ def _detect_promql_label_matcher_params(
     es_url: str,
     api_key: str | None = None,
     timeout: float = 5.0,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     url = es_url.rstrip("/") + "/_query"
     payload = {
@@ -772,6 +836,7 @@ def _detect_promql_label_matcher_params(
             json=payload,
             headers=_es_headers(api_key),
             timeout=timeout,
+            verify=verify,
         )
     except Exception as exc:
         return {
@@ -827,10 +892,11 @@ def _detect_target_runtime_features(
     es_url: str,
     api_key: str | None = None,
     timeout: float = 5.0,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     profile: dict[str, Any] = {}
 
-    promql_supported = _detect_promql_support(es_url, api_key, timeout=timeout)
+    promql_supported = _detect_promql_support(es_url, api_key, timeout=timeout, verify=verify)
     set_runtime_feature(
         profile,
         PROMQL_COMMAND_V0,
@@ -860,11 +926,11 @@ def _detect_target_runtime_features(
     headers = _es_headers(api_key)
     capabilities_url = es_url.rstrip("/") + "/_nodes/capabilities"
     try:
-        response = requests.get(capabilities_url, headers=headers, timeout=timeout)
+        response = requests.get(capabilities_url, headers=headers, timeout=timeout, verify=verify)
         if getattr(response, "status_code", 0) == 200:
             payload = response.json()
             if _capability_payload_contains(payload, PROMQL_LABEL_MATCHER_PARAMS):
-                probe_state = _detect_promql_label_matcher_params(es_url, api_key, timeout)
+                probe_state = _detect_promql_label_matcher_params(es_url, api_key, timeout, verify=verify)
                 if probe_state.get("supported") is True:
                     set_runtime_feature(
                         profile,
@@ -888,7 +954,7 @@ def _detect_target_runtime_features(
     except Exception:
         pass
 
-    profile[PROMQL_LABEL_MATCHER_PARAMS] = _detect_promql_label_matcher_params(es_url, api_key, timeout)
+    profile[PROMQL_LABEL_MATCHER_PARAMS] = _detect_promql_label_matcher_params(es_url, api_key, timeout, verify=verify)
     return profile
 
 
@@ -936,7 +1002,9 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
     if not es_url:
         return False
     es_api_key = getattr(args, "es_api_key", "") or None
-    runtime_features = runtime_features or _detect_target_runtime_features(es_url, es_api_key)
+    runtime_features = runtime_features or _detect_target_runtime_features(
+        es_url, es_api_key, verify=_resolve_tls_from_args(args)
+    )
     if is_feature_supported(runtime_features, PROMQL_COMMAND_V0):
         print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
         return True
@@ -981,6 +1049,7 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
         runtime_profile = _detect_target_runtime_features(
             getattr(args, "es_url", "") or "",
             getattr(args, "es_api_key", "") or None,
+            verify=_resolve_tls_from_args(args),
         )
         rule_pack.runtime_features.update(runtime_profile)
         _print_promql_runtime_profile(runtime_profile)
@@ -1013,6 +1082,7 @@ def _run_validation_jobs(
     es_api_key: str | None,
     narrow_limit: int,
     workers: int,
+    verify: bool | str = True,
 ) -> list[tuple[Any, Any, dict[str, Any]]]:
     """Validate panel queries, optionally in parallel, preserving report order."""
     if not validation_jobs:
@@ -1044,6 +1114,7 @@ def _run_validation_jobs(
             es_api_key=es_api_key,
             narrow_limit=narrow_limit,
             result_limit=1,
+            verify=verify,
         )
 
     if worker_count == 1:
@@ -1198,6 +1269,7 @@ def _run_preflight_reporting(
     )
 
     print("\n  Preflight probes...")
+    verify = _resolve_tls_from_args(args)
     referenced_metrics = _collect_referenced_metrics(results)
     referenced_labels = _collect_referenced_labels(results)
 
@@ -1205,6 +1277,7 @@ def _run_preflight_reporting(
         getattr(args, "prometheus_url", "") or "",
         required_metrics=referenced_metrics,
         required_labels=referenced_labels,
+        verify=verify,
     )
     if source_inventory.get("status") == "ok":
         found = len(source_inventory.get("metrics_found", []))
@@ -1228,6 +1301,7 @@ def _run_preflight_reporting(
     target_readiness = probe_target_readiness(
         args.es_url, required_index_patterns,
         es_api_key=args.es_api_key or None,
+        verify=verify,
     )
     if target_readiness.get("cluster_health"):
         health = target_readiness["cluster_health"]
@@ -1403,11 +1477,14 @@ def main(argv: list[str] | None = None):
     if args.es_api_key:
         configure_es_auth(args.es_api_key)
 
+    verify = _resolve_tls_from_args(args)
+
     resolver = SchemaResolver(
         rule_pack,
         es_url=args.es_url or None,
         index_pattern=args.esql_index or args.data_view,
         es_api_key=args.es_api_key or None,
+        verify=verify,
     )
 
     base_dir = dashboard_output_dir(root_output_dir)
@@ -1434,19 +1511,21 @@ def main(argv: list[str] | None = None):
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
 
     print(f"\n[1/7] Extracting dashboards (source={args.source})...")
+    grafana_url, grafana_user, grafana_pass = _grafana_conn(args)
     if args.source == "api":
         dashboards = extract_dashboards_from_grafana(
-            GRAFANA_URL,
-            GRAFANA_USER,
-            GRAFANA_PASS,
+            grafana_url,
+            grafana_user,
+            grafana_pass,
             token=getattr(args, "grafana_token", "") or "",
+            verify=verify,
         )
     else:
         dashboards = extract_dashboards_from_files(args.input_dir)
     if not dashboards:
         if args.source == "api":
             print(
-                f"  ERROR: no dashboards found in Grafana at {GRAFANA_URL}.",
+                f"  ERROR: no dashboards found in Grafana at {grafana_url}.",
                 file=sys.stderr,
             )
         else:
@@ -1594,6 +1673,7 @@ def main(argv: list[str] | None = None):
             es_api_key=args.es_api_key or None,
             narrow_limit=getattr(args, "validate_narrow_limit", 10),
             workers=getattr(args, "validate_workers", 4),
+            verify=verify,
         )
         for r, pr, validation_result in validation_outputs:
             status = validation_result["status"]
@@ -1762,6 +1842,7 @@ def main(argv: list[str] | None = None):
                     kibana_url=args.kibana_url,
                     space_id=upload_space,
                     kibana_api_key=args.kibana_api_key,
+                    verify=verify,
                 )
                 ok = upload_result["success"]
                 output = upload_result["output"]
@@ -1796,6 +1877,7 @@ def main(argv: list[str] | None = None):
         results, validation_records,
         prometheus_url=getattr(args, "prometheus_url", "") or "",
         loki_url=getattr(args, "loki_url", "") or "",
+        verify=verify,
     )
     review_summary = {}
     if args.review_explanations:

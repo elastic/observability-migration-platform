@@ -2889,8 +2889,8 @@ class TestFieldMap(unittest.TestCase):
         self.assertFalse(profile.is_numeric_field("shared.field", context="log"))
         self.assertEqual(mock_fetch.call_args_list[0].args, ("https://example.es", "metrics-*"))
         self.assertEqual(mock_fetch.call_args_list[1].args, ("https://example.es", "logs-*"))
-        self.assertEqual(mock_fetch.call_args_list[0].kwargs, {"es_api_key": "secret"})
-        self.assertEqual(mock_fetch.call_args_list[1].kwargs, {"es_api_key": "secret"})
+        self.assertEqual(mock_fetch.call_args_list[0].kwargs, {"es_api_key": "secret", "verify": True})
+        self.assertEqual(mock_fetch.call_args_list[1].kwargs, {"es_api_key": "secret", "verify": True})
 
     def test_load_unknown_profile_raises(self):
         with self.assertRaises(ValueError):

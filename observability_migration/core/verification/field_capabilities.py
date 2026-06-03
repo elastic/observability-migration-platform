@@ -186,6 +186,7 @@ def fetch_field_capabilities(
     index_pattern: str,
     es_api_key: str = "",
     timeout: int = 10,
+    verify: bool | str = True,
 ) -> dict[str, FieldCapability]:
     """Fetch and normalize Elasticsearch _field_caps for an index pattern."""
     if not es_url or not index_pattern:
@@ -196,6 +197,7 @@ def fetch_field_capabilities(
         params={"fields": "*"},
         headers=_build_es_headers(es_api_key),
         timeout=timeout,
+        verify=verify,
     )
     response.raise_for_status()
     fields = response.json().get("fields", {}) or {}

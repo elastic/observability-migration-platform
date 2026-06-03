@@ -83,6 +83,7 @@ class TestFieldCapabilities(unittest.TestCase):
             params={"fields": "*"},
             headers={"Authorization": "ApiKey secret"},
             timeout=10,
+            verify=True,
         )
 
 

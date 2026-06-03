@@ -3317,7 +3317,7 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_run_esql_query_materializes_dashboard_time_params_for_validation(self):
         captured = {}
 
-        def fake_post(url, json, params, headers, timeout):
+        def fake_post(url, json, params, headers, timeout, **kwargs):
             captured["url"] = url
             captured["query"] = json["query"]
             return SimpleNamespace(

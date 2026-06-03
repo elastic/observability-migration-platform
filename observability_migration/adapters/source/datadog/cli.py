@@ -37,6 +37,7 @@ from observability_migration.core.cli_contract import (
     dashboard_output_dir,
     normalize_requested_assets,
 )
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
 from observability_migration.core.reporting.summary_md import save_markdown_summary
@@ -61,8 +62,20 @@ from .translate import translate_widget
 from .verification import annotate_results_with_verification, save_verification_packets
 
 
+def _env_truthy_default(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_tls_from_args(args: argparse.Namespace) -> bool | str:
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    verify = _resolve_tls_from_args(args)
     selection = normalize_requested_assets(
         assets=args.assets,
         fetch_alerts=False,
@@ -72,11 +85,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.list_dashboards:
         target_adapter = target_registry.get("kibana")()
-        _handle_list_dashboards(args, target_adapter)
+        _handle_list_dashboards(args, target_adapter, verify=verify)
         return
     if args.delete_dashboards:
         target_adapter = target_registry.get("kibana")()
-        _handle_delete_dashboards(args, target_adapter)
+        _handle_delete_dashboards(args, target_adapter, verify=verify)
         return
 
     compile_requested = False
@@ -124,7 +137,7 @@ def main(argv: list[str] | None = None) -> None:
     if not field_map.logs_dataset_filter:
         from .field_map import derive_dataset_from_index
         field_map.logs_dataset_filter = derive_dataset_from_index(field_map.logs_index)
-    _load_live_field_capabilities(field_map, args)
+    _load_live_field_capabilities(field_map, args, verify=verify)
     base_dir = Path(args.output_dir)
     dashboards_dir = dashboard_output_dir(base_dir)
     alerts_dir = alert_output_dir(base_dir)
@@ -139,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
             dd_creds=dd_creds,
             target_adapter=target_adapter,
             compile_requested=compile_requested,
+            verify=verify,
         )
 
     alert_summary: dict[str, Any] | None = None
@@ -185,6 +199,7 @@ def _run_dashboard_pipeline(
     dd_creds: dict[str, str],
     target_adapter: Any,
     compile_requested: bool,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
     if not raw_dashboards:
@@ -271,6 +286,7 @@ def _run_dashboard_pipeline(
             dashboard_outputs,
             field_map,
             args,
+            verify=verify,
         )
     elif args.validate:
         print("  Validation: skipped (pass --es-url to enable)")
@@ -278,13 +294,19 @@ def _run_dashboard_pipeline(
     if compile_requested:
         _compile_all_dashboards(all_results, output_dir, target_adapter)
     if args.upload and args.ensure_data_views:
-        _ensure_data_views(args, target_adapter, field_map)
+        _ensure_data_views(args, target_adapter, field_map, verify=verify)
     if args.upload:
-        _upload_all_dashboards(all_results, output_dir, args, target_adapter)
+        _upload_all_dashboards(all_results, output_dir, args, target_adapter, verify=verify)
 
     smoke_payload: dict[str, Any] = {}
     if args.smoke:
-        smoke_payload = _smoke_uploaded_dashboards(all_results, output_dir, args, target_adapter)
+        smoke_payload = _smoke_uploaded_dashboards(
+            all_results,
+            output_dir,
+            args,
+            target_adapter,
+            verify=verify,
+        )
 
     # Source-side execution hits the live Datadog API per panel. Keep it
     # strictly opt-in (--source-execution): otherwise translation must stay
@@ -298,6 +320,7 @@ def _run_dashboard_pipeline(
         datadog_api_key=dd_creds.get("api_key", "") if source_execution_enabled else "",
         datadog_app_key=dd_creds.get("app_key", "") if source_execution_enabled else "",
         datadog_site=dd_creds.get("site", "datadoghq.com"),
+        verify=verify,
     )
     for dashboard_result in all_results:
         dashboard_result.verification_summary = {
@@ -438,19 +461,30 @@ def _extract(args: argparse.Namespace) -> list[dict[str, Any]]:
             app_key=creds["app_key"],
             site=creds["site"],
             dashboard_ids=dashboard_ids,
+            verify=_resolve_tls_from_args(args),
         )
 
     print(f"  ERROR: unknown source: {args.source}")
     sys.exit(1)
 
 
-def _load_live_field_capabilities(field_map: Any, args: argparse.Namespace) -> None:
+def _load_live_field_capabilities(
+    field_map: Any,
+    args: argparse.Namespace,
+    *,
+    verify: bool | str | None = None,
+) -> None:
     """Populate live target field capabilities when Elasticsearch access is configured."""
     if not args.es_url:
         print("  Target field capabilities: offline mode (pass --es-url to enable)")
         return
+    verify = _resolve_tls_from_args(args) if verify is None else verify
     try:
-        counts = field_map.load_live_field_capabilities(args.es_url, es_api_key=args.es_api_key)
+        counts = field_map.load_live_field_capabilities(
+            args.es_url,
+            es_api_key=args.es_api_key,
+            verify=verify,
+        )
     except Exception as exc:
         print(f"  WARNING: target field capability discovery failed: {exc}")
         return
@@ -549,11 +583,13 @@ class _DatadogValidationResolver:
         *,
         es_url: str = "",
         es_api_key: str = "",
+        verify: bool | str = True,
     ) -> None:
         self._field_map = field_map
         self._index_pattern = index_pattern or field_map.metric_index
         self._es_url = es_url
         self._es_api_key = es_api_key
+        self._verify = verify
         self._concrete_index_cache: list[str] | None = None
 
     def _context(self) -> str:
@@ -618,6 +654,7 @@ class _DatadogValidationResolver:
                 f"{self._es_url}/_resolve/index/{self._index_pattern}",
                 headers=self._es_headers(),
                 timeout=10,
+                verify=self._verify,
             )
             if resp.status_code != 200:
                 return []
@@ -710,6 +747,8 @@ def _validate_all_dashboards(
     dashboard_outputs: list[tuple[DashboardResult, Any]],
     field_map: Any,
     args: argparse.Namespace,
+    *,
+    verify: bool | str = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Validate emitted Datadog ES|QL queries against Elasticsearch."""
     print("\n  Validating ES|QL queries against Elasticsearch...")
@@ -738,6 +777,7 @@ def _validate_all_dashboards(
                     cache_key,
                     es_url=args.es_url,
                     es_api_key=args.es_api_key or "",
+                    verify=verify,
                 )
                 resolver_cache[cache_key] = resolver
             validation_result = validate_query_with_fixes(
@@ -745,6 +785,7 @@ def _validate_all_dashboards(
                 args.es_url,
                 resolver,
                 es_api_key=args.es_api_key or None,
+                verify=verify,
             )
             status = validation_result["status"]
             per_dashboard_counts[status] = per_dashboard_counts.get(status, 0) + 1
@@ -805,14 +846,21 @@ def _validate_all_dashboards(
     return validation_records, validation_summary
 
 
-def _handle_list_dashboards(args: argparse.Namespace, target_adapter: Any) -> None:
+def _handle_list_dashboards(
+    args: argparse.Namespace,
+    target_adapter: Any,
+    *,
+    verify: bool | str | None = None,
+) -> None:
     if not args.kibana_url:
         print("  ERROR: --kibana-url is required for --list-dashboards")
         sys.exit(2)
+    verify = _resolve_tls_from_args(args) if verify is None else verify
     dashboards = target_adapter.list_dashboards(
         args.kibana_url,
         api_key=args.kibana_api_key,
         space_id=args.space_id,
+        verify=verify,
     )
     print(f"\n  Found {len(dashboards)} dashboard(s) in Kibana:\n")
     for d in dashboards:
@@ -820,7 +868,12 @@ def _handle_list_dashboards(args: argparse.Namespace, target_adapter: Any) -> No
         print(f"    {d.get('id', '???'):40s}  {title}")
 
 
-def _handle_delete_dashboards(args: argparse.Namespace, target_adapter: Any) -> None:
+def _handle_delete_dashboards(
+    args: argparse.Namespace,
+    target_adapter: Any,
+    *,
+    verify: bool | str | None = None,
+) -> None:
     if not args.kibana_url:
         print("  ERROR: --kibana-url is required for --delete-dashboards")
         sys.exit(2)
@@ -828,11 +881,13 @@ def _handle_delete_dashboards(args: argparse.Namespace, target_adapter: Any) -> 
     if not ids:
         print("  ERROR: provide comma-separated dashboard IDs")
         sys.exit(2)
+    verify = _resolve_tls_from_args(args) if verify is None else verify
     result = target_adapter.delete_dashboards(
         args.kibana_url,
         ids,
         api_key=args.kibana_api_key,
         space_id=args.space_id,
+        verify=verify,
     )
     print(f"\n  Cleared {len(result['cleared'])} dashboard(s)")
     if result["failed"]:
@@ -841,7 +896,13 @@ def _handle_delete_dashboards(args: argparse.Namespace, target_adapter: Any) -> 
     print(f"\n  Note: {result['note']}")
 
 
-def _ensure_data_views(args: argparse.Namespace, target_adapter: Any, field_map: Any) -> None:
+def _ensure_data_views(
+    args: argparse.Namespace,
+    target_adapter: Any,
+    field_map: Any,
+    *,
+    verify: bool | str | None = None,
+) -> None:
     patterns: list[str] = []
     if field_map.metric_index:
         patterns.append(field_map.metric_index)
@@ -850,12 +911,14 @@ def _ensure_data_views(args: argparse.Namespace, target_adapter: Any, field_map:
     if not patterns:
         patterns = ["metrics-*"]
     print(f"\n  Ensuring data views: {', '.join(patterns)}")
+    verify = _resolve_tls_from_args(args) if verify is None else verify
     try:
         created = target_adapter.ensure_data_views(
             args.kibana_url,
             data_view_patterns=patterns,
             api_key=args.kibana_api_key,
             space_id=args.space_id,
+            verify=verify,
         )
         for dv in created:
             print(f"    OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
@@ -868,6 +931,8 @@ def _upload_all_dashboards(
     output_dir: Path,
     args: argparse.Namespace,
     target_adapter: Any,
+    *,
+    verify: bool | str | None = None,
 ) -> None:
     """Upload compiled dashboards to Kibana via the shared target runtime."""
     from observability_migration.targets.kibana.compile import (
@@ -877,6 +942,7 @@ def _upload_all_dashboards(
 
     compiled_dir = output_dir / "compiled"
     compiled_dir.mkdir(parents=True, exist_ok=True)
+    verify = _resolve_tls_from_args(args) if verify is None else verify
     target_space = detect_space_id_from_kibana_url(args.kibana_url) or "default"
     upload_space = args.space_id or ""
     upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
@@ -914,6 +980,7 @@ def _upload_all_dashboards(
             kibana_url=args.kibana_url,
             space_id=upload_space,
             kibana_api_key=args.kibana_api_key,
+            verify=verify,
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
@@ -1028,6 +1095,8 @@ def _smoke_uploaded_dashboards(
     output_dir: Path,
     args: argparse.Namespace,
     target_adapter: TargetAdapter,
+    *,
+    verify: bool | str | None = None,
 ) -> dict[str, Any]:
     uploaded_results = [result for result in results if result.uploaded]
     if not uploaded_results:
@@ -1036,6 +1105,7 @@ def _smoke_uploaded_dashboards(
 
     smoke_output = Path(args.smoke_output) if args.smoke_output else output_dir / "uploaded_dashboard_smoke_report.json"
     dashboard_titles = [result.dashboard_title for result in uploaded_results if result.dashboard_title]
+    verify = _resolve_tls_from_args(args) if verify is None else verify
 
     print(f"\n  Smoke validating uploaded dashboards ({len(uploaded_results)})...")
     try:
@@ -1053,6 +1123,7 @@ def _smoke_uploaded_dashboards(
             browser_audit=args.browser_audit,
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
+            verify=verify,
         )
     except Exception as exc:
         message = str(exc)
@@ -1322,6 +1393,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--monitor-query", default="",
         help="Datadog monitor search query for filtered discovery",
+    )
+    parser.add_argument(
+        "--ca-cert", default=os.getenv("OBS_MIGRATE_CA_CERT", ""),
+        help=(
+            "Path to a custom CA certificate (bundle) used to verify TLS for all "
+            "outbound connections (Datadog, Elasticsearch, Kibana). "
+            "Defaults to OBS_MIGRATE_CA_CERT env var."
+        ),
+    )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        default=_env_truthy_default("OBS_MIGRATE_INSECURE"),
+        help=(
+            "Disable TLS certificate verification for all outbound connections. "
+            "Insecure — for testing or trusted migration environments only. "
+            "Defaults to OBS_MIGRATE_INSECURE env var."
+        ),
     )
 
     return parser.parse_args(argv)

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import requests
 
+from observability_migration.core.http import apply_tls
+
 from .esql_validate import materialize_dashboard_time_query
 
 DEFAULT_CHROME_CANDIDATES = (
@@ -839,17 +841,21 @@ def _runtime_gap_reason(panel: dict) -> str:
     return "unexpected_gap"
 
 
-def _validate_panel_queries(es_url, queries, timeout, es_api_key="", validation_workers=1):
+def _validate_panel_queries(
+    es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
+):
     if not queries:
         return []
 
     def _run(query):
         session = requests.Session()
+        apply_tls(session, verify)
         return validate_esql(es_url, query, timeout, es_api_key=es_api_key, session=session)
 
     workers = max(1, int(validation_workers or 1))
     if workers == 1 or len(queries) == 1:
         session = requests.Session()
+        apply_tls(session, verify)
         return [
             validate_esql(es_url, query, timeout, es_api_key=es_api_key, session=session)
             for query in queries
@@ -866,6 +872,7 @@ def inspect_dashboard(
     browser_audit=None,
     es_api_key="",
     validation_workers=1,
+    verify: bool | str = True,
 ):
     attributes = saved_object.get("attributes", {})
     raw_panels = attributes.get("panelsJSON", "[]")
@@ -937,6 +944,7 @@ def inspect_dashboard(
             timeout,
             es_api_key=es_api_key,
             validation_workers=validation_workers,
+            verify=verify,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)
@@ -1033,9 +1041,10 @@ def build_summary(dashboards):
     }
 
 
-def main():
+def main(verify: bool | str = True):
     args = parse_args()
     session = requests.Session()
+    apply_tls(session, verify)
     session.headers.update({"kbn-xsrf": "true"})
     if args.kibana_api_key:
         session.headers.update({"Authorization": f"ApiKey {args.kibana_api_key}"})
@@ -1082,6 +1091,7 @@ def main():
                 browser_audit=browser_audit,
                 es_api_key=args.es_api_key,
                 validation_workers=getattr(args, "validation_workers", 1),
+                verify=verify,
             )
         )
 

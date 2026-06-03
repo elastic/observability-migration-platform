@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from observability_migration.core.http import apply_tls
+
 
 def extract_dashboards_from_grafana(
     grafana_url: str,
@@ -22,9 +24,10 @@ def extract_dashboards_from_grafana(
     password: str,
     *,
     token: str = "",
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """Extract all dashboards from Grafana via HTTP API."""
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     search_resp = session.get(f"{grafana_url}/api/search?type=dash-db&limit=500")
     search_resp.raise_for_status()
     dashboard_list = search_resp.json()
@@ -199,9 +202,10 @@ def _normalize_text_panel_content(content, mode=""):
     return raw
 
 
-def _grafana_session(grafana_url, user="", password="", token=""):
+def _grafana_session(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Build a requests session with Bearer token or HTTP basic auth."""
     session = requests.Session()
+    apply_tls(session, verify)
     tok = str(token or "").strip()
     if tok:
         session.headers["Authorization"] = f"Bearer {tok}"
@@ -230,10 +234,10 @@ def _fetch_unified_provisioning_json(session, base_url, path, empty_on_error, re
         return empty_on_error
 
 
-def extract_unified_alert_rules(grafana_url, user="", password="", token=""):
+def extract_unified_alert_rules(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch all Grafana Unified Alerting rules (GET /api/v1/provisioning/alert-rules)."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -244,10 +248,10 @@ def extract_unified_alert_rules(grafana_url, user="", password="", token=""):
     return data if isinstance(data, list) else []
 
 
-def extract_unified_contact_points(grafana_url, user="", password="", token=""):
+def extract_unified_contact_points(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch contact points (GET /api/v1/provisioning/contact-points)."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -258,10 +262,10 @@ def extract_unified_contact_points(grafana_url, user="", password="", token=""):
     return data if isinstance(data, list) else []
 
 
-def extract_unified_notification_policies(grafana_url, user="", password="", token=""):
+def extract_unified_notification_policies(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch notification policy tree (GET /api/v1/provisioning/policies)."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -272,10 +276,10 @@ def extract_unified_notification_policies(grafana_url, user="", password="", tok
     return data if isinstance(data, dict) else {}
 
 
-def extract_unified_mute_timings(grafana_url, user="", password="", token=""):
+def extract_unified_mute_timings(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch mute timings (GET /api/v1/provisioning/mute-timings)."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -286,10 +290,10 @@ def extract_unified_mute_timings(grafana_url, user="", password="", token=""):
     return data if isinstance(data, list) else []
 
 
-def extract_unified_templates(grafana_url, user="", password="", token=""):
+def extract_unified_templates(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch notification templates (GET /api/v1/provisioning/templates)."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -300,10 +304,10 @@ def extract_unified_templates(grafana_url, user="", password="", token=""):
     return data if isinstance(data, list) else []
 
 
-def extract_datasources(grafana_url, user="", password="", token=""):
+def extract_datasources(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch Grafana datasources and return a UID-keyed metadata map."""
     base = str(grafana_url or "").rstrip("/")
-    session = _grafana_session(grafana_url, user=user, password=password, token=token)
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
     data = _fetch_unified_provisioning_json(
         session,
         base,
@@ -328,26 +332,26 @@ def extract_datasources(grafana_url, user="", password="", token=""):
     return datasources
 
 
-def extract_all_alerting_resources(grafana_url, user="", password="", token=""):
+def extract_all_alerting_resources(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch all unified alerting provisioning resources; each part degrades gracefully."""
     return {
         "alert_rules": extract_unified_alert_rules(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "contact_points": extract_unified_contact_points(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "notification_policies": extract_unified_notification_policies(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "mute_timings": extract_unified_mute_timings(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "templates": extract_unified_templates(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "datasources": extract_datasources(
-            grafana_url, user=user, password=password, token=token
+            grafana_url, user=user, password=password, token=token, verify=verify
         ),
     }
 

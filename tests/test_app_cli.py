@@ -162,6 +162,133 @@ class TestUnifiedCliRouting(unittest.TestCase):
         finally:
             sys.argv = original_argv
 
+    def test_run_cluster_threads_verify_into_serverless_calls(self):
+        args = SimpleNamespace(
+            action="list-dashboards",
+            kibana_url="https://kb",
+            kibana_api_key="key",
+            space_id="",
+            dashboard_ids="",
+            data_view_patterns="metrics-*",
+            ca_cert="/tmp/ca.pem",
+            insecure=False,
+        )
+        with patch(
+            "observability_migration.targets.kibana.serverless.list_dashboards",
+            return_value=[],
+        ) as mock_list, redirect_stdout(io.StringIO()):
+            app_cli._run_cluster(args)
+        self.assertEqual(mock_list.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
+    def test_migrate_parser_tls_flag_defaults(self):
+        parser = app_cli._build_parser()
+        with mock.patch.dict(
+            "os.environ", {"OBS_MIGRATE_CA_CERT": "", "OBS_MIGRATE_INSECURE": ""}, clear=False
+        ):
+            args = parser.parse_args(["migrate", "--source", "grafana"])
+        self.assertEqual(args.ca_cert, "")
+        self.assertFalse(args.insecure)
+        self.assertEqual(args.grafana_url, "")
+        self.assertEqual(args.grafana_user, "")
+        self.assertEqual(args.grafana_pass, "")
+
+    def test_migrate_parser_accepts_tls_and_grafana_flags(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args([
+            "migrate", "--source", "grafana",
+            "--ca-cert", "/tmp/ca.pem", "--insecure",
+            "--grafana-url", "https://graf", "--grafana-user", "u", "--grafana-pass", "p",
+        ])
+        self.assertEqual(args.ca_cert, "/tmp/ca.pem")
+        self.assertTrue(args.insecure)
+        self.assertEqual(args.grafana_url, "https://graf")
+        self.assertEqual(args.grafana_user, "u")
+        self.assertEqual(args.grafana_pass, "p")
+
+    def test_cluster_and_audit_parsers_expose_tls_flags(self):
+        parser = app_cli._build_parser()
+        cluster = parser.parse_args([
+            "cluster", "list-dashboards", "--kibana-url", "https://kb", "--insecure",
+        ])
+        self.assertTrue(cluster.insecure)
+        audit = parser.parse_args([
+            "audit-rules", "--kibana-url", "https://kb", "--ca-cert", "/tmp/ca.pem",
+        ])
+        self.assertEqual(audit.ca_cert, "/tmp/ca.pem")
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_tls_and_grafana_flags(self, mock_main):
+        args = self._make_grafana_args(
+            ca_cert="/tmp/ca.pem",
+            insecure=True,
+            grafana_url="https://graf",
+            grafana_user="u",
+            grafana_pass="p",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            forwarded = sys.argv
+            self.assertIn("--ca-cert", forwarded)
+            self.assertIn("/tmp/ca.pem", forwarded)
+            self.assertIn("--insecure", forwarded)
+            self.assertIn("--grafana-url", forwarded)
+            self.assertIn("https://graf", forwarded)
+            self.assertIn("--grafana-user", forwarded)
+            self.assertIn("--grafana-pass", forwarded)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_omits_tls_flags_by_default(self, mock_main):
+        args = self._make_grafana_args()
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertNotIn("--ca-cert", sys.argv)
+            self.assertNotIn("--insecure", sys.argv)
+            self.assertNotIn("--grafana-url", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_tls_flags(self, mock_main):
+        args = SimpleNamespace(
+            input_mode="files",
+            input_dir="infra/datadog/dashboards",
+            output_dir="datadog_migration_output",
+            data_view="metrics-*",
+            field_profile="otel",
+            logs_index="",
+            compile=True,
+            validate=False,
+            upload=False,
+            preflight=False,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            ca_cert="/tmp/ca.pem",
+            insecure=True,
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertIn("--ca-cert", sys.argv)
+            self.assertIn("/tmp/ca.pem", sys.argv)
+            self.assertIn("--insecure", sys.argv)
+        finally:
+            sys.argv = original_argv
+
     @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_upload_flags(self, mock_main):
         args = SimpleNamespace(

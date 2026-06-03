@@ -239,6 +239,7 @@ def build_verification_packet(
     datadog_app_key: str = "",
     datadog_site: str = "datadoghq.com",
     source_timeout: int = 30,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     query_ir = _build_query_ir_snapshot(panel_result)
     panel_result.query_ir = dict(query_ir)
@@ -252,6 +253,7 @@ def build_verification_packet(
         app_key=datadog_app_key,
         site=datadog_site,
         timeout=source_timeout,
+        verify=verify,
     ).to_dict()
     target_execution = build_target_execution_summary(panel_result, validation_record).to_dict()
     comparison = build_comparison_result(source_execution, target_execution, query_ir, validation_record).to_dict()
@@ -363,6 +365,7 @@ def validate_monitor_queries(
     es_api_key: str = "",
     validate_query_fn=validate_query_with_fixes,
     max_attempts: int = 8,
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """Validate translated monitor queries against Elasticsearch when configured."""
     records: list[dict[str, Any]] = []
@@ -390,6 +393,7 @@ def validate_monitor_queries(
             resolver=None,
             max_attempts=max_attempts,
             es_api_key=es_api_key or None,
+            verify=verify,
         )
         records.append({**base_record, **validation})
     return records
@@ -439,6 +443,7 @@ def annotate_results_with_verification(
     datadog_app_key: str = "",
     datadog_site: str = "datadoghq.com",
     source_timeout: int = 30,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     validation_index = _index_validation_records(validation_records)
     validation_attempted = bool(validation_records)
@@ -465,6 +470,7 @@ def annotate_results_with_verification(
                 datadog_app_key=datadog_app_key,
                 datadog_site=datadog_site,
                 source_timeout=source_timeout,
+                verify=verify,
             )
             panel_result.target_candidates = list(packet.get("candidate_targets", []) or [])
             panel_result.recommended_target = str(packet.get("recommended_target", "") or "")

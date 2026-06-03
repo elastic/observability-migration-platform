@@ -502,6 +502,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             grafana_cli.GRAFANA_USER,
             grafana_cli.GRAFANA_PASS,
             token="token-123",
+            verify=True,
         )
         alert_pipeline.run_alert_pipeline.assert_called_once()
 
@@ -1099,6 +1100,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             kibana_url="https://kibana.example",
             space_id="shadow",
             kibana_api_key="secret",
+            verify=True,
         )
 
     def test_lint_failure_skips_only_failing_yaml_before_compile(self):

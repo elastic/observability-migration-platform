@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 
 from observability_migration.core.assets.visual import refresh_visual_ir
+from observability_migration.core.http import apply_subprocess_tls_env
 from observability_migration.targets.kibana import layout as layout_module
 from observability_migration.targets.kibana import lint as lint_module
 from observability_migration.targets.kibana._kbtool import tool_argv
@@ -23,9 +25,9 @@ COMMAND_TIMEOUT_SECONDS = 90
 VALIDATION_TIMEOUT_SECONDS = 120
 
 
-def _run_command(cmd, timeout):
+def _run_command(cmd, timeout, env=None):
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s: {shlex.join(str(part) for part in cmd)}"
     return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
@@ -88,7 +90,14 @@ def kibana_url_for_space(kibana_url, space_id=""):
     return urlunsplit((split.scheme, split.netloc, normalized_path, split.query, split.fragment))
 
 
-def upload_yaml(yaml_path, output_dir, kibana_url, space_id="", kibana_api_key=""):
+def upload_yaml(
+    yaml_path,
+    output_dir,
+    kibana_url,
+    space_id="",
+    kibana_api_key="",
+    verify: bool | str = True,
+):
     upload_url = kibana_url_for_space(kibana_url, space_id)
     cmd = tool_argv("kb-dashboard-cli") + [
         "compile",
@@ -103,7 +112,8 @@ def upload_yaml(yaml_path, output_dir, kibana_url, space_id="", kibana_api_key="
     ]
     if kibana_api_key:
         cmd.extend(["--kibana-api-key", str(kibana_api_key)])
-    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS)
+    env = apply_subprocess_tls_env(verify, env=os.environ.copy())
+    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS, env=env)
 
 
 def _sync_esql_panel_fields(yaml_panel, old_query, new_query):

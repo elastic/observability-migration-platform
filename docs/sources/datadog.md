@@ -299,6 +299,10 @@ Use that doc for:
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
 - `--env-file` loads Datadog API credentials for API extraction and live metric
   source execution during verification.
+- `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env
+  `OBS_MIGRATE_INSECURE`) control TLS verification for all outbound connections
+  (Elasticsearch, Kibana, and the Node upload step). Prefer `--ca-cert` for
+  private CAs; `--insecure` disables verification for testing only.
 - `--source api --dashboard-ids ...` is a dedicated-CLI-only dashboard scoping
   surface. Unified Datadog API mode does not expose `--dashboard-ids`.
 - `--monitor-ids` and `--monitor-query` scope monitor extraction during

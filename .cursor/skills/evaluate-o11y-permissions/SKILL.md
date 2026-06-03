@@ -9,7 +9,7 @@ Goal: give the user confidence their credentials can perform every step **before
 
 ## Which command form to use (package vs. repo)
 
-Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. Helper **scripts** (`scripts/verify_alert_rule_uploads.py`, `scripts/audit_migrated_rules.py`) ship **only in the repo**, not in the package — for package users, prefer the built-in CLI paths shown below and do not tell them to run a `scripts/...` file they do not have. Likewise `examples/` YAML does not exist for them; use their own migrated output.
+Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
 
 ## Mental model (state this to the user)
 
@@ -55,9 +55,14 @@ obs-migrate cluster list-dashboards --kibana-url "$KIBANA_ENDPOINT" --kibana-api
 # 3. ES read for field validation
 curl -sf -H "Authorization: ApiKey $KEY" "$ELASTICSEARCH_ENDPOINT/metrics-*/_field_caps?fields=*" >/dev/null && echo "ES read OK"
 
-# 4. Alerting read (only if migrating alerts) — no CLI wrapper, use curl
-curl -s -H "Authorization: ApiKey $KEY" "$KIBANA_ENDPOINT/api/alerting/_health"
+# 4. Alerting read (only if migrating alerts) — package-native, read-only:
+#    lists migrated rules (tagged obs-migration) and proves alerting-read access.
+obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 ```
+
+`audit-rules` is **read-only by default** (it only lists migrated rules; it disables nothing unless you pass `--disable-enabled`). On a target with no migrated rules yet it simply reports zero — that still proves the key can reach and read the Alerting API. (Raw equivalent if you prefer: `curl -s -H "Authorization: ApiKey $KEY" "$KIBANA_ENDPOINT/api/alerting/_health"`.)
+
+**Custom-CA / self-signed targets:** every `obs-migrate` command above (`cluster ...`, `audit-rules`, `upload`, `verify-alert-rules`) accepts the global TLS flags `--ca-cert <bundle>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env `OBS_MIGRATE_INSECURE`). If a probe fails with a TLS/`CERTIFICATE_VERIFY_FAILED` error rather than a 401/403, that's a trust problem, not a permission gap — add `--ca-cert` (keeps verification on; preferred) or, only with explicit user consent, `--insecure`. For the raw `curl` field-caps check, the analogous escapes are `curl --cacert <bundle>` or `curl -k`.
 
 `ensure-data-views` creates/updates data views, so treat it as a **mutating** check:
 
@@ -79,17 +84,18 @@ obs-migrate upload \
   --yaml-dir <their-output-dir>/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
-# Alert-rule create proof via the shipped CLI: migrate alerts and create the
-# rules DISABLED (tagged obs-migration). This is the package-native write check.
-obs-migrate migrate --source grafana --input-mode api \
-  --output-dir /tmp/perm-alerts --assets alerts \
+# Alert-rule write proof — SELF-CLEANING round trip (package-native).
+# Creates the emitted rules DISABLED, confirms none came back enabled, then
+# DELETES them (unless --keep-rules). Needs a comparison report from a prior
+# alert-capable migration (e.g. <their-output-dir>/alerts/alert_comparison_results.json
+# for Grafana, or monitor_comparison_results.json for Datadog). --limit caps it.
+obs-migrate verify-alert-rules \
+  --comparison <their-output-dir>/alerts/alert_comparison_results.json \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" \
-  --create-alert-rules
+  --limit 1
 ```
 
-Created rules are **disabled by default** and tagged `obs-migration`; review them in the Kibana UI (or via `GET /api/alerting/rules/_find?search=obs-migration`) and delete any you do not want. The import proof leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` afterward if it was only a test.
-
-> Repo checkout only: `scripts/verify_alert_rule_uploads.py --limit 1` does a self-cleaning create→delete round trip, and `scripts/audit_migrated_rules.py` reads migrated rules without creating anything. These scripts are **not** in the installed package — do not reference them for package users.
+`verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward, audit and disable/remove them with `obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled` and delete in the Kibana UI. The dashboard import proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test.
 
 ## Serverless caveats (call these out)
 
@@ -101,10 +107,12 @@ Created rules are **disabled by default** and tagged `obs-migration`; review the
 - Do **not** present a state-changing command (`upload`, `ensure-data-views`, rule creation) as a "safe permission check" without saying it mutates the target.
 - Do **not** invent flags, endpoints, or privilege names. `obs-migrate doctor` checks local tool resolution, **not** credentials/permissions.
 - Do **not** claim Grafana `--assets alerts` proves a separate source alert-read permission.
-- Do **not** point package users at `scripts/...` files or `examples/...` YAML — those exist only in a repo checkout.
+- Do **not** point package users at `scripts/...` files or `examples/...` YAML for the alert checks — use `obs-migrate verify-alert-rules` / `obs-migrate audit-rules` (shipped) and the user's own migrated output instead.
+- Do **not** describe `audit-rules` (without `--disable-enabled`) as mutating — it only reads.
 
 ## See also
 
 - `connect-to-o11y-source` skill — source setup and reachability.
+- `obs-migrate verify-alert-rules --help` and `obs-migrate audit-rules --help` — the self-cleaning alert write proof and the read-only rule audit (shipped in the package).
 - `obs-migrate cluster --help` and `obs-migrate migrate --help` — authoritative target/alerting flags for the installed version.
 - `docs/command-contract.md` — `cluster` actions and the alert upload flow (online docs / repo).

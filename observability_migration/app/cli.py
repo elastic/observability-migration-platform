@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,19 @@ import observability_migration.adapters.source.datadog.adapter
 import observability_migration.adapters.source.grafana.adapter
 import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.telemetry_contract import (
+    build_combined_telemetry_contract,
+    build_schema_change_report,
+    build_telemetry_contract,
+    write_telemetry_contract,
+)
+from observability_migration.targets.kibana.alerting import (
+    audit_migrated_rules,
+    collect_emitted_rule_payloads,
+    verify_emitted_rule_uploads,
+)
 
 _UPLOAD_SHAPE_HELP = (
     "Accepted input shapes: a directory of .yaml files, a dashboard artifact "
@@ -31,6 +44,40 @@ _UPLOAD_SHAPE_HELP = (
     "or that artifact dir's sibling 'compiled/' directory (for example "
     "'migration_output/dashboards/compiled')."
 )
+
+
+def _env_truthy_default(name: str) -> bool:
+    """Default for a store_true flag backed by an environment variable."""
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tls_verify(args: Any) -> bool | str:
+    """Resolve the requests ``verify`` setting from --ca-cert / --insecure args."""
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
+
+
+def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --ca-cert / --insecure TLS flags to a subparser."""
+    parser.add_argument(
+        "--ca-cert", default=os.getenv("OBS_MIGRATE_CA_CERT", ""),
+        help=(
+            "Path to a custom CA certificate (bundle) used to verify TLS for all "
+            "outbound connections (Elasticsearch, Kibana, Grafana, Prometheus/Loki, "
+            "Datadog). Defaults to OBS_MIGRATE_CA_CERT env var."
+        ),
+    )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        default=_env_truthy_default("OBS_MIGRATE_INSECURE"),
+        help=(
+            "Disable TLS certificate verification for all outbound connections. "
+            "Insecure — for testing or trusted migration environments only. "
+            "Defaults to OBS_MIGRATE_INSECURE env var."
+        ),
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -150,6 +197,19 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--smoke-timeout", type=int, default=30)
     migrate.add_argument("--chrome-binary", default="")
     migrate.add_argument("--smoke-report", default="")
+    migrate.add_argument(
+        "--grafana-url", default="",
+        help="Grafana base URL for API extraction (Grafana only; defaults to GRAFANA_URL env var)",
+    )
+    migrate.add_argument(
+        "--grafana-user", default="",
+        help="Grafana username for HTTP basic auth (Grafana only; defaults to GRAFANA_USER env var)",
+    )
+    migrate.add_argument(
+        "--grafana-pass", default="",
+        help="Grafana password for HTTP basic auth (Grafana only; defaults to GRAFANA_PASS env var)",
+    )
+    _add_tls_arguments(migrate)
 
     sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
 
@@ -182,6 +242,7 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
+    _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
     cluster_cmd.add_argument("action", choices=["list-dashboards", "ensure-data-views", "delete-dashboards", "detect-serverless"],
@@ -193,6 +254,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              help="Comma-separated dashboard IDs (for delete-dashboards)")
     cluster_cmd.add_argument("--data-view-patterns", default="metrics-*",
                              help="Comma-separated data view patterns (for ensure-data-views)")
+    _add_tls_arguments(cluster_cmd)
 
     verify_cmd = sub.add_parser(
         "verify-panels",
@@ -277,6 +339,101 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the starter extension template to a file",
     )
 
+    schema_report_cmd = sub.add_parser(
+        "schema-report",
+        help="Emit a per-panel source-to-target schema-change report from migrated "
+             "dashboard artifacts (the package-native form of the telemetry contract).",
+        description=(
+            "Build a human-readable source-to-target schema report (and, optionally, "
+            "the telemetry producer contract JSON) from one or more migrated dashboard "
+            "artifact directories. Each artifact dir is a per-source 'dashboards/' "
+            "output containing yaml/ and verification_packets.json (for example "
+            "'migration_output/dashboards'). Repeat --artifact-dir to merge multiple "
+            "sources into one report."
+        ),
+    )
+    schema_report_cmd.add_argument(
+        "--artifact-dir",
+        dest="artifact_dir",
+        action="append",
+        required=True,
+        help="Migrated dashboard artifact directory (contains yaml/ and "
+             "verification_packets.json). Repeat to merge multiple sources.",
+    )
+    schema_report_cmd.add_argument(
+        "--output",
+        default="schema_change_report.md",
+        help="Markdown output path for the schema-change report "
+             "(default: schema_change_report.md).",
+    )
+    schema_report_cmd.add_argument(
+        "--contract-out",
+        default="",
+        help="Optional path to also write the telemetry producer contract JSON.",
+    )
+
+    audit_rules_cmd = sub.add_parser(
+        "audit-rules",
+        help="Audit migrated Kibana alerting rules (tagged 'obs-migration') and "
+             "optionally disable any that are currently enabled.",
+        description=(
+            "List the alerting rules created by a migration (those tagged "
+            "'obs-migration' or named '[migrated] ...') and report which are enabled. "
+            "Read-only by default; pass --disable-enabled to disable the enabled "
+            "subset. Exit code is non-zero while enabled migrated rules remain "
+            "(or remediation fails)."
+        ),
+    )
+    audit_rules_cmd.add_argument("--kibana-url", required=True)
+    audit_rules_cmd.add_argument("--kibana-api-key", default="")
+    audit_rules_cmd.add_argument("--space-id", default="")
+    audit_rules_cmd.add_argument("--per-page", type=int, default=100, help="Rules to fetch per page.")
+    audit_rules_cmd.add_argument("--max-pages", type=int, default=20, help="Maximum pages to fetch.")
+    audit_rules_cmd.add_argument(
+        "--disable-enabled",
+        action="store_true",
+        help="Disable any migrated rules that are currently enabled.",
+    )
+    _add_tls_arguments(audit_rules_cmd)
+
+    verify_alert_rules_cmd = sub.add_parser(
+        "verify-alert-rules",
+        help="Round-trip verify emitted alert-rule payloads against Kibana: create "
+             "them (disabled), confirm they did not land enabled, then delete them.",
+        description=(
+            "Create the emitted alert-rule payloads from a migration's comparison "
+            "report(s) in Kibana, confirm none came back enabled, then clean them up "
+            "(unless --keep-rules). This is a self-cleaning write check. The comparison "
+            "JSON is written by an alert-capable migration run (for example "
+            "'<output-dir>/alerts/alert_comparison_results.json' for Grafana or "
+            "'monitor_comparison_results.json' for Datadog)."
+        ),
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--comparison",
+        dest="comparison_paths",
+        action="append",
+        required=True,
+        help="Comparison JSON path written by an alert-capable migration run. "
+             "Repeat to verify payloads from multiple reports.",
+    )
+    verify_alert_rules_cmd.add_argument("--kibana-url", required=True)
+    verify_alert_rules_cmd.add_argument("--kibana-api-key", default="")
+    verify_alert_rules_cmd.add_argument("--space-id", default="")
+    verify_alert_rules_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Optional max number of emitted payloads to verify (0 = no limit).",
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--keep-rules", action="store_true",
+        help="Keep the verification rules instead of deleting them.",
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--name-prefix", default="[verification ",
+        help="Prefix for temporary verification rule names.",
+    )
+    _add_tls_arguments(verify_alert_rules_cmd)
+
     return parser
 
 
@@ -303,6 +460,12 @@ def main(argv: list[str] | None = None) -> None:
         _run_verify_panels(args)
     elif args.command == "verify-visual":
         _run_verify_visual(args)
+    elif args.command == "schema-report":
+        sys.exit(_run_schema_report(args))
+    elif args.command == "audit-rules":
+        sys.exit(_run_audit_rules(args))
+    elif args.command == "verify-alert-rules":
+        sys.exit(_run_verify_alert_rules(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -479,6 +642,16 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.append("--create-alert-rules")
     if getattr(args, "grafana_token", ""):
         legacy_argv.extend(["--grafana-token", args.grafana_token])
+    if getattr(args, "grafana_url", ""):
+        legacy_argv.extend(["--grafana-url", args.grafana_url])
+    if getattr(args, "grafana_user", ""):
+        legacy_argv.extend(["--grafana-user", args.grafana_user])
+    if getattr(args, "grafana_pass", ""):
+        legacy_argv.extend(["--grafana-pass", args.grafana_pass])
+    if getattr(args, "ca_cert", ""):
+        legacy_argv.extend(["--ca-cert", args.ca_cert])
+    if getattr(args, "insecure", False):
+        legacy_argv.append("--insecure")
     smoke_requested = (
         args.smoke
         or args.browser_audit
@@ -552,6 +725,10 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--monitor-query", args.monitor_query])
     if getattr(args, "env_file", ""):
         legacy_argv.extend(["--env-file", args.env_file])
+    if getattr(args, "ca_cert", ""):
+        legacy_argv.extend(["--ca-cert", args.ca_cert])
+    if getattr(args, "insecure", False):
+        legacy_argv.append("--insecure")
     smoke_requested = (
         args.smoke
         or args.browser_audit
@@ -623,12 +800,14 @@ def _run_upload(args: Any) -> None:
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
+    verify = _tls_verify(args)
     adapter = target_registry.get("kibana")()
     upload_payload = adapter.upload(
         input_dir,
         kibana_url=args.kibana_url,
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
+        verify=verify,
     )
     if not upload_payload["records"]:
         print(
@@ -671,6 +850,95 @@ def _run_extensions(args: Any) -> None:
     print(_serialize_data(catalog, args.format), end="")
 
 
+def _run_schema_report(args: Any) -> int:
+    """Emit a source-to-target schema-change report from migrated artifacts.
+
+    Package-native equivalent of scripts/generate_telemetry_contract.py: works
+    from an installed wheel without a source checkout.
+    """
+    artifact_dirs = [Path(path) for path in args.artifact_dir]
+
+    report = build_schema_change_report(artifact_dirs)
+    output_path = Path(args.output)
+    if output_path.parent != Path(""):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report, encoding="utf-8")
+    print(f"Schema change report written: {output_path}")
+
+    if args.contract_out:
+        contract = (
+            build_telemetry_contract(artifact_dirs[0])
+            if len(artifact_dirs) == 1
+            else build_combined_telemetry_contract(artifact_dirs)
+        )
+        write_telemetry_contract(contract, args.contract_out)
+        print(f"Telemetry contract written: {args.contract_out}")
+    return 0
+
+
+def _run_audit_rules(args: Any) -> int:
+    """Audit migrated Kibana alerting rules; optionally disable enabled ones."""
+    result = audit_migrated_rules(
+        args.kibana_url,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        per_page=args.per_page,
+        max_pages=args.max_pages,
+        disable_enabled=args.disable_enabled,
+        verify=_tls_verify(args),
+    )
+    print(json.dumps(result, indent=2))
+
+    if result.get("errors"):
+        return 2
+    if args.disable_enabled:
+        return 0 if not result["remediation"]["failed_rule_ids"] else 1
+    return 0 if not result["enabled_migrated_rule_ids"] else 1
+
+
+def _run_verify_alert_rules(args: Any) -> int:
+    """Round-trip verify emitted alert-rule payloads against Kibana."""
+    comparison_paths = [Path(path) for path in args.comparison_paths]
+    missing = [str(path) for path in comparison_paths if not path.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_comparison_files", "paths": missing}, indent=2))
+        return 2
+
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in comparison_paths]
+    payloads = collect_emitted_rule_payloads(*reports)
+    if args.limit > 0:
+        payloads = payloads[: args.limit]
+    if not payloads:
+        print(json.dumps({"error": "no_emitted_rule_payloads"}, indent=2))
+        return 2
+
+    summary = verify_emitted_rule_uploads(
+        args.kibana_url,
+        payloads,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        keep_rules=bool(args.keep_rules),
+        name_prefix=args.name_prefix,
+        verify=_tls_verify(args),
+    )
+    summary = {
+        "comparison_paths": [str(path) for path in comparison_paths],
+        **summary,
+    }
+    print(json.dumps(summary, indent=2))
+
+    if summary.get("error") == "preflight_unreachable":
+        return 2
+    if (
+        summary["creation_errors"]
+        or summary["enabled_true_in_create_response"]
+        or summary["enabled_true_in_rule_listing"]
+        or summary["cleanup"]["failed_rule_ids"]
+    ):
+        return 1
+    return 0
+
+
 def _run_cluster(args: Any) -> None:
     """Manage target Kibana cluster: list dashboards, create data views, etc."""
     from observability_migration.targets.kibana.serverless import (
@@ -680,15 +948,17 @@ def _run_cluster(args: Any) -> None:
         list_dashboards,
     )
 
+    verify = _tls_verify(args)
+
     if args.action == "detect-serverless":
         is_sl = detect_serverless(
-            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id,
+            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"Serverless: {is_sl}")
 
     elif args.action == "list-dashboards":
         dashboards = list_dashboards(
-            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id,
+            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"\n  {len(dashboards)} dashboard(s):\n")
         for d in dashboards:
@@ -702,6 +972,7 @@ def _run_cluster(args: Any) -> None:
             data_view_patterns=patterns,
             api_key=args.kibana_api_key,
             space_id=args.space_id,
+            verify=verify,
         )
         for dv in created:
             print(f"  OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
@@ -713,7 +984,7 @@ def _run_cluster(args: Any) -> None:
             sys.exit(2)
         result = delete_dashboards(
             args.kibana_url, ids,
-            api_key=args.kibana_api_key, space_id=args.space_id,
+            api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"  Cleared: {len(result['cleared'])}")
         for f in result.get("failed", []):

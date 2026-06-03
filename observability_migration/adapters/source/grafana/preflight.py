@@ -23,6 +23,7 @@ def probe_source_metric_inventory(
     required_labels: set[str] | None = None,
     *,
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Query Prometheus metadata to build a metric and label inventory.
 
@@ -47,7 +48,7 @@ def probe_source_metric_inventory(
 
     try:
         resp = requests.get(
-            f"{base}/api/v1/label/__name__/values", timeout=timeout,
+            f"{base}/api/v1/label/__name__/values", timeout=timeout, verify=verify,
         )
         resp.raise_for_status()
         body = resp.json()
@@ -59,7 +60,7 @@ def probe_source_metric_inventory(
         return result
 
     try:
-        resp = requests.get(f"{base}/api/v1/labels", timeout=timeout)
+        resp = requests.get(f"{base}/api/v1/labels", timeout=timeout, verify=verify)
         resp.raise_for_status()
         body = resp.json()
         if body.get("status") == "success":
@@ -91,6 +92,7 @@ def probe_target_readiness(
     *,
     timeout: int = 10,
     es_api_key: str | None = None,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Check Elasticsearch cluster health, index templates, and data streams.
 
@@ -113,7 +115,7 @@ def probe_target_readiness(
         headers["Authorization"] = f"ApiKey {es_api_key}"
 
     try:
-        resp = requests.get(f"{base}/_cluster/health", headers=headers, timeout=timeout)
+        resp = requests.get(f"{base}/_cluster/health", headers=headers, timeout=timeout, verify=verify)
         if resp.status_code == 200:
             health = resp.json()
             result["cluster_health"] = {
@@ -142,7 +144,7 @@ def probe_target_readiness(
         tpl_key = pattern.replace("*", "").rstrip("-")
         try:
             resp = requests.get(
-                f"{base}/_index_template/{tpl_key}*", headers=headers, timeout=timeout,
+                f"{base}/_index_template/{tpl_key}*", headers=headers, timeout=timeout, verify=verify,
             )
             if resp.status_code == 200:
                 templates = resp.json().get("index_templates", [])
@@ -159,7 +161,7 @@ def probe_target_readiness(
 
         try:
             resp = requests.get(
-                f"{base}/_data_stream/{pattern}", headers=headers, timeout=timeout,
+                f"{base}/_data_stream/{pattern}", headers=headers, timeout=timeout, verify=verify,
             )
             if resp.status_code == 200:
                 streams = resp.json().get("data_streams", [])
