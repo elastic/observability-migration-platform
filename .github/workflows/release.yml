@@ -37,7 +37,12 @@ jobs:
         with:
           name: dist
           path: dist/
+      # Temporarily disabled: PyPI Trusted Publishing is not yet configured for
+      # this project (publish fails with `invalid-publisher`). Re-enable once a
+      # trusted publisher is set up for the `pypi` environment on PyPI.
+      # See https://docs.pypi.org/trusted-publishers/
       - name: Publish to PyPI (Trusted Publishing)
+        if: ${{ false }}
         uses: pypa/gh-action-pypi-publish@release/v1
       - name: Attach artifacts + SBOM to GitHub Release
         uses: softprops/action-gh-release@v2
