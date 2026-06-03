@@ -11,13 +11,17 @@ Goal: tell the user **what they have and what shape it is** — counts, types, d
 
 There is **no standalone scan/inventory command.** Inventory is produced as a by-product of a **source-only migration run**: point it at the source, write to a throwaway output dir, do not upload, then read the report artifacts. No Elastic/Kibana target is required.
 
+## Which command form to use (package vs. repo)
+
+Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. The output artifacts below are written by the CLI itself, so they exist for package users too — no `scripts/`, `infra/`, or `examples/` directory is needed.
+
 ## Run a source-only inventory pass
 
-Grafana (uses `--preflight` to also produce the datasource audit):
+Grafana via live API (uses `--preflight` to also produce the datasource audit):
 
 ```bash
-set -a && source grafana_creds.env && set +a
-.venv/bin/obs-migrate migrate \
+export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
+obs-migrate migrate \
   --source grafana --input-mode api \
   --output-dir grafana_inventory \
   --assets all \
@@ -27,12 +31,14 @@ set -a && source grafana_creds.env && set +a
 Datadog:
 
 ```bash
-.venv/bin/obs-migrate migrate \
+export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
+obs-migrate migrate \
   --source datadog --input-mode api \
-  --env-file datadog_creds.env \
   --output-dir datadog_inventory \
   --assets all
 ```
+
+(If the user has exported dashboard JSON files instead of live API access, swap `--input-mode api` for `--input-mode files --input-dir <their-dashboards-dir>`.)
 
 Use `--assets all` to inventory both dashboards and alerts/monitors; use `--assets dashboards` if you only care about dashboards. No `--upload`, `--es-url`, or `--kibana-url` is needed for inventory.
 
@@ -67,4 +73,5 @@ Non-migratable datasources flagged today include InfluxDB, MySQL/Postgres/MSSQL,
 ## See also
 
 - `assess-migration-readiness` skill — what will vs. won't migrate.
-- `observability_migration/adapters/source/grafana/manifest.py` (`build_dashboard_inventory`) and `preflight.py` (`build_datasource_audit`) — the inventory/audit builders.
+- `obs-migrate migrate --help` — confirm `--preflight` and asset flags for the installed version.
+- `docs/command-contract.md` — artifact descriptions (online docs / repo).

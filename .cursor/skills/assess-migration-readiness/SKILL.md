@@ -24,13 +24,15 @@ Always tell the user which level their run achieved. A clean-looking verdict at 
 
 Readiness comes from a **preflight** run (`--preflight`): it translates and analyzes, optionally validates against live systems, and writes a customer-facing readiness report. It does not upload.
 
-Highest-evidence Grafana run (add the live URLs you actually have):
+Assume the user **installed the package** (`grafana-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. The readiness artifacts below are written by the CLI, so they exist for package users without any `scripts/`/`infra/` directory.
+
+Highest-evidence Grafana run (export the endpoints/keys you actually have):
 
 ```bash
-set -a && source grafana_creds.env && set +a
-set -a && source serverless_creds.env && set +a   # for ELASTICSEARCH_ENDPOINT, KEY
+export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
+export ELASTICSEARCH_ENDPOINT="https://...es..." KEY="<api-key>"
 
-.venv/bin/grafana-migrate \
+grafana-migrate \
   --source api \
   --output-dir readiness_out \
   --assets all \
@@ -76,5 +78,5 @@ High confidence requires **all** of: `evidence_level: full`, `blockers` empty, G
 ## See also
 
 - `scan-o11y-environment` skill — the descriptive inventory layer beneath this.
-- `observability_migration/adapters/source/grafana/preflight.py` (`build_preflight_report`) — readiness, blockers, actions, evidence level.
-- `docs/command-contract.md` — preflight/validation flags and artifacts.
+- `grafana-migrate --help` — confirm `--preflight`, `--es-url`, `--prometheus-url`, `--loki-url` for the installed version.
+- `docs/command-contract.md` — preflight/validation flags and artifacts (online docs / repo).

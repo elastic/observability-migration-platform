@@ -20,41 +20,39 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 ## Get the mapping for the user's own dashboards
 
-Two steps: migrate to an artifact dir, then generate the schema-change report.
+Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Run a migration to an artifact dir with a live `--es-url` so the resolver can confirm which target fields actually exist:
 
 ```bash
-set -a && source serverless_creds.env && set +a   # for live field check (optional but recommended)
+export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
+export ELASTICSEARCH_ENDPOINT="https://...es..." KEY="<api-key>"
 
-.venv/bin/obs-migrate migrate \
-  --source grafana --input-mode files \
-  --input-dir infra/grafana/dashboards \
+obs-migrate migrate \
+  --source grafana --input-mode api \
   --output-dir migration_output \
-  --assets dashboards --native-promql \
+  --assets dashboards --native-promql --preflight \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
-
-.venv/bin/python scripts/generate_telemetry_contract.py \
-  migration_output/dashboards \
-  --output migration_output/telemetry_contract.json \
-  --schema-report migration_output/schema_change_report.md
 ```
 
-`--es-url` matters here: it lets the resolver confirm which candidate target field actually exists, so the mapping reflects the real cluster.
+(Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below.
 
 ## Where to read it
 
+These artifacts are written by the CLI itself, so they exist for **package users** — no `scripts/` directory required. All under `migration_output/dashboards/`:
+
 | What | File | Notes |
 |---|---|---|
-| **Per-panel source → target field map** | `migration_output/schema_change_report.md` | Purpose-built table: `dashboard │ panel │ source_fields │ target_stream │ target_fields`. **Start here.** |
-| Required target fields + whether they exist | `migration_output/dashboards/required_target_contract.json` | each field has `status` (e.g. `confirmed`/`missing`) when `--es-url` was used |
-| Per-panel translation detail | `migration_output/dashboards/verification_packets.json` | source vs. translated query per panel. **Open the file to read the exact key names** rather than assuming them — packet shape varies. |
-| Must-fix worklist | `migration_output/dashboards/migration_summary.md` | human-readable |
+| **Required target fields + whether they exist** | `required_target_contract.json` | each field has a `status` (e.g. `confirmed`/`missing`) when `--es-url` was used. **Start here** for "which fields are missing/renamed". |
+| Per-panel translation detail (source vs. translated query) | `verification_packets.json` | **Open the file to read the exact key names** rather than assuming them — packet shape varies. |
+| Must-fix worklist | `migration_summary.md` | human-readable verdict + actions |
+
+> Repo checkout only: a purpose-built per-panel source→target table (`dashboard │ panel │ source_fields │ target_stream │ target_fields`) can be generated with `python scripts/generate_telemetry_contract.py migration_output/dashboards --schema-report schema_change_report.md`. **This script is not shipped in the installed package** — do not tell package users to run it. For them, the `required_target_contract.json` + `verification_packets.json` above carry the same source-vs-target information.
 
 ## Customize / override the mapping
 
 **Grafana** — emit a starter rule pack, edit, re-run with `--rules-file`:
 
 ```bash
-.venv/bin/obs-migrate extensions --source grafana --format yaml --template-out custom-rule-pack.yaml
+obs-migrate extensions --source grafana --format yaml --template-out custom-rule-pack.yaml
 ```
 
 ```yaml
@@ -71,10 +69,10 @@ controls:
 ```
 
 ```bash
-.venv/bin/obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
+obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
 ```
 
-The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates).
+The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates). `extensions` and `--suggest-rule-pack-out` are shipped in the package.
 
 **Datadog** — pick a built-in `--field-profile {otel,prometheus,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
 
@@ -83,9 +81,10 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 - Do **not** assert `verification_packets.json` field/key names from memory — open the file and read them. Packet keys are easy to get subtly wrong.
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
+- Do **not** tell package users to run `scripts/generate_telemetry_contract.py` — it ships only in a repo checkout; use the shipped artifacts instead.
 
 ## See also
 
-- `docs/sources/grafana.md` (SchemaResolver + rule packs) and `docs/sources/datadog.md` (field profiles) — the full mapping tables.
+- `docs/sources/grafana.md` (SchemaResolver + rule packs) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
 - `assess-migration-readiness` skill — `missing` fields/metrics show up there as blockers/actions.
-- `observability_migration/core/telemetry_contract.py` (`build_schema_change_report`) — how the report is built.
+- `obs-migrate extensions --help` and `grafana-migrate --help` — rule-pack and `--rules-file` options for the installed version.
