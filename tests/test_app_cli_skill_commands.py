@@ -3,9 +3,9 @@
 
 """Tests for the package-native discovery/verification subcommands.
 
-These cover the ``schema-report``, ``audit-rules``, ``delete-rules`` and
-``verify-alert-rules`` subcommands that expose previously repo-only scripts
-through the installed ``obs-migrate`` CLI.
+These cover the ``schema-report``, ``audit-rules``, ``delete-rules``,
+``verify-alert-rules`` and ``list-samples`` subcommands that expose previously
+repo-only scripts through the installed ``obs-migrate`` CLI.
 """
 
 import io
@@ -570,6 +570,50 @@ class SkillCommandHelpTests(unittest.TestCase):
         normalized_help = help_text.replace("-\n", "").replace("\n", " ")
         self.assertIn("--comparison", help_text)
         self.assertIn("alerts/monitor_comparison_results.json", normalized_help)
+
+
+class ListSamplesSubcommandTests(unittest.TestCase):
+    def test_list_samples_prints_json_catalog(self):
+        from observability_migration.app import cli
+        from observability_migration.sample_dashboards.catalog import list_samples
+
+        parser = cli._build_parser()
+        args = parser.parse_args(["list-samples"])
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = cli._run_list_samples(args)
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertIsInstance(payload, list)
+        self.assertTrue(payload)
+        first = payload[0]
+        for key in (
+            "id",
+            "source",
+            "title",
+            "description",
+            "input_dir",
+            "expected_unsupported",
+            "run",
+        ):
+            self.assertIn(key, first)
+        self.assertTrue(Path(first["input_dir"]).is_absolute())
+        self.assertTrue(Path(first["input_dir"]).is_dir())
+        self.assertEqual(len(payload), len(list_samples()))
+        self.assertEqual({e["source"] for e in payload}, {s.source for s in list_samples()})
+        self.assertIn("obs-migrate migrate", first["run"])
+        self.assertIn("--input-mode files", first["run"])
+        self.assertIn(first["input_dir"], first["run"])
+
+    def test_main_dispatches_list_samples(self):
+        from observability_migration.app import cli
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit) as ctx:
+            cli.main(["list-samples"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertTrue(json.loads(stdout.getvalue()))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ from observability_migration.core.telemetry_contract import (
     build_telemetry_contract,
     write_telemetry_contract,
 )
+from observability_migration.sample_dashboards.catalog import list_samples, resolve_input_dir
 from observability_migration.targets.kibana.alerting import (
     audit_migrated_rules,
     cleanup_rules,
@@ -463,6 +464,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_tls_arguments(verify_alert_rules_cmd)
 
+    sub.add_parser(
+        "list-samples",
+        help="List the bundled sample dashboards (offline, no credentials). Use a "
+             "sample's input_dir with 'migrate --input-mode files'.",
+        description=(
+            "Print a JSON catalog of the sample dashboards bundled with the "
+            "package. Each entry includes the resolved input_dir to pass to "
+            "'obs-migrate migrate --source <source> --input-mode files "
+            "--input-dir <input_dir>'. Read-only and fully offline."
+        ),
+    )
+
     return parser
 
 
@@ -497,6 +510,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_delete_rules(args))
     elif args.command == "verify-alert-rules":
         sys.exit(_run_verify_alert_rules(args))
+    elif args.command == "list-samples":
+        sys.exit(_run_list_samples(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -1036,6 +1051,29 @@ def _run_verify_alert_rules(args: Any) -> int:
         or summary["cleanup"]["failed_rule_ids"]
     ):
         return 1
+    return 0
+
+
+def _run_list_samples(args: Any) -> int:
+    """Print the bundled sample dashboard catalog as JSON (offline)."""
+    catalog = []
+    for sample in list_samples():
+        input_dir = resolve_input_dir(sample.id)
+        catalog.append(
+            {
+                "id": sample.id,
+                "source": sample.source,
+                "title": sample.title,
+                "description": sample.description,
+                "input_dir": str(input_dir),
+                "expected_unsupported": list(sample.expected_unsupported),
+                "run": (
+                    f"obs-migrate migrate --source {sample.source} "
+                    f'--input-mode files --input-dir "{input_dir}" --output-dir sample_out'
+                ),
+            }
+        )
+    print(json.dumps(catalog, indent=2))
     return 0
 
 
