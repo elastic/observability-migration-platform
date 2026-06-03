@@ -29,6 +29,7 @@ from observability_migration.core.sample_data import (
     NetworkError,
     load_metric_kind_overrides,
     make_es_request,
+    remove_sample_data,
     seed_sample_data,
 )
 from observability_migration.core.telemetry_contract import (
@@ -509,6 +510,28 @@ def _build_parser() -> argparse.ArgumentParser:
     seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
     _add_tls_arguments(seed_cmd)
 
+    remove_cmd = sub.add_parser(
+        "remove-sample-data",
+        help="Remove synthetic Elasticsearch data previously seeded for migrated "
+             "dashboards. Dry-run by default; pass --confirm to actually delete.",
+        description=(
+            "Tear down seeder-owned data streams and templates for the given migrated "
+            "dashboard artifact directories. Fail-closed: only streams provably created "
+            "by the seeder are deleted; foreign or unverifiable streams are skipped. "
+            "Dry-run by default (reports the plan, deletes nothing); pass --confirm to "
+            "delete. Exit code is 2 when ES is unreachable or inputs are invalid, 1 when "
+            "any delete fails, 0 otherwise."
+        ),
+    )
+    remove_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                            help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+    remove_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                            help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    remove_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    remove_cmd.add_argument("--confirm", action="store_true",
+                            help="Actually delete. Without this flag the command only prints the plan (dry-run).")
+    _add_tls_arguments(remove_cmd)
+
     return parser
 
 
@@ -547,6 +570,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_list_samples(args))
     elif args.command == "seed-sample-data":
         sys.exit(_run_seed_sample_data(args))
+    elif args.command == "remove-sample-data":
+        sys.exit(_run_remove_sample_data(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -1121,6 +1146,37 @@ def _run_seed_sample_data(args: Any) -> int:
         print(json.dumps({"error": "seed_failed", "detail": str(exc)}, indent=2))
         return 2
     print(json.dumps({"ingested": summary.ok, "errors": summary.errors, "docs_per_stream": summary.docs_per_stream}, indent=2))
+    return 0 if not summary.errors else 1
+
+
+def _run_remove_sample_data(args: Any) -> int:
+    """Remove seeder-owned Elasticsearch data for migrated dashboards (dry-run by default)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    artifact_dirs = [Path(p) for p in args.artifact_dir]
+    missing = [str(p) for p in artifact_dirs if not p.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_artifact_dirs", "paths": missing}, indent=2))
+        return 2
+
+    verify = _tls_verify(args)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        summary = remove_sample_data(artifact_dirs, request, dry_run=not args.confirm)
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+    except RuntimeError as exc:
+        print(json.dumps({"error": "remove_failed", "detail": str(exc)}, indent=2))
+        return 2
+    print(json.dumps({
+        "dry_run": summary.dry_run,
+        "deleted_streams": summary.deleted_streams,
+        "deleted_templates": summary.deleted_templates,
+        "skipped_not_owned": summary.skipped_not_owned,
+        "errors": summary.errors,
+    }, indent=2))
     return 0 if not summary.errors else 1
 
 

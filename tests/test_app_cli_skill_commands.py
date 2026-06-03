@@ -671,5 +671,75 @@ class SeedSampleDataSubcommandTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
 
+class RemoveSampleDataSubcommandTests(unittest.TestCase):
+    def _patch(self, cli, captured):
+        def fake_make_es_request(es_url, api_key, *, verify=True, timeout=120):
+            captured["verify"] = verify
+            return "REQ"
+
+        class FakeRemoveSummary:
+            def __init__(self, dry_run):
+                self.dry_run = dry_run
+                self.deleted_streams = ["logs-generic-default"]
+                self.skipped_not_owned = ["metrics-foreign-default"]
+                self.deleted_templates = ["telemetry-data-logs-generic-default"]
+                self.errors: list = []
+
+        def fake_remove(artifact_dirs, request, *, dry_run=True):
+            captured["artifact_dirs"] = [str(p) for p in artifact_dirs]
+            captured["request"] = request
+            captured["dry_run"] = dry_run
+            return FakeRemoveSummary(dry_run)
+
+        return (
+            mock.patch.object(cli, "make_es_request", side_effect=fake_make_es_request),
+            mock.patch.object(cli, "remove_sample_data", side_effect=fake_remove),
+        )
+
+    def test_dry_run_is_default(self):
+        from observability_migration.app import cli
+
+        captured = {}
+        p1, p2 = self._patch(cli, captured)
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with p1, p2, self.assertRaises(SystemExit) as ctx:
+                cli.main([
+                    "remove-sample-data",
+                    "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test",
+                    "--api-key", "k",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertTrue(captured["dry_run"])  # no --confirm => dry run
+            self.assertEqual(captured["request"], "REQ")
+            self.assertEqual(captured["artifact_dirs"], [artifact_dir])
+
+    def test_confirm_disables_dry_run_and_threads_tls(self):
+        from observability_migration.app import cli
+
+        captured = {}
+        p1, p2 = self._patch(cli, captured)
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with p1, p2, self.assertRaises(SystemExit) as ctx:
+                cli.main([
+                    "remove-sample-data",
+                    "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test",
+                    "--api-key", "k",
+                    "--confirm",
+                    "--insecure",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertFalse(captured["dry_run"])  # --confirm => real delete
+            self.assertEqual(captured["verify"], False)  # --insecure
+
+    def test_missing_creds_returns_2(self):
+        from observability_migration.app import cli
+
+        with tempfile.TemporaryDirectory() as artifact_dir, self.assertRaises(SystemExit) as ctx:
+            cli.main(["remove-sample-data", "--artifact-dir", artifact_dir, "--es-url", "https://es.test"])
+        self.assertEqual(ctx.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
