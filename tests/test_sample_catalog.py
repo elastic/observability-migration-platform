@@ -41,6 +41,16 @@ class SampleCatalogTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             resolve_input_dir("does-not-exist")
 
+    def test_catalog_dir_is_importable_package_data(self):
+        # Resolves via importlib.resources (package data), not a repo-relative
+        # path, so it works from an installed wheel.
+        from importlib import resources
+
+        root = resources.files("observability_migration.sample_dashboards")
+        for sample in list_samples():
+            entry = root.joinpath(sample.relative_dir)
+            self.assertTrue(entry.is_dir(), f"missing packaged dir for {sample.id}")
+
 
 if __name__ == "__main__":
     unittest.main()
