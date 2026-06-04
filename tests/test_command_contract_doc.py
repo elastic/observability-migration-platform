@@ -13,6 +13,7 @@ DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
 ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
 MIGRATE_ALL_SUPPORTED_SKILL = ROOT / ".cursor" / "skills" / "migrate-all-supported-assets" / "SKILL.md"
 REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKILL.md"
+REPORT_COVERAGE_SKILL = ROOT / ".cursor" / "skills" / "report-migration-coverage" / "SKILL.md"
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -140,6 +141,14 @@ class CommandContractDocTests(unittest.TestCase):
         text = REVERT_MIGRATION_SKILL.read_text(encoding="utf-8")
         self.assertIn("Dashboard deletion has no dry-run or `--confirm`", text)
         self.assertNotIn("Both revert paths have a **read-only / dry-run first**", text)
+
+    def test_report_coverage_skill_reads_real_artifacts(self):
+        text = REPORT_COVERAGE_SKILL.read_text(encoding="utf-8")
+        self.assertIn("migration_summary.md", text)
+        self.assertIn("migration_manifest.json", text)
+        self.assertIn("run_summary.json", text)
+        # Honest about partial success
+        self.assertIn("exit 0", text)
 
     def test_dashboard_delete_docs_match_clear_placeholder_behavior(self):
         contract_text = COMMAND_CONTRACT.read_text(encoding="utf-8")
