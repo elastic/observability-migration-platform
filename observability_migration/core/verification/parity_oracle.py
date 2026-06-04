@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 # Labels Prometheus/remote-write attach automatically; scrub so series keys match
 # between the translated output and the native PROMQL output.
@@ -279,3 +279,76 @@ def compute_diff(a, b, step) -> tuple[int, float, float]:
 
 # PromQL constructs the native PROMQL command does not parse / we don't compare.
 NATIVE_UNSUPPORTED = ("label_replace", "label_join")
+
+
+def _run_query(request, query: str, params: list | None = None) -> dict:
+    body: dict = {"query": query}
+    if params is not None:
+        body["params"] = params
+    return request("POST", "/_query?format=json", body, "application/json")
+
+
+def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
+    return _run_query(request, esql, params=[{"_tstart": tstart}, {"_tend": tend}])
+
+
+def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:
+    query = f'PROMQL index={index} step={step}s start="{start_iso}" end="{end_iso}" value=({expr})'
+    return _run_query(request, query)
+
+
+def native_promql_available(request, index: str) -> bool:
+    """Probe whether the target ES supports the native PROMQL command."""
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=5)
+    res = run_native_promql(
+        request, "1", index, 60,
+        start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z"),
+    )
+    return not (isinstance(res, dict) and res.get("error"))
+
+
+def compare_panel(request, *, source_query: str, translated_query: str, index: str,
+                  step: int, start_iso: str, end_iso: str) -> Comparison:
+    """Compare an emitted ES|QL panel query against native PROMQL of its source.
+
+    In-band ES errors fail closed (SKIP for native, ERROR for translated). Transport
+    failures are NOT caught here: a NetworkError from the injected ``request`` (e.g. an
+    unreachable cluster) propagates to the caller, which handles it at the CLI boundary.
+    """
+    cmp_ = Comparison(expr=source_query, esql=(translated_query or "").strip())
+    if not cmp_.esql:
+        cmp_.skipped_reason = "no translated ES|QL on this panel"
+        return cmp_
+    if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
+        cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
+        return cmp_
+
+    native_raw = run_native_promql(request, source_query, index, step, start_iso, end_iso)
+    if isinstance(native_raw, dict) and native_raw.get("error"):
+        cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
+        return cmp_
+
+    translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso)
+    if isinstance(translated_raw, dict) and translated_raw.get("error"):
+        cmp_.translated_error = str(translated_raw["error"])[:200]
+        return cmp_
+
+    native = normalize_native(native_raw)
+    translated = normalize_translated(translated_raw)
+    cmp_.native_series = len(native)
+    cmp_.translated_series = len(translated)
+    common = set(native) & set(translated)
+    native_for_diff = native
+    if not common and native and translated:
+        projected = _project_to_subset(native, translated)
+        if set(projected) & set(translated):
+            native_for_diff = projected
+            common = set(projected) & set(translated)
+            cmp_.notes.append(f"native re-aggregated {len(native)}->{len(projected)} series to match translated label subset")
+    cmp_.common_series = len(common)
+    points, rmax, rmean = compute_diff(native_for_diff, translated, step)
+    cmp_.compared_points = points
+    cmp_.max_relative_error = rmax
+    cmp_.mean_relative_error = rmean
+    return cmp_

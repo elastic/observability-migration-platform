@@ -74,3 +74,66 @@ class NormalizeAndDiffTests(unittest.TestCase):
         self.assertEqual(len(out), 2)
         namespaces = sorted(dict(k.labels)["namespace"] for k in out)
         self.assertEqual(namespaces, ["ns1", "ns2"])
+
+
+class ExecutionTests(unittest.TestCase):
+    def _fake_request(self, native_data, translated_data, *, native_error=None):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            calls.append(q)
+            if q.startswith("PROMQL"):
+                if native_error:
+                    return {"error": {"reason": native_error}}
+                return native_data
+            return translated_data
+
+        request.calls = calls  # type: ignore[attr-defined]
+        return request
+
+    def test_compare_panel_strict_pass(self):
+        # Space points one full step (5 min) apart so they land in DISTINCT buckets;
+        # compute_diff trims the first/last bucket, so >=3 points are needed to leave
+        # >=1 comparable bucket. Identical native/translated values => max err 0 => STRICT_PASS.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        vals = [10.0, 20.0, 30.0, 40.0, 50.0]
+        series = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}, {"name": "host", "type": "keyword"}],
+                  "values": [[v, t, "a"] for t, v in zip(stamps, vals)]}
+        translated = {"columns": [{"name": "computed_value", "type": "double"}, {"name": "time_bucket", "type": "date"}, {"name": "host", "type": "keyword"}],
+                      "values": [[v, t, "a"] for t, v in zip(stamps, vals)]}
+        req = self._fake_request(series, translated)
+        result = po.compare_panel(req, source_query="go_goroutines",
+                                  translated_query="TS metrics-* | STATS computed_value = AVG(x) BY time_bucket = TBUCKET(5m), host",
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.max_relative_error, 0.0)
+        self.assertGreaterEqual(result.compared_points, 1)
+
+    def test_compare_panel_native_unparseable_is_skip(self):
+        req = self._fake_request({}, {}, native_error="could not parse")
+        result = po.compare_panel(req, source_query="weird_expr", translated_query="TS metrics-*",
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+
+    def test_compare_panel_no_esql_is_skip(self):
+        req = self._fake_request({}, {})
+        result = po.compare_panel(req, source_query="go_goroutines", translated_query="",
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+
+    def test_native_promql_available_true_false(self):
+        ok = self._fake_request({"columns": [{"name": "value"}], "values": [[1.0]]}, {})
+        self.assertTrue(po.native_promql_available(ok, "metrics-*"))
+        bad = self._fake_request({}, {}, native_error="unknown command [PROMQL]")
+        self.assertFalse(po.native_promql_available(bad, "metrics-*"))
+
+    def test_compare_panel_translated_error_is_error(self):
+        # native side returns data; translated (ES|QL) side returns an ES error body
+        series = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[1.0, "2026-01-01T00:00:00Z"]]}
+        req = self._fake_request(series, {"error": {"type": "parsing_exception", "reason": "bad ES|QL"}})
+        result = po.compare_panel(req, source_query="go_goroutines", translated_query="TS metrics-* | BROKEN",
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "ERROR")
+        self.assertIn("bad ES|QL", result.translated_error)
