@@ -136,7 +136,8 @@ capability → the profile's counter field) so `rate()`/`irate()` stay correct.
 > target has not ingested the Prometheus data yet, no profile is detected and
 > the resolver falls back to OTel candidates + pass-through — dashboards look
 > migrated but may query the wrong fields. Ingest first, then migrate with a
-> reachable `--es-url`, and confirm field `status` in
+> reachable `--es-url`, and confirm `schema_profile`,
+> `field_capabilities_discovery`, and resolved target-field `status` in
 > `required_target_contract.json`.
 
 ### Built-in Prometheus → OTel Mappings

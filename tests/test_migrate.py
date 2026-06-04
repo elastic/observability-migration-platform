@@ -667,6 +667,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
         self.assertIsNone(self.resolver.schema_profile())
 
+    def test_resolver_reports_offline_schema_discovery_status(self):
+        resolver = migrate.SchemaResolver(self.rule_pack)
+
+        resolver.schema_profile()
+
+        self.assertEqual(
+            resolver.discovery_status(),
+            {"status": "offline", "error": "", "field_count": 0},
+        )
+
+    def test_resolver_reports_empty_schema_discovery_status(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"fields": {}}
+
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            resolver.schema_profile()
+
+        self.assertEqual(
+            resolver.discovery_status(),
+            {"status": "empty", "error": "", "field_count": 0},
+        )
+
+    def test_resolver_reports_failed_schema_discovery_status(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=401, text="Unauthorized")
+
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            resolver.schema_profile()
+
+        self.assertEqual(resolver.discovery_status()["status"], "error")
+        self.assertIn("401", resolver.discovery_status()["error"])
+
     def test_resolve_label_namespaces_to_prometheus_labels_when_profile_active(self):
         self.seed_field_caps({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},

@@ -132,6 +132,7 @@ Datadog.
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
 | `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana currently supports `otel` only; Datadog also supports source-specific built-ins and YAML profile files. ECS fallback is not implemented in this pass. |
+| `--data-view` | Grafana, Datadog | Override the target metrics data view / index pattern | When omitted, the source adapter keeps its own default. For Datadog, this means non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
 | `--dashboard-ids` | Datadog dashboard pipeline | Scope Datadog dashboard extraction by comma-separated dashboard IDs | Only affects Datadog dashboard runs |
@@ -206,12 +207,24 @@ currently accepts only `otel`; Datadog accepts `otel` plus its existing
 Datadog-specific built-ins and YAML profile files. ECS fallback is planned
 separately and is not part of this contract.
 
+Datadog `--data-view` is an explicit override, not a hidden default. If omitted,
+the active profile controls the metric index (`otel` uses `metrics-*`,
+`prometheus` uses `metrics-prometheus-*`, and custom YAML profiles can set their
+own `metric_index`).
+
 For Grafana `--native-promql` validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
 including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
 lab's `metrics-*` data view. If you point `--data-view` at a different
 Prometheus integration layout, verify the target schema first before treating
 empty panels as a migration bug.
+
+Live target readiness artifacts are source-specific: Grafana preflight writes
+`required_target_contract.json` with `schema_profile`,
+`field_capabilities_discovery`, and resolved target-field statuses; Datadog
+dashboard runs write `target_readiness_contract.json` with the active
+`field_profile`, metric/log index patterns, source fields, resolved target
+fields, and statuses.
 
 **Live extraction (`--input-mode api`)**
 

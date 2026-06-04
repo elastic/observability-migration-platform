@@ -98,7 +98,7 @@ field profile setup
 | Capability discovery | `field_map.py` | Optionally load live target `_field_caps` from Elasticsearch when `--es-url` is present |
 | Extract | `extract.py` | Read dashboards from files or Datadog API |
 | Normalize | `normalize.py` | Convert raw Datadog JSON into `NormalizedDashboard` / `NormalizedWidget` |
-| Optional preflight | `preflight.py` | Check mapped fields and capability risks before translation; may also run automatically when live capabilities are available |
+| Optional preflight | `preflight.py` | Check mapped fields and capability risks before translation when `--preflight` is requested |
 | Plan | `planner.py` | Choose `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked` for each widget |
 | Translate | `translate.py` | Translate metric, log, and formula queries according to the widget plan |
 | Emit YAML | `generate.py` | Build Kibana YAML, dashboard controls, and output files |
@@ -268,6 +268,17 @@ When `--es-url` is provided, the profile can load live `_field_caps` from
 Elasticsearch. This enables type-aware translation decisions and preflight
 checks — the translator can verify whether a mapped field actually exists,
 is numeric and aggregatable, or has conflicting types across indices.
+
+The dashboard pipeline also writes
+`<output-dir>/dashboards/target_readiness_contract.json`. It records the active
+`field_profile`, metric/log index patterns, source fields, resolved target
+fields, and field `status` (`confirmed`, `missing`, or `unknown`). `unknown`
+means live field caps were unavailable; it is not proof that a field exists.
+
+`--data-view` is an explicit override. When omitted, the selected field profile
+keeps its own metric index (for example, `prometheus` keeps
+`metrics-prometheus-*` instead of being overwritten by the OTel default
+`metrics-*`).
 
 ## Command Coverage
 

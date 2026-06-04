@@ -192,6 +192,7 @@ class CommandContractDocTests(unittest.TestCase):
         text = REMEDIATE_FIELD_GAPS_SKILL.read_text(encoding="utf-8")
         self.assertIn("obs-migrate schema-report", text)
         self.assertIn("required_target_contract.json", text)
+        self.assertIn("target_readiness_contract.json", text)
         self.assertIn("--rules-file", text)
         self.assertIn("--field-profile", text)
         self.assertIn("--suggest-rule-pack-out", text)
@@ -229,6 +230,7 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("prometheus_native", text)
         # Metric names are NOT a no-op: they are rewritten per profile.
         self.assertNotIn("PromQL metric names pass through to ES", text)
+        self.assertIn("field_capabilities_discovery", text)
 
     def test_prepare_target_telemetry_skill_routes_pre_migration_setup(self):
         text = PREPARE_TARGET_TELEMETRY_SKILL.read_text(encoding="utf-8")
@@ -242,6 +244,7 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("--es-url", text)
         self.assertIn("seed-sample-data", text)
         self.assertIn("required_target_contract.json", text)
+        self.assertIn("target_readiness_contract.json", text)
         self.assertIn("obs-migrate schema-report", text)
         # Routes to existing skills instead of duplicating their setup docs.
         self.assertIn("understand-source-schema", text)
@@ -263,6 +266,22 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("## Command Coverage", text)
         self.assertIn("--assets {dashboards,alerts,all}", text)
         self.assertNotIn("Inventory (representative)", text)
+
+    def test_datadog_source_doc_documents_target_readiness_contract(self):
+        text = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")
+        self.assertIn("target_readiness_contract.json", text)
+        self.assertIn("field_profile", text)
+        self.assertIn("confirmed", text)
+        self.assertIn("missing", text)
+        self.assertIn("unknown", text)
+        self.assertIn("explicit override", text)
+
+    def test_command_contract_documents_source_specific_readiness_artifacts(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("required_target_contract.json", text)
+        self.assertIn("target_readiness_contract.json", text)
+        self.assertIn("field_capabilities_discovery", text)
+        self.assertIn("Datadog `--data-view` is an explicit override", text)
 
 
 if __name__ == "__main__":

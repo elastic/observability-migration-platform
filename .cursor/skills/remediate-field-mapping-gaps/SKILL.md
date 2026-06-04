@@ -12,7 +12,7 @@ Goal: move from "the migrated panel is empty or wrong" to a concrete source-to-E
 | Symptom | First move |
 |---|---|
 | Empty uploaded panel / "No results found" | Use `debug-uploaded-kibana-dashboard` to capture the exact ES|QL Kibana is running, then compare its fields and filters to the artifacts below |
-| Unknown column / missing field error | Read the field name from the Kibana/ES error and locate it in `required_target_contract.json` or the emitted query |
+| Unknown column / missing field error | Read the field name from the Kibana/ES error and locate it in `required_target_contract.json` (Grafana), `target_readiness_contract.json` (Datadog), or the emitted query |
 | Values look wrong but data exists | Compare source query fields/tags to translated query fields in `verification_packets.json` and the schema report |
 | Many panels fail the same way | Fix the rule pack / field profile and rerun; do not hand-edit every panel first |
 
@@ -30,7 +30,7 @@ obs-migrate schema-report \
 | What you need | File / command |
 |---|---|
 | Per-panel source fields -> target fields | `schema_change_report.md` from `obs-migrate schema-report` |
-| Required target fields and missing/confirmed status | `<output-dir>/dashboards/required_target_contract.json` (when written by preflight/live validation) |
+| Required target fields and missing/confirmed status | Grafana: `<output-dir>/dashboards/required_target_contract.json`; Datadog: `<output-dir>/dashboards/target_readiness_contract.json` |
 | Source query and translated query | `<output-dir>/dashboards/verification_packets.json` |
 | Human-readable must-fix list | `<output-dir>/dashboards/migration_summary.md` |
 | Uploaded-panel runtime truth | `debug-uploaded-kibana-dashboard` capture of Kibana's actual `/_query` request |
@@ -39,7 +39,7 @@ obs-migrate schema-report \
 
 1. **Prove it is a mapping/data-view issue** — confirm the target has data in the selected time range and index. Empty data is not a mapping fix.
 2. **Generate or open the schema report** — run `obs-migrate schema-report` against the dashboard artifact dir. Read the row for the failing panel.
-3. **Check required fields** — open `required_target_contract.json` when present. Prioritize fields marked missing or unconfirmed.
+3. **Check required fields** — open `required_target_contract.json` (Grafana) or `target_readiness_contract.json` (Datadog). Prioritize fields marked `missing` or `unknown`.
 4. **Compare three sources of truth** — source query fields/tags, translated ES|QL fields, and Kibana's actual runtime query. If Kibana changed aliases or buckets, note that separately.
 5. **Choose the right fix layer**:
    - **Grafana / PromQL:** add or adjust a rule pack and rerun with `--rules-file <custom-rule-pack.yaml>`.

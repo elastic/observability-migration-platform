@@ -109,7 +109,11 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--input-dir", default=".")
     migrate.add_argument("--output-dir", default="migration_output")
     migrate.add_argument("--target", default="kibana")
-    migrate.add_argument("--data-view", default="metrics-*")
+    migrate.add_argument(
+        "--data-view",
+        default="",
+        help="Elasticsearch data view or index pattern (source default when omitted)",
+    )
     migrate.add_argument(
         "--assets",
         choices=ASSET_CHOICES,
@@ -727,9 +731,10 @@ def _run_grafana_migration(args: Any) -> None:
         "--source", args.input_mode,
         "--input-dir", args.input_dir,
         "--output-dir", args.output_dir,
-        "--data-view", args.data_view,
         "--field-profile", getattr(args, "field_profile", "otel"),
     ]
+    if args.data_view:
+        legacy_argv[6:6] = ["--data-view", args.data_view]
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(
@@ -820,9 +825,10 @@ def _run_datadog_migration(args: Any) -> None:
         "--source", args.input_mode,
         "--input-dir", args.input_dir,
         "--output-dir", args.output_dir,
-        "--data-view", args.data_view,
-        "--field-profile", args.field_profile,
     ]
+    if args.data_view:
+        legacy_argv.extend(["--data-view", args.data_view])
+    legacy_argv.extend(["--field-profile", args.field_profile])
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(

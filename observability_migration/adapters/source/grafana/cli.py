@@ -1503,10 +1503,22 @@ def main(argv: list[str] | None = None):
     if args.es_url:
         print(f"\n  Schema discovery: {args.es_url}")
         resolver._discover_fields()
-        if resolver._field_cache:
-            print(f"  Discovered {len(resolver._field_cache)} fields, {len(resolver._discovered_mappings)} label mappings")
+        discovery = resolver.discovery_status()
+        if discovery["status"] == "ok":
+            profile = resolver.schema_profile() or "generic/otel"
+            print(
+                f"  Discovered {discovery['field_count']} fields, "
+                f"{len(resolver._discovered_mappings)} label mappings "
+                f"(schema_profile={profile})"
+            )
+            if resolver.schema_profile() is None:
+                print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
+        elif discovery["status"] == "empty":
+            print("  WARNING: schema discovery reached Elasticsearch but found no fields")
+        elif discovery["status"] == "error":
+            print(f"  WARNING: schema discovery failed: {discovery['error']}")
         else:
-            print("  Schema discovery: no fields found (offline mode)")
+            print("  Schema discovery: offline mode")
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
 

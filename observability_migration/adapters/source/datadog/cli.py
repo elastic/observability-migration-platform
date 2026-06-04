@@ -55,7 +55,12 @@ from .manifest import save_migration_manifest
 from .models import DashboardResult, NormalizedWidget, TranslationResult
 from .normalize import normalize_dashboard
 from .planner import plan_widget
-from .preflight import PreflightResult, run_preflight
+from .preflight import (
+    PreflightResult,
+    build_target_readiness_contract,
+    run_preflight,
+    save_target_readiness_contract,
+)
 from .report import build_summary_view, print_report, save_detailed_report
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .translate import translate_widget
@@ -346,7 +351,12 @@ def _run_dashboard_pipeline(
     report_path = output_dir / "migration_report.json"
     manifest_path = output_dir / "migration_manifest.json"
     verification_path = output_dir / "verification_packets.json"
+    readiness_contract_path = output_dir / "target_readiness_contract.json"
     rollout_path = output_dir / "rollout_plan.json"
+    readiness_contract = build_target_readiness_contract(
+        [dashboard for _, dashboard in dashboard_outputs],
+        field_map,
+    )
     save_detailed_report(
         all_results,
         str(report_path),
@@ -357,6 +367,7 @@ def _run_dashboard_pipeline(
     )
     save_migration_manifest(all_results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
+    save_target_readiness_contract(readiness_contract, readiness_contract_path)
     rollout_plan = build_rollout_plan(
         all_results,
         target_space=args.space_id or "",
@@ -369,6 +380,7 @@ def _run_dashboard_pipeline(
     )
     save_rollout_plan(rollout_plan, rollout_path)
     print(f"  Verification packets saved: {verification_path}")
+    print(f"  Target readiness contract saved: {readiness_contract_path}")
     print(f"  Migration manifest saved: {manifest_path}")
     print(f"  Rollout plan saved: {rollout_path}")
     review_queue = generate_review_queue(rollout_plan)
@@ -383,10 +395,15 @@ def _run_dashboard_pipeline(
             )
 
     try:
+        rollout_run_id = (
+            rollout_plan.get("run_id", "")
+            if isinstance(rollout_plan, dict)
+            else getattr(rollout_plan, "run_id", "")
+        )
         summary_view = build_summary_view(
             all_results,
             review_queue=review_queue,
-            run_id=rollout_plan.get("run_id", "") if isinstance(rollout_plan, dict) else "",
+            run_id=rollout_run_id,
         )
         summary_md_path = output_dir / "migration_summary.md"
         save_markdown_summary(summary_view, summary_md_path)
@@ -1259,8 +1276,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Field mapping profile: otel, elastic_agent, prometheus, passthrough, or path to YAML",
     )
     parser.add_argument(
-        "--data-view", default="metrics-*",
-        help="Elasticsearch index pattern for metrics data",
+        "--data-view",
+        default=None,
+        help="Elasticsearch index pattern for metrics data (defaults from --field-profile)",
     )
     parser.add_argument(
         "--logs-index", default="",

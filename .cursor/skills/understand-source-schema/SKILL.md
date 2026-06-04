@@ -1,6 +1,6 @@
 ---
 name: understand-source-schema
-description: Understand how a source observability schema (Prometheus metric/label names, Datadog dotted metrics/tags) maps to Kibana/Elastic field names, see the concrete source-to-target field mapping for the user's own dashboards, and figure out what to change so migrated dashboards find data. Use when the user asks how their schema/fields/metric names/labels map or translate to Elastic, why migrated panels can't find data, what fields they need, or how to customize/override the field mapping (rule pack / field profile).
+description: Use when the user asks how their schema/fields/metric names/labels map or translate to Elastic, why migrated panels can't find data, what fields they need, or how to customize/override the field mapping (rule pack / field profile) — explains how a source observability schema (Prometheus metric/label names, Datadog dotted metrics/tags) maps to Kibana/Elastic field names, shows the concrete source-to-target field mapping for the user's own dashboards, and what to change so migrated dashboards find data.
 ---
 
 # Understand the source schema (source → Elastic field mapping)
@@ -21,7 +21,7 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 **Metric type matters too:** `rate()`/`irate()` only work if the metric is stored as a counter. `is_counter()` decides from rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric` capability → the profile's counter field. A counter ingested as a gauge breaks rate math even when the field name is right.
 
-**Hard dependency — ingest first, then migrate with `--es-url`.** Profile detection only works when the data is already in Elastic *and* `--es-url` is reachable. If it is not (wrong/missing key, TLS failure, or **migrating before pointing Prometheus at Elastic**), detection silently finds nothing, the profile is `none`, and the resolver falls back to OTel candidates + pass-through — dashboards look migrated but query the wrong fields. Confirm the profile via `required_target_contract.json` field `status` (below) before trusting any mapping.
+**Hard dependency — ingest first, then migrate with `--es-url` and `--preflight`.** Profile detection only works when the data is already in Elastic *and* `--es-url` is reachable. If it is not (wrong/missing key, TLS failure, or **migrating before pointing Prometheus at Elastic**), detection finds nothing, the profile is `none`, and the resolver falls back to OTel candidates + pass-through — dashboards look migrated but query the wrong fields. Confirm the profile via Grafana `required_target_contract.json` (`schema_profile`, `field_capabilities_discovery`, field `status`) from a preflight run before trusting any mapping.
 
 **Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus`, `elastic_agent`, `passthrough`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
 
@@ -60,7 +60,8 @@ These artifacts are also written by the migration run itself, under `migration_o
 
 | What | File | Notes |
 |---|---|---|
-| **Required target fields + whether they exist** | `required_target_contract.json` | each field has a `status` (e.g. `confirmed`/`missing`) when `--es-url` was used. Best for "which fields are missing/renamed". |
+| **Grafana required target fields + whether they exist** | `required_target_contract.json` | includes `schema_profile`, `field_capabilities_discovery`, and each resolved target field's `status` (e.g. `confirmed`/`missing`/`unknown`) when `--es-url` was used. |
+| **Datadog required target fields + whether they exist** | `target_readiness_contract.json` | includes the active `field_profile`, metric/log index patterns, source fields, resolved target fields, and `status`. |
 | Per-panel translation detail (source vs. translated query) | `verification_packets.json` | **Open the file to read the exact key names** rather than assuming them — packet shape varies. |
 | Must-fix worklist | `migration_summary.md` | human-readable verdict + actions |
 

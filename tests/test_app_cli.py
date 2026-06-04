@@ -76,6 +76,45 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
         mock_main.assert_called_once_with()
 
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_omits_default_data_view(self, mock_main):
+        args = SimpleNamespace(
+            input_mode="files",
+            input_dir="infra/datadog/dashboards",
+            output_dir="datadog_migration_output",
+            data_view="",
+            field_profile="prometheus",
+            logs_index="",
+            compile=True,
+            validate=False,
+            upload=False,
+            preflight=False,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+        )
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertNotIn("--data-view", sys.argv)
+            self.assertIn("--field-profile", sys.argv)
+            self.assertIn("prometheus", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
     def _make_grafana_args(self, **overrides):
         defaults = dict(
             input_mode="files",
@@ -124,6 +163,19 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
             self.assertIn("--field-profile", sys.argv)
             self.assertIn("otel", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_omits_default_data_view(self, mock_main):
+        args = self._make_grafana_args(data_view="", esql_index="")
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertNotIn("--data-view", sys.argv)
         finally:
             sys.argv = original_argv
 

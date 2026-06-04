@@ -36,7 +36,7 @@ You cannot point Datadog at Elastic directly: choose an ingest route, then **man
 
 ## Verify before trusting (both sources)
 
-1. Migrate **one** dashboard with `--es-url` (+ `--preflight`). Read field existence: Grafana writes `required_target_contract.json` (`status`: `confirmed`/`missing`); Datadog surfaces it via `--preflight` + live field caps.
+1. Migrate **one** dashboard with `--es-url` (+ `--preflight`). Read field existence: Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Both carry `status` values such as `confirmed`, `missing`, or `unknown`.
 2. Get the per-panel source→target table: `obs-migrate schema-report --artifact-dir <out>/dashboards --output schema_change_report.md`.
 3. **Prove panels light up without waiting for real ingest:** `obs-migrate seed-sample-data --artifact-dir <out>/dashboards --es-url "$ES"` ingests synthetic docs matching the contract so panels render; tear down with `obs-migrate remove-sample-data`.
 4. Only roll out once fields are `confirmed` / panels light up.
@@ -46,7 +46,7 @@ You cannot point Datadog at Elastic directly: choose an ingest route, then **man
 - **The tool does not ingest data or set up collectors/Fleet/Agent for you.** Follow Elastic's ingestion docs for the route you pick; this skill covers only what `obs-migrate` reads and produces.
 - **Do NOT migrate before data exists with a reachable `--es-url`** — unverified field mappings are guesses.
 - **Do NOT assume a Datadog profile** — it must match your real ingest layout; there is no auto-detection.
-- **`required_target_contract.json` is Grafana-written**; for Datadog rely on `--preflight` field existence + `schema-report`.
+- **Do NOT treat `unknown` as proven.** It means live target field caps were unavailable; rerun with data in Elastic and a reachable `--es-url`.
 - An empty panel after upload is often missing/wrong-window data, not a translator bug.
 
 ## See also
