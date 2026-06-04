@@ -14,6 +14,7 @@ ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
 MIGRATE_ALL_SUPPORTED_SKILL = ROOT / ".cursor" / "skills" / "migrate-all-supported-assets" / "SKILL.md"
 REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKILL.md"
 REPORT_COVERAGE_SKILL = ROOT / ".cursor" / "skills" / "report-migration-coverage" / "SKILL.md"
+EXPLAIN_GAPS_SKILL = ROOT / ".cursor" / "skills" / "explain-migration-gaps" / "SKILL.md"
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -149,6 +150,15 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("run_summary.json", text)
         # Honest about partial success
         self.assertIn("exit 0", text)
+
+    def test_explain_gaps_skill_uses_real_status_vocab_and_is_honest(self):
+        text = EXPLAIN_GAPS_SKILL.read_text(encoding="utf-8")
+        self.assertIn("not_feasible", text)
+        self.assertIn("requires_manual", text)
+        self.assertIn("transformation_redesign_tasks", text)
+        self.assertIn("blocked", text)  # Datadog-only status surfaced
+        # Honest about the grafana-only richer explanations
+        self.assertIn("--review-explanations", text)
 
     def test_dashboard_delete_docs_match_clear_placeholder_behavior(self):
         contract_text = COMMAND_CONTRACT.read_text(encoding="utf-8")
