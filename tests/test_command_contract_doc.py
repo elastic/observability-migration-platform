@@ -16,6 +16,7 @@ REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKI
 REPORT_COVERAGE_SKILL = ROOT / ".cursor" / "skills" / "report-migration-coverage" / "SKILL.md"
 EXPLAIN_GAPS_SKILL = ROOT / ".cursor" / "skills" / "explain-migration-gaps" / "SKILL.md"
 VALIDATE_SXS_SKILL = ROOT / ".cursor" / "skills" / "validate-side-by-side" / "SKILL.md"
+UNDERSTAND_SCHEMA_SKILL = ROOT / ".cursor" / "skills" / "understand-source-schema" / "SKILL.md"
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -188,6 +189,25 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("## Command Coverage", text)
         self.assertIn("--assets {dashboards,alerts,all}", text)
         self.assertNotIn("Inventory (representative)", text)
+
+    def test_grafana_source_doc_documents_schema_profiles(self):
+        text = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8")
+        # The verified model is profile-aware: the resolver auto-detects how the
+        # Prometheus data landed in Elastic before resolving labels/metrics.
+        self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_native", text)
+        # Metric names are NOT a no-op: they are rewritten per profile.
+        self.assertNotIn("PromQL metric names pass through to ES", text)
+
+    def test_understand_source_schema_skill_documents_three_profile_model(self):
+        text = UNDERSTAND_SCHEMA_SKILL.read_text(encoding="utf-8")
+        self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_native", text)
+        self.assertIn("_field_caps", text)
+        # Honest about the hard dependency: detection needs data already in ES.
+        self.assertIn("ingest first", text)
+        # The old flat "4-level priority chain" framing is superseded.
+        self.assertNotIn("4-level priority chain", text)
 
     def test_datadog_source_doc_defers_command_examples_to_canonical_contract(self):
         text = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")

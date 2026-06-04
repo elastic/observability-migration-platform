@@ -7,14 +7,21 @@ description: Understand how a source observability schema (Prometheus metric/lab
 
 Goal: help the user see exactly how their source field names become Elastic field names, get that mapping for **their** dashboards, and know how to override it. Source schemas (Prometheus `instance`/`job`/`node_cpu_seconds_total`, Datadog `system.cpu.user`/`host`) usually do **not** match Elastic field names, so this gap is expected, not a bug.
 
-## How the mapping works
+## How the mapping works (Grafana)
 
-**Grafana** uses `SchemaResolver` (`adapters/source/grafana/schema.py`) with a 4-level priority chain:
+`SchemaResolver` (`adapters/source/grafana/schema.py`) first **auto-detects how your Prometheus data actually landed in Elastic** by reading `_field_caps` from `--es-url`, then rewrites metric names, labels, and metric types to match that layout. There are three layouts (schema profiles):
 
-1. Rule-pack `label_rewrites` (`--rules-file`) — highest
-2. Live ES `_field_caps` discovery (`--es-url`) — picks the candidate that actually exists
-3. Built-in Prometheus → OTel candidates (e.g. `instance` → `service.instance.id`/`host.name`, `job` → `service.name`, `namespace` → `k8s.namespace.name`)
-4. Pass-through (use the label as-is) — lowest
+| Schema profile | How the data got into Elastic | Metric `http_requests_total` → | Label `service` → |
+|---|---|---|---|
+| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration | `prometheus.http_requests_total.counter` / `.value` / `.rate` (suffix by role) | `prometheus.labels.service` |
+| `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
+| generic / OTel (none detected) | OTel collector, custom mapping, or no data found | `http_requests_total` (pass-through) | exact field → OTel candidate (`service.name`) → as-is |
+
+**Label resolution order** (`resolve_label`): ignored labels → rule-pack `label_rewrites` → exact field match (source-faithful) → profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) → discovered OTel mapping from `_field_caps` → built-in candidate (e.g. `instance` → `service.instance.id`/`host.name`, `job` → `service.name`) → pass-through.
+
+**Metric type matters too:** `rate()`/`irate()` only work if the metric is stored as a counter. `is_counter()` decides from rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric` capability → the profile's counter field. A counter ingested as a gauge breaks rate math even when the field name is right.
+
+**Hard dependency — ingest first, then migrate with `--es-url`.** Profile detection only works when the data is already in Elastic *and* `--es-url` is reachable. If it is not (wrong/missing key, TLS failure, or **migrating before pointing Prometheus at Elastic**), detection silently finds nothing, the profile is `none`, and the resolver falls back to OTel candidates + pass-through — dashboards look migrated but query the wrong fields. Confirm the profile via `required_target_contract.json` field `status` (below) before trusting any mapping.
 
 **Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus`, `elastic_agent`, `passthrough`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
 
@@ -90,6 +97,7 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 
 - Do **not** assert `verification_packets.json` field/key names from memory — open the file and read them. Packet keys are easy to get subtly wrong.
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
+- Do **not** trust field mappings from a run where `--es-url` was unreachable or the target had no data yet — with no detected schema profile the resolver guesses OTel candidates and passes names through. Ingest first, then re-run with a reachable `--es-url`.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
 - Do **not** reach for repo-only scripts for the schema report: `obs-migrate schema-report` is the package-native command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
 
