@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,32 @@ import observability_migration.adapters.source.datadog.adapter
 import observability_migration.adapters.source.grafana.adapter
 import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.sample_data import (
+    NetworkError,
+    load_metric_kind_overrides,
+    make_es_request,
+    remove_sample_data,
+    seed_sample_data,
+)
+from observability_migration.core.telemetry_contract import (
+    build_combined_telemetry_contract,
+    build_schema_change_report,
+    build_telemetry_contract,
+    write_telemetry_contract,
+)
+from observability_migration.core.verification.parity_oracle import (
+    compare_panel,
+    native_promql_available,
+)
+from observability_migration.sample_dashboards.catalog import list_samples, resolve_input_dir
+from observability_migration.targets.kibana.alerting import (
+    audit_migrated_rules,
+    cleanup_rules,
+    collect_emitted_rule_payloads,
+    verify_emitted_rule_uploads,
+)
 
 _UPLOAD_SHAPE_HELP = (
     "Accepted input shapes: a directory of .yaml files, a dashboard artifact "
@@ -31,6 +57,40 @@ _UPLOAD_SHAPE_HELP = (
     "or that artifact dir's sibling 'compiled/' directory (for example "
     "'migration_output/dashboards/compiled')."
 )
+
+
+def _env_truthy_default(name: str) -> bool:
+    """Default for a store_true flag backed by an environment variable."""
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tls_verify(args: Any) -> bool | str:
+    """Resolve the requests ``verify`` setting from --ca-cert / --insecure args."""
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
+
+
+def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --ca-cert / --insecure TLS flags to a subparser."""
+    parser.add_argument(
+        "--ca-cert", default=os.getenv("OBS_MIGRATE_CA_CERT", ""),
+        help=(
+            "Path to a custom CA certificate (bundle) used to verify TLS for all "
+            "outbound connections (Elasticsearch, Kibana, Grafana, Prometheus/Loki, "
+            "Datadog). Defaults to OBS_MIGRATE_CA_CERT env var."
+        ),
+    )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        default=_env_truthy_default("OBS_MIGRATE_INSECURE"),
+        help=(
+            "Disable TLS certificate verification for all outbound connections. "
+            "Insecure — for testing or trusted migration environments only. "
+            "Defaults to OBS_MIGRATE_INSECURE env var."
+        ),
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -49,7 +109,11 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--input-dir", default=".")
     migrate.add_argument("--output-dir", default="migration_output")
     migrate.add_argument("--target", default="kibana")
-    migrate.add_argument("--data-view", default="metrics-*")
+    migrate.add_argument(
+        "--data-view",
+        default="",
+        help="Elasticsearch data view or index pattern (source default when omitted)",
+    )
     migrate.add_argument(
         "--assets",
         choices=ASSET_CHOICES,
@@ -109,6 +173,8 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Comma-separated Datadog monitor IDs to extract (Datadog only)")
     migrate.add_argument("--monitor-query", default="",
                          help="Datadog monitor search query (Datadog only)")
+    migrate.add_argument("--dashboard-ids", default="",
+                         help="Comma-separated Datadog dashboard IDs to extract (Datadog only)")
     migrate.add_argument("--env-file", default="",
                          help="Path to credentials .env file (Datadog)")
     migrate.add_argument(
@@ -150,6 +216,19 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--smoke-timeout", type=int, default=30)
     migrate.add_argument("--chrome-binary", default="")
     migrate.add_argument("--smoke-report", default="")
+    migrate.add_argument(
+        "--grafana-url", default="",
+        help="Grafana base URL for API extraction (Grafana only; defaults to GRAFANA_URL env var)",
+    )
+    migrate.add_argument(
+        "--grafana-user", default="",
+        help="Grafana username for HTTP basic auth (Grafana only; defaults to GRAFANA_USER env var)",
+    )
+    migrate.add_argument(
+        "--grafana-pass", default="",
+        help="Grafana password for HTTP basic auth (Grafana only; defaults to GRAFANA_PASS env var)",
+    )
+    _add_tls_arguments(migrate)
 
     sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
 
@@ -182,6 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
+    _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
     cluster_cmd.add_argument("action", choices=["list-dashboards", "ensure-data-views", "delete-dashboards", "detect-serverless"],
@@ -193,6 +273,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              help="Comma-separated dashboard IDs (for delete-dashboards)")
     cluster_cmd.add_argument("--data-view-patterns", default="metrics-*",
                              help="Comma-separated data view patterns (for ensure-data-views)")
+    _add_tls_arguments(cluster_cmd)
 
     verify_cmd = sub.add_parser(
         "verify-panels",
@@ -277,6 +358,213 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the starter extension template to a file",
     )
 
+    schema_report_cmd = sub.add_parser(
+        "schema-report",
+        help="Emit a per-panel source-to-target schema-change report from migrated "
+             "dashboard artifacts (the package-native form of the telemetry contract).",
+        description=(
+            "Build a human-readable source-to-target schema report (and, optionally, "
+            "the telemetry producer contract JSON) from one or more migrated dashboard "
+            "artifact directories. Each artifact dir is a per-source 'dashboards/' "
+            "output containing yaml/ and verification_packets.json (for example "
+            "'migration_output/dashboards'). Repeat --artifact-dir to merge multiple "
+            "sources into one report."
+        ),
+    )
+    schema_report_cmd.add_argument(
+        "--artifact-dir",
+        dest="artifact_dir",
+        action="append",
+        required=True,
+        help="Migrated dashboard artifact directory (contains yaml/ and "
+             "verification_packets.json). Repeat to merge multiple sources.",
+    )
+    schema_report_cmd.add_argument(
+        "--output",
+        default="schema_change_report.md",
+        help="Markdown output path for the schema-change report "
+             "(default: schema_change_report.md).",
+    )
+    schema_report_cmd.add_argument(
+        "--contract-out",
+        default="",
+        help="Optional path to also write the telemetry producer contract JSON.",
+    )
+
+    audit_rules_cmd = sub.add_parser(
+        "audit-rules",
+        help="Audit migrated Kibana alerting rules (tagged 'obs-migration') and "
+             "optionally disable any that are currently enabled.",
+        description=(
+            "List the alerting rules created by a migration (those tagged "
+            "'obs-migration' or named '[migrated] ...') and report which are enabled. "
+            "Read-only by default; pass --disable-enabled to disable the enabled "
+            "subset. Exit code is non-zero while enabled migrated rules remain "
+            "(or remediation fails)."
+        ),
+    )
+    audit_rules_cmd.add_argument("--kibana-url", required=True)
+    audit_rules_cmd.add_argument("--kibana-api-key", default="")
+    audit_rules_cmd.add_argument("--space-id", default="")
+    audit_rules_cmd.add_argument("--per-page", type=int, default=100, help="Rules to fetch per page.")
+    audit_rules_cmd.add_argument("--max-pages", type=int, default=20, help="Maximum pages to fetch.")
+    audit_rules_cmd.add_argument(
+        "--disable-enabled",
+        action="store_true",
+        help="Disable any migrated rules that are currently enabled.",
+    )
+    _add_tls_arguments(audit_rules_cmd)
+
+    delete_rules_cmd = sub.add_parser(
+        "delete-rules",
+        help="Delete the alerting rules created by a migration (tagged "
+             "'obs-migration' or named '[migrated] ...'). Dry-run by default; "
+             "pass --confirm to actually delete.",
+        description=(
+            "Revert the alert-rule half of a migration by deleting the rules it "
+            "created (those tagged 'obs-migration' or named '[migrated] ...'). "
+            "Read-only by default: it lists the rules that would be removed. Pass "
+            "--confirm to delete them. Exit code is 2 when the cluster is "
+            "unreachable, 1 when any delete fails, and 0 otherwise."
+        ),
+    )
+    delete_rules_cmd.add_argument("--kibana-url", required=True)
+    delete_rules_cmd.add_argument("--kibana-api-key", default="")
+    delete_rules_cmd.add_argument("--space-id", default="")
+    delete_rules_cmd.add_argument("--per-page", type=int, default=100, help="Rules to fetch per page.")
+    delete_rules_cmd.add_argument("--max-pages", type=int, default=20, help="Maximum pages to fetch.")
+    delete_rules_cmd.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually delete the migrated rules. Without this flag the command "
+             "only reports which rules would be deleted (dry run).",
+    )
+    _add_tls_arguments(delete_rules_cmd)
+
+    verify_alert_rules_cmd = sub.add_parser(
+        "verify-alert-rules",
+        help="Round-trip verify emitted alert-rule payloads against Kibana: create "
+             "them (disabled), confirm they did not land enabled, then delete them.",
+        description=(
+            "Create the emitted alert-rule payloads from a migration's comparison "
+            "report(s) in Kibana, confirm none came back enabled, then clean them up "
+            "(unless --keep-rules). This is a self-cleaning write check. The comparison "
+            "JSON is written by an alert-capable migration run (for example "
+            "'<output-dir>/alerts/alert_comparison_results.json' for Grafana or "
+            "'<output-dir>/alerts/monitor_comparison_results.json' for Datadog)."
+        ),
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--comparison",
+        dest="comparison_paths",
+        action="append",
+        required=True,
+        help="Comparison JSON path written by an alert-capable migration run. "
+             "Repeat to verify payloads from multiple reports.",
+    )
+    verify_alert_rules_cmd.add_argument("--kibana-url", required=True)
+    verify_alert_rules_cmd.add_argument("--kibana-api-key", default="")
+    verify_alert_rules_cmd.add_argument("--space-id", default="")
+    verify_alert_rules_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Optional max number of emitted payloads to verify (0 = no limit).",
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--keep-rules", action="store_true",
+        help="Keep the verification rules instead of deleting them.",
+    )
+    verify_alert_rules_cmd.add_argument(
+        "--name-prefix", default="[verification ",
+        help="Prefix for temporary verification rule names.",
+    )
+    _add_tls_arguments(verify_alert_rules_cmd)
+
+    sub.add_parser(
+        "list-samples",
+        help="List the bundled sample dashboards (offline, no credentials). Use a "
+             "sample's input_dir with 'migrate --input-mode files'.",
+        description=(
+            "Print a JSON catalog of the sample dashboards bundled with the "
+            "package. Each entry includes the resolved input_dir to pass to "
+            "'obs-migrate migrate --source <source> --input-mode files "
+            "--input-dir <input_dir>'. Read-only and fully offline."
+        ),
+    )
+
+    seed_cmd = sub.add_parser(
+        "seed-sample-data",
+        help="Seed synthetic Elasticsearch data for migrated dashboard artifacts so "
+             "their panels light up. ES-only; pair with remove-sample-data to clean up.",
+        description=(
+            "Build a telemetry contract from one or more migrated dashboard artifact "
+            "directories and ingest synthetic documents into Elasticsearch so migrated "
+            "panels render. ES-only (does not touch Kibana). Exit code is 2 when ES is "
+            "unreachable or inputs are invalid, 1 on ingest errors, 0 otherwise."
+        ),
+    )
+    seed_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                          help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+    seed_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                          help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    seed_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    seed_cmd.add_argument("--data-hours", type=float, default=2.0, help="Hours of synthetic data to generate.")
+    seed_cmd.add_argument("--interval-sec", type=int, default=60, help="Seconds between generated samples.")
+    seed_cmd.add_argument("--batch-docs", type=int, default=5000, help="Documents per bulk request.")
+    seed_cmd.add_argument("--max-combinations", type=int, default=12, help="Max dimension combinations per stream per timestamp.")
+    seed_cmd.add_argument("--no-recreate", action="store_true", help="Skip template/data-stream creation; only ingest.")
+    seed_cmd.add_argument("--purge-foreign-streams", action="store_true",
+                          help="Delete non-seeder streams overlapping the contract wildcards before seeding.")
+    seed_cmd.add_argument("--rules-file", action="append", default=[], help="Rule-pack file with metric_kinds overrides. Repeat to layer.")
+    seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
+    _add_tls_arguments(seed_cmd)
+
+    remove_cmd = sub.add_parser(
+        "remove-sample-data",
+        help="Remove synthetic Elasticsearch data previously seeded for migrated "
+             "dashboards. Dry-run by default; pass --confirm to actually delete.",
+        description=(
+            "Tear down seeder-owned data streams and templates for the given migrated "
+            "dashboard artifact directories. Fail-closed: only streams provably created "
+            "by the seeder are deleted; foreign or unverifiable streams are skipped. "
+            "Dry-run by default (reports the plan, deletes nothing); pass --confirm to "
+            "delete. Exit code is 2 when ES is unreachable or inputs are invalid, 1 when "
+            "any delete fails, 0 otherwise."
+        ),
+    )
+    remove_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                            help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+    remove_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                            help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    remove_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    remove_cmd.add_argument("--confirm", action="store_true",
+                            help="Actually delete. Without this flag the command only prints the plan (dry-run).")
+    _add_tls_arguments(remove_cmd)
+
+    compare_cmd = sub.add_parser(
+        "compare",
+        help="Side-by-side parity: compare each migrated panel's ES|QL against the "
+             "source query using Elasticsearch's native PROMQL oracle (PromQL/Grafana); "
+             "degrade to the semantic gate otherwise.",
+        description=(
+            "Read migrated artifact verification_packets.json and, per panel, run the "
+            "emitted ES|QL and native PROMQL(source query) on the target cluster to "
+            "compute numeric parity. PromQL panels are numerically verified; Datadog / "
+            "non-PromQL / clusters without native PROMQL degrade to a structural "
+            "(semantic-gate) report, clearly labeled. Exit 2 when ES is unreachable or "
+            "inputs are invalid, 1 when any panel parity FAILs, 0 otherwise."
+        ),
+    )
+    compare_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                             help="Migrated dashboard artifact dir (contains verification_packets.json). Repeat to combine.")
+    compare_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                             help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    compare_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    compare_cmd.add_argument("--index", default="", help="Override the ES index pattern for the native PROMQL oracle (default: infer per panel).")
+    compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
+    compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
+    compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
+    _add_tls_arguments(compare_cmd)
+
     return parser
 
 
@@ -303,6 +591,22 @@ def main(argv: list[str] | None = None) -> None:
         _run_verify_panels(args)
     elif args.command == "verify-visual":
         _run_verify_visual(args)
+    elif args.command == "schema-report":
+        sys.exit(_run_schema_report(args))
+    elif args.command == "audit-rules":
+        sys.exit(_run_audit_rules(args))
+    elif args.command == "delete-rules":
+        sys.exit(_run_delete_rules(args))
+    elif args.command == "verify-alert-rules":
+        sys.exit(_run_verify_alert_rules(args))
+    elif args.command == "list-samples":
+        sys.exit(_run_list_samples(args))
+    elif args.command == "seed-sample-data":
+        sys.exit(_run_seed_sample_data(args))
+    elif args.command == "remove-sample-data":
+        sys.exit(_run_remove_sample_data(args))
+    elif args.command == "compare":
+        sys.exit(_run_compare(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -427,9 +731,10 @@ def _run_grafana_migration(args: Any) -> None:
         "--source", args.input_mode,
         "--input-dir", args.input_dir,
         "--output-dir", args.output_dir,
-        "--data-view", args.data_view,
         "--field-profile", getattr(args, "field_profile", "otel"),
     ]
+    if args.data_view:
+        legacy_argv[6:6] = ["--data-view", args.data_view]
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(
@@ -479,6 +784,16 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.append("--create-alert-rules")
     if getattr(args, "grafana_token", ""):
         legacy_argv.extend(["--grafana-token", args.grafana_token])
+    if getattr(args, "grafana_url", ""):
+        legacy_argv.extend(["--grafana-url", args.grafana_url])
+    if getattr(args, "grafana_user", ""):
+        legacy_argv.extend(["--grafana-user", args.grafana_user])
+    if getattr(args, "grafana_pass", ""):
+        legacy_argv.extend(["--grafana-pass", args.grafana_pass])
+    if getattr(args, "ca_cert", ""):
+        legacy_argv.extend(["--ca-cert", args.ca_cert])
+    if getattr(args, "insecure", False):
+        legacy_argv.append("--insecure")
     smoke_requested = (
         args.smoke
         or args.browser_audit
@@ -510,9 +825,10 @@ def _run_datadog_migration(args: Any) -> None:
         "--source", args.input_mode,
         "--input-dir", args.input_dir,
         "--output-dir", args.output_dir,
-        "--data-view", args.data_view,
-        "--field-profile", args.field_profile,
     ]
+    if args.data_view:
+        legacy_argv.extend(["--data-view", args.data_view])
+    legacy_argv.extend(["--field-profile", args.field_profile])
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(
@@ -550,8 +866,14 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--monitor-ids", args.monitor_ids])
     if getattr(args, "monitor_query", ""):
         legacy_argv.extend(["--monitor-query", args.monitor_query])
+    if getattr(args, "dashboard_ids", ""):
+        legacy_argv.extend(["--dashboard-ids", args.dashboard_ids])
     if getattr(args, "env_file", ""):
         legacy_argv.extend(["--env-file", args.env_file])
+    if getattr(args, "ca_cert", ""):
+        legacy_argv.extend(["--ca-cert", args.ca_cert])
+    if getattr(args, "insecure", False):
+        legacy_argv.append("--insecure")
     smoke_requested = (
         args.smoke
         or args.browser_audit
@@ -623,12 +945,14 @@ def _run_upload(args: Any) -> None:
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
+    verify = _tls_verify(args)
     adapter = target_registry.get("kibana")()
     upload_payload = adapter.upload(
         input_dir,
         kibana_url=args.kibana_url,
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
+        verify=verify,
     )
     if not upload_payload["records"]:
         print(
@@ -671,6 +995,343 @@ def _run_extensions(args: Any) -> None:
     print(_serialize_data(catalog, args.format), end="")
 
 
+def _run_schema_report(args: Any) -> int:
+    """Emit a source-to-target schema-change report from migrated artifacts.
+
+    Package-native equivalent of scripts/generate_telemetry_contract.py: works
+    from an installed wheel without a source checkout.
+    """
+    artifact_dirs = [Path(path) for path in args.artifact_dir]
+
+    report = build_schema_change_report(artifact_dirs)
+    output_path = Path(args.output)
+    if output_path.parent != Path(""):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report, encoding="utf-8")
+    print(f"Schema change report written: {output_path}")
+
+    if args.contract_out:
+        contract = (
+            build_telemetry_contract(artifact_dirs[0])
+            if len(artifact_dirs) == 1
+            else build_combined_telemetry_contract(artifact_dirs)
+        )
+        write_telemetry_contract(contract, args.contract_out)
+        print(f"Telemetry contract written: {args.contract_out}")
+    return 0
+
+
+def _run_audit_rules(args: Any) -> int:
+    """Audit migrated Kibana alerting rules; optionally disable enabled ones."""
+    result = audit_migrated_rules(
+        args.kibana_url,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        per_page=args.per_page,
+        max_pages=args.max_pages,
+        disable_enabled=args.disable_enabled,
+        verify=_tls_verify(args),
+    )
+    print(json.dumps(result, indent=2))
+
+    if result.get("errors"):
+        return 2
+    if args.disable_enabled:
+        return 0 if not result["remediation"]["failed_rule_ids"] else 1
+    return 0 if not result["enabled_migrated_rule_ids"] else 1
+
+
+def _run_delete_rules(args: Any) -> int:
+    """Delete migrated Kibana alerting rules (dry-run unless --confirm)."""
+    verify = _tls_verify(args)
+    listing = audit_migrated_rules(
+        args.kibana_url,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        per_page=args.per_page,
+        max_pages=args.max_pages,
+        disable_enabled=False,
+        verify=verify,
+    )
+    if listing.get("errors"):
+        print(json.dumps({"errors": listing["errors"]}, indent=2))
+        return 2
+
+    rule_ids = [rid for rid in listing.get("migrated_rule_ids", []) if rid]
+    if listing.get("listing_truncated"):
+        print(
+            json.dumps(
+                {
+                    "error": "rule_listing_truncated",
+                    "listing_truncated": True,
+                    "listing_warning": listing.get("listing_warning", ""),
+                    "would_delete_count": len(rule_ids),
+                    "would_delete_rule_ids": rule_ids,
+                },
+                indent=2,
+            )
+        )
+        return 2
+
+    if not args.confirm:
+        print(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "would_delete_count": len(rule_ids),
+                    "would_delete_rule_ids": rule_ids,
+                    "note": "Re-run with --confirm to delete these rules.",
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    cleanup = cleanup_rules(
+        args.kibana_url,
+        rule_ids,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        verify=verify,
+    )
+    print(
+        json.dumps(
+            {
+                "dry_run": False,
+                "requested_count": len(rule_ids),
+                "deleted_count": cleanup["deleted_count"],
+                "failed_rule_ids": cleanup["failed_rule_ids"],
+            },
+            indent=2,
+        )
+    )
+    return 0 if not cleanup["failed_rule_ids"] else 1
+
+
+def _run_verify_alert_rules(args: Any) -> int:
+    """Round-trip verify emitted alert-rule payloads against Kibana."""
+    comparison_paths = [Path(path) for path in args.comparison_paths]
+    missing = [str(path) for path in comparison_paths if not path.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_comparison_files", "paths": missing}, indent=2))
+        return 2
+
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in comparison_paths]
+    payloads = collect_emitted_rule_payloads(*reports)
+    if args.limit > 0:
+        payloads = payloads[: args.limit]
+    if not payloads:
+        print(json.dumps({"error": "no_emitted_rule_payloads"}, indent=2))
+        return 2
+
+    summary = verify_emitted_rule_uploads(
+        args.kibana_url,
+        payloads,
+        api_key=args.kibana_api_key,
+        space_id=args.space_id,
+        keep_rules=bool(args.keep_rules),
+        name_prefix=args.name_prefix,
+        verify=_tls_verify(args),
+    )
+    summary = {
+        "comparison_paths": [str(path) for path in comparison_paths],
+        **summary,
+    }
+    print(json.dumps(summary, indent=2))
+
+    if summary.get("error") == "preflight_unreachable":
+        return 2
+    if (
+        summary["creation_errors"]
+        or summary["enabled_true_in_create_response"]
+        or summary["enabled_true_in_rule_listing"]
+        or summary["cleanup"]["failed_rule_ids"]
+    ):
+        return 1
+    return 0
+
+
+def _run_compare(args: Any) -> int:
+    """Per-panel side-by-side parity for migrated dashboards (PromQL native oracle)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    packets: list[dict[str, Any]] = []
+    for raw in args.artifact_dir:
+        path = Path(raw) / "verification_packets.json"
+        if not path.exists():
+            print(json.dumps({"error": "missing_verification_packets", "path": str(path)}, indent=2))
+            return 2
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"error": "invalid_verification_packets", "path": str(path), "detail": str(exc)}, indent=2))
+            return 2
+        if not isinstance(data, dict):
+            print(json.dumps({"error": "invalid_verification_packets", "path": str(path), "detail": "expected a JSON object"}, indent=2))
+            return 2
+        packets.extend(data.get("packets") or [])
+
+    from datetime import UTC, datetime, timedelta
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=args.window_minutes)
+    start_iso = start.isoformat().replace("+00:00", "Z")
+    end_iso = end.isoformat().replace("+00:00", "Z")
+
+    verify = _tls_verify(args)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        oracle_ok = native_promql_available(request, args.index or "metrics-*")
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+
+    rows: list[dict[str, Any]] = []
+    for pkt in packets:
+        is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
+        if oracle_ok and is_promql:
+            index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
+            try:
+                cmp_ = compare_panel(
+                    request, source_query=pkt["source_query"], translated_query=pkt["translated_query"],
+                    index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
+                )
+            except NetworkError as exc:
+                print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+                return 2
+            rows.append({
+                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                "mode": "native_oracle", "verdict": cmp_.verdict(),
+                "max_relative_error": cmp_.max_relative_error, "compared_points": cmp_.compared_points,
+                "reason": cmp_.skipped_reason or cmp_.translated_error or cmp_.native_error or "",
+                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
+            })
+        else:
+            rows.append({
+                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                "mode": "structural", "verdict": "STRUCTURAL", "semantic_gate": pkt.get("semantic_gate", ""),
+                "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
+            })
+
+    summary = {"panels": len(rows)}
+    for r in rows:
+        summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
+    report = {"summary": summary, "oracle_available": oracle_ok, "panels": rows}
+    out = Path(args.report_out)
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+    return 1 if any(r["verdict"] == "FAIL" for r in rows) else 0
+
+
+def _infer_index(esql: str) -> str:
+    """Best-effort index pattern from a leading FROM/TS source command."""
+    for kw in ("FROM ", "TS "):
+        if kw in esql:
+            tail = esql.split(kw, 1)[1].strip()
+            return tail.split()[0].split("|")[0].strip().rstrip(",") if tail else ""
+    return ""
+
+
+def _render_compare_md(report: dict[str, Any]) -> str:
+    lines = ["# Side-by-side comparison", "", f"Oracle available: {report['oracle_available']}", "",
+             "| Dashboard | Panel | Mode | Verdict | Max rel err | Reason |", "|---|---|---|---|---|---|"]
+    for r in report["panels"]:
+        err = f"{r.get('max_relative_error', 0):.4f}" if r.get("mode") == "native_oracle" else "-"
+        lines.append(f"| {r.get('dashboard','')} | {r.get('panel','')} | {r.get('mode','')} | {r.get('verdict','')} | {err} | {r.get('reason','')} |")
+    return "\n".join(lines) + "\n"
+
+
+def _run_seed_sample_data(args: Any) -> int:
+    """Seed synthetic Elasticsearch data for migrated dashboard artifacts (ES-only)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    artifact_dirs = [Path(p) for p in args.artifact_dir]
+    missing = [str(p) for p in artifact_dirs if not p.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_artifact_dirs", "paths": missing}, indent=2))
+        return 2
+    if args.data_hours <= 0 or args.interval_sec <= 0 or args.max_combinations <= 0:
+        print(json.dumps({"error": "--data-hours/--interval-sec/--max-combinations must be > 0"}, indent=2))
+        return 2
+
+    verify = _tls_verify(args)
+    overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        summary = seed_sample_data(
+            artifact_dirs, request,
+            data_hours=args.data_hours, interval_sec=args.interval_sec,
+            batch_docs=args.batch_docs, max_combinations=args.max_combinations,
+            no_recreate=args.no_recreate, purge_foreign=args.purge_foreign_streams,
+            metric_kind_overrides=overrides,
+        )
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+    except RuntimeError as exc:
+        print(json.dumps({"error": "seed_failed", "detail": str(exc)}, indent=2))
+        return 2
+    print(json.dumps({"ingested": summary.ok, "errors": summary.errors, "docs_per_stream": summary.docs_per_stream}, indent=2))
+    return 0 if not summary.errors else 1
+
+
+def _run_remove_sample_data(args: Any) -> int:
+    """Remove seeder-owned Elasticsearch data for migrated dashboards (dry-run by default)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    artifact_dirs = [Path(p) for p in args.artifact_dir]
+    missing = [str(p) for p in artifact_dirs if not p.exists()]
+    if missing:
+        print(json.dumps({"error": "missing_artifact_dirs", "paths": missing}, indent=2))
+        return 2
+
+    verify = _tls_verify(args)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        summary = remove_sample_data(artifact_dirs, request, dry_run=not args.confirm)
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+    except RuntimeError as exc:
+        print(json.dumps({"error": "remove_failed", "detail": str(exc)}, indent=2))
+        return 2
+    print(json.dumps({
+        "dry_run": summary.dry_run,
+        "deleted_streams": summary.deleted_streams,
+        "deleted_templates": summary.deleted_templates,
+        "skipped_not_owned": summary.skipped_not_owned,
+        "errors": summary.errors,
+    }, indent=2))
+    return 0 if not summary.errors else 1
+
+
+def _run_list_samples(args: Any) -> int:
+    """Print the bundled sample dashboard catalog as JSON (offline)."""
+    catalog = []
+    for sample in list_samples():
+        input_dir = resolve_input_dir(sample.id)
+        catalog.append(
+            {
+                "id": sample.id,
+                "source": sample.source,
+                "title": sample.title,
+                "description": sample.description,
+                "input_dir": str(input_dir),
+                "expected_unsupported": list(sample.expected_unsupported),
+                "run": (
+                    f"obs-migrate migrate --source {sample.source} "
+                    f'--input-mode files --input-dir "{input_dir}" --output-dir sample_out'
+                ),
+            }
+        )
+    print(json.dumps(catalog, indent=2))
+    return 0
+
+
 def _run_cluster(args: Any) -> None:
     """Manage target Kibana cluster: list dashboards, create data views, etc."""
     from observability_migration.targets.kibana.serverless import (
@@ -680,15 +1341,17 @@ def _run_cluster(args: Any) -> None:
         list_dashboards,
     )
 
+    verify = _tls_verify(args)
+
     if args.action == "detect-serverless":
         is_sl = detect_serverless(
-            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id,
+            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"Serverless: {is_sl}")
 
     elif args.action == "list-dashboards":
         dashboards = list_dashboards(
-            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id,
+            args.kibana_url, api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"\n  {len(dashboards)} dashboard(s):\n")
         for d in dashboards:
@@ -702,6 +1365,7 @@ def _run_cluster(args: Any) -> None:
             data_view_patterns=patterns,
             api_key=args.kibana_api_key,
             space_id=args.space_id,
+            verify=verify,
         )
         for dv in created:
             print(f"  OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
@@ -713,7 +1377,7 @@ def _run_cluster(args: Any) -> None:
             sys.exit(2)
         result = delete_dashboards(
             args.kibana_url, ids,
-            api_key=args.kibana_api_key, space_id=args.space_id,
+            api_key=args.kibana_api_key, space_id=args.space_id, verify=verify,
         )
         print(f"  Cleared: {len(result['cleared'])}")
         for f in result.get("failed", []):

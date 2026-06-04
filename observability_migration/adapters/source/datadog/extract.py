@@ -27,6 +27,14 @@ def _json_safe_api_value(value: Any) -> Any:
     return value
 
 
+def _apply_sdk_tls(config: Any, verify: bool | str = True) -> None:
+    """Apply a requests-style TLS verify value to Datadog API client config."""
+    if verify is False:
+        config.verify_ssl = False
+    elif isinstance(verify, str) and verify.strip():
+        config.ssl_ca_cert = verify.strip()
+
+
 def extract_dashboards_from_files(input_dir: str) -> list[dict[str, Any]]:
     """Load Datadog dashboard JSON files from a directory.
 
@@ -81,6 +89,7 @@ def extract_dashboards_from_api(
     app_key: str,
     site: str = "datadoghq.com",
     dashboard_ids: list[str] | None = None,
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """Pull dashboards from the Datadog API using the official Python client.
 
@@ -100,6 +109,7 @@ def extract_dashboards_from_api(
     config.api_key["apiKeyAuth"] = api_key
     config.api_key["appKeyAuth"] = app_key
     config.server_variables["site"] = site
+    _apply_sdk_tls(config, verify)
 
     dashboards: list[dict[str, Any]] = []
 
@@ -148,6 +158,7 @@ def extract_monitors_from_api(
     site: str = "datadoghq.com",
     monitor_ids: list[str | int] | None = None,
     monitor_query: str = "",
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """Pull monitors from the Datadog API using the official Python client.
 
@@ -171,6 +182,7 @@ def extract_monitors_from_api(
     config.api_key["apiKeyAuth"] = api_key
     config.api_key["appKeyAuth"] = app_key
     config.server_variables["site"] = site
+    _apply_sdk_tls(config, verify)
 
     monitors: list[dict[str, Any]] = []
 

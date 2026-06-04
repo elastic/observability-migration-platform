@@ -185,6 +185,124 @@ class GrafanaPreflightReportTests(unittest.TestCase):
         )
         self.assertEqual(set(contract["counter_expectations"]), {"container_cpu_usage_seconds_total"})
 
+    def test_schema_contract_checks_native_profile_resolved_target_fields(self):
+        class NativeResolver:
+            _index_pattern = "metrics-native-*"
+
+            def schema_profile(self):
+                return "prometheus_native"
+
+            def discovery_status(self):
+                return {"status": "ok", "error": "", "field_count": 3}
+
+            def resolve_metric_field(self, metric_name, *, prefer=None):
+                return f"metrics.{metric_name}"
+
+            def resolve_label(self, label):
+                return f"labels.{label}"
+
+            def field_exists(self, field_name):
+                return field_name in {
+                    "metrics.http_requests_total",
+                    "labels.service",
+                    "labels.env",
+                }
+
+            def field_type(self, field_name):
+                return "double" if field_name.startswith("metrics.") else "keyword"
+
+            def is_counter(self, metric_name):
+                return metric_name == "http_requests_total"
+
+        panel = SimpleNamespace(
+            query_ir={
+                "target_index": "metrics-native-*",
+                "source_type": "TS",
+                "metric": "http_requests_total",
+                "group_labels": ["service"],
+                "label_filters": ['env="prod"'],
+                "output_metric_field": "computed_rate",
+                "semantic_losses": [],
+            },
+            reasons=[],
+        )
+        result = SimpleNamespace(inventory={}, panel_results=[panel])
+
+        contract = preflight.build_target_schema_contract([result], NativeResolver())
+
+        self.assertEqual(contract["schema_profile"], "prometheus_native")
+        self.assertEqual(contract["field_capabilities_index"], "metrics-native-*")
+        self.assertEqual(
+            contract["field_capabilities_discovery"],
+            {"status": "ok", "error": "", "field_count": 3},
+        )
+        self.assertIn("metrics.http_requests_total", contract["required_fields"])
+        self.assertIn("labels.service", contract["required_fields"])
+        self.assertIn("labels.env", contract["required_fields"])
+        self.assertNotIn("http_requests_total", contract["required_fields"])
+        metric = contract["required_fields"]["metrics.http_requests_total"]
+        self.assertEqual(metric["source_fields"], ["http_requests_total"])
+        self.assertEqual(metric["target_field"], "metrics.http_requests_total")
+        self.assertEqual(metric["status"], "confirmed")
+        self.assertEqual(metric["type"], "double")
+        self.assertEqual(
+            contract["counter_expectations"]["metrics.http_requests_total"]["source_field"],
+            "http_requests_total",
+        )
+        self.assertTrue(
+            contract["counter_expectations"]["metrics.http_requests_total"]["confirmed_counter"],
+        )
+
+    def test_schema_contract_checks_remote_write_profile_resolved_target_fields(self):
+        class RemoteWriteResolver:
+            _index_pattern = "metrics-prometheus.remote_write-*"
+
+            def schema_profile(self):
+                return "prometheus_remote_write"
+
+            def resolve_metric_field(self, metric_name, *, prefer=None):
+                suffix = "counter" if prefer == "counter" else "value"
+                return f"prometheus.{metric_name}.{suffix}"
+
+            def resolve_label(self, label):
+                return f"prometheus.labels.{label}"
+
+            def field_exists(self, field_name):
+                return field_name in {
+                    "prometheus.http_requests_total.counter",
+                    "prometheus.labels.service",
+                }
+
+            def field_type(self, field_name):
+                return "double" if field_name.endswith(".counter") else "keyword"
+
+            def is_counter(self, metric_name):
+                return metric_name == "http_requests_total"
+
+        panel = SimpleNamespace(
+            query_ir={
+                "target_index": "metrics-prometheus.remote_write-*",
+                "source_type": "TS",
+                "metric": "http_requests_total",
+                "group_labels": ["service"],
+                "output_metric_field": "computed_rate",
+                "semantic_losses": [],
+            },
+            reasons=[],
+        )
+        result = SimpleNamespace(inventory={}, panel_results=[panel])
+
+        contract = preflight.build_target_schema_contract([result], RemoteWriteResolver())
+
+        self.assertEqual(contract["schema_profile"], "prometheus_remote_write")
+        self.assertIn("prometheus.http_requests_total.counter", contract["required_fields"])
+        self.assertIn("prometheus.labels.service", contract["required_fields"])
+        self.assertNotIn("http_requests_total", contract["required_fields"])
+        self.assertEqual(
+            contract["required_fields"]["prometheus.labels.service"]["source_fields"],
+            ["service"],
+        )
+
     def test_native_promql_panels_are_not_reported_as_metrics_mapping_needed(self):
         panel = SimpleNamespace(
             status="migrated",

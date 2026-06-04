@@ -48,6 +48,7 @@ class TestKibanaTargetAdapterUpload(unittest.TestCase):
             data_view_patterns=None,
             api_key="secret",
             space_id="shadow",
+            verify=True,
         )
 
     def test_upload_dashboard_ensures_data_views_before_dashboard_upload(self):
@@ -87,6 +88,7 @@ class TestKibanaTargetAdapterUpload(unittest.TestCase):
             data_view_patterns=None,
             api_key="secret",
             space_id="shadow",
+            verify=True,
         )
 
     def test_upload_dashboard_rewrites_data_view_references_to_created_id(self):

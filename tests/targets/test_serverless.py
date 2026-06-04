@@ -79,7 +79,8 @@ class TestDeleteDashboards(unittest.TestCase):
         result = delete_dashboards("https://kb.test", ["dash-1", "dash-2"])
         self.assertEqual(len(result["cleared"]), 2)
         self.assertEqual(len(result["failed"]), 0)
-        self.assertIn("does not support DELETE", result["note"])
+        self.assertIn("Cleared dashboards have been overwritten", result["note"])
+        self.assertNotIn("Serverless Kibana", result["note"])
 
     @patch("observability_migration.targets.kibana.serverless.import_saved_objects")
     def test_reports_import_failures(self, mock_import):
@@ -172,6 +173,7 @@ class TestEnsureDataView(unittest.TestCase):
             api_key="",
             space_id="",
             timeout=30,
+            verify=True,
         )
 
 

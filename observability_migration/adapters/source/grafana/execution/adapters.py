@@ -38,11 +38,13 @@ class SourceQueryResult:
 _TIMEOUT = 30
 
 
-def _prometheus_instant_query(base_url: str, query: str, *, timeout: int = _TIMEOUT) -> SourceQueryResult:
+def _prometheus_instant_query(
+    base_url: str, query: str, *, timeout: int = _TIMEOUT, verify: bool | str = True,
+) -> SourceQueryResult:
     url = urljoin(base_url.rstrip("/") + "/", "api/v1/query")
     t0 = time.monotonic()
     try:
-        resp = requests.get(url, params={"query": query}, timeout=timeout)
+        resp = requests.get(url, params={"query": query}, timeout=timeout, verify=verify)
         elapsed = int((time.monotonic() - t0) * 1000)
         resp.raise_for_status()
         body = resp.json()
@@ -101,7 +103,14 @@ def _prometheus_instant_query(base_url: str, query: str, *, timeout: int = _TIME
 
 
 def _prometheus_range_query(
-    base_url: str, query: str, *, start: str = "", end: str = "", step: str = "60s", timeout: int = _TIMEOUT,
+    base_url: str,
+    query: str,
+    *,
+    start: str = "",
+    end: str = "",
+    step: str = "60s",
+    timeout: int = _TIMEOUT,
+    verify: bool | str = True,
 ) -> SourceQueryResult:
     url = urljoin(base_url.rstrip("/") + "/", "api/v1/query_range")
     now = int(time.time())
@@ -113,7 +122,7 @@ def _prometheus_range_query(
     }
     t0 = time.monotonic()
     try:
-        resp = requests.get(url, params=params, timeout=timeout)
+        resp = requests.get(url, params=params, timeout=timeout, verify=verify)
         elapsed = int((time.monotonic() - t0) * 1000)
         resp.raise_for_status()
         body = resp.json()
@@ -139,7 +148,9 @@ def _prometheus_range_query(
     )
 
 
-def _loki_query(base_url: str, query: str, *, limit: int = 1000, timeout: int = _TIMEOUT) -> SourceQueryResult:
+def _loki_query(
+    base_url: str, query: str, *, limit: int = 1000, timeout: int = _TIMEOUT, verify: bool | str = True,
+) -> SourceQueryResult:
     url = urljoin(base_url.rstrip("/") + "/", "loki/api/v1/query_range")
     now = int(time.time())
     params: dict[str, str] = {
@@ -150,7 +161,7 @@ def _loki_query(base_url: str, query: str, *, limit: int = 1000, timeout: int = 
     }
     t0 = time.monotonic()
     try:
-        resp = requests.get(url, params=params, timeout=timeout)
+        resp = requests.get(url, params=params, timeout=timeout, verify=verify)
         elapsed = int((time.monotonic() - t0) * 1000)
         resp.raise_for_status()
         body = resp.json()
@@ -213,12 +224,13 @@ def execute_source_query(
     loki_url: str = "",
     range_window: str = "",
     timeout: int = _TIMEOUT,
+    verify: bool | str = True,
 ) -> SourceQueryResult:
     lang = query_language.lower()
     if lang == "promql" and prometheus_url:
         if range_window:
-            return _prometheus_range_query(prometheus_url, query, timeout=timeout)
-        return _prometheus_instant_query(prometheus_url, query, timeout=timeout)
+            return _prometheus_range_query(prometheus_url, query, timeout=timeout, verify=verify)
+        return _prometheus_instant_query(prometheus_url, query, timeout=timeout, verify=verify)
     if lang == "logql" and loki_url:
-        return _loki_query(loki_url, query, timeout=timeout)
+        return _loki_query(loki_url, query, timeout=timeout, verify=verify)
     return SourceQueryResult(error="No adapter URL configured for this query language")

@@ -12,6 +12,7 @@ from observability_migration.core.assets.alerting import (
     build_alerting_ir_from_grafana,
     build_alerting_ir_from_grafana_unified,
 )
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import map_alerts_batch
 from observability_migration.targets.kibana.alerting import (
     create_rules_from_payloads,
@@ -33,6 +34,13 @@ from .extract import (
 
 def _selected_space_id(args) -> str:
     return getattr(args, "shadow_space", "") or getattr(args, "space_id", "") or ""
+
+
+def _verify_from_args(args) -> bool | str:
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
 
 
 def build_legacy_alert_tasks_from_dashboards(
@@ -58,12 +66,13 @@ def load_unified_alerting_resources(args) -> dict[str, Any]:
     if getattr(args, "source", "files") == "api":
         grafana_url = getattr(args, "grafana_url", "") or os.getenv("GRAFANA_URL", "http://localhost:3000")
         grafana_user = getattr(args, "grafana_user", "") or os.getenv("GRAFANA_USER", "admin")
-        grafana_password = getattr(args, "grafana_password", "") or os.getenv("GRAFANA_PASS", "admin")
+        grafana_password = getattr(args, "grafana_pass", "") or os.getenv("GRAFANA_PASS", "admin")
         return extract_all_alerting_resources(
             grafana_url,
             user=grafana_user,
             password=grafana_password,
             token=grafana_token,
+            verify=_verify_from_args(args),
         )
     return extract_all_alerting_resources_from_files(getattr(args, "input_dir", ""))
 
@@ -97,6 +106,7 @@ def build_payload_validation_lookup(
         args.kibana_url,
         api_key=getattr(args, "kibana_api_key", "") or "",
         space_id=_selected_space_id(args),
+        verify=_verify_from_args(args),
     )
     for item in mapping_batch.get("results", []):
         payload = item.get("mapping", {}).get("rule_payload", {})
@@ -213,6 +223,7 @@ def create_rules_if_requested(
         space_id=_selected_space_id(args),
         preflight=payload_preflight,
         enabled=False,
+        verify=_verify_from_args(args),
     )
     rule_upload_path = output_dir / "alert_rule_upload_results.json"
     with rule_upload_path.open("w", encoding="utf-8") as fh:

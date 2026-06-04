@@ -10,10 +10,12 @@ and capability preflight for the alert migration pipeline.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
 
+from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
 
 logger = logging.getLogger(__name__)
@@ -26,8 +28,9 @@ def _api_base(kibana_url: str, space_id: str = "") -> str:
     return base
 
 
-def _session(api_key: str = "") -> requests.Session:
+def _session(api_key: str = "", verify: bool | str = True) -> requests.Session:
     session = requests.Session()
+    apply_tls(session, verify)
     session.headers.update({"kbn-xsrf": "true"})
     if api_key:
         session.headers["Authorization"] = f"ApiKey {api_key}"
@@ -40,9 +43,10 @@ def _session(api_key: str = "") -> requests.Session:
 
 def get_alerting_health(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """GET /api/alerting/_health — alerting subsystem health."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.get(f"{base}/api/alerting/_health", timeout=timeout)
@@ -55,9 +59,10 @@ def get_alerting_health(
 
 def list_rule_types(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """GET /api/alerting/rule_types — discover available rule families."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.get(f"{base}/api/alerting/rule_types", timeout=timeout)
@@ -70,9 +75,10 @@ def list_rule_types(
 
 def list_connector_types(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """GET /api/actions/connector_types — discover available connector families."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.get(f"{base}/api/actions/connector_types", timeout=timeout)
@@ -85,9 +91,10 @@ def list_connector_types(
 
 def list_connectors(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
+    verify: bool | str = True,
 ) -> list[dict[str, Any]]:
     """GET /api/actions/connectors — list all existing connectors."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.get(f"{base}/api/actions/connectors", timeout=timeout)
@@ -100,6 +107,7 @@ def list_connectors(
 
 def run_alerting_preflight(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Run a full alerting capability preflight against the target Kibana.
 
@@ -110,10 +118,10 @@ def run_alerting_preflight(
     - existing connector count
     - whether key rule families are present
     """
-    health = get_alerting_health(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout)
-    rule_types = list_rule_types(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout)
-    connector_types = list_connector_types(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout)
-    connectors = list_connectors(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout)
+    health = get_alerting_health(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify)
+    rule_types = list_rule_types(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify)
+    connector_types = list_connector_types(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify)
+    connectors = list_connectors(kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify)
 
     rule_type_ids = {rt.get("id", "") for rt in rule_types}
     enabled_connector_types = {
@@ -162,9 +170,10 @@ def create_connector(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """POST /api/actions/connector — create a new connector."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     body: dict[str, Any] = {
         "connector_type_id": connector_type_id,
@@ -201,12 +210,13 @@ def create_rule(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """POST /api/alerting/rule — create a new alerting rule.
 
     Rules are created disabled by default for safety.
     """
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     body: dict[str, Any] = {
         "rule_type_id": rule_type_id,
@@ -230,9 +240,10 @@ def create_rule(
 def list_rules(
     kibana_url: str, *, api_key: str = "", space_id: str = "", timeout: int = 15,
     per_page: int = 100, page: int = 1,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """GET /api/alerting/rules/_find — list existing rules."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.get(
@@ -254,9 +265,10 @@ def delete_rule(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> bool:
     """DELETE /api/alerting/rule/{id}."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.delete(f"{base}/api/alerting/rule/{rule_id}", timeout=timeout)
@@ -273,9 +285,10 @@ def enable_rule(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> bool:
     """POST /api/alerting/rule/{id}/_enable."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.post(f"{base}/api/alerting/rule/{rule_id}/_enable", timeout=timeout)
@@ -292,9 +305,10 @@ def disable_rule(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> bool:
     """POST /api/alerting/rule/{id}/_disable."""
-    session = _session(api_key)
+    session = _session(api_key, verify=verify)
     base = _api_base(kibana_url, space_id)
     try:
         resp = session.post(f"{base}/api/alerting/rule/{rule_id}/_disable", timeout=timeout)
@@ -405,6 +419,7 @@ def create_rules_from_payloads(
     enabled: bool = False,
     only_automated: bool = True,
     timeout: int = 15,
+    verify: bool | str = True,
     create_rule_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Create Kibana alerting rules from a batch of emitted rule payloads.
@@ -521,6 +536,7 @@ def create_rules_from_payloads(
             api_key=api_key,
             space_id=space_id,
             timeout=timeout,
+            verify=verify,
         )
 
         if not isinstance(response, dict) or response.get("error"):
@@ -561,6 +577,7 @@ def cleanup_rules(
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
+    verify: bool | str = True,
     delete_rule_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Delete a batch of rules and summarize boolean delete results."""
@@ -575,6 +592,7 @@ def cleanup_rules(
                 api_key=api_key,
                 space_id=space_id,
                 timeout=timeout,
+                verify=verify,
             )
         )
         if ok:
@@ -584,6 +602,250 @@ def cleanup_rules(
     return {
         "deleted_count": deleted_count,
         "failed_rule_ids": failed_rule_ids,
+    }
+
+
+DEFAULT_VERIFY_NAME_PREFIX = "[verification "
+
+
+def _list_all_rules(
+    kibana_url: str,
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    timeout: int = 15,
+    per_page: int = 100,
+    max_pages: int = 20,
+    verify: bool | str = True,
+    list_rules_fn: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Page through every rule in the space and return them flattened."""
+    lister = list_rules_fn or list_rules
+    all_rules: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        payload = lister(
+            kibana_url,
+            api_key=api_key,
+            space_id=space_id,
+            timeout=timeout,
+            per_page=per_page,
+            page=page,
+            verify=verify,
+        )
+        if not isinstance(payload, dict):
+            break
+        page_rules = payload.get("data", [])
+        if not isinstance(page_rules, list) or not page_rules:
+            break
+        all_rules.extend(rule for rule in page_rules if isinstance(rule, dict))
+        total = int(payload.get("total", len(all_rules)) or len(all_rules))
+        if len(all_rules) >= total:
+            break
+    return all_rules
+
+
+def _matching_verification_rule_ids(
+    rules: list[dict[str, Any]], marker: str, name_prefix: str
+) -> list[str]:
+    """Return ids of rules carrying the verification marker tag or name prefix."""
+    matching: list[str] = []
+    for rule in rules:
+        rule_id = str(rule.get("id", "") or "")
+        if not rule_id:
+            continue
+        tags = rule.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+        name = str(rule.get("name", "") or "")
+        if marker in tags or name.startswith(name_prefix):
+            matching.append(rule_id)
+    return matching
+
+
+def verify_emitted_rule_uploads(
+    kibana_url: str,
+    payloads: list[dict[str, Any]],
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    keep_rules: bool = False,
+    name_prefix: str = DEFAULT_VERIFY_NAME_PREFIX,
+    timeout: int = 15,
+    verify: bool | str = True,
+    preflight: dict[str, Any] | None = None,
+    marker: str = "",
+    create_rule_fn: Any | None = None,
+    list_rules_fn: Any | None = None,
+    delete_rule_fn: Any | None = None,
+    run_preflight_fn: Any | None = None,
+) -> dict[str, Any]:
+    """Create emitted alert-rule payloads in Kibana, confirm they land disabled, then clean up.
+
+    This is the packaged form of the alert-rule upload round trip: it creates
+    each payload (tagged with a unique ``marker`` so it can be swept up), checks
+    that none came back enabled in either the create response or a fresh
+    listing, and — unless ``keep_rules`` is set — deletes everything it created
+    (plus any stragglers carrying the marker/name prefix).
+
+    Parameters
+    ----------
+    payloads:
+        The shape returned by :func:`collect_emitted_rule_payloads` (each item
+        has ``payload``, ``alert_id``, ``name``).
+    preflight:
+        Optional pre-computed preflight snapshot. When omitted, this calls
+        :func:`run_alerting_preflight`. If the cluster is unreachable, no rules
+        are created and the summary carries ``error == "preflight_unreachable"``.
+
+    Returns
+    -------
+    dict
+        A JSON-serializable summary with ``candidate_payloads``,
+        ``created_rules``, ``creation_errors``,
+        ``enabled_true_in_create_response``, ``enabled_true_in_rule_listing``,
+        ``preflight``, ``marker``, ``keep_rules`` and ``cleanup``.
+    """
+    creator = create_rule_fn or create_rule
+    preflight_runner = run_preflight_fn or run_alerting_preflight
+
+    if preflight is None:
+        preflight = preflight_runner(
+            kibana_url, api_key=api_key, space_id=space_id, verify=verify,
+        )
+    preflight_snapshot = {
+        "rule_types_count": (preflight or {}).get("rule_types_count"),
+        "connector_types_count": (preflight or {}).get("connector_types_count"),
+        "can_create_es_query_rules": (preflight or {}).get("can_create_es_query_rules"),
+        "can_create_index_threshold_rules": (preflight or {}).get("can_create_index_threshold_rules"),
+        "can_create_custom_threshold_rules": (preflight or {}).get("can_create_custom_threshold_rules"),
+    }
+
+    if _preflight_unreachable(preflight):
+        return {
+            "candidate_payloads": len(payloads),
+            "created_rules": 0,
+            "creation_errors": [],
+            "enabled_true_in_create_response": [],
+            "enabled_true_in_rule_listing": [],
+            "preflight": {
+                **preflight_snapshot,
+                "health_error": ((preflight or {}).get("health") or {}).get("error", ""),
+            },
+            "marker": "",
+            "keep_rules": bool(keep_rules),
+            "cleanup": {"deleted_count": 0, "failed_rule_ids": []},
+            "error": "preflight_unreachable",
+        }
+
+    marker = marker or f"obs-migration-live-verify-{int(time.time())}"
+    created: list[dict[str, Any]] = []
+    creation_errors: list[dict[str, Any]] = []
+    enabled_true_in_create_response: list[dict[str, Any]] = []
+    enabled_true_in_rule_listing: list[dict[str, Any]] = []
+
+    try:
+        for idx, item in enumerate(payloads, start=1):
+            payload = item["payload"]
+            result = creator(
+                kibana_url,
+                rule_type_id=str(payload.get("rule_type_id", "") or ""),
+                name=f"{name_prefix}{idx}] {payload.get('name', item.get('name', ''))}",
+                consumer=str(payload.get("consumer", "stackAlerts") or "stackAlerts"),
+                schedule_interval=str((payload.get("schedule") or {}).get("interval", "1m") or "1m"),
+                params=payload.get("params") or {},
+                actions=payload.get("actions") or [],
+                enabled=bool(payload.get("enabled", False)),
+                tags=[*(payload.get("tags") or []), marker],
+                api_key=api_key,
+                space_id=space_id,
+                timeout=timeout,
+                verify=verify,
+            )
+            if result.get("error"):
+                creation_errors.append(
+                    {
+                        "alert_id": item.get("alert_id", ""),
+                        "name": item.get("name", ""),
+                        "rule_type_id": payload.get("rule_type_id", ""),
+                        "error": result["error"],
+                    }
+                )
+                continue
+            created.append(
+                {
+                    "id": str(result.get("id", "") or ""),
+                    "name": str(result.get("name", "") or ""),
+                    "enabled": bool(result.get("enabled", False)),
+                }
+            )
+            if result.get("enabled"):
+                enabled_true_in_create_response.append({"id": result.get("id", ""), "name": result.get("name", "")})
+
+        listed_by_id = {
+            str(rule.get("id", "") or ""): rule
+            for rule in _list_all_rules(
+                kibana_url,
+                api_key=api_key,
+                space_id=space_id,
+                timeout=timeout,
+                verify=verify,
+                list_rules_fn=list_rules_fn,
+            )
+        }
+        for item in created:
+            listed = listed_by_id.get(item["id"])
+            if listed and listed.get("enabled"):
+                enabled_true_in_rule_listing.append({"id": item["id"], "name": item["name"]})
+    finally:
+        if keep_rules:
+            cleanup_result: dict[str, Any] = {"deleted_count": 0, "failed_rule_ids": []}
+        else:
+            cleanup_result = cleanup_rules(
+                kibana_url,
+                [item["id"] for item in created if item["id"]],
+                api_key=api_key,
+                space_id=space_id,
+                timeout=timeout,
+                verify=verify,
+                delete_rule_fn=delete_rule_fn,
+            )
+            remaining = _matching_verification_rule_ids(
+                _list_all_rules(
+                    kibana_url,
+                    api_key=api_key,
+                    space_id=space_id,
+                    timeout=timeout,
+                    verify=verify,
+                    list_rules_fn=list_rules_fn,
+                ),
+                marker,
+                name_prefix,
+            )
+            if remaining:
+                sweep = cleanup_rules(
+                    kibana_url,
+                    remaining,
+                    api_key=api_key,
+                    space_id=space_id,
+                    timeout=timeout,
+                    verify=verify,
+                    delete_rule_fn=delete_rule_fn,
+                )
+                cleanup_result = {
+                    "deleted_count": cleanup_result["deleted_count"] + sweep["deleted_count"],
+                    "failed_rule_ids": [*cleanup_result["failed_rule_ids"], *sweep["failed_rule_ids"]],
+                }
+
+    return {
+        "candidate_payloads": len(payloads),
+        "created_rules": len(created),
+        "creation_errors": creation_errors,
+        "enabled_true_in_create_response": enabled_true_in_create_response,
+        "enabled_true_in_rule_listing": enabled_true_in_rule_listing,
+        "preflight": preflight_snapshot,
+        "marker": marker,
+        "keep_rules": bool(keep_rules),
+        "cleanup": cleanup_result,
     }
 
 
@@ -611,6 +873,7 @@ def audit_migrated_rules(
     per_page: int = 100,
     max_pages: int = 20,
     disable_enabled: bool = False,
+    verify: bool | str = True,
     list_rules_fn: Any | None = None,
     disable_rule_fn: Any | None = None,
 ) -> dict[str, Any]:
@@ -620,6 +883,8 @@ def audit_migrated_rules(
 
     all_rules: list[dict[str, Any]] = []
     errors: list[str] = []
+    total_available: int | None = None
+    pages_scanned = 0
     for page in range(1, max_pages + 1):
         payload = lister(
             kibana_url,
@@ -628,6 +893,7 @@ def audit_migrated_rules(
             timeout=timeout,
             per_page=per_page,
             page=page,
+            verify=verify,
         )
         if not isinstance(payload, dict):
             break
@@ -638,8 +904,10 @@ def audit_migrated_rules(
         page_rules = payload.get("data", [])
         if not isinstance(page_rules, list) or not page_rules:
             break
+        pages_scanned = page
         all_rules.extend(rule for rule in page_rules if isinstance(rule, dict))
         total = int(payload.get("total", len(all_rules)) or len(all_rules))
+        total_available = total
         if len(all_rules) >= total:
             break
 
@@ -666,6 +934,7 @@ def audit_migrated_rules(
                     api_key=api_key,
                     space_id=space_id,
                     timeout=timeout,
+                    verify=verify,
                 )
             )
             if ok:
@@ -673,8 +942,20 @@ def audit_migrated_rules(
             else:
                 remediation["failed_rule_ids"].append(rule_id)
 
+    listing_truncated = total_available is not None and len(all_rules) < total_available and not errors
+    listing_warning = ""
+    if listing_truncated:
+        listing_warning = (
+            f"Inspected {len(all_rules)} of {total_available} rules after {pages_scanned} page(s). "
+            "Increase --max-pages to inspect every rule before acting on this result."
+        )
+
     return {
         "total_rules_seen": len(all_rules),
+        "total_rules_available": total_available if total_available is not None else len(all_rules),
+        "pages_scanned": pages_scanned,
+        "listing_truncated": listing_truncated,
+        "listing_warning": listing_warning,
         "migrated_rules_seen": len(migrated_rules),
         "migrated_rule_ids": [str(rule.get("id", "") or "") for rule in migrated_rules],
         "enabled_migrated_rule_ids": [str(rule.get("id", "") or "") for rule in enabled_migrated_rules],
@@ -751,4 +1032,5 @@ __all__ = [
     "list_rules",
     "run_alerting_preflight",
     "validate_rule_payload",
+    "verify_emitted_rule_uploads",
 ]

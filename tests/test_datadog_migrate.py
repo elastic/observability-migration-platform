@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from observability_migration.adapters.source.datadog import alert_pipeline as datadog_alert_pipeline
 from observability_migration.adapters.source.datadog import cli as datadog_cli
 from observability_migration.adapters.source.datadog import extract as datadog_extract
+from observability_migration.adapters.source.datadog import preflight as datadog_preflight
 from observability_migration.adapters.source.datadog.execution import build_source_execution_summary
 from observability_migration.adapters.source.datadog.field_map import (
     OTEL_PROFILE,
@@ -2889,8 +2890,8 @@ class TestFieldMap(unittest.TestCase):
         self.assertFalse(profile.is_numeric_field("shared.field", context="log"))
         self.assertEqual(mock_fetch.call_args_list[0].args, ("https://example.es", "metrics-*"))
         self.assertEqual(mock_fetch.call_args_list[1].args, ("https://example.es", "logs-*"))
-        self.assertEqual(mock_fetch.call_args_list[0].kwargs, {"es_api_key": "secret"})
-        self.assertEqual(mock_fetch.call_args_list[1].kwargs, {"es_api_key": "secret"})
+        self.assertEqual(mock_fetch.call_args_list[0].kwargs, {"es_api_key": "secret", "verify": True})
+        self.assertEqual(mock_fetch.call_args_list[1].kwargs, {"es_api_key": "secret", "verify": True})
 
     def test_load_unknown_profile_raises(self):
         with self.assertRaises(ValueError):
@@ -2902,6 +2903,216 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
         args = datadog_cli.parse_args([])
 
         self.assertEqual(args.field_profile, "otel")
+
+    def test_parse_args_accepts_input_mode_alias_for_source(self):
+        args = datadog_cli.parse_args(["--input-mode", "api"])
+
+        self.assertEqual(args.input_mode, "api")
+        self.assertEqual(args.source, "api")
+
+    def test_parse_args_rejects_conflicting_source_and_input_mode(self):
+        with self.assertRaises(SystemExit):
+            datadog_cli.parse_args(["--source", "files", "--input-mode", "api"])
+
+    def test_parse_args_compiles_dashboards_by_default(self):
+        args = datadog_cli.parse_args([])
+
+        self.assertTrue(args.compile)
+
+    def test_parse_args_can_disable_default_compile(self):
+        args = datadog_cli.parse_args(["--no-compile"])
+
+        self.assertFalse(args.compile)
+
+    def test_parse_args_does_not_default_data_view_over_profile_index(self):
+        args = datadog_cli.parse_args(["--field-profile", "prometheus"])
+
+        self.assertIsNone(args.data_view)
+
+    def test_explicit_data_view_still_overrides_profile_index(self):
+        args = datadog_cli.parse_args([
+            "--field-profile",
+            "prometheus",
+            "--data-view",
+            "metrics-custom-*",
+        ])
+
+        self.assertEqual(args.data_view, "metrics-custom-*")
+
+    def test_target_readiness_contract_reports_mapped_field_status(self):
+        field_map = load_profile("otel")
+        metric_cap = FieldCapability(name="system_cpu_user", type="double")
+        metric_cap.aggregatable = True
+        tag_cap = FieldCapability(name="host.name", type="keyword")
+        tag_cap.aggregatable = True
+        field_map.metric_field_caps = {
+            "system_cpu_user": metric_cap,
+            "host.name": tag_cap,
+        }
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "avg:system.cpu.user{host:web01} by {host}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="timeseries",
+            title="CPU",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                ),
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            field_map,
+        )
+
+        self.assertEqual(contract["source"], "datadog")
+        self.assertEqual(contract["field_profile"], "otel")
+        self.assertEqual(contract["metric_index"], "metrics-*")
+        self.assertEqual(contract["required_fields"]["system_cpu_user"]["status"], "confirmed")
+        self.assertEqual(
+            contract["required_fields"]["system_cpu_user"]["source_fields"],
+            ["system.cpu.user"],
+        )
+        self.assertEqual(contract["required_fields"]["host.name"]["status"], "confirmed")
+        self.assertEqual(contract["required_fields"]["host.name"]["roles"], ["filter", "group_by"])
+
+    def test_target_readiness_contract_reports_missing_and_unknown_fields(self):
+        field_map = load_profile("otel")
+        metric_cap = FieldCapability(name="system_cpu_user", type="double")
+        metric_cap.aggregatable = True
+        field_map.metric_field_caps = {"system_cpu_user": metric_cap}
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "avg:system.cpu.user{host:web01}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                ),
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            field_map,
+        )
+
+        self.assertEqual(contract["required_fields"]["system_cpu_user"]["status"], "confirmed")
+        self.assertEqual(contract["required_fields"]["host.name"]["status"], "missing")
+
+        offline_contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            load_profile("otel"),
+        )
+
+        self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
+        self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+
+    def test_dashboard_pipeline_writes_target_readiness_contract(self):
+        args = argparse.Namespace(
+            source="files",
+            input_dir="unused",
+            validate=False,
+            es_url="",
+            upload=False,
+            ensure_data_views=False,
+            smoke=False,
+            smoke_output="",
+            space_id="",
+            preflight=False,
+        )
+        raw_dashboard = {
+            "id": "dash1",
+            "title": "Dash",
+            "widgets": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            datadog_cli,
+            "_extract",
+            return_value=[raw_dashboard],
+        ):
+            datadog_cli._run_dashboard_pipeline(
+                args=args,
+                field_map=load_profile("otel"),
+                output_dir=Path(tmpdir),
+                dd_creds={},
+                target_adapter=None,
+                compile_requested=False,
+            )
+
+            contract_path = Path(tmpdir) / "target_readiness_contract.json"
+            schema_report_path = Path(tmpdir) / "schema_change_report.md"
+            telemetry_contract_path = Path(tmpdir) / "telemetry_contract.json"
+            contract_exists = contract_path.exists()
+            schema_report_exists = schema_report_path.exists()
+            telemetry_contract_exists = telemetry_contract_path.exists()
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(contract_exists)
+        self.assertEqual(contract["source"], "datadog")
+        self.assertEqual(contract["field_profile"], "otel")
+        self.assertTrue(schema_report_exists)
+        self.assertTrue(telemetry_contract_exists)
+
+    def test_dashboard_pipeline_treats_schema_report_failure_as_non_fatal(self):
+        args = argparse.Namespace(
+            source="files",
+            input_dir="unused",
+            validate=False,
+            es_url="",
+            upload=False,
+            ensure_data_views=False,
+            smoke=False,
+            smoke_output="",
+            space_id="",
+            preflight=False,
+        )
+        raw_dashboard = {
+            "id": "dash1",
+            "title": "Dash",
+            "widgets": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            datadog_cli,
+            "_extract",
+            return_value=[raw_dashboard],
+        ), patch.object(
+            datadog_cli,
+            "write_schema_report_artifacts",
+            side_effect=RuntimeError("schema failed"),
+        ):
+            datadog_cli._run_dashboard_pipeline(
+                args=args,
+                field_map=load_profile("otel"),
+                output_dir=Path(tmpdir),
+                dd_creds={},
+                target_adapter=None,
+                compile_requested=False,
+            )
+
+            summary_exists = (Path(tmpdir) / "migration_summary.md").exists()
+            readiness_exists = (Path(tmpdir) / "target_readiness_contract.json").exists()
+            schema_report_exists = (Path(tmpdir) / "schema_change_report.md").exists()
+
+        self.assertTrue(summary_exists)
+        self.assertTrue(readiness_exists)
+        self.assertFalse(schema_report_exists)
 
 
 # =========================================================================
@@ -4847,9 +5058,13 @@ class TestDatadogWritesMarkdownSummary(unittest.TestCase):
                 )
 
             summary_path = output_dir / "dashboards" / "migration_summary.md"
+            rollout_path = output_dir / "dashboards" / "rollout_plan.json"
             self.assertTrue(summary_path.exists())
+            self.assertTrue(rollout_path.exists())
             text = summary_path.read_text(encoding="utf-8")
+            rollout = json.loads(rollout_path.read_text(encoding="utf-8"))
             self.assertIn("# Migration Summary — Datadog → Kibana", text)
+            self.assertIn(f"`{rollout['run_id']}`", text)
             self.assertIn("Widgets", text)
 
 

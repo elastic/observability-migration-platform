@@ -54,6 +54,7 @@ class DatadogAdapter(SourceAdapter):
                 api_key=config.get("dd_api_key", ""),
                 app_key=config.get("dd_app_key", ""),
                 dashboard_ids=config.get("dashboard_ids", []),
+                verify=config.get("verify", True),
             )
         return extract_dashboards_from_files(str(input_dir or ""))
 

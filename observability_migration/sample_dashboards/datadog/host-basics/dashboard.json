@@ -1,0 +1,39 @@
+{
+  "id": "obs-sample-host-basics",
+  "title": "Sample: Host Basics",
+  "layout_type": "ordered",
+  "widgets": [
+    {
+      "id": 1,
+      "definition": {
+        "type": "timeseries",
+        "title": "CPU by host",
+        "requests": [ { "q": "avg:system.cpu.user{*} by {host}", "display_type": "line" } ]
+      }
+    },
+    {
+      "id": 2,
+      "definition": {
+        "type": "query_value",
+        "title": "Avg load",
+        "requests": [ { "q": "avg:system.load.1{*}", "aggregator": "avg" } ]
+      }
+    },
+    {
+      "id": 3,
+      "definition": {
+        "type": "toplist",
+        "title": "Top memory consumers",
+        "requests": [ { "q": "top(avg:system.mem.used{*} by {host}, 10, 'mean', 'desc')" } ]
+      }
+    },
+    {
+      "id": 4,
+      "definition": {
+        "type": "hostmap",
+        "title": "Host Map (unsupported)",
+        "requests": { "fill": { "q": "avg:system.cpu.idle{*} by {host}" } }
+      }
+    }
+  ]
+}

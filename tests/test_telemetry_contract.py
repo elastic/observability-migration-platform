@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -15,10 +16,77 @@ from observability_migration.core.telemetry_contract import (
     merge_metric_kind_overrides,
     metric_kinds_from_field_caps,
     metric_kinds_from_prometheus_metadata,
+    write_schema_report_artifacts,
 )
 
 
 class TelemetryContractTests(unittest.TestCase):
+    def test_write_schema_report_artifacts_writes_default_report_and_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Service",
+                                "panel": "CPU",
+                                "source_queries": ["avg:system.cpu.user{host:web01} by {host}"],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| STATS value = AVG(system_cpu_user) BY host.name"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            artifacts = write_schema_report_artifacts(artifact_dir)
+
+            report_text = artifacts["schema_report"].read_text(encoding="utf-8")
+            contract = json.loads(artifacts["telemetry_contract"].read_text(encoding="utf-8"))
+
+        self.assertIn("system.cpu.user", report_text)
+        self.assertIn("system_cpu_user", report_text)
+        self.assertEqual(contract["summary"]["streams"], 1)
+
+    def test_write_schema_report_artifacts_removes_partial_report_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Service",
+                                "panel": "CPU",
+                                "source_queries": ["avg:system.cpu.user{*}"],
+                                "translated_query": "FROM metrics-* | STATS value = AVG(system_cpu_user)",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = artifact_dir / "schema_change_report.md"
+            contract_path = artifact_dir / "telemetry_contract.json"
+
+            with mock.patch(
+                "observability_migration.core.telemetry_contract.write_telemetry_contract",
+                side_effect=RuntimeError("contract failed"),
+            ), self.assertRaisesRegex(RuntimeError, "contract failed"):
+                write_schema_report_artifacts(artifact_dir)
+
+            report_exists = report_path.exists()
+            contract_exists = contract_path.exists()
+
+        self.assertFalse(report_exists)
+        self.assertFalse(contract_exists)
+
     def test_build_contract_from_yaml_and_verification_packets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
@@ -719,6 +787,48 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("app_errors_total", target_tokens)
         self.assertIn("service", target_tokens)
 
+    def test_schema_change_report_extracts_target_fields_inside_esql_aggregate_expressions(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Node",
+                                "panel": "Uptime",
+                                "source_queries": ["time() - node_boot_time_seconds"],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| WHERE node_boot_time_seconds IS NOT NULL\n"
+                                    "| STATS start_time_ms = MAX(node_boot_time_seconds * 1000)\n"
+                                    "| EVAL node_boot_time_seconds_uptime_seconds = "
+                                    "DATE_DIFF(\"seconds\", TO_DATETIME(start_time_ms), NOW())\n"
+                                    "| KEEP node_boot_time_seconds_uptime_seconds"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_schema_change_report(artifact_dir)
+
+        row = next(line for line in report.splitlines() if line.startswith("| Node | Uptime |"))
+        cells = [cell.strip() for cell in row.split("|")[1:-1]]
+        target_tokens = {
+            token.strip()
+            for token in cells[4].split(",")
+            if token.strip() and token.strip() != "n/a"
+        }
+        self.assertIn("node_boot_time_seconds", target_tokens)
+        self.assertNotIn("start_time_ms", target_tokens)
+        self.assertNotIn("node_boot_time_seconds_uptime_seconds", target_tokens)
+
     def test_schema_change_report_filters_grafana_and_promql_meta_tokens_from_source(
         self,
     ):
@@ -792,6 +902,115 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("instance", source_tokens)
         self.assertIn("mode", source_tokens)
         self.assertIn("nodename", source_tokens)
+
+    def test_schema_change_report_filters_datadog_formula_tokens_from_source(self):
+        """Datadog formulas and log search values must not be reported as
+        source schema fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Datadog",
+                                "panel": "Top CPU",
+                                "source_queries": [
+                                    "top(avg:apache.performance.cpu_load{*} by {host}, 10, 'mean', 'desc')"
+                                ],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| STATS value = AVG(apache_performance_cpu_load) BY host.name"
+                                ),
+                            },
+                            {
+                                "dashboard": "Datadog",
+                                "panel": "Oplog usage",
+                                "source_queries": [
+                                    "default_zero(avg:mongodb.oplog.usedsizemb{*}) "
+                                    "/ default_zero(avg:mongodb.oplog.logsizemb{*})"
+                                ],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| STATS used = AVG(mongodb_oplog_usedsizemb), "
+                                    "size = AVG(mongodb_oplog_logsizemb)"
+                                ),
+                            },
+                            {
+                                "dashboard": "Datadog",
+                                "panel": "Data stream latency",
+                                "source_queries": [
+                                    "count(v: v>=0):data_streams.latency{direction:out,"
+                                    "pathway_type:full,type:kafka,$topic,$env} "
+                                    "by {service,env}.as_rate().rollup(10)"
+                                ],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| WHERE direction == \"out\" AND pathway_type == \"full\"\n"
+                                    "| STATS value = COUNT(data_streams_latency) "
+                                    "BY service.name, deployment.environment"
+                                ),
+                            },
+                            {
+                                "dashboard": "Datadog",
+                                "panel": "Apache logs",
+                                "source_queries": ["source:apache status:error"],
+                                "translated_query": (
+                                    "FROM logs-*\n"
+                                    "| WHERE service.name == \"apache\" AND log.level == \"error\""
+                                ),
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = build_schema_change_report(artifact_dir)
+
+        source_cells: list[str] = []
+        for line in report.splitlines():
+            if line.startswith("|") and "Datadog" in line:
+                cells = [cell.strip() for cell in line.split("|")[1:-1]]
+                if len(cells) >= 5:
+                    source_cells.append(cells[2])
+        self.assertTrue(source_cells, "expected Datadog schema-report rows")
+
+        source_tokens = {
+            token.strip()
+            for cell in source_cells
+            for token in cell.split(",")
+            if token.strip() and token.strip() != "n/a"
+        }
+        forbidden = {
+            "desc",
+            "mean",
+            "zero",
+            "v",
+            "apache",
+            "source:apache",
+            "status:error",
+            ":data_streams.latency",
+        }
+        leaked = source_tokens & forbidden
+        self.assertFalse(
+            leaked,
+            f"source column leaked Datadog formula/log tokens: {sorted(leaked)!r}; "
+            f"full source tokens: {sorted(source_tokens)!r}",
+        )
+        self.assertIn("apache.performance.cpu_load", source_tokens)
+        self.assertIn("host", source_tokens)
+        self.assertIn("mongodb.oplog.usedsizemb", source_tokens)
+        self.assertIn("mongodb.oplog.logsizemb", source_tokens)
+        self.assertIn("data_streams.latency", source_tokens)
+        self.assertIn("direction", source_tokens)
+        self.assertIn("pathway_type", source_tokens)
+        self.assertIn("type", source_tokens)
+        self.assertIn("service", source_tokens)
+        self.assertIn("env", source_tokens)
+        self.assertIn("source", source_tokens)
+        self.assertIn("status", source_tokens)
 
     def test_schema_change_report_combines_multiple_artifacts_into_single_document(self):
         with tempfile.TemporaryDirectory() as tmpdir:

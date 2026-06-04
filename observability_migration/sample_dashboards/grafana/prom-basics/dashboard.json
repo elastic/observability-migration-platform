@@ -1,0 +1,46 @@
+{
+  "uid": "obs-sample-prom-basics",
+  "title": "Sample: Prometheus Basics",
+  "schemaVersion": 39,
+  "tags": ["obs-migrate-sample"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request rate",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(http_requests_total[5m])) by (service)" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total requests",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [ { "refId": "A", "expr": "sum(http_requests_total)" } ],
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Requests by status",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [
+        { "refId": "A", "expr": "sum(http_requests_total) by (status_code)" }
+      ],
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "id": 4,
+      "type": "grafana-worldmap-panel",
+      "title": "World Map (unsupported)",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [ { "refId": "A", "expr": "sum(http_requests_total) by (country)" } ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    }
+  ]
+}

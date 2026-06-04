@@ -13,6 +13,14 @@ import yaml
 from scripts import setup_telemetry_data
 
 
+class _FakeSummary:
+    def __init__(self, *, ok=5, errors=0, docs_per_stream=None, error_samples=None):
+        self.ok = ok
+        self.errors = errors
+        self.docs_per_stream = docs_per_stream if docs_per_stream is not None else {"logs-generic-default": ok}
+        self.error_samples = error_samples if error_samples is not None else []
+
+
 class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_builds_contract_and_ingests_with_generic_engine(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -51,7 +59,7 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
                     return {"items": [{"create": {}} for _ in docs]}
                 return {"acknowledged": True}
 
-            with mock.patch.object(setup_telemetry_data, "es_request", side_effect=fake_request):
+            with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(artifact_dir),
@@ -107,7 +115,7 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
                     return {"items": [{"create": {}} for _ in docs]}
                 return {"acknowledged": True}
 
-            with mock.patch.object(setup_telemetry_data, "es_request", side_effect=fake_request):
+            with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(artifact_dir),
@@ -129,41 +137,17 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_respects_max_combinations_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
-                yaml.safe_dump(
-                    {
-                        "dashboards": [
-                            {
-                                "panels": [
-                                    {
-                                        "esql": {
-                                            "query": (
-                                                "FROM logs-*\n"
-                                                "| STATS count = COUNT(*) BY service.name, host.name, log.level"
-                                            )
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
+            artifact_dir.mkdir()
 
             captured = {}
 
-            def fake_generate_documents(contract, *, now=None, data_hours=2, interval_sec=60, max_combinations=12):
-                captured["max_combinations"] = max_combinations
-                if False:
-                    yield ("logs-generic-default", {"@timestamp": "2026-04-15T06:00:00.000Z"})
-                return
+            def fake_seed(artifact_dirs, request, **kwargs):
+                captured.update(kwargs)
+                return _FakeSummary()
 
             with (
-                mock.patch.object(setup_telemetry_data, "es_request", return_value={"acknowledged": True, "items": []}),
-                mock.patch.object(setup_telemetry_data, "generate_documents", side_effect=fake_generate_documents),
+                mock.patch.object(setup_telemetry_data, "make_es_request", return_value="REQ"),
+                mock.patch.object(setup_telemetry_data, "seed_sample_data", side_effect=fake_seed),
             ):
                 exit_code = setup_telemetry_data.main(
                     [
@@ -213,7 +197,7 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
                 return {"acknowledged": True}
 
             stdout = io.StringIO()
-            with mock.patch.object(setup_telemetry_data, "es_request", side_effect=fake_request), redirect_stdout(stdout):
+            with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request), redirect_stdout(stdout):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(artifact_dir),
@@ -236,25 +220,18 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_handles_network_failure_with_clear_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
-                yaml.safe_dump(
-                    {
-                        "dashboards": [
-                            {
-                                "panels": [
-                                    {"esql": {"query": "FROM metrics-*\n| STATS value = SUM(metric)"}}
-                                ]
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
+            artifact_dir.mkdir()
 
             stdout = io.StringIO()
-            with mock.patch("urllib.request.urlopen", side_effect=__import__("urllib").error.URLError("connection refused")), redirect_stdout(stdout):
+            with (
+                mock.patch.object(setup_telemetry_data, "make_es_request", return_value="REQ"),
+                mock.patch.object(
+                    setup_telemetry_data,
+                    "seed_sample_data",
+                    side_effect=setup_telemetry_data.NetworkError("connection refused"),
+                ),
+                redirect_stdout(stdout),
+            ):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(artifact_dir),
@@ -346,7 +323,7 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
                 return {"acknowledged": True}
 
             stdout = io.StringIO()
-            with mock.patch.object(setup_telemetry_data, "es_request", side_effect=fake_request), redirect_stdout(stdout):
+            with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request), redirect_stdout(stdout):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(artifact_dir),
@@ -390,7 +367,7 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
                     return {"items": [{"create": {}} for _ in docs]}
                 return {"acknowledged": True}
 
-            with mock.patch.object(setup_telemetry_data, "es_request", side_effect=fake_request):
+            with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request):
                 exit_code = setup_telemetry_data.main(
                     [
                         str(first.parent),

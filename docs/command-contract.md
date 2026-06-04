@@ -57,9 +57,9 @@ Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
 runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
 `obs-migrate doctor` to see which path is active.
 
-Datadog live API extraction (`--source api` on the dedicated CLI or Datadog
-`--input-mode api` through `obs-migrate migrate`) also requires the optional
-Datadog client extra:
+Datadog live API extraction (`--input-mode api` on either the unified or
+dedicated CLI; legacy dedicated spelling `--source api` also works) requires
+the optional Datadog client extra:
 
 ```bash
 .venv/bin/pip install -e ".[datadog]"
@@ -70,6 +70,9 @@ Datadog client extra:
 You can use the migration tooling productively before configuring a target cluster.
 
 - Translate exported dashboards into YAML.
+- List bundled sample dashboards with `obs-migrate list-samples` (offline, no
+  credentials), then migrate one with
+  `obs-migrate migrate --source <source> --input-mode files --input-dir <input_dir>`.
 - Pull live dashboards from Grafana or Datadog APIs.
 - Pull Grafana alert artifacts or Datadog monitor artifacts.
 - Read `migration_summary.md` for a human-readable verdict, scorecard, and
@@ -129,9 +132,14 @@ Datadog.
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
 | `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana currently supports `otel` only; Datadog also supports source-specific built-ins and YAML profile files. ECS fallback is not implemented in this pass. |
+| `--data-view` | Grafana, Datadog | Override the target metrics data view / index pattern | When omitted, the source adapter keeps its own default. For Datadog, this means non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
+| `--dashboard-ids` | Datadog dashboard pipeline | Scope Datadog dashboard extraction by comma-separated dashboard IDs | Only affects Datadog dashboard runs |
 | `--monitor-ids`, `--monitor-query` | Datadog alert pipeline | Scope Datadog monitor extraction | Only affect Datadog alert runs |
+| `--grafana-url`, `--grafana-user`, `--grafana-pass`, `--grafana-token` | Grafana | Grafana API connection (basic auth or bearer token) | Flag-first with env fallback (`GRAFANA_URL` / `GRAFANA_USER` / `GRAFANA_PASS` / `GRAFANA_TOKEN`); forwarded to `grafana-migrate` |
+| `--ca-cert <path>` | Grafana, Datadog | Verify TLS against a custom CA bundle for **all** outbound connections (source, Elasticsearch, Kibana, incl. the Node upload step) | Env fallback `OBS_MIGRATE_CA_CERT`; keeps verification on |
+| `--insecure` | Grafana, Datadog | Disable TLS certificate verification for **all** outbound connections | Env fallback `OBS_MIGRATE_INSECURE`; testing/trusted-network only, prints a one-time warning. Prefer `--ca-cert` |
 | `--smoke`, `--browser-audit`, `--capture-screenshots` | Grafana, Datadog | Run shared post-upload validation | Forwarded to source runtimes when smoke is enabled |
 
 Use `obs-migrate cluster ...` for shared target-management operations.
@@ -199,6 +207,11 @@ currently accepts only `otel`; Datadog accepts `otel` plus its existing
 Datadog-specific built-ins and YAML profile files. ECS fallback is planned
 separately and is not part of this contract.
 
+Datadog `--data-view` is an explicit override, not a hidden default. If omitted,
+the active profile controls the metric index (`otel` uses `metrics-*`,
+`prometheus` uses `metrics-prometheus-*`, and custom YAML profiles can set their
+own `metric_index`).
+
 For Grafana `--native-promql` validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
 including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
@@ -206,24 +219,57 @@ lab's `metrics-*` data view. If you point `--data-view` at a different
 Prometheus integration layout, verify the target schema first before treating
 empty panels as a migration bug.
 
+Dashboard migrations also write `schema_change_report.md` and
+`telemetry_contract.json` inside the per-source `dashboards/` artifact
+directory. Live target readiness artifacts are source-specific: Grafana
+preflight writes `required_target_contract.json` with `schema_profile`,
+`field_capabilities_discovery`, and resolved target-field statuses; Datadog
+dashboard runs write `target_readiness_contract.json` with the active
+`field_profile`, metric/log index patterns, source fields, resolved target
+fields, and statuses.
+
 **Live extraction (`--input-mode api`)**
 
-Grafana API mode expects Grafana HTTP basic auth via environment variables:
-`GRAFANA_URL`, `GRAFANA_USER`, and `GRAFANA_PASS` (defaults exist for local
-labs). For the full environment-driven setup and entry points, see [Grafana
-source adapter](sources/grafana.md).
+Grafana API mode accepts connection details **flag-first with env fallback**:
+`--grafana-url` / `--grafana-user` / `--grafana-pass` (HTTP basic auth) or
+`--grafana-token` (bearer), each defaulting to the matching environment variable
+(`GRAFANA_URL`, `GRAFANA_USER`, `GRAFANA_PASS`, `GRAFANA_TOKEN`; defaults exist
+for local labs). The flags exist on both `obs-migrate migrate --source grafana`
+and the dedicated `grafana-migrate` CLI. For the full environment-driven setup
+and entry points, see [Grafana source adapter](sources/grafana.md).
 
-Unified Datadog API mode exposes `--env-file`, `--monitor-ids`, and
-`--monitor-query`, but not `--dashboard-ids`. Datadog API mode still requires
-the optional `datadog-api-client` dependency:
+**TLS for custom-CA / self-signed clusters**
+
+The migration, upload, cluster-management, alert-rule audit/delete, and
+alert-rule verification commands accept two TLS knobs that apply to their outbound HTTPS connections —
+source (Grafana/Prometheus/Loki), Elasticsearch, Kibana, Datadog, and the Node
+`kb-dashboard-cli` compile/upload step where applicable (mapped to
+`NODE_EXTRA_CA_CERTS` / `NODE_TLS_REJECT_UNAUTHORIZED`):
+
+- `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`): verify against a custom CA
+  bundle/file; verification stays on. Preferred for private/internal CAs.
+- `--insecure` (env `OBS_MIGRATE_INSECURE`): skip certificate verification
+  entirely. Testing or trusted-network migration only; prints a one-time loud
+  stderr warning. Prefer `--ca-cert` whenever possible.
+
+On the dedicated CLIs these flags are honored across schema discovery, ES|QL
+validation, source preflight/execution probes, dashboard upload, smoke
+validation, and the alerting preflight/create/audit paths.
+
+The repo-oriented `verify-panels` and `verify-visual` parity-rig wrappers do not
+expose these TLS flags today; prefer the package-native migration/upload/smoke
+paths for custom-CA or self-signed target validation.
+
+Unified Datadog API mode exposes `--env-file`, `--dashboard-ids`,
+`--monitor-ids`, and `--monitor-query`. Datadog API mode still requires the
+optional `datadog-api-client` dependency:
 
 ```bash
 .venv/bin/pip install -e ".[datadog]"
 ```
 
 When unified Datadog API mode runs without a dashboard ID list, the extractor
-uses the dashboard list returned by the Datadog API. Use the dedicated
-`datadog-migrate` CLI when you need explicit dashboard scoping.
+uses the dashboard list returned by the Datadog API.
 
 **Source-only / offline evaluation**
 
@@ -248,10 +294,12 @@ and tagged `obs-migration`.
 - Grafana writes `<output-dir>/alerts/alert_rule_upload_results.json`
 - Datadog writes `<output-dir>/alerts/monitor_rule_upload_results.json`
 
-Use `scripts/audit_migrated_rules.py` or the Kibana UI to review the rules
-before enabling them. `scripts/verify_alert_rule_uploads.py` remains the
-destructive round-trip verifier (it creates rules with a temporary marker tag
-and cleans them up on exit unless `--keep-rules` is passed).
+Use `obs-migrate audit-rules` (or the Kibana UI) to review the rules before
+enabling them. `obs-migrate verify-alert-rules` is the self-cleaning round-trip
+verifier (it creates rules with a temporary marker tag and cleans them up on
+exit unless `--keep-rules` is passed). Both ship in the installed package; the
+`scripts/audit_migrated_rules.py` and `scripts/verify_alert_rule_uploads.py`
+files are the equivalent repo-checkout entry points.
 
 ```bash
 # Unified: migrate dashboards + alerts + create rules (disabled).
@@ -278,7 +326,7 @@ set -a && source serverless_creds.env && set +a
 - **Datadog (`input-mode api`)** — Pulls dashboard objects from the Datadog
   API. Alert-capable runs can also pull monitors, emit/validate Kibana rule
   payloads, and optionally create rules with `--create-alert-rules`. Unified
-  mode does not expose the dedicated Datadog `--dashboard-ids` selector.
+  mode also accepts `--dashboard-ids` for explicit dashboard scoping.
 
 ### Compile / Upload
 
@@ -310,7 +358,10 @@ set -a && source serverless_creds.env && set +a
 .venv/bin/obs-migrate cluster detect-serverless --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 ```
 
-On Serverless, `delete-dashboards` clears saved objects into `[DELETED]` placeholders because direct saved-object DELETE is unavailable.
+`delete-dashboards` clears saved objects into `[DELETED]` placeholders by
+overwriting each dashboard with empty content. This Serverless-safe behavior is
+used for every target; use the Kibana UI if you need the placeholder saved
+objects fully removed.
 
 ### Extensions
 
@@ -321,9 +372,237 @@ On Serverless, `delete-dashboards` clears saved objects into `[DELETED]` placeho
 .venv/bin/obs-migrate extensions --source datadog --format yaml --template-out custom-field-profile.yaml
 ```
 
+### Schema Report
+
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` automatically. `obs-migrate schema-report` is the
+advanced regeneration/combination command: it emits the same per-panel
+source-to-target schema-change report
+(`dashboard | panel | source_fields | target_stream | target_fields`) from one
+or more existing dashboard artifact directories. It is the package-native form
+of `scripts/generate_telemetry_contract.py` — it ships in the installed wheel
+and needs no source checkout.
+
+```bash
+# Single source
+.venv/bin/obs-migrate schema-report \
+  --artifact-dir migration_output/dashboards \
+  --output schema_change_report.md
+
+# Merge multiple sources, and also emit the telemetry producer contract JSON
+.venv/bin/obs-migrate schema-report \
+  --artifact-dir grafana_output/dashboards \
+  --artifact-dir datadog_output/dashboards \
+  --output schema_change_report.md \
+  --contract-out telemetry_contract.json
+```
+
+Each `--artifact-dir` is a per-source `dashboards/` output (containing `yaml/`
+and `verification_packets.json`). `--contract-out` is optional; without it only
+the Markdown report is written.
+
+### Audit Rules
+
+`obs-migrate audit-rules` lists migrated Kibana alerting rules (those tagged
+`obs-migration` or named `[migrated] ...`) and reports which are enabled. It is
+**read-only by default**; pass `--disable-enabled` to disable the enabled
+subset. This is the package-native form of `scripts/audit_migrated_rules.py`.
+Exit code is non-zero while enabled migrated rules remain (or remediation
+fails).
+
+```bash
+.venv/bin/obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+.venv/bin/obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled
+```
+
+### Delete Rules
+
+`obs-migrate delete-rules` reverts the alert-rule half of a migration by
+deleting the rules it created (those tagged `obs-migration` or named
+`[migrated] ...`). It is **dry-run by default** — it lists the rule IDs that
+would be removed without touching them. Pass `--confirm` to actually delete.
+Exit code is `2` when the cluster is unreachable or the rule listing is
+truncated, `1` when any delete fails, and `0` otherwise. Unlike
+`audit-rules --disable-enabled` (which only disables enabled rules), this
+removes the rules entirely; unlike `verify-alert-rules` (which only cleans up
+its own temporary verification rules), this targets the migrated rules already
+in Kibana.
+
+By default the command scans 20 pages of 100 rules (`--max-pages 20`,
+`--per-page 100`) in the default Kibana space. Use `--space-id <space>` for
+non-default spaces. In large spaces, if the listing hits the scan limit before
+all rules are inspected, the command returns `rule_listing_truncated`, exits
+`2`, and does **not** delete anything. Increase `--max-pages` and rerun the dry
+run before passing `--confirm`.
+
+```bash
+# Dry run: show which migrated rules would be deleted.
+.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+
+# Confirm: delete the migrated rules.
+.venv/bin/obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --confirm --max-pages 50
+```
+
+### Verify Alert Rules
+
+`obs-migrate verify-alert-rules` is the package-native form of
+`scripts/verify_alert_rule_uploads.py`: a self-cleaning round trip that creates
+the emitted alert-rule payloads in Kibana **disabled**, confirms none came back
+enabled, then deletes them (unless `--keep-rules`). `--comparison` is required
+and points at a comparison report written by a prior alert-capable migration
+(for example `<output-dir>/alerts/alert_comparison_results.json` for Grafana, or
+`<output-dir>/alerts/monitor_comparison_results.json` for Datadog). Repeat
+`--comparison` to verify multiple reports.
+
+```bash
+.venv/bin/obs-migrate verify-alert-rules \
+  --comparison alert_migration_output/alerts/alert_comparison_results.json \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY" \
+  --limit 1
+```
+
+Exit code is `2` when the cluster is unreachable or no payloads are found, `1`
+when any rule landed enabled / failed to create / failed to clean up, and `0`
+on a clean round trip.
+
+### Seed Sample Data
+
+`obs-migrate seed-sample-data` builds a telemetry contract from one or more
+migrated dashboard artifact directories and ingests synthetic documents into
+Elasticsearch so the migrated panels light up. It is the package-native,
+TLS-aware form of `scripts/setup_telemetry_data.py` (which is now a thin shim
+over the same library) — it ships in the installed wheel and needs no source
+checkout. It is **ES-only** (it does not touch Kibana); pair it with
+`remove-sample-data` to clean up afterward. Exit code is `2` when Elasticsearch
+is unreachable or inputs are invalid, `1` on ingest errors, and `0` otherwise.
+
+```bash
+# Seed synthetic data for a single migrated artifact directory.
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Merge multiple sources and cap cardinality; honors --ca-cert / --insecure.
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir grafana_output/dashboards \
+  --artifact-dir datadog_output/dashboards \
+  --data-hours 6 --interval-sec 30 --max-combinations 8 \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+```
+
+`--es-url`/`--api-key` fall back to `ELASTICSEARCH_ENDPOINT`/`KEY`. Use
+`--purge-foreign-streams` to drop non-seeder streams overlapping the contract
+wildcards before seeding, `--no-recreate` to ingest without recreating
+templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
+metric kinds.
+
+### Compare (side-by-side parity)
+
+`obs-migrate compare` reads `verification_packets.json` from one or more migrated
+dashboard artifact directories and, per panel, checks that the emitted ES|QL
+matches the source query on the target cluster.
+
+For **PromQL / Grafana panels** on a cluster with native PROMQL support, the
+command runs the panel's translated ES|QL and Elasticsearch's native
+`PROMQL(<source query>)` command over the **same** index pattern and time window,
+then diffs per bucket. Verdicts are `STRICT_PASS` (≤1% relative error),
+`FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, or `ERROR`.
+
+For **Datadog panels**, non-PromQL panels, or clusters without native PROMQL,
+the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labeled
+**not numerically verified**.
+
+```bash
+# Compare migrated panels against the source on the target cluster.
+.venv/bin/obs-migrate compare \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Repeat --artifact-dir to merge multiple runs; honors --ca-cert / --insecure.
+.venv/bin/obs-migrate compare \
+  --artifact-dir grafana_output/dashboards \
+  --artifact-dir datadog_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --index "metrics-*" \
+  --step-seconds 300 \
+  --window-minutes 60 \
+  --report-out comparison_report.json
+```
+
+`--artifact-dir` is required and repeatable (each directory must contain
+`verification_packets.json`). `--es-url`/`--api-key` default to
+`ELASTICSEARCH_ENDPOINT`/`ES_URL` and `KEY`. `--index` overrides the native
+PROMQL oracle index pattern (default: inferred per panel from the translated
+ES|QL). `--step-seconds` sets the oracle bucket step (default `300`).
+`--window-minutes` sets the look-back window (default `60`). `--report-out`
+names the JSON report (default `comparison_report.json`); a sibling
+`comparison_report.md` is written with a panel-by-panel table (dashboard, panel,
+mode, verdict, max relative error, reason).
+
+Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
+(missing/malformed `verification_packets.json`, missing credentials), `1` when
+any panel parity check returns `FAIL`, and `0` otherwise (structural-only rows
+never fail the run).
+
+**Deterministic trial:** seed synthetic data both sides can read, compare parity,
+then clean up:
+
+```bash
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+.venv/bin/obs-migrate compare \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --confirm
+```
+
+### Remove Sample Data
+
+`obs-migrate remove-sample-data` tears down what `seed-sample-data` created. It
+is **fail-closed**: it only deletes data streams it can positively prove were
+created by the seeder (their backing index template is prefixed
+`telemetry-data-`); foreign or unverifiable streams are skipped, never deleted.
+It is **dry-run by default** — it prints the plan (`deleted_streams`,
+`deleted_templates`, `skipped_not_owned`, `errors`) and deletes nothing; pass
+`--confirm` to actually delete. Exit code is `2` when Elasticsearch is
+unreachable or inputs are invalid, `1` when any delete fails, and `0` otherwise.
+
+```bash
+# Dry run: show which seeder-owned streams/templates would be removed.
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Confirm: delete the seeder-owned streams and templates.
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --confirm
+```
+
 ## Dedicated Source CLIs
 
 Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers around `python -m observability_migration.adapters.source.grafana.cli` and `python -m observability_migration.adapters.source.datadog.cli`.
+They accept the same `--input-mode {files,api}` extraction selector as unified
+`obs-migrate migrate`. The older dedicated-CLI spelling `--source files|api`
+is still accepted as a compatibility alias; if both are provided, they must
+match.
 
 ### Grafana
 
@@ -334,7 +613,7 @@ source adapter](sources/grafana.md).
 ```bash
 # Files: dashboards only
 .venv/bin/grafana-migrate \
-  --source files \
+  --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets dashboards \
@@ -346,13 +625,13 @@ source adapter](sources/grafana.md).
 # Live Grafana API: alerts only
 KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
 .venv/bin/grafana-migrate \
-  --source api \
+  --input-mode api \
   --output-dir migration_output \
   --assets alerts
 
 # Files: dashboards + alerts + integrated smoke
 .venv/bin/python -m observability_migration.adapters.source.grafana.cli \
-  --source files \
+  --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets all \
@@ -384,7 +663,7 @@ source adapter](sources/datadog.md).
 ```bash
 # Files: dashboards only
 .venv/bin/datadog-migrate \
-  --source files \
+  --input-mode files \
   --input-dir infra/datadog/dashboards \
   --output-dir datadog_migration_output \
   --assets dashboards \
@@ -392,8 +671,8 @@ source adapter](sources/datadog.md).
   --data-view "metrics-*"
 
 # Live Datadog API with explicit dashboard scoping
-.venv/bin/python -m observability_migration.adapters.source.datadog.cli \
-  --source api \
+.venv/bin/datadog-migrate \
+  --input-mode api \
   --env-file datadog_creds.env \
   --dashboard-ids abc-def-123 \
   --output-dir datadog_migration_output \
@@ -402,7 +681,7 @@ source adapter](sources/datadog.md).
 
 # Live Datadog API: alerts only
 .venv/bin/datadog-migrate \
-  --source api \
+  --input-mode api \
   --env-file datadog_creds.env \
   --output-dir datadog_migration_output \
   --assets alerts \
@@ -418,8 +697,11 @@ through alert-capable runs and rule payload emission/validation limited to
 validated monitor shapes.
 
 Without `--es-url`, Datadog stays in offline field-capabilities mode.
-Dashboard-capable runs (`--assets dashboards` or `--assets all`) still write
-dashboard YAML plus the standard dashboard run reports. Alerts-only runs
+Dashboard-capable runs (`--assets dashboards` or `--assets all`) compile by
+default and still write dashboard YAML plus the standard dashboard run reports;
+pass `--no-compile` only when you explicitly want to skip local dashboard
+compilation. Upload still compiles because Kibana upload consumes compiled
+dashboard artifacts. Alerts-only runs
 (`--assets alerts`) skip dashboard YAML and compiled output, write monitor
 artifacts under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
@@ -560,6 +842,13 @@ The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
 
 ### Data Setup
 
+For new use, prefer the package-native
+[`obs-migrate seed-sample-data`](#seed-sample-data) /
+[`obs-migrate remove-sample-data`](#remove-sample-data) subcommands, which ship
+in the installed wheel and honor the shared `--ca-cert`/`--insecure` TLS flags.
+`scripts/setup_telemetry_data.py` is now a thin shim over the same library, kept
+for existing automation:
+
 ```bash
 set -a && source serverless_creds.env && set +a
 DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
@@ -626,7 +915,11 @@ artifact root. Useful flags:
 | `--max-combinations` | Maximum dimension combinations per stream per timestamp. Defaults to 12. Falls back to `MAX_COMBINATIONS` env. Lower this for very high-cardinality contracts. |
 | `--no-recreate` | Skip all index template and data stream operations. Use when the streams already exist with the desired mappings and you only want to ingest more synthetic documents. |
 
-To inspect schema changes from source queries to target fields:
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` automatically. To regenerate schema changes from
+source queries to target fields, or to combine several source outputs, use the
+package-native [`obs-migrate schema-report`](#schema-report) subcommand. The
+equivalent repo-checkout script is:
 
 ```bash
 .venv/bin/python scripts/generate_telemetry_contract.py \
@@ -635,8 +928,8 @@ To inspect schema changes from source queries to target fields:
   --schema-report schema_change_report.md
 ```
 
-`--schema-report` writes a single Markdown document with a top-level summary
-plus one section per artifact directory, mapping every panel from its source
+Both forms write a single Markdown document with a top-level summary plus one
+section per artifact directory, mapping every panel from its source
 fields/queries to the target stream/fields it produces.
 
 ### Pipeline Trace Regeneration

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from observability_migration.core.assets.alerting import build_alerting_ir_from_datadog
+from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import map_alerts_batch
 from observability_migration.targets.kibana.alerting import (
     create_rules_from_payloads,
@@ -18,6 +19,13 @@ from observability_migration.targets.kibana.alerting import (
 from .extract import extract_monitors_from_api, extract_monitors_from_files
 from .report import build_monitor_comparison_results, build_monitor_migration_results
 from .verification import build_monitor_verification_lookup, validate_monitor_queries
+
+
+def _verify_from_args(args) -> bool | str:
+    return resolve_tls(
+        ca_cert=getattr(args, "ca_cert", "") or "",
+        insecure=bool(getattr(args, "insecure", False)),
+    )
 
 
 def run_alert_pipeline(
@@ -50,6 +58,7 @@ def run_alert_pipeline(
         monitor_irs,
         es_url=args.es_url if getattr(args, "validate", False) else "",
         es_api_key=getattr(args, "es_api_key", "") or "",
+        verify=_verify_from_args(args),
     )
     monitor_verification_lookup = build_monitor_verification_lookup(
         monitor_irs,
@@ -105,6 +114,7 @@ def load_raw_monitors(args, dd_creds: dict[str, str]) -> list[dict[str, Any]]:
             site=dd_creds.get("site", "datadoghq.com"),
             monitor_ids=monitor_ids,
             monitor_query=monitor_query,
+            verify=_verify_from_args(args),
         )
 
     monitor_dir = Path(args.input_dir) / "monitors"
@@ -134,6 +144,7 @@ def build_payload_validation_lookup(
         args.kibana_url,
         api_key=getattr(args, "kibana_api_key", "") or "",
         space_id=getattr(args, "space_id", "") or "",
+        verify=_verify_from_args(args),
     )
     for item in mapping_batch.get("results", []):
         payload = item.get("mapping", {}).get("rule_payload", {})
@@ -225,6 +236,7 @@ def create_rules_if_requested(
         space_id=getattr(args, "space_id", "") or "",
         preflight=payload_preflight,
         enabled=False,
+        verify=_verify_from_args(args),
     )
     rule_upload_path = output_dir / "monitor_rule_upload_results.json"
     with rule_upload_path.open("w", encoding="utf-8") as fh:

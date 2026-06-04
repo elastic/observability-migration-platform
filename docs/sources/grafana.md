@@ -106,15 +106,45 @@ field profiles.
 
 ### How Schema Resolution Works
 
-`SchemaResolver` resolves Prometheus labels to target Elasticsearch fields
-through a four-level priority chain:
+`SchemaResolver` first **auto-detects the target layout** (schema profile) from
+live `_field_caps`, then resolves Prometheus metric names, labels, and metric
+types to match it. Three profiles are recognized:
+
+| Schema profile | How the data was ingested | Metric `http_requests_total` → | Label `service` → |
+|---|---|---|---|
+| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration | `prometheus.http_requests_total.counter` / `.value` / `.rate` | `prometheus.labels.service` |
+| `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
+| generic / OTel (none detected) | OTel collector, custom mapping, or no data found | `http_requests_total` (pass-through) | exact match → OTel candidate → as-is |
+
+Within the detected profile, **labels** resolve through this order:
 
 | Priority | Source | How to configure |
 |---|---|---|
 | 1 (highest) | Rule-pack `label_rewrites` | `--rules-file custom-pack.yaml` |
-| 2 | Live ES `_field_caps` discovery | `--es-url` flag |
-| 3 | Built-in Prometheus → OTel candidate mappings | Always available offline |
-| 4 (lowest) | Pass-through (use label as-is) | Default fallback |
+| 2 | Exact field match (source-faithful) | target advertises the label as a real field |
+| 3 | Profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) | detected from `_field_caps` |
+| 4 | Live ES `_field_caps` OTel discovery | `--es-url` flag |
+| 5 | Built-in Prometheus → OTel candidate mappings | always available offline |
+| 6 (lowest) | Pass-through (use label as-is) | default fallback |
+
+`resolve_metric_field()` rewrites metric names the same way per profile (a no-op
+only for the generic/OTel layout), and `is_counter()` resolves counter-vs-gauge
+(rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric`
+capability → the profile's counter field) so `rate()`/`irate()` stay correct.
+
+> **Profile detection requires live data.** If `--es-url` is unreachable or the
+> target has not ingested the Prometheus data yet, no profile is detected and
+> the resolver falls back to OTel candidates + pass-through — dashboards look
+> migrated but may query the wrong fields. Ingest first, then migrate with a
+> reachable `--es-url`, and confirm `schema_profile`,
+> `field_capabilities_discovery`, and resolved target-field `status` in
+> `required_target_contract.json`.
+
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` under `<output-dir>/dashboards/` automatically. Use
+the schema report for the per-panel Prometheus source field -> Elastic target
+field table, and use `required_target_contract.json` for live field-existence
+status.
 
 ### Built-in Prometheus → OTel Mappings
 
@@ -185,7 +215,7 @@ To emit a validated starter rule-pack template:
 
 | Aspect | Grafana (SchemaResolver + rule packs) | Datadog (FieldMapProfile) |
 |---|---|---|
-| Metric name mapping | Not needed — PromQL metric names pass through to ES or are wrapped in `PROMQL` | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
+| Metric name mapping | Profile-dependent and automatic — pass-through for OTel/generic targets, rewritten to `prometheus.<metric>.{counter,value,rate}` (Fleet remote_write) or `metrics.<metric>` (native endpoint); native `PROMQL` panels query the metric name directly | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
 | Tag / label mapping | `SchemaResolver` with multi-level priority and live discovery | `tag_map` dictionary with optional `tag_prefix` fallback |
 | Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
 | Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
@@ -217,9 +247,15 @@ Use that doc for:
   artifacts are written under `<output-dir>/alerts`.
 - `--native-promql` prefers native PromQL over ES|QL translation for compatible
   panels.
-- `--source api` (or unified `--input-mode api`) pulls dashboard documents
-  through the env-driven HTTP basic-auth path; `--grafana-token` is the bearer
-  token alternative for API access.
+- `--source api` (or unified `--input-mode api`) pulls dashboard documents over
+  HTTP basic auth. Connection details are **flag-first with env fallback**:
+  `--grafana-url` / `--grafana-user` / `--grafana-pass` default to `GRAFANA_URL`
+  / `GRAFANA_USER` / `GRAFANA_PASS`; `--grafana-token` (env `GRAFANA_TOKEN`) is
+  the bearer-token alternative.
+- `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env
+  `OBS_MIGRATE_INSECURE`) control TLS verification for all outbound connections
+  (Grafana, Elasticsearch, Kibana, and the Node upload step). Prefer `--ca-cert`
+  for private CAs; `--insecure` disables verification for testing only.
 - `--dataset-filter` and `--logs-dataset-filter` control the emitted dashboard
   filters when you need non-default dataset wiring.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes

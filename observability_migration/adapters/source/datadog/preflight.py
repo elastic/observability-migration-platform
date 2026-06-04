@@ -15,8 +15,10 @@ Each check returns a PreflightResult that can block, warn, or pass.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from observability_migration.core.verification.field_capabilities import (
@@ -303,6 +305,103 @@ def run_preflight(
         result.add(issue)
 
     return result
+
+
+def build_target_readiness_contract(
+    dashboards: list[Any],
+    field_map: FieldMapProfile,
+) -> dict[str, Any]:
+    """Build a machine-readable source-to-target field readiness contract."""
+    has_shared_caps = bool(getattr(field_map, "field_caps", {}) or {})
+    has_metric_caps = bool(getattr(field_map, "metric_field_caps", {}) or {})
+    has_log_caps = bool(getattr(field_map, "log_field_caps", {}) or {})
+    required_fields: dict[str, dict[str, Any]] = {}
+
+    for dashboard in dashboards:
+        for req in _extract_required_fields(dashboard, field_map=field_map):
+            target_name = str(req.get("name", "") or "").strip()
+            if not target_name:
+                continue
+            source_name = str(req.get("source_name", "") or "").strip() or target_name
+            context = str(req.get("context", "") or "")
+            role = str(req.get("usage", "") or "field")
+            widget_id = str(req.get("widget_id", "") or "")
+            capability = field_map.field_capability(target_name, context=context)
+            context_has_caps = has_shared_caps
+            if context == "metric":
+                context_has_caps = has_shared_caps or has_metric_caps
+            elif context == "log":
+                context_has_caps = has_shared_caps or has_log_caps
+
+            status = "unknown"
+            field_type = None
+            if capability is not None:
+                status = "confirmed"
+                field_type = capability.type
+            elif context_has_caps:
+                status = "missing"
+
+            entry = required_fields.setdefault(
+                target_name,
+                {
+                    "target_field": target_name,
+                    "source_fields": set(),
+                    "roles": set(),
+                    "contexts": set(),
+                    "widgets": set(),
+                    "status": status,
+                    "type": field_type,
+                },
+            )
+            entry["source_fields"].add(source_name)
+            entry["roles"].add(role)
+            if context:
+                entry["contexts"].add(context)
+            if widget_id:
+                entry["widgets"].add(widget_id)
+            if entry["status"] != "confirmed":
+                entry["status"] = status
+                entry["type"] = field_type
+
+    serialized_fields = {}
+    for field_name, info in sorted(required_fields.items()):
+        serialized_fields[field_name] = {
+            "target_field": info["target_field"],
+            "source_fields": sorted(info["source_fields"]),
+            "roles": sorted(info["roles"]),
+            "contexts": sorted(info["contexts"]),
+            "widgets": sorted(info["widgets"]),
+            "status": info["status"],
+            "type": info["type"],
+        }
+
+    confirmed = sum(1 for v in serialized_fields.values() if v["status"] == "confirmed")
+    missing = sum(1 for v in serialized_fields.values() if v["status"] == "missing")
+    unknown = sum(1 for v in serialized_fields.values() if v["status"] == "unknown")
+    return {
+        "source": "datadog",
+        "field_profile": field_map.name,
+        "metric_index": field_map.metric_index,
+        "logs_index": field_map.logs_index,
+        "capabilities": {
+            "metric_fields": len(getattr(field_map, "metric_field_caps", {}) or {}),
+            "log_fields": len(getattr(field_map, "log_field_caps", {}) or {}),
+            "total_fields": len(getattr(field_map, "field_caps", {}) or {}),
+        },
+        "required_fields": serialized_fields,
+        "totals": {
+            "fields": len(serialized_fields),
+            "fields_confirmed": confirmed,
+            "fields_missing": missing,
+            "fields_unknown": unknown,
+        },
+    }
+
+
+def save_target_readiness_contract(contract: dict[str, Any], output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    with output_path.open("w", encoding="utf-8") as fh:
+        json.dump(contract, fh, indent=2)
 
 
 def _extract_required_fields(

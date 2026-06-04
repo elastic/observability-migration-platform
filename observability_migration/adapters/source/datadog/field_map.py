@@ -131,15 +131,30 @@ class FieldMapProfile:
     def has_conflicting_types(self, field_name: str, context: str = "") -> bool:
         return has_conflicting_types(self.field_capability(field_name, context=context))
 
-    def load_live_field_capabilities(self, es_url: str, es_api_key: str = "") -> dict[str, int]:
+    def load_live_field_capabilities(
+        self,
+        es_url: str,
+        es_api_key: str = "",
+        verify: bool | str = True,
+    ) -> dict[str, int]:
         """Populate field capabilities from the live target cluster."""
-        metric_caps = fetch_field_capabilities(es_url, self.metric_index, es_api_key=es_api_key)
+        metric_caps = fetch_field_capabilities(
+            es_url,
+            self.metric_index,
+            es_api_key=es_api_key,
+            verify=verify,
+        )
         log_caps = {}
         if self.logs_index:
             if self.logs_index == self.metric_index:
                 log_caps = metric_caps
             else:
-                log_caps = fetch_field_capabilities(es_url, self.logs_index, es_api_key=es_api_key)
+                log_caps = fetch_field_capabilities(
+                    es_url,
+                    self.logs_index,
+                    es_api_key=es_api_key,
+                    verify=verify,
+                )
         self.metric_field_caps = metric_caps
         self.log_field_caps = log_caps
         merged = {}

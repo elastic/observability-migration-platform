@@ -74,17 +74,20 @@ class SchemaResolver:
     _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
 
-    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None):
+    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None, verify: bool | str = True):
         self._rule_pack = rule_pack
         self._es_url = es_url
         self._index_pattern = index_pattern or "metrics-*"
         self._es_api_key = es_api_key
+        self._verify = verify
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
         self._concrete_index_cache = None
         self._schema_profile = None
         self._schema_profile_cache_id = None
+        self._discovery_status = "not_attempted"
+        self._discovery_error = ""
 
     def _candidate_fields(self, label):
         candidates = []
@@ -109,6 +112,8 @@ class SchemaResolver:
         self._discovery_attempted = True
         self._field_cache = {}
         if not self._es_url:
+            self._discovery_status = "offline"
+            self._discovery_error = ""
             return
         try:
             resp = requests.get(
@@ -116,12 +121,19 @@ class SchemaResolver:
                 params={"fields": "*"},
                 headers=self._es_headers(),
                 timeout=10,
+                verify=self._verify,
             )
             if resp.status_code == 200:
                 self._field_cache = resp.json().get("fields", {})
+                self._discovery_status = "ok" if self._field_cache else "empty"
+                self._discovery_error = ""
                 self._build_discovered_mappings()
-        except Exception:
-            pass
+            else:
+                self._discovery_status = "error"
+                self._discovery_error = f"_field_caps returned HTTP {resp.status_code}: {getattr(resp, 'text', '')}"
+        except Exception as exc:
+            self._discovery_status = "error"
+            self._discovery_error = f"_field_caps request failed: {exc}"
 
     def _current_schema_profile(self):
         """Return the schema profile for the current `_field_cache`.
@@ -182,6 +194,15 @@ class SchemaResolver:
         self._discover_fields()
         return self._current_schema_profile()
 
+    def discovery_status(self):
+        """Return field-capability discovery status for reporting."""
+        self._discover_fields()
+        return {
+            "status": self._discovery_status,
+            "error": self._discovery_error,
+            "field_count": len(self._field_cache or {}),
+        }
+
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.
         if self._compute_schema_profile(self._field_cache or {}) == "prometheus_native":
@@ -209,6 +230,7 @@ class SchemaResolver:
                 f"{self._es_url}/_resolve/index/{self._index_pattern}",
                 headers=self._es_headers(),
                 timeout=10,
+                verify=self._verify,
             )
             if resp.status_code != 200:
                 return

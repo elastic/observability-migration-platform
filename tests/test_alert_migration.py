@@ -2803,7 +2803,7 @@ class TestDatadogMonitorVerification(unittest.TestCase):
         field_map = load_profile("otel")
         ir = build_alerting_ir_from_datadog(_datadog_log_measure_monitor(), field_map=field_map)
 
-        def _fake_validate(query, es_url, resolver, max_attempts=8, es_api_key=None):
+        def _fake_validate(query, es_url, resolver, max_attempts=8, es_api_key=None, verify=True):
             return {
                 "status": "pass",
                 "query": query,
@@ -3090,6 +3090,59 @@ class TestDatadogAlertPipeline(unittest.TestCase):
             self.assertTrue((output_dir / "monitor_comparison_results.json").exists())
             self.assertTrue((output_dir / "monitor_verification_results.json").exists())
 
+    def test_alerting_preflight_threads_tls_verify(self):
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            preflight=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            ca_cert="/tmp/ca.pem",
+            insecure=False,
+        )
+        mapping_batch = {"results": []}
+
+        with patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.run_alerting_preflight",
+            return_value={},
+        ) as mock_preflight:
+            alert_pipeline.build_payload_validation_lookup(args, mapping_batch)
+
+        mock_preflight.assert_called_once()
+        self.assertEqual(mock_preflight.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
+    def test_create_rules_threads_tls_verify(self):
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            ca_cert="/tmp/ca.pem",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 0},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ) as mock_create:
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_called_once()
+        self.assertEqual(mock_create.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
 
 class TestGrafanaAlertPipeline(unittest.TestCase):
     def test_run_alert_pipeline_writes_alert_artifacts_to_output_dir(self):
@@ -3141,6 +3194,33 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
             self.assertTrue((output_dir / "raw_alerts" / "grafana_dashboards.json").exists())
             self.assertTrue((output_dir / "alert_migration_results.json").exists())
             self.assertTrue((output_dir / "alert_comparison_results.json").exists())
+
+    def test_api_unified_alert_extraction_uses_grafana_pass_and_tls_verify(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            source="api",
+            grafana_url="https://grafana.example",
+            grafana_user="user-a",
+            grafana_pass="pass-a",
+            grafana_token="token-a",
+            ca_cert="/tmp/ca.pem",
+            insecure=False,
+        )
+
+        with patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.extract_all_alerting_resources",
+            return_value={"alert_rules": []},
+        ) as mock_extract:
+            alert_pipeline.load_unified_alerting_resources(args)
+
+        mock_extract.assert_called_once_with(
+            "https://grafana.example",
+            user="user-a",
+            password="pass-a",
+            token="token-a",
+            verify="/tmp/ca.pem",
+        )
 
 
 # =====================================================================
@@ -3232,7 +3312,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
 
         calls = []
 
-        def _fake_delete(kibana_url, rule_id, *, api_key="", space_id="", timeout=15):
+        def _fake_delete(kibana_url, rule_id, *, api_key="", space_id="", timeout=15, verify=True):
             calls.append((kibana_url, rule_id, api_key, space_id, timeout))
             return rule_id != "rule-2"
 
@@ -3486,11 +3566,11 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         list_calls = []
         disable_calls = []
 
-        def _fake_list(kibana_url, *, api_key="", space_id="", timeout=15, per_page=100, page=1):
+        def _fake_list(kibana_url, *, api_key="", space_id="", timeout=15, per_page=100, page=1, verify=True):
             list_calls.append(page)
             return listed_pages[page]
 
-        def _fake_disable(kibana_url, rule_id, *, api_key="", space_id="", timeout=15):
+        def _fake_disable(kibana_url, rule_id, *, api_key="", space_id="", timeout=15, verify=True):
             disable_calls.append(rule_id)
             return True
 
@@ -3509,6 +3589,27 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertEqual(result["remediation"]["attempted_rule_ids"], ["rule-1"])
         self.assertEqual(result["remediation"]["disabled_rule_ids"], ["rule-1"])
         self.assertEqual(disable_calls, ["rule-1"])
+
+    def test_audit_migrated_rules_reports_truncated_listing(self):
+        from observability_migration.targets.kibana.alerting import audit_migrated_rules
+
+        def _fake_list(kibana_url, *, api_key="", space_id="", timeout=15, per_page=100, page=1, verify=True):
+            return {
+                "data": [{"id": f"rule-{page}", "name": "[migrated] CPU high", "enabled": False, "tags": []}],
+                "total": 3,
+            }
+
+        result = audit_migrated_rules(
+            "http://kibana:5601",
+            per_page=1,
+            max_pages=2,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertTrue(result["listing_truncated"])
+        self.assertEqual(result["total_rules_available"], 3)
+        self.assertEqual(result["total_rules_seen"], 2)
+        self.assertIn("Increase --max-pages", result["listing_warning"])
 
 
 # =====================================================================

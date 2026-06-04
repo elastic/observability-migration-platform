@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from observability_migration.adapters.source.grafana import smoke as grafana_smoke
+from observability_migration.core.http import apply_tls
 
 DEFAULT_SAVED_OBJECTS_PER_PAGE = grafana_smoke.DEFAULT_SAVED_OBJECTS_PER_PAGE
 
@@ -40,6 +41,7 @@ def run_smoke_report(
     window_height: int = 2200,
     virtual_time_budget_ms: int = 30000,
     screenshot_retries: int = 1,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Inspect uploaded Kibana dashboards and return a smoke report payload."""
 
@@ -69,6 +71,7 @@ def run_smoke_report(
     )
 
     session = requests.Session()
+    apply_tls(session, verify)
     session.headers.update({"kbn-xsrf": "true"})
     if kibana_api_key:
         session.headers.update({"Authorization": f"ApiKey {kibana_api_key}"})

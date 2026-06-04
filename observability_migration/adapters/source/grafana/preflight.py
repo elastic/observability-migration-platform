@@ -23,6 +23,7 @@ def probe_source_metric_inventory(
     required_labels: set[str] | None = None,
     *,
     timeout: int = 15,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Query Prometheus metadata to build a metric and label inventory.
 
@@ -47,7 +48,7 @@ def probe_source_metric_inventory(
 
     try:
         resp = requests.get(
-            f"{base}/api/v1/label/__name__/values", timeout=timeout,
+            f"{base}/api/v1/label/__name__/values", timeout=timeout, verify=verify,
         )
         resp.raise_for_status()
         body = resp.json()
@@ -59,7 +60,7 @@ def probe_source_metric_inventory(
         return result
 
     try:
-        resp = requests.get(f"{base}/api/v1/labels", timeout=timeout)
+        resp = requests.get(f"{base}/api/v1/labels", timeout=timeout, verify=verify)
         resp.raise_for_status()
         body = resp.json()
         if body.get("status") == "success":
@@ -91,6 +92,7 @@ def probe_target_readiness(
     *,
     timeout: int = 10,
     es_api_key: str | None = None,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     """Check Elasticsearch cluster health, index templates, and data streams.
 
@@ -113,7 +115,7 @@ def probe_target_readiness(
         headers["Authorization"] = f"ApiKey {es_api_key}"
 
     try:
-        resp = requests.get(f"{base}/_cluster/health", headers=headers, timeout=timeout)
+        resp = requests.get(f"{base}/_cluster/health", headers=headers, timeout=timeout, verify=verify)
         if resp.status_code == 200:
             health = resp.json()
             result["cluster_health"] = {
@@ -142,7 +144,7 @@ def probe_target_readiness(
         tpl_key = pattern.replace("*", "").rstrip("-")
         try:
             resp = requests.get(
-                f"{base}/_index_template/{tpl_key}*", headers=headers, timeout=timeout,
+                f"{base}/_index_template/{tpl_key}*", headers=headers, timeout=timeout, verify=verify,
             )
             if resp.status_code == 200:
                 templates = resp.json().get("index_templates", [])
@@ -159,7 +161,7 @@ def probe_target_readiness(
 
         try:
             resp = requests.get(
-                f"{base}/_data_stream/{pattern}", headers=headers, timeout=timeout,
+                f"{base}/_data_stream/{pattern}", headers=headers, timeout=timeout, verify=verify,
             )
             if resp.status_code == 200:
                 streams = resp.json().get("data_streams", [])
@@ -408,11 +410,28 @@ _COUNTER_SUFFIXES = ("_total", "_count", "_sum")
 _GAUGE_RESOURCE_TOKENS = ("resource_limit", "resource_limits", "resource_request", "resource_requests")
 
 
-def _add_required_field(required_fields: dict[str, dict[str, Any]], field_name: str, role: str) -> None:
+def _add_required_field(
+    required_fields: dict[str, dict[str, Any]],
+    field_name: str,
+    role: str,
+    *,
+    source_field: str | None = None,
+) -> None:
     field_name = str(field_name or "").strip()
     if not field_name or field_name in {"@timestamp", "time_bucket", "timestamp_bucket", "step", "__name__"}:
         return
-    entry = required_fields.setdefault(field_name, {"roles": set(), "panels": 0})
+    source_field = str(source_field or field_name).strip()
+    entry = required_fields.setdefault(
+        field_name,
+        {
+            "target_field": field_name,
+            "source_fields": set(),
+            "roles": set(),
+            "panels": 0,
+        },
+    )
+    if source_field:
+        entry["source_fields"].add(source_field)
     entry["roles"].add(role)
     entry["panels"] += 1
 
@@ -522,9 +541,21 @@ def build_target_schema_contract(
     required_indexes: Counter = Counter()
     required_fields: dict[str, dict[str, Any]] = {}
     counter_expectations: dict[str, int] = {}
+    counter_sources: dict[str, str] = {}
     unresolved_labels: Counter = Counter()
     unresolved_variables: Counter = Counter()
     feature_gaps: list[str] = []
+    schema_profile = None
+    field_capabilities_index = ""
+    field_capabilities_discovery = {"status": "not_attempted", "error": "", "field_count": 0}
+    if resolver:
+        schema_profile_fn = getattr(resolver, "schema_profile", None)
+        if callable(schema_profile_fn):
+            schema_profile = schema_profile_fn()
+        field_capabilities_index = str(getattr(resolver, "_index_pattern", "") or "")
+        discovery_status_fn = getattr(resolver, "discovery_status", None)
+        if callable(discovery_status_fn):
+            field_capabilities_discovery = discovery_status_fn()
 
     seen_features: set[str] = set()
 
@@ -551,26 +582,67 @@ def build_target_schema_contract(
 
             metric_fields = _metric_candidates(query_ir)
             for metric_field in sorted(metric_fields):
-                _add_required_field(required_fields, metric_field, "metric")
+                target_metric = metric_field
+                if resolver and hasattr(resolver, "resolve_metric_field"):
+                    prefer = "counter" if (
+                        str(query_ir.get("source_type", "") or "") == "TS"
+                        and _looks_like_counter_metric(metric_field)
+                    ) else None
+                    target_metric = resolver.resolve_metric_field(metric_field, prefer=prefer)
+                _add_required_field(
+                    required_fields,
+                    target_metric,
+                    "metric",
+                    source_field=metric_field,
+                )
 
             for group_field in (
                 list(query_ir.get("source_group_fields", []) or [])
                 + list(query_ir.get("group_labels", []) or [])
             ):
-                _add_required_field(required_fields, group_field, "group_by")
+                target_group = group_field
+                if resolver and hasattr(resolver, "resolve_label"):
+                    target_group = resolver.resolve_label(group_field)
+                _add_required_field(
+                    required_fields,
+                    target_group,
+                    "group_by",
+                    source_field=group_field,
+                )
 
             for filter_expr in query_ir.get("label_filters", []) or []:
-                _add_required_field(required_fields, _label_filter_field(filter_expr), "filter")
+                source_filter = _label_filter_field(filter_expr)
+                target_filter = source_filter
+                if resolver and hasattr(resolver, "resolve_label"):
+                    target_filter = resolver.resolve_label(source_filter)
+                _add_required_field(
+                    required_fields,
+                    target_filter,
+                    "filter",
+                    source_field=source_filter,
+                )
             for filter_field in query_ir.get("source_filter_fields", []) or []:
-                _add_required_field(required_fields, filter_field, "filter")
+                target_filter = filter_field
+                if resolver and hasattr(resolver, "resolve_label"):
+                    target_filter = resolver.resolve_label(filter_field)
+                _add_required_field(
+                    required_fields,
+                    target_filter,
+                    "filter",
+                    source_field=filter_field,
+                )
 
             source_type = str(query_ir.get("source_type", "") or "")
             if source_type == "TS":
                 for metric_field in metric_fields:
                     if not _looks_like_counter_metric(metric_field):
                         continue
-                    counter_expectations[metric_field] = (
-                        counter_expectations.get(metric_field, 0) + 1
+                    target_metric = metric_field
+                    if resolver and hasattr(resolver, "resolve_metric_field"):
+                        target_metric = resolver.resolve_metric_field(metric_field, prefer="counter")
+                    counter_sources[target_metric] = metric_field
+                    counter_expectations[target_metric] = (
+                        counter_expectations.get(target_metric, 0) + 1
                     )
 
             for loss in query_ir.get("semantic_losses", []) or []:
@@ -598,6 +670,8 @@ def build_target_schema_contract(
         field_status[field_name] = {
             "status": status,
             "type": field_type,
+            "target_field": info.get("target_field", field_name),
+            "source_fields": sorted(info.get("source_fields", {field_name})),
             "roles": sorted(info["roles"]),
             "panels": info["panels"],
         }
@@ -608,8 +682,10 @@ def build_target_schema_contract(
     ):
         is_counter = None
         if resolver:
-            is_counter = resolver.is_counter(metric_name)
+            is_counter = resolver.is_counter(counter_sources.get(metric_name, metric_name))
         counter_status[metric_name] = {
+            "source_field": counter_sources.get(metric_name, metric_name),
+            "target_field": metric_name,
             "expected_counter": True,
             "confirmed_counter": is_counter,
             "panels": count,
@@ -620,6 +696,9 @@ def build_target_schema_contract(
     unknown = sum(1 for v in field_status.values() if v["status"] == "unknown")
 
     return {
+        "schema_profile": schema_profile,
+        "field_capabilities_index": field_capabilities_index,
+        "field_capabilities_discovery": field_capabilities_discovery,
         "required_indexes": dict(required_indexes.most_common()),
         "required_fields": field_status,
         "counter_expectations": counter_status,

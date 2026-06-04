@@ -222,6 +222,7 @@ def build_verification_packet(
     *,
     prometheus_url: str = "",
     loki_url: str = "",
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     query_ir = _query_ir_dict(panel_result)
     candidates = build_target_candidates(panel_result)
@@ -230,7 +231,7 @@ def build_verification_packet(
     runtime_state = _runtime_state(panel_result, validation_record, dashboard_result)
     sample_window = build_sample_window(query_ir, validation_record).to_dict()
     source_execution = build_source_execution_summary(
-        panel_result, prometheus_url=prometheus_url, loki_url=loki_url,
+        panel_result, prometheus_url=prometheus_url, loki_url=loki_url, verify=verify,
     ).to_dict()
     target_execution = build_target_execution_summary(panel_result, validation_record).to_dict()
     comparison = build_comparison_result(source_execution, target_execution, query_ir, validation_record).to_dict()
@@ -352,6 +353,7 @@ def annotate_results_with_verification(
     *,
     prometheus_url: str = "",
     loki_url: str = "",
+    verify: bool | str = True,
 ) -> dict[str, Any]:
     validation_index = _index_validation_records(validation_records)
     validation_attempted = bool(validation_records)
@@ -376,7 +378,7 @@ def annotate_results_with_verification(
 
             packet = build_verification_packet(
                 result.dashboard_title, panel_result, record, dashboard_result=result,
-                prometheus_url=prometheus_url, loki_url=loki_url,
+                prometheus_url=prometheus_url, loki_url=loki_url, verify=verify,
             )
 
             if (

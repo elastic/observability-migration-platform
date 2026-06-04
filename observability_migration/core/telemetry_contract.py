@@ -533,6 +533,37 @@ def write_telemetry_contract(contract: dict[str, Any], output_path: str | Path) 
     path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def write_schema_report_artifacts(
+    artifact_dir: str | Path,
+    *,
+    report_filename: str = "schema_change_report.md",
+    contract_filename: str = "telemetry_contract.json",
+) -> dict[str, Path]:
+    """Write the default human and machine-readable schema reports.
+
+    Source adapters call this after writing their YAML and verification packets
+    so a normal migration run produces the same artifacts that the advanced
+    ``obs-migrate schema-report`` command can regenerate later.
+    """
+    artifact_path = Path(artifact_dir)
+    report_path = artifact_path / report_filename
+    contract_path = artifact_path / contract_filename
+    try:
+        report_path.write_text(build_schema_change_report(artifact_path), encoding="utf-8")
+        write_telemetry_contract(build_telemetry_contract(artifact_path), contract_path)
+    except Exception:
+        for path in (report_path, contract_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    return {
+        "schema_report": report_path,
+        "telemetry_contract": contract_path,
+    }
+
+
 def _propagate_control_fields(streams: dict[str, dict[str, Any]]) -> None:
     control_fields: list[str] = []
     for stream in streams.values():
@@ -703,6 +734,23 @@ def _extract_metrics(query: str) -> dict[str, str]:
             metrics[field_name] = "gauge"
         else:
             metrics[field_name] = "counter" if function_name in {"RATE", "IRATE"} else _classify_metric(field_name)
+
+    # Aggregations over expressions, e.g. MAX(node_boot_time_seconds * 1000),
+    # are common in generated ES|QL. Capture the real source fields inside the
+    # expression while ignoring function names and translator aliases.
+    expression_pattern = re.compile(
+        r"\b(SUM|AVG|AVERAGE|MAX|MIN|MEDIAN|RATE|IRATE|INCREASE|MAX_OVER_TIME|AVG_OVER_TIME|PERCENTILE)\(([^)]*)\)",
+        re.IGNORECASE,
+    )
+    for match in expression_pattern.finditer(query):
+        function_name = match.group(1).upper()
+        for field_name in _extract_query_field_candidates(match.group(2)):
+            if is_from_query:
+                metrics[field_name] = "gauge"
+            elif function_name in {"RATE", "IRATE", "INCREASE"}:
+                metrics[field_name] = "counter"
+            else:
+                metrics[field_name] = _classify_metric(field_name)
 
     # Two-arg TSDB functions: IRATE(field, duration), RATE(field, dur), INCREASE(field, dur)
     # classify their first argument as counter.
@@ -1056,6 +1104,49 @@ def _normalize_field(field_name: str) -> str:
     return value
 
 
+_QUERY_FIELD_RESERVED_WORDS = {
+    "average",
+    "avg",
+    "avg_over_time",
+    "case",
+    "count",
+    "date_diff",
+    "false",
+    "first",
+    "if",
+    "increase",
+    "irate",
+    "last",
+    "max",
+    "max_over_time",
+    "median",
+    "min",
+    "now",
+    "null",
+    "percentile",
+    "rate",
+    "sum",
+    "to_datetime",
+    "true",
+}
+
+
+def _extract_query_field_candidates(expression: str) -> list[str]:
+    fields: list[str] = []
+    for raw in re.findall(r"`[^`]+`|[A-Za-z_@][\w.@-]*", expression):
+        field_name = _normalize_field(raw)
+        if not field_name:
+            continue
+        if field_name == "@timestamp" or field_name.startswith("_"):
+            continue
+        if field_name.lower() in _QUERY_FIELD_RESERVED_WORDS:
+            continue
+        if _should_skip_field(field_name):
+            continue
+        _append_unique(fields, field_name)
+    return fields
+
+
 def _should_skip_field(field_name: str) -> bool:
     if field_name in _SKIP_FIELDS:
         return True
@@ -1345,6 +1436,11 @@ def _panel_key(dashboard: str, panel: str) -> tuple[str, str]:
 
 
 _DATADOG_AGGREGATOR_RE = re.compile(r"^(?:avg|sum|min|max|p\d+|count):", re.IGNORECASE)
+_DATADOG_METRIC_QUERY_RE = re.compile(
+    r"\b(?:avg|sum|min|max|p\d+|count)(?:\([^)]*\))?:([A-Za-z_][\w.]*)\{([^}]*)\}",
+    re.IGNORECASE,
+)
+_DATADOG_LOG_FILTER_RE = re.compile(r"(?:^|[\s,(])([A-Za-z_][\w.-]*)\s*:\s*([^,\s)}]+)")
 _NOISY_SOURCE_TOKENS = {
     "by",
     "and",
@@ -1389,7 +1485,8 @@ _GRAFANA_TEMPLATE_TOKENS = {
 def _extract_source_fields(expression: str) -> list[str]:
     fields: list[str] = []
     # Datadog metric syntax: avg:metric.name{tag:value} by {tag}
-    for match in re.finditer(r"\b(?:avg|sum|min|max|p\d+|count):([A-Za-z_][\w.]*)\{([^}]*)\}", expression):
+    datadog_metric_matches = list(_DATADOG_METRIC_QUERY_RE.finditer(expression))
+    for match in datadog_metric_matches:
         _append_unique(fields, match.group(1))
         scope = match.group(2)
         for tag in re.findall(r"([A-Za-z_][\w.]*)\s*:", scope):
@@ -1399,6 +1496,18 @@ def _extract_source_fields(expression: str) -> list[str]:
             field_name = _normalize_field(part)
             if field_name and not _should_skip_field(field_name):
                 _append_unique(fields, field_name)
+    if datadog_metric_matches:
+        return _clean_source_fields(fields)
+    for match in _DATADOG_LOG_FILTER_RE.finditer(expression):
+        field_name = _normalize_field(match.group(1))
+        value = match.group(2)
+        if value.startswith("$"):
+            continue
+        if field_name.lower() in _NOISY_SOURCE_TOKENS:
+            continue
+        _append_unique(fields, field_name)
+    if fields:
+        return _clean_source_fields(fields)
     # PromQL source expressions.
     for field_name in _extract_promql_metric_names(f"PROMQL index=metrics-* value=({expression})"):
         _append_unique(fields, field_name)
@@ -1443,5 +1552,6 @@ __all__ = [
     "merge_metric_kind_overrides",
     "metric_kinds_from_field_caps",
     "metric_kinds_from_prometheus_metadata",
+    "write_schema_report_artifacts",
     "write_telemetry_contract",
 ]

@@ -96,6 +96,7 @@ class KibanaTargetAdapter(TargetAdapter):
         *,
         api_key: str = "",
         space_id: str = "",
+        verify: bool | str = True,
     ) -> list[dict[str, Any]]:
         """Create the default migration data views before importing dashboards."""
         return ensure_migration_data_views(
@@ -103,6 +104,7 @@ class KibanaTargetAdapter(TargetAdapter):
             data_view_patterns=None,
             api_key=api_key,
             space_id=space_id,
+            verify=verify,
         )
 
     def _prepare_upload_yaml(
@@ -173,6 +175,7 @@ class KibanaTargetAdapter(TargetAdapter):
         es_url = str(kwargs.get("es_url", "") or "")
         timeout = int(kwargs.get("timeout", 30) or 30)
         es_api_key = str(kwargs.get("es_api_key", "") or "")
+        verify = kwargs.get("verify", True)
         if not es_url:
             return {
                 "summary": {"queries": 0, "pass": 0, "fail": 0, "empty": 0, "skipped": 1},
@@ -197,6 +200,7 @@ class KibanaTargetAdapter(TargetAdapter):
                         query,
                         timeout=timeout,
                         es_api_key=es_api_key,
+                        verify=verify,
                     )
                     status = "empty" if validation["status"] == "pass" and validation["rows"] == 0 else validation["status"]
                     if status == "pass":
@@ -234,6 +238,7 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url = str(kwargs.get("kibana_url", "") or "")
         space_id = str(kwargs.get("space_id", "") or "")
         kibana_api_key = str(kwargs.get("kibana_api_key", "") or "")
+        verify = kwargs.get("verify", True)
         records: list[dict[str, Any]] = []
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
@@ -244,6 +249,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 kibana_url,
                 api_key=kibana_api_key,
                 space_id=space_id,
+                verify=verify,
             )
         for yaml_file in yaml_files:
             out_dir = compiled_dir / yaml_file.stem
@@ -255,6 +261,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 kibana_url,
                 space_id=space_id,
                 kibana_api_key=kibana_api_key,
+                verify=verify,
             )
             records.append(
                 {
@@ -283,11 +290,13 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url: str,
         space_id: str = "",
         kibana_api_key: str = "",
+        verify: bool | str = True,
     ) -> dict[str, Any]:
         data_views = self._ensure_default_data_views(
             kibana_url,
             api_key=kibana_api_key,
             space_id=space_id,
+            verify=verify,
         )
         upload_yaml_path = self._prepare_upload_yaml(
             Path(yaml_path),
@@ -300,6 +309,7 @@ class KibanaTargetAdapter(TargetAdapter):
             kibana_url,
             space_id=space_id,
             kibana_api_key=kibana_api_key,
+            verify=verify,
         )
         return {
             "success": success,
@@ -319,8 +329,9 @@ class KibanaTargetAdapter(TargetAdapter):
         *,
         api_key: str = "",
         space_id: str = "",
+        verify: bool | str = True,
     ) -> bool:
-        return detect_serverless(kibana_url, api_key=api_key, space_id=space_id)
+        return detect_serverless(kibana_url, api_key=api_key, space_id=space_id, verify=verify)
 
     def list_dashboards(
         self,
@@ -329,10 +340,11 @@ class KibanaTargetAdapter(TargetAdapter):
         api_key: str = "",
         space_id: str = "",
         timeout: int = 30,
+        verify: bool | str = True,
     ) -> list[dict[str, Any]]:
         """List all dashboards using the Serverless-safe _export API."""
         return serverless_list_dashboards(
-            kibana_url, api_key=api_key, space_id=space_id, timeout=timeout,
+            kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify,
         )
 
     def delete_dashboards(
@@ -343,6 +355,7 @@ class KibanaTargetAdapter(TargetAdapter):
         api_key: str = "",
         space_id: str = "",
         timeout: int = 30,
+        verify: bool | str = True,
     ) -> dict[str, Any]:
         """Best-effort dashboard deletion (overwrite with empty content)."""
         return serverless_delete_dashboards(
@@ -351,6 +364,7 @@ class KibanaTargetAdapter(TargetAdapter):
             api_key=api_key,
             space_id=space_id,
             timeout=timeout,
+            verify=verify,
         )
 
     def ensure_data_views(
@@ -361,6 +375,7 @@ class KibanaTargetAdapter(TargetAdapter):
         api_key: str = "",
         space_id: str = "",
         timeout: int = 30,
+        verify: bool | str = True,
     ) -> list[dict[str, Any]]:
         """Ensure all required data views exist in the Kibana cluster."""
         return ensure_migration_data_views(
@@ -369,6 +384,7 @@ class KibanaTargetAdapter(TargetAdapter):
             api_key=api_key,
             space_id=space_id,
             timeout=timeout,
+            verify=verify,
         )
 
 

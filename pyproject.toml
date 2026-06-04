@@ -83,6 +83,9 @@ datadog-migrate = "observability_migration.adapters.source.datadog.cli:main"
 [tool.setuptools.packages.find]
 include = ["observability_migration*"]
 
+[tool.setuptools.package-data]
+"observability_migration.sample_dashboards" = ["**/*.json"]
+
 # ---------- Linting (ruff) ----------
 [tool.ruff]
 target-version = "py311"
