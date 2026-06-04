@@ -47,8 +47,11 @@ htmlcov/
 .cursor/skills/*
 !.cursor/skills/**/
 
-# Claude
-.claude/
+# Claude (ignore everything except shared project skills)
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/**/
 
 # Generated migration output
 migration_output*/
