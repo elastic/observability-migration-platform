@@ -481,6 +481,77 @@ wildcards before seeding, `--no-recreate` to ingest without recreating
 templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
 metric kinds.
 
+### Compare (side-by-side parity)
+
+`obs-migrate compare` reads `verification_packets.json` from one or more migrated
+dashboard artifact directories and, per panel, checks that the emitted ES|QL
+matches the source query on the target cluster.
+
+For **PromQL / Grafana panels** on a cluster with native PROMQL support, the
+command runs the panel's translated ES|QL and Elasticsearch's native
+`PROMQL(<source query>)` command over the **same** index pattern and time window,
+then diffs per bucket. Verdicts are `STRICT_PASS` (≤1% relative error),
+`FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, or `ERROR`.
+
+For **Datadog panels**, non-PromQL panels, or clusters without native PROMQL,
+the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labeled
+**not numerically verified**.
+
+```bash
+# Compare migrated panels against the source on the target cluster.
+.venv/bin/obs-migrate compare \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Repeat --artifact-dir to merge multiple runs; honors --ca-cert / --insecure.
+.venv/bin/obs-migrate compare \
+  --artifact-dir grafana_output/dashboards \
+  --artifact-dir datadog_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --index "metrics-*" \
+  --step-seconds 300 \
+  --window-minutes 60 \
+  --report-out comparison_report.json
+```
+
+`--artifact-dir` is required and repeatable (each directory must contain
+`verification_packets.json`). `--es-url`/`--api-key` default to
+`ELASTICSEARCH_ENDPOINT`/`ES_URL` and `KEY`. `--index` overrides the native
+PROMQL oracle index pattern (default: inferred per panel from the translated
+ES|QL). `--step-seconds` sets the oracle bucket step (default `300`).
+`--window-minutes` sets the look-back window (default `60`). `--report-out`
+names the JSON report (default `comparison_report.json`); a sibling
+`comparison_report.md` is written with a panel-by-panel table (dashboard, panel,
+mode, verdict, max relative error, reason).
+
+Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
+(missing/malformed `verification_packets.json`, missing credentials), `1` when
+any panel parity check returns `FAIL`, and `0` otherwise (structural-only rows
+never fail the run).
+
+**Deterministic trial:** seed synthetic data both sides can read, compare parity,
+then clean up:
+
+```bash
+.venv/bin/obs-migrate seed-sample-data \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+.venv/bin/obs-migrate compare \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+.venv/bin/obs-migrate remove-sample-data \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --confirm
+```
+
 ### Remove Sample Data
 
 `obs-migrate remove-sample-data` tears down what `seed-sample-data` created. It

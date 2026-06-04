@@ -133,6 +133,12 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("fail-closed", text)
         self.assertIn("telemetry-data-", text)
 
+    def test_command_contract_documents_compare(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate compare", text)
+        self.assertIn("native PROMQL", text)
+        self.assertIn("comparison_report", text)
+
     def test_migrate_all_supported_skill_uses_datadog_widget_type(self):
         text = MIGRATE_ALL_SUPPORTED_SKILL.read_text(encoding="utf-8")
         self.assertIn("panels[].datadog_widget_type", text)
