@@ -1,6 +1,6 @@
 ---
 name: try-one-source-dashboard
-description: Fully migrate ONE of the user's own Grafana/Datadog dashboards into Kibana end-to-end so they can do a side-by-side comparison and build confidence before bulk migration. Use when the user wants to "try one of my dashboards", "migrate just one", "do a single dashboard end-to-end", "prove it on one real dashboard first", or wants one real proof-of-value before committing. For a count/type inventory use scan-o11y-environment; for a migrate/no-migrate verdict use assess-migration-readiness; for diagnosing a single broken uploaded panel use debug-uploaded-kibana-dashboard.
+description: Use when the user wants to "try one of my dashboards", "migrate just one", "do a single dashboard end-to-end", "prove it on one real dashboard first", or wants one real proof-of-value before committing — fully migrates ONE of the user's own Grafana/Datadog dashboards into Kibana end-to-end for a side-by-side comparison before bulk migration. For a count/type inventory use scan-o11y-environment; for a migrate/no-migrate verdict use assess-migration-readiness; for diagnosing a single broken uploaded panel use debug-uploaded-kibana-dashboard.
 ---
 
 # Try one of my dashboards (single end-to-end migration)

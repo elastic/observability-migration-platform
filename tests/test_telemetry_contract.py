@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -15,10 +16,77 @@ from observability_migration.core.telemetry_contract import (
     merge_metric_kind_overrides,
     metric_kinds_from_field_caps,
     metric_kinds_from_prometheus_metadata,
+    write_schema_report_artifacts,
 )
 
 
 class TelemetryContractTests(unittest.TestCase):
+    def test_write_schema_report_artifacts_writes_default_report_and_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Service",
+                                "panel": "CPU",
+                                "source_queries": ["avg:system.cpu.user{host:web01} by {host}"],
+                                "translated_query": (
+                                    "FROM metrics-*\n"
+                                    "| STATS value = AVG(system_cpu_user) BY host.name"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            artifacts = write_schema_report_artifacts(artifact_dir)
+
+            report_text = artifacts["schema_report"].read_text(encoding="utf-8")
+            contract = json.loads(artifacts["telemetry_contract"].read_text(encoding="utf-8"))
+
+        self.assertIn("system.cpu.user", report_text)
+        self.assertIn("system_cpu_user", report_text)
+        self.assertEqual(contract["summary"]["streams"], 1)
+
+    def test_write_schema_report_artifacts_removes_partial_report_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir()
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Service",
+                                "panel": "CPU",
+                                "source_queries": ["avg:system.cpu.user{*}"],
+                                "translated_query": "FROM metrics-* | STATS value = AVG(system_cpu_user)",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = artifact_dir / "schema_change_report.md"
+            contract_path = artifact_dir / "telemetry_contract.json"
+
+            with mock.patch(
+                "observability_migration.core.telemetry_contract.write_telemetry_contract",
+                side_effect=RuntimeError("contract failed"),
+            ), self.assertRaisesRegex(RuntimeError, "contract failed"):
+                write_schema_report_artifacts(artifact_dir)
+
+            report_exists = report_path.exists()
+            contract_exists = contract_path.exists()
+
+        self.assertFalse(report_exists)
+        self.assertFalse(contract_exists)
+
     def test_build_contract_from_yaml_and_verification_packets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

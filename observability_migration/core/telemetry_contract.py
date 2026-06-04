@@ -533,6 +533,37 @@ def write_telemetry_contract(contract: dict[str, Any], output_path: str | Path) 
     path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def write_schema_report_artifacts(
+    artifact_dir: str | Path,
+    *,
+    report_filename: str = "schema_change_report.md",
+    contract_filename: str = "telemetry_contract.json",
+) -> dict[str, Path]:
+    """Write the default human and machine-readable schema reports.
+
+    Source adapters call this after writing their YAML and verification packets
+    so a normal migration run produces the same artifacts that the advanced
+    ``obs-migrate schema-report`` command can regenerate later.
+    """
+    artifact_path = Path(artifact_dir)
+    report_path = artifact_path / report_filename
+    contract_path = artifact_path / contract_filename
+    try:
+        report_path.write_text(build_schema_change_report(artifact_path), encoding="utf-8")
+        write_telemetry_contract(build_telemetry_contract(artifact_path), contract_path)
+    except Exception:
+        for path in (report_path, contract_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    return {
+        "schema_report": report_path,
+        "telemetry_contract": contract_path,
+    }
+
+
 def _propagate_control_fields(streams: dict[str, dict[str, Any]]) -> None:
     control_fields: list[str] = []
     for stream in streams.values():
@@ -1521,5 +1552,6 @@ __all__ = [
     "merge_metric_kind_overrides",
     "metric_kinds_from_field_caps",
     "metric_kinds_from_prometheus_metadata",
+    "write_schema_report_artifacts",
     "write_telemetry_contract",
 ]

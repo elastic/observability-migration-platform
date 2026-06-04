@@ -270,10 +270,14 @@ checks — the translator can verify whether a mapped field actually exists,
 is numeric and aggregatable, or has conflicting types across indices.
 
 The dashboard pipeline also writes
-`<output-dir>/dashboards/target_readiness_contract.json`. It records the active
-`field_profile`, metric/log index patterns, source fields, resolved target
-fields, and field `status` (`confirmed`, `missing`, or `unknown`). `unknown`
-means live field caps were unavailable; it is not proof that a field exists.
+`<output-dir>/dashboards/schema_change_report.md`,
+`<output-dir>/dashboards/telemetry_contract.json`, and
+`<output-dir>/dashboards/target_readiness_contract.json`. The schema report is
+the per-panel source-field -> target-field table. The readiness contract records
+the active `field_profile`, metric/log index patterns, source fields, resolved
+target fields, and field `status` (`confirmed`, `missing`, or `unknown`).
+`unknown` means live field caps were unavailable; it is not proof that a field
+exists.
 
 `--data-view` is an explicit override. When omitted, the selected field profile
 keeps its own metric index (for example, `prometheus` keeps

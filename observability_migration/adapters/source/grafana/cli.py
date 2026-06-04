@@ -34,6 +34,7 @@ from observability_migration.core.reporting.report import (
     save_detailed_report,
 )
 from observability_migration.core.reporting.summary_md import save_markdown_summary
+from observability_migration.core.telemetry_contract import write_schema_report_artifacts
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
 from observability_migration.targets.kibana.compile import (
     compile_all,
@@ -137,9 +138,17 @@ def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Grafana → Kibana migration pipeline")
     parser.add_argument(
         "--source",
+        dest="source",
         choices=["api", "files"],
-        default="files",
-        help="Source: 'api' for live Grafana, 'files' for local JSON",
+        default=None,
+        help="Input mode alias: 'api' for live Grafana, 'files' for local JSON. Prefer --input-mode.",
+    )
+    parser.add_argument(
+        "--input-mode",
+        dest="input_mode",
+        choices=["api", "files"],
+        default=None,
+        help="Input mode: 'api' for live Grafana, 'files' for local JSON.",
     )
     parser.add_argument(
         "--input-dir",
@@ -460,7 +469,13 @@ def parse_args(argv: list[str] | None = None):
             "Defaults to OBS_MIGRATE_INSECURE env var."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.source and args.input_mode and args.source != args.input_mode:
+        parser.error("--source and --input-mode must match when both are provided")
+    input_mode = args.input_mode or args.source or "files"
+    args.input_mode = input_mode
+    args.source = input_mode
+    return args
 
 
 def _handle_list_dashboards(args):
@@ -1145,11 +1160,12 @@ def _run_validation_jobs(
             if completed % 25 == 0 or completed == len(unique_jobs):
                 print(f"    validated {completed}/{len(unique_jobs)} unique queries", flush=True)
 
-    return [
-        (job[0], job[1], outputs[job_to_unique_index[idx]])
-        for idx, job in enumerate(validation_jobs)
-        if outputs[job_to_unique_index[idx]] is not None
-    ]
+    validation_outputs: list[tuple[Any, Any, dict[str, Any]]] = []
+    for idx, job in enumerate(validation_jobs):
+        output = outputs[job_to_unique_index[idx]]
+        if output is not None:
+            validation_outputs.append((job[0], job[1], output))
+    return validation_outputs
 
 
 def _write_run_summary(
@@ -1943,9 +1959,17 @@ def main(argv: list[str] | None = None):
     save_detailed_report(results, compile_results, report_path, validation_summary, validation_records, verification_payload)
     save_migration_manifest(results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
+    try:
+        schema_artifacts = write_schema_report_artifacts(base_dir)
+    except Exception as exc:  # best-effort: never fail a migration on derived reports
+        schema_artifacts = {}
+        print(f"  Schema report: skipped ({exc})")
     print(f"  Detailed report: {report_path}")
     print(f"  Migration manifest: {manifest_path}")
     print(f"  Verification packets: {verification_path}")
+    if schema_artifacts:
+        print(f"  Schema change report saved: {schema_artifacts['schema_report']}")
+        print(f"  Telemetry contract saved: {schema_artifacts['telemetry_contract']}")
     _write_run_summary(
         root_output_dir,
         requested_assets=selection.label,

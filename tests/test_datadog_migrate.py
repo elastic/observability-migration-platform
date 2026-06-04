@@ -2904,6 +2904,26 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(args.field_profile, "otel")
 
+    def test_parse_args_accepts_input_mode_alias_for_source(self):
+        args = datadog_cli.parse_args(["--input-mode", "api"])
+
+        self.assertEqual(args.input_mode, "api")
+        self.assertEqual(args.source, "api")
+
+    def test_parse_args_rejects_conflicting_source_and_input_mode(self):
+        with self.assertRaises(SystemExit):
+            datadog_cli.parse_args(["--source", "files", "--input-mode", "api"])
+
+    def test_parse_args_compiles_dashboards_by_default(self):
+        args = datadog_cli.parse_args([])
+
+        self.assertTrue(args.compile)
+
+    def test_parse_args_can_disable_default_compile(self):
+        args = datadog_cli.parse_args(["--no-compile"])
+
+        self.assertFalse(args.compile)
+
     def test_parse_args_does_not_default_data_view_over_profile_index(self):
         args = datadog_cli.parse_args(["--field-profile", "prometheus"])
 
@@ -3036,12 +3056,63 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
             )
 
             contract_path = Path(tmpdir) / "target_readiness_contract.json"
+            schema_report_path = Path(tmpdir) / "schema_change_report.md"
+            telemetry_contract_path = Path(tmpdir) / "telemetry_contract.json"
             contract_exists = contract_path.exists()
+            schema_report_exists = schema_report_path.exists()
+            telemetry_contract_exists = telemetry_contract_path.exists()
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
 
         self.assertTrue(contract_exists)
         self.assertEqual(contract["source"], "datadog")
         self.assertEqual(contract["field_profile"], "otel")
+        self.assertTrue(schema_report_exists)
+        self.assertTrue(telemetry_contract_exists)
+
+    def test_dashboard_pipeline_treats_schema_report_failure_as_non_fatal(self):
+        args = argparse.Namespace(
+            source="files",
+            input_dir="unused",
+            validate=False,
+            es_url="",
+            upload=False,
+            ensure_data_views=False,
+            smoke=False,
+            smoke_output="",
+            space_id="",
+            preflight=False,
+        )
+        raw_dashboard = {
+            "id": "dash1",
+            "title": "Dash",
+            "widgets": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            datadog_cli,
+            "_extract",
+            return_value=[raw_dashboard],
+        ), patch.object(
+            datadog_cli,
+            "write_schema_report_artifacts",
+            side_effect=RuntimeError("schema failed"),
+        ):
+            datadog_cli._run_dashboard_pipeline(
+                args=args,
+                field_map=load_profile("otel"),
+                output_dir=Path(tmpdir),
+                dd_creds={},
+                target_adapter=None,
+                compile_requested=False,
+            )
+
+            summary_exists = (Path(tmpdir) / "migration_summary.md").exists()
+            readiness_exists = (Path(tmpdir) / "target_readiness_contract.json").exists()
+            schema_report_exists = (Path(tmpdir) / "schema_change_report.md").exists()
+
+        self.assertTrue(summary_exists)
+        self.assertTrue(readiness_exists)
+        self.assertFalse(schema_report_exists)
 
 
 # =========================================================================

@@ -1,6 +1,6 @@
 ---
 name: migrate-selected-assets
-description: Migrate a chosen SUBSET of a user's Grafana/Datadog dashboards and/or alerting rules into Kibana — not just one (that is try-one-source-dashboard) and not everything (that is migrate-all-supported-assets). Use when the user wants to migrate "these specific dashboards", "only my critical alerts", "just the monitors matching X", "this folder/team's dashboards", or otherwise scope a real migration to a selection. Routes by the engine's actual selectors (Datadog ids/query; Grafana file-scoping) and is honest about selection it cannot do.
+description: Use when the user wants to migrate "these specific dashboards", "only my critical alerts", "just the monitors matching X", "this folder/team's dashboards", or otherwise scope a real migration to a selection — migrates a chosen SUBSET of a user's Grafana/Datadog dashboards and/or alerting rules into Kibana, not just one (that is try-one-source-dashboard) and not everything (that is migrate-all-supported-assets). Routes by the engine's actual selectors (Datadog ids/query; Grafana file-scoping) and is honest about selection it cannot do.
 ---
 
 # Migrate selected dashboards / alerting rules

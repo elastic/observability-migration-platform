@@ -1,6 +1,6 @@
 ---
 name: revert-migration
-description: Remove some or all of the Kibana assets a migration created — uploaded dashboards and/or migrated alerting rules — when the user changes their mind or wants to redo a run cleanly. Use when the user wants to "undo the migration", "delete the dashboards I just uploaded", "remove the migrated alert rules", "roll back", "clean up Kibana", or "start over". Operates only on the TARGET (Kibana); it never deletes anything from the source Grafana/Datadog.
+description: Use when the user wants to "undo the migration", "delete the dashboards I just uploaded", "remove the migrated alert rules", "roll back", "clean up Kibana", or "start over" — removes some or all of the Kibana assets a migration created (uploaded dashboards and/or migrated alerting rules). Operates only on the TARGET (Kibana); it never deletes anything from the source Grafana/Datadog.
 ---
 
 # Revert a migration (remove generated Kibana assets)

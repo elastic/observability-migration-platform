@@ -20,16 +20,9 @@ Goal: move from "the migrated panel is empty or wrong" to a concrete source-to-E
 
 Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout.
 
-```bash
-obs-migrate schema-report \
-  --artifact-dir <output-dir>/dashboards \
-  --output schema_change_report.md \
-  --contract-out telemetry_contract.json
-```
-
 | What you need | File / command |
 |---|---|
-| Per-panel source fields -> target fields | `schema_change_report.md` from `obs-migrate schema-report` |
+| Per-panel source fields -> target fields | `<output-dir>/dashboards/schema_change_report.md` (written by migration); use `obs-migrate schema-report --artifact-dir <output-dir>/dashboards --output schema_change_report.md --contract-out telemetry_contract.json` only to regenerate or combine outputs |
 | Required target fields and missing/confirmed status | Grafana: `<output-dir>/dashboards/required_target_contract.json`; Datadog: `<output-dir>/dashboards/target_readiness_contract.json` |
 | Source query and translated query | `<output-dir>/dashboards/verification_packets.json` |
 | Human-readable must-fix list | `<output-dir>/dashboards/migration_summary.md` |
@@ -38,7 +31,7 @@ obs-migrate schema-report \
 ## Remediation loop
 
 1. **Prove it is a mapping/data-view issue** — confirm the target has data in the selected time range and index. Empty data is not a mapping fix.
-2. **Generate or open the schema report** — run `obs-migrate schema-report` against the dashboard artifact dir. Read the row for the failing panel.
+2. **Open the schema report** — read `<output-dir>/dashboards/schema_change_report.md` and find the row for the failing panel. Regenerate with `obs-migrate schema-report` only if you are combining old artifact dirs or rebuilding the report.
 3. **Check required fields** — open `required_target_contract.json` (Grafana) or `target_readiness_contract.json` (Datadog). Prioritize fields marked `missing` or `unknown`.
 4. **Compare three sources of truth** — source query fields/tags, translated ES|QL fields, and Kibana's actual runtime query. If Kibana changed aliases or buckets, note that separately.
 5. **Choose the right fix layer**:

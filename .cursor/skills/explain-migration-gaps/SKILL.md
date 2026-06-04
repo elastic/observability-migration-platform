@@ -1,6 +1,6 @@
 ---
 name: explain-migration-gaps
-description: Explain WHY panels and widgets did NOT migrate cleanly, in plain language, and give step-by-step guidance to rebuild them in Kibana. Use when the user asks "why didn't this panel migrate", "what does not_feasible mean here", "how do I fix the panels that need manual work", "explain the warnings", or "how do I rebuild this in Kibana". Read-only: reads migration artifacts already on disk. For an overall coverage summary use report-migration-coverage; to numerically verify the panels that DID migrate use validate-side-by-side.
+description: Use when the user asks "why didn't this panel migrate", "what does not_feasible mean here", "how do I fix the panels that need manual work", "explain the warnings", or "how do I rebuild this in Kibana" — explains WHY panels and widgets did NOT migrate cleanly, in plain language, with step-by-step guidance to rebuild them in Kibana. Read-only; reads migration artifacts already on disk. For an overall coverage summary use report-migration-coverage; to numerically verify the panels that DID migrate use validate-side-by-side.
 ---
 
 # Explain migration gaps

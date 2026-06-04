@@ -41,6 +41,7 @@ from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
 from observability_migration.core.reporting.summary_md import save_markdown_summary
+from observability_migration.core.telemetry_contract import write_schema_report_artifacts
 from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
@@ -368,6 +369,11 @@ def _run_dashboard_pipeline(
     save_migration_manifest(all_results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
     save_target_readiness_contract(readiness_contract, readiness_contract_path)
+    try:
+        schema_artifacts = write_schema_report_artifacts(output_dir)
+    except Exception as exc:  # best-effort: never fail a migration on derived reports
+        schema_artifacts = {}
+        print(f"  Schema report: skipped ({exc})")
     rollout_plan = build_rollout_plan(
         all_results,
         target_space=args.space_id or "",
@@ -381,6 +387,9 @@ def _run_dashboard_pipeline(
     save_rollout_plan(rollout_plan, rollout_path)
     print(f"  Verification packets saved: {verification_path}")
     print(f"  Target readiness contract saved: {readiness_contract_path}")
+    if schema_artifacts:
+        print(f"  Schema change report saved: {schema_artifacts['schema_report']}")
+        print(f"  Telemetry contract saved: {schema_artifacts['telemetry_contract']}")
     print(f"  Migration manifest saved: {manifest_path}")
     print(f"  Rollout plan saved: {rollout_path}")
     review_queue = generate_review_queue(rollout_plan)
@@ -1254,8 +1263,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--source", choices=["files", "api"], default="files",
-        help="Dashboard source: 'files' (JSON exports) or 'api' (Datadog API)",
+        "--source",
+        dest="source",
+        choices=["files", "api"],
+        default=None,
+        help="Input mode alias: 'files' (JSON exports) or 'api' (Datadog API). Prefer --input-mode.",
+    )
+    parser.add_argument(
+        "--input-mode",
+        dest="input_mode",
+        choices=["files", "api"],
+        default=None,
+        help="Input mode: 'files' (JSON exports) or 'api' (Datadog API).",
     )
     parser.add_argument(
         "--input-dir", default="infra/datadog/dashboards",
@@ -1303,8 +1322,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated Datadog dashboard IDs to fetch (API mode)",
     )
     parser.add_argument(
-        "--compile", action="store_true",
-        help="Compile YAML to NDJSON using kb-dashboard-cli",
+        "--compile",
+        dest="compile",
+        action="store_true",
+        default=True,
+        help="Compile YAML to NDJSON using kb-dashboard-cli (default)",
+    )
+    parser.add_argument(
+        "--no-compile",
+        dest="compile",
+        action="store_false",
+        help="Skip dashboard YAML compilation unless upload is requested",
     )
     parser.add_argument(
         "--validate", action="store_true",
@@ -1430,7 +1458,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.source and args.input_mode and args.source != args.input_mode:
+        parser.error("--source and --input-mode must match when both are provided")
+    input_mode = args.input_mode or args.source or "files"
+    args.input_mode = input_mode
+    args.source = input_mode
+    return args
 
 
 if __name__ == "__main__":

@@ -190,6 +190,7 @@ class CommandContractDocTests(unittest.TestCase):
 
     def test_remediate_field_mapping_gaps_skill_uses_package_native_artifacts(self):
         text = REMEDIATE_FIELD_GAPS_SKILL.read_text(encoding="utf-8")
+        self.assertIn("<output-dir>/dashboards/schema_change_report.md", text)
         self.assertIn("obs-migrate schema-report", text)
         self.assertIn("required_target_contract.json", text)
         self.assertIn("target_readiness_contract.json", text)
@@ -228,6 +229,8 @@ class CommandContractDocTests(unittest.TestCase):
         # Prometheus data landed in Elastic before resolving labels/metrics.
         self.assertIn("prometheus_remote_write", text)
         self.assertIn("prometheus_native", text)
+        self.assertIn("schema_change_report.md", text)
+        self.assertIn("telemetry_contract.json", text)
         # Metric names are NOT a no-op: they are rewritten per profile.
         self.assertNotIn("PromQL metric names pass through to ES", text)
         self.assertIn("field_capabilities_discovery", text)
@@ -245,6 +248,7 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("seed-sample-data", text)
         self.assertIn("required_target_contract.json", text)
         self.assertIn("target_readiness_contract.json", text)
+        self.assertIn("<out>/dashboards/schema_change_report.md", text)
         self.assertIn("obs-migrate schema-report", text)
         # Routes to existing skills instead of duplicating their setup docs.
         self.assertIn("understand-source-schema", text)
@@ -269,6 +273,8 @@ class CommandContractDocTests(unittest.TestCase):
 
     def test_datadog_source_doc_documents_target_readiness_contract(self):
         text = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")
+        self.assertIn("schema_change_report.md", text)
+        self.assertIn("telemetry_contract.json", text)
         self.assertIn("target_readiness_contract.json", text)
         self.assertIn("field_profile", text)
         self.assertIn("confirmed", text)
@@ -278,10 +284,20 @@ class CommandContractDocTests(unittest.TestCase):
 
     def test_command_contract_documents_source_specific_readiness_artifacts(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("Dashboard migrations also write `schema_change_report.md`", text)
+        self.assertIn("`telemetry_contract.json`", text)
         self.assertIn("required_target_contract.json", text)
         self.assertIn("target_readiness_contract.json", text)
         self.assertIn("field_capabilities_discovery", text)
         self.assertIn("Datadog `--data-view` is an explicit override", text)
+
+    def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("They accept the same `--input-mode {files,api}`", text)
+        self.assertIn("`--source files|api`", text)
+        self.assertIn("--no-compile", text)
+        self.assertIn("Upload still compiles", text)
+        self.assertIn("obs-migrate migrate --source <source> --input-mode files", text)
 
 
 if __name__ == "__main__":

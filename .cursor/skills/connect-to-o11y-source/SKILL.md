@@ -1,6 +1,6 @@
 ---
 name: connect-to-o11y-source
-description: Connect the obs-migrate / mig-to-kbn tool to a source observability vendor (Grafana or Datadog) and prove the tool can actually reach it before any migration. Use when the user wants to connect, authenticate, point the tool at, or verify connectivity/credentials to their Grafana or Datadog instance, or asks "can the tool reach my Grafana/Datadog" / "how do I set up access".
+description: Use when the user wants to connect, authenticate, point the tool at, or verify connectivity/credentials to their Grafana or Datadog instance, or asks "can the tool reach my Grafana/Datadog" / "how do I set up access" — connects the obs-migrate / mig-to-kbn tool to a source observability vendor (Grafana or Datadog) and proves it can actually reach it before any migration.
 ---
 
 # Connect to an o11y source (Grafana / Datadog)

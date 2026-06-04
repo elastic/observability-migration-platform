@@ -1,6 +1,6 @@
 ---
 name: assess-migration-readiness
-description: Assess how much of a connected Grafana/Datadog environment will migrate cleanly versus need manual rework, and how trustworthy that assessment is. Use when the user wants a readiness assessment, feasibility verdict, "what will/won't migrate", how much manual effort is required, a go/no-go before committing, or wants to know how confident they can be in the result. For a plain count/type inventory (no verdict), use scan-o11y-environment instead.
+description: Use when the user wants a readiness assessment, feasibility verdict, "what will/won't migrate", how much manual effort is required, a go/no-go before committing, or to know how confident they can be in the result — assesses how much of a connected Grafana/Datadog environment will migrate cleanly versus need manual rework, and how trustworthy that assessment is. For a plain count/type inventory (no verdict), use scan-o11y-environment instead.
 ---
 
 # Assess migration readiness

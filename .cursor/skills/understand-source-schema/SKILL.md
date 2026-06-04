@@ -44,7 +44,9 @@ obs-migrate migrate \
 
 ## Get the purpose-built per-panel mapping table (start here)
 
-The most direct answer to "how do my fields map?" is the **schema-change report**, a per-panel `dashboard │ panel │ source_fields │ target_stream │ target_fields` table. It ships in the installed package as the `obs-migrate schema-report` subcommand (no source checkout, no `scripts/` directory needed):
+The most direct answer to "how do my fields map?" is the **schema-change report**, a per-panel `dashboard │ panel │ source_fields │ target_stream │ target_fields` table. Dashboard migration writes it automatically at `<output-dir>/dashboards/schema_change_report.md`, alongside `<output-dir>/dashboards/telemetry_contract.json`.
+
+To regenerate the report, or to merge several source outputs into one table, use the installed package command (no source checkout, no `scripts/` directory needed):
 
 ```bash
 obs-migrate schema-report \
@@ -100,7 +102,7 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
 - Do **not** trust field mappings from a run where `--es-url` was unreachable or the target had no data yet — with no detected schema profile the resolver guesses OTel candidates and passes names through. Ingest first, then re-run with a reachable `--es-url`.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
-- Do **not** reach for repo-only scripts for the schema report: `obs-migrate schema-report` is the package-native command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
+- Do **not** reach for repo-only scripts for the schema report: migration writes `schema_change_report.md` automatically, and `obs-migrate schema-report` is the package-native regeneration/merge command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
 
 ## See also
 

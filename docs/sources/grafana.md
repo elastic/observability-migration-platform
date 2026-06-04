@@ -140,6 +140,12 @@ capability → the profile's counter field) so `rate()`/`irate()` stay correct.
 > `field_capabilities_discovery`, and resolved target-field `status` in
 > `required_target_contract.json`.
 
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` under `<output-dir>/dashboards/` automatically. Use
+the schema report for the per-panel Prometheus source field -> Elastic target
+field table, and use `required_target_contract.json` for live field-existence
+status.
+
 ### Built-in Prometheus → OTel Mappings
 
 When no rule-pack override or live field match is available, the resolver

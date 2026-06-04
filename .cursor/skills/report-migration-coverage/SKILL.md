@@ -1,6 +1,6 @@
 ---
 name: report-migration-coverage
-description: Produce a shareable migration coverage report — counts, % migrated cleanly, what needs review or is blocked, plus a rough manual-effort estimate — from the artifacts a completed obs-migrate run already wrote. Use when the user asks for "a migration report", "coverage summary", "how much migrated", "what's left", or "a summary I can send my manager". Read-only: reads existing artifacts; does not re-run a migration or touch any cluster. For per-panel "why didn't this migrate / how do I rebuild it" use explain-migration-gaps; to prove panels are numerically correct use validate-side-by-side.
+description: Use when the user asks for "a migration report", "coverage summary", "how much migrated", "what's left", or "a summary I can send my manager" — produces a shareable migration coverage report (counts, % migrated cleanly, what needs review or is blocked, plus a rough manual-effort estimate) from the artifacts a completed obs-migrate run already wrote. Read-only; reads existing artifacts and does not re-run a migration or touch any cluster. For per-panel "why didn't this migrate / how do I rebuild it" use explain-migration-gaps; to prove panels are numerically correct use validate-side-by-side.
 ---
 
 # Report migration coverage

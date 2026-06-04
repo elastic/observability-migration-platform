@@ -1,6 +1,6 @@
 ---
 name: scan-o11y-environment
-description: Produce an inventory of what exists in a connected Grafana or Datadog environment before deciding what to migrate — dashboard/asset counts, panel/widget types, datasource distribution (including non-migratable datasources), and folder organization. Use when the user wants to scan, inventory, list, or take stock of their source environment, asks "what do I have / how many dashboards / what datasources / what panel types", or wants an overview before committing to a migration. For a migrate/no-migrate verdict per asset, use assess-migration-readiness instead.
+description: Use when the user wants to scan, inventory, list, or take stock of their source environment, asks "what do I have / how many dashboards / what datasources / what panel types", or wants an overview before committing to a migration — produces an inventory of what exists in a connected Grafana or Datadog environment (dashboard/asset counts, panel/widget types, datasource distribution including non-migratable datasources, and folder organization). For a migrate/no-migrate verdict per asset, use assess-migration-readiness instead.
 ---
 
 # Scan an o11y environment (inventory)

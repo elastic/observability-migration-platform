@@ -1,6 +1,6 @@
 ---
 name: debug-uploaded-kibana-dashboard
-description: Diagnose a Kibana dashboard that mig-to-kbn uploaded to the Serverless cluster by driving Chrome via the chrome-devtools MCP server. Captures the per-panel ES|QL the Kibana UI is actually running, the network response from /_query, the browser console errors, and a screenshot of the failing panel. Use when the user reports a panel rendering empty / "No results found" / "Migration Required" / wrong-shape values after running parity-rig/upload-all.sh or obs-migrate upload, or hands over a Kibana dashboard URL and asks "why is this panel broken".
+description: Use when the user reports a panel rendering empty / "No results found" / "Migration Required" / wrong-shape values after running parity-rig/upload-all.sh or obs-migrate upload, or hands over a Kibana dashboard URL and asks "why is this panel broken" — diagnoses a Kibana dashboard that mig-to-kbn uploaded to the Serverless cluster by driving Chrome via the chrome-devtools MCP server, capturing the per-panel ES|QL the Kibana UI is actually running, the /_query network response, browser console errors, and a screenshot of the failing panel.
 ---
 
 # Debug an uploaded Kibana dashboard

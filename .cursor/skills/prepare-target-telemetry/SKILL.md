@@ -37,7 +37,7 @@ You cannot point Datadog at Elastic directly: choose an ingest route, then **man
 ## Verify before trusting (both sources)
 
 1. Migrate **one** dashboard with `--es-url` (+ `--preflight`). Read field existence: Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Both carry `status` values such as `confirmed`, `missing`, or `unknown`.
-2. Get the per-panel source→target table: `obs-migrate schema-report --artifact-dir <out>/dashboards --output schema_change_report.md`.
+2. Open the per-panel source→target table written by the migration: `<out>/dashboards/schema_change_report.md`. Use `obs-migrate schema-report --artifact-dir <out>/dashboards --output schema_change_report.md` only to regenerate or combine existing outputs.
 3. **Prove panels light up without waiting for real ingest:** `obs-migrate seed-sample-data --artifact-dir <out>/dashboards --es-url "$ES"` ingests synthetic docs matching the contract so panels render; tear down with `obs-migrate remove-sample-data`.
 4. Only roll out once fields are `confirmed` / panels light up.
 

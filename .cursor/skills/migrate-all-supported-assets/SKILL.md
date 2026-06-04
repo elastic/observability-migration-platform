@@ -1,6 +1,6 @@
 ---
 name: migrate-all-supported-assets
-description: Bulk-migrate EVERY supported dashboard and/or alerting rule from a connected Grafana or Datadog environment into Kibana in one sweep, and report exactly which assets could not migrate. Use when the user has decided to fully switch and wants to "migrate everything", "do the whole environment", "migrate all my dashboards and alerts", or a complete cutover. For a chosen subset use migrate-selected-assets; for a single proof dashboard use try-one-source-dashboard.
+description: Use when the user has decided to fully switch and wants to "migrate everything", "do the whole environment", "migrate all my dashboards and alerts", or a complete cutover — bulk-migrates EVERY supported dashboard and/or alerting rule from a connected Grafana or Datadog environment into Kibana in one sweep, and reports exactly which assets could not migrate. For a chosen subset use migrate-selected-assets; for a single proof dashboard use try-one-source-dashboard.
 ---
 
 # Migrate every supported dashboard / alerting rule

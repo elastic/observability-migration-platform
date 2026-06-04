@@ -57,9 +57,9 @@ Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
 runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
 `obs-migrate doctor` to see which path is active.
 
-Datadog live API extraction (`--source api` on the dedicated CLI or Datadog
-`--input-mode api` through `obs-migrate migrate`) also requires the optional
-Datadog client extra:
+Datadog live API extraction (`--input-mode api` on either the unified or
+dedicated CLI; legacy dedicated spelling `--source api` also works) requires
+the optional Datadog client extra:
 
 ```bash
 .venv/bin/pip install -e ".[datadog]"
@@ -72,7 +72,7 @@ You can use the migration tooling productively before configuring a target clust
 - Translate exported dashboards into YAML.
 - List bundled sample dashboards with `obs-migrate list-samples` (offline, no
   credentials), then migrate one with
-  `migrate --source <source> --input-mode files --input-dir <input_dir>`.
+  `obs-migrate migrate --source <source> --input-mode files --input-dir <input_dir>`.
 - Pull live dashboards from Grafana or Datadog APIs.
 - Pull Grafana alert artifacts or Datadog monitor artifacts.
 - Read `migration_summary.md` for a human-readable verdict, scorecard, and
@@ -219,8 +219,10 @@ lab's `metrics-*` data view. If you point `--data-view` at a different
 Prometheus integration layout, verify the target schema first before treating
 empty panels as a migration bug.
 
-Live target readiness artifacts are source-specific: Grafana preflight writes
-`required_target_contract.json` with `schema_profile`,
+Dashboard migrations also write `schema_change_report.md` and
+`telemetry_contract.json` inside the per-source `dashboards/` artifact
+directory. Live target readiness artifacts are source-specific: Grafana
+preflight writes `required_target_contract.json` with `schema_profile`,
 `field_capabilities_discovery`, and resolved target-field statuses; Datadog
 dashboard runs write `target_readiness_contract.json` with the active
 `field_profile`, metric/log index patterns, source fields, resolved target
@@ -372,11 +374,14 @@ objects fully removed.
 
 ### Schema Report
 
-`obs-migrate schema-report` emits a per-panel source-to-target schema-change
-report (`dashboard | panel | source_fields | target_stream | target_fields`)
-from one or more migrated dashboard artifact directories. It is the
-package-native form of `scripts/generate_telemetry_contract.py` — it ships in
-the installed wheel and needs no source checkout.
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` automatically. `obs-migrate schema-report` is the
+advanced regeneration/combination command: it emits the same per-panel
+source-to-target schema-change report
+(`dashboard | panel | source_fields | target_stream | target_fields`) from one
+or more existing dashboard artifact directories. It is the package-native form
+of `scripts/generate_telemetry_contract.py` — it ships in the installed wheel
+and needs no source checkout.
 
 ```bash
 # Single source
@@ -594,6 +599,10 @@ unreachable or inputs are invalid, `1` when any delete fails, and `0` otherwise.
 ## Dedicated Source CLIs
 
 Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers around `python -m observability_migration.adapters.source.grafana.cli` and `python -m observability_migration.adapters.source.datadog.cli`.
+They accept the same `--input-mode {files,api}` extraction selector as unified
+`obs-migrate migrate`. The older dedicated-CLI spelling `--source files|api`
+is still accepted as a compatibility alias; if both are provided, they must
+match.
 
 ### Grafana
 
@@ -604,7 +613,7 @@ source adapter](sources/grafana.md).
 ```bash
 # Files: dashboards only
 .venv/bin/grafana-migrate \
-  --source files \
+  --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets dashboards \
@@ -616,13 +625,13 @@ source adapter](sources/grafana.md).
 # Live Grafana API: alerts only
 KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
 .venv/bin/grafana-migrate \
-  --source api \
+  --input-mode api \
   --output-dir migration_output \
   --assets alerts
 
 # Files: dashboards + alerts + integrated smoke
 .venv/bin/python -m observability_migration.adapters.source.grafana.cli \
-  --source files \
+  --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets all \
@@ -654,7 +663,7 @@ source adapter](sources/datadog.md).
 ```bash
 # Files: dashboards only
 .venv/bin/datadog-migrate \
-  --source files \
+  --input-mode files \
   --input-dir infra/datadog/dashboards \
   --output-dir datadog_migration_output \
   --assets dashboards \
@@ -663,7 +672,7 @@ source adapter](sources/datadog.md).
 
 # Live Datadog API with explicit dashboard scoping
 .venv/bin/datadog-migrate \
-  --source api \
+  --input-mode api \
   --env-file datadog_creds.env \
   --dashboard-ids abc-def-123 \
   --output-dir datadog_migration_output \
@@ -672,7 +681,7 @@ source adapter](sources/datadog.md).
 
 # Live Datadog API: alerts only
 .venv/bin/datadog-migrate \
-  --source api \
+  --input-mode api \
   --env-file datadog_creds.env \
   --output-dir datadog_migration_output \
   --assets alerts \
@@ -688,8 +697,11 @@ through alert-capable runs and rule payload emission/validation limited to
 validated monitor shapes.
 
 Without `--es-url`, Datadog stays in offline field-capabilities mode.
-Dashboard-capable runs (`--assets dashboards` or `--assets all`) still write
-dashboard YAML plus the standard dashboard run reports. Alerts-only runs
+Dashboard-capable runs (`--assets dashboards` or `--assets all`) compile by
+default and still write dashboard YAML plus the standard dashboard run reports;
+pass `--no-compile` only when you explicitly want to skip local dashboard
+compilation. Upload still compiles because Kibana upload consumes compiled
+dashboard artifacts. Alerts-only runs
 (`--assets alerts`) skip dashboard YAML and compiled output, write monitor
 artifacts under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
@@ -903,7 +915,9 @@ artifact root. Useful flags:
 | `--max-combinations` | Maximum dimension combinations per stream per timestamp. Defaults to 12. Falls back to `MAX_COMBINATIONS` env. Lower this for very high-cardinality contracts. |
 | `--no-recreate` | Skip all index template and data stream operations. Use when the streams already exist with the desired mappings and you only want to ingest more synthetic documents. |
 
-To inspect schema changes from source queries to target fields, prefer the
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` automatically. To regenerate schema changes from
+source queries to target fields, or to combine several source outputs, use the
 package-native [`obs-migrate schema-report`](#schema-report) subcommand. The
 equivalent repo-checkout script is:
 
