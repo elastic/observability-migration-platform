@@ -54,3 +54,38 @@ def test_union_cap_overflow_drops_metric():
     dash = {"panels": [_panel(expr)]}
     # 4 distinct labels exceeds the cap of 3 -> metric omitted (honest fallback).
     assert build_metric_series_labels(dash) == {}
+
+
+def test_by_clause_scoped_to_its_aggregation_not_sibling_metric():
+    # The by(cpu) belongs to count(node_cpu_seconds_total); it must NOT leak onto
+    # node_load1, which shares the expression but not that aggregation.
+    expr = (
+        'scalar(node_load1{job="n"}) * 100'
+        ' / count(count(node_cpu_seconds_total{job="n"}) by (cpu))'
+    )
+    dash = {"panels": [_panel(expr)]}
+    out = build_metric_series_labels(dash)
+    assert "cpu" not in out.get("node_load1", [])
+    assert out.get("node_cpu_seconds_total") == ["cpu"]
+
+
+def test_grafana_interval_variable_not_mined_as_metric_name():
+    expr = (
+        'sum by(instance) (irate(node_cpu_seconds_total{instance="$node"}'
+        "[$__rate_interval]))"
+    )
+    dash = {"panels": [_panel(expr)]}
+
+    out = build_metric_series_labels(dash)
+
+    assert "__rate_interval" not in out
+    assert out == {"node_cpu_seconds_total": ["instance"]}
+
+
+def test_by_clause_prefix_form_scoped_to_its_aggregation():
+    # Prefix grouping form: sum by (le) (rate(metric)) — le attaches to the bucket
+    # metric, while a sibling gauge in the same panel expression is unaffected.
+    expr = "histogram_quantile(0.9, sum by (le) (rate(http_req_bucket[5m])))"
+    dash = {"panels": [_panel(expr)]}
+    out = build_metric_series_labels(dash)
+    assert out.get("http_req_bucket") == ["le"]

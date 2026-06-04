@@ -48,6 +48,7 @@ _SELECTOR_RE = re.compile(rf"({_METRIC_RE})\s*\{{([^}}]*)\}}")
 _LABEL_FILTER_RE = re.compile(rf"({_METRIC_RE})\s*(=~|!=|!~|=)\s*\"([^\"]*)\"")
 _LABEL_VALUES_RE = re.compile(rf"label_values\(\s*({_METRIC_RE})\s*,\s*({_METRIC_RE})\s*\)")
 _BARE_METRIC_RE = re.compile(rf"\b({_METRIC_RE})\b(?!\s*\()")
+_GROUP_MOD_RE = re.compile(r"\b(?:group_left|group_right|on|ignoring)\s*\([^)]*\)", re.IGNORECASE)
 
 
 def _split_labels(group_body: str) -> list[str]:
@@ -78,6 +79,17 @@ def _add(out: dict[str, list[str]], metric: str, label: str) -> None:
         bucket.append(label)
 
 
+def expr_has_explicit_grouping(expr: str) -> bool:
+    """True if a PromQL expression declares its own grouping via ``by(...)``/``without(...)``.
+
+    A panel whose query carries an explicit grouping clause has already stated its
+    series dimensions, so the dashboard-wide series-label backfill (which exists only
+    to recover dimensions for *bare* selectors) must not override that intent.
+    """
+    text = str(expr or "")
+    return bool(_BY_RE.search(text) or _WITHOUT_RE.search(text))
+
+
 def _metrics_in_expr(expr: str) -> set[str]:
     """Best-effort set of metric names referenced in a PromQL expression.
 
@@ -91,6 +103,9 @@ def _metrics_in_expr(expr: str) -> set[str]:
     scrubbed = _SELECTOR_RE.sub(lambda m: f"{m.group(1)} ", expr)
     scrubbed = _BY_RE.sub(" ", scrubbed)
     scrubbed = _WITHOUT_RE.sub(" ", scrubbed)
+    # Grafana injects variables such as $__rate_interval inside range selectors.
+    # They are duration/control tokens, not Prometheus metric names.
+    scrubbed = re.sub(r"\$[A-Za-z_:][A-Za-z0-9_:]*", " ", scrubbed)
     for token in _BARE_METRIC_RE.findall(scrubbed):
         if token in _PROMQL_KEYWORDS:
             continue
@@ -98,6 +113,78 @@ def _metrics_in_expr(expr: str) -> set[str]:
             continue
         metrics.add(token)
     return metrics
+
+
+def _metrics_in_fragment(fragment: str) -> set[str]:
+    """Metrics in an aggregation argument, ignoring vector-matching modifier
+    label lists (``group_left(...)`` / ``on(...)``) and case-variant keywords."""
+    scrubbed = _GROUP_MOD_RE.sub(" ", fragment)
+    return {m for m in _metrics_in_expr(scrubbed) if m.lower() not in _PROMQL_KEYWORDS}
+
+
+def _balanced_paren_back(text: str, close_idx: int) -> int | None:
+    """Index of the ``(`` matching the ``)`` at ``close_idx`` (or None)."""
+    depth = 0
+    for i in range(close_idx, -1, -1):
+        char = text[i]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _balanced_paren_fwd(text: str, open_idx: int) -> int | None:
+    """Index of the ``)`` matching the ``(`` at ``open_idx`` (or None)."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        char = text[i]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _aggregation_argument(expr: str, by_start: int, by_end: int) -> str:
+    """Return the aggregation argument that a ``by(...)`` clause groups.
+
+    PromQL spells grouping two ways around the aggregation's argument list:
+    ``sum(<arg>) by (labels)`` (suffix) and ``sum by (labels) (<arg>)`` (prefix).
+    We isolate ``<arg>`` so a clause bound to one operand of a larger expression
+    is not mis-attributed to sibling metrics. Falls back to the whole expression
+    when the structure can't be matched.
+    """
+    prefix = expr[:by_start].rstrip()
+    if prefix.endswith(")"):
+        open_idx = _balanced_paren_back(prefix, len(prefix) - 1)
+        if open_idx is not None:
+            return prefix[open_idx + 1 : len(prefix) - 1]
+
+    rest = expr[by_end:]
+    lead = len(rest) - len(rest.lstrip())
+    if lead < len(rest) and rest[lead] == "(":
+        close_idx = _balanced_paren_fwd(rest, lead)
+        if close_idx is not None:
+            return rest[lead + 1 : close_idx]
+
+    return expr
+
+
+def _scoped_by_clauses(expr: str) -> list[tuple[list[str], set[str]]]:
+    """For each ``by(...)`` clause, the (labels, metrics-it-groups) pair."""
+    pairs: list[tuple[list[str], set[str]]] = []
+    for match in _BY_RE.finditer(expr):
+        labels = _split_labels(match.group(1))
+        if not labels:
+            continue
+        arg = _aggregation_argument(expr, match.start(), match.end())
+        pairs.append((labels, _metrics_in_fragment(arg)))
+    return pairs
 
 
 def build_metric_series_labels(dashboard: dict) -> dict[str, list[str]]:
@@ -109,14 +196,17 @@ def build_metric_series_labels(dashboard: dict) -> dict[str, list[str]]:
         without_labels = set()
         for body in _WITHOUT_RE.findall(expr):
             without_labels.update(_split_labels(body))
-        expr_metrics = _metrics_in_expr(expr)
 
-        # by(...) labels apply to the metrics aggregated in this expression.
-        for body in _BY_RE.findall(expr):
-            for label in _split_labels(body):
+        # by(...) labels apply only to the metrics inside the aggregation that the
+        # clause actually groups. Attributing them to every metric in the
+        # expression leaks a sibling operand's grouping onto unrelated metrics
+        # (e.g. ``scalar(node_load1) / count(... node_cpu_seconds_total ...) by (cpu)``
+        # must not mark node_load1 as per-cpu).
+        for labels, metrics in _scoped_by_clauses(expr):
+            for label in labels:
                 if label in without_labels:
                     continue
-                for metric in expr_metrics:
+                for metric in metrics:
                     _add(out, metric, label)
 
         # Variable-driven / regex label filters inside selectors.

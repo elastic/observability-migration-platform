@@ -1036,6 +1036,37 @@ class TestRuleEngine(unittest.TestCase):
         }
         self.assertTrue(resolver.is_counter("node_scrape_collector_duration_seconds"))
 
+    def test_live_gauge_metadata_overrides_histogram_summary_suffix(self):
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "custom_queue_count": {
+                "double": {
+                    "type": "double",
+                    "time_series_metric": "gauge",
+                }
+            }
+        }
+
+        self.assertFalse(resolver.is_counter("custom_queue_count"))
+
+    def test_metric_kind_override_still_beats_live_gauge_metadata(self):
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["custom_queue_count"] = "counter"
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "custom_queue_count": {
+                "double": {
+                    "type": "double",
+                    "time_series_metric": "gauge",
+                }
+            }
+        }
+
+        self.assertTrue(resolver.is_counter("custom_queue_count"))
+
     def test_schema_marked_counter_uses_last_over_time_for_simple_metric(self):
         rp = rules.RulePackConfig()
         resolver = schema.SchemaResolver(rp)
@@ -2128,6 +2159,109 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
                 "preferred_group_labels", hints,
                 f"{panel_type} must not receive inferred grouping",
             )
+
+    def test_target_hints_explicit_by_not_clobbered_by_dashboard_union(self):
+        # Issue #94: a panel with its own by() clause has declared its grouping;
+        # the dashboard-wide series-label union must NOT overwrite it.
+        target = {
+            "expr": "sum(rate(http_requests_total[5m])) by (service)",
+            "legendFormat": "",
+        }
+        hints = panels._target_translation_hints(
+            {"type": "timeseries"},
+            "timeseries",
+            target,
+            {"http_requests_total": ["service", "status_code", "country"]},
+        )
+        self.assertNotEqual(
+            hints.get("preferred_group_labels_origin"), "dashboard_inferred"
+        )
+        self.assertIsNone(hints.get("preferred_group_labels"))
+
+    def test_target_hints_explicit_without_skips_inference(self):
+        # A without() clause is also explicit grouping intent; dashboard-wide
+        # inference must not inject a label set on top of it.
+        target = {
+            "expr": "sum(http_requests_total) without (instance)",
+            "legendFormat": "",
+        }
+        hints = panels._target_translation_hints(
+            {"type": "timeseries"},
+            "timeseries",
+            target,
+            {"http_requests_total": ["service", "status_code"]},
+        )
+        self.assertNotIn("preferred_group_labels", hints)
+
+    def test_explicit_by_not_widened_by_sibling_panel_dimensions(self):
+        # End-to-end: the ES|QL for a by(service) panel must group by service only,
+        # never by sibling panels' status_code / country (issue #94).
+        target = {
+            "expr": "sum(rate(http_requests_total[5m])) by (service)",
+            "legendFormat": "",
+        }
+        hints = panels._target_translation_hints(
+            {"type": "timeseries"},
+            "timeseries",
+            target,
+            {"http_requests_total": ["service", "status_code", "country"]},
+        )
+        ctx = self._translate(
+            "sum(rate(http_requests_total[5m])) by (service)", hints=hints
+        )
+        self.assertIn("service", ctx.esql_query)
+        self.assertNotIn("status_code", ctx.esql_query)
+        self.assertNotIn("country", ctx.esql_query)
+
+
+class TestCounterSuffixClassification(unittest.TestCase):
+    """Canonical Prometheus histogram/summary component series (``_bucket``,
+    ``_count``, ``_sum``) are counters. rate()/irate()/increase() over them must
+    emit RATE/IRATE/INCREASE, not the gauge fallback (AVG_OVER_TIME/MAX_OVER_TIME).
+    """
+
+    def setUp(self):
+        self.rp = rules.RulePackConfig()
+        self.res = schema.SchemaResolver(self.rp)
+
+    def _translate(self, expr, panel_type="timeseries"):
+        return translate.translate_promql_to_esql(
+            expr,
+            esql_index="metrics-*",
+            panel_type=panel_type,
+            rule_pack=self.rp,
+            resolver=self.res,
+        )
+
+    def test_is_counter_recognizes_histogram_summary_suffixes(self):
+        for metric in (
+            "http_request_duration_seconds_bucket",
+            "http_request_duration_seconds_count",
+            "http_request_duration_seconds_sum",
+        ):
+            self.assertTrue(
+                self.res.is_counter(metric), f"{metric} should classify as a counter"
+            )
+
+    def test_histogram_bucket_rate_emits_rate_not_gauge_fallback(self):
+        ctx = self._translate(
+            "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)"
+        )
+        self.assertIn("RATE(http_request_duration_seconds_bucket", ctx.esql_query)
+        self.assertNotIn("AVG_OVER_TIME", ctx.esql_query)
+        self.assertFalse(
+            any("typed as gauge" in w for w in ctx.warnings),
+            f"unexpected gauge-fallback warning: {ctx.warnings}",
+        )
+
+    def test_summary_count_increase_emits_increase_not_gauge_fallback(self):
+        ctx = self._translate(
+            "increase(prometheus_target_sync_length_seconds_count[5m])"
+        )
+        self.assertIn(
+            "INCREASE(prometheus_target_sync_length_seconds_count", ctx.esql_query
+        )
+        self.assertNotIn("MAX_OVER_TIME", ctx.esql_query)
 
 
 if __name__ == "__main__":

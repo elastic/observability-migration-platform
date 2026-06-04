@@ -85,7 +85,11 @@ from .promql import (
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
 from .schema import SchemaResolver
-from .series_labels import _metrics_in_expr, build_metric_series_labels
+from .series_labels import (
+    _metrics_in_expr,
+    build_metric_series_labels,
+    expr_has_explicit_grouping,
+)
 from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
 
 PANEL_TYPE_MAP = {
@@ -339,7 +343,16 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
     # Skip single-value panels (stat/gauge/bargauge/piechart -> summary_mode): they
     # intentionally render one current value, so adding an inferred breakdown would change
     # the panel's type/intent. Their own explicit legend/by() labels still apply above.
-    if not summary_mode and not preferred_group_labels and metric_series_labels:
+    #
+    # Also skip panels whose own expression already carries an explicit by()/without()
+    # clause: that grouping is authoritative and the translator honors it directly, so
+    # the dashboard-wide union must not overwrite it (issue #94).
+    if (
+        not summary_mode
+        and not preferred_group_labels
+        and metric_series_labels
+        and not expr_has_explicit_grouping(target.get("expr", ""))
+    ):
         inferred = _inferred_labels_for_target(target, metric_series_labels)
         if inferred:
             hints["preferred_group_labels"] = inferred
