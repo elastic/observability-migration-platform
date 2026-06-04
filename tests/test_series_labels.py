@@ -69,6 +69,19 @@ def test_by_clause_scoped_to_its_aggregation_not_sibling_metric():
     assert out.get("node_cpu_seconds_total") == ["cpu"]
 
 
+def test_grafana_interval_variable_not_mined_as_metric_name():
+    expr = (
+        'sum by(instance) (irate(node_cpu_seconds_total{instance="$node"}'
+        "[$__rate_interval]))"
+    )
+    dash = {"panels": [_panel(expr)]}
+
+    out = build_metric_series_labels(dash)
+
+    assert "__rate_interval" not in out
+    assert out == {"node_cpu_seconds_total": ["instance"]}
+
+
 def test_by_clause_prefix_form_scoped_to_its_aggregation():
     # Prefix grouping form: sum by (le) (rate(metric)) — le attaches to the bucket
     # metric, while a sibling gauge in the same panel expression is unaffected.

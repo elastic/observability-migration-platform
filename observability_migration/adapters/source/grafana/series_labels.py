@@ -103,6 +103,9 @@ def _metrics_in_expr(expr: str) -> set[str]:
     scrubbed = _SELECTOR_RE.sub(lambda m: f"{m.group(1)} ", expr)
     scrubbed = _BY_RE.sub(" ", scrubbed)
     scrubbed = _WITHOUT_RE.sub(" ", scrubbed)
+    # Grafana injects variables such as $__rate_interval inside range selectors.
+    # They are duration/control tokens, not Prometheus metric names.
+    scrubbed = re.sub(r"\$[A-Za-z_:][A-Za-z0-9_:]*", " ", scrubbed)
     for token in _BARE_METRIC_RE.findall(scrubbed):
         if token in _PROMQL_KEYWORDS:
             continue

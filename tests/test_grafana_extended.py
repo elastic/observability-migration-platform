@@ -1036,6 +1036,37 @@ class TestRuleEngine(unittest.TestCase):
         }
         self.assertTrue(resolver.is_counter("node_scrape_collector_duration_seconds"))
 
+    def test_live_gauge_metadata_overrides_histogram_summary_suffix(self):
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "custom_queue_count": {
+                "double": {
+                    "type": "double",
+                    "time_series_metric": "gauge",
+                }
+            }
+        }
+
+        self.assertFalse(resolver.is_counter("custom_queue_count"))
+
+    def test_metric_kind_override_still_beats_live_gauge_metadata(self):
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["custom_queue_count"] = "counter"
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "custom_queue_count": {
+                "double": {
+                    "type": "double",
+                    "time_series_metric": "gauge",
+                }
+            }
+        }
+
+        self.assertTrue(resolver.is_counter("custom_queue_count"))
+
     def test_schema_marked_counter_uses_last_over_time_for_simple_metric(self):
         rp = rules.RulePackConfig()
         resolver = schema.SchemaResolver(rp)
