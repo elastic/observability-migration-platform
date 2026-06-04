@@ -16,7 +16,11 @@ REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKI
 REPORT_COVERAGE_SKILL = ROOT / ".cursor" / "skills" / "report-migration-coverage" / "SKILL.md"
 EXPLAIN_GAPS_SKILL = ROOT / ".cursor" / "skills" / "explain-migration-gaps" / "SKILL.md"
 VALIDATE_SXS_SKILL = ROOT / ".cursor" / "skills" / "validate-side-by-side" / "SKILL.md"
+PREPARE_CUTOVER_SKILL = ROOT / ".cursor" / "skills" / "prepare-production-cutover" / "SKILL.md"
+REMEDIATE_FIELD_GAPS_SKILL = ROOT / ".cursor" / "skills" / "remediate-field-mapping-gaps" / "SKILL.md"
+REVIEW_ALERTS_SKILL = ROOT / ".cursor" / "skills" / "review-and-enable-migrated-alerts" / "SKILL.md"
 UNDERSTAND_SCHEMA_SKILL = ROOT / ".cursor" / "skills" / "understand-source-schema" / "SKILL.md"
+PREPARE_TARGET_TELEMETRY_SKILL = ROOT / ".cursor" / "skills" / "prepare-target-telemetry" / "SKILL.md"
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -175,6 +179,33 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("comparison_report", text)
         self.assertIn("not numerically verified", text)  # honest about structural fallback
 
+    def test_prepare_cutover_skill_stitches_existing_skills_and_artifacts(self):
+        text = PREPARE_CUTOVER_SKILL.read_text(encoding="utf-8")
+        self.assertIn("report-migration-coverage", text)
+        self.assertIn("validate-side-by-side", text)
+        self.assertIn("explain-migration-gaps", text)
+        self.assertIn("revert-migration", text)
+        self.assertIn("run_summary.json", text)
+        self.assertIn("go/no-go", text)
+
+    def test_remediate_field_mapping_gaps_skill_uses_package_native_artifacts(self):
+        text = REMEDIATE_FIELD_GAPS_SKILL.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate schema-report", text)
+        self.assertIn("required_target_contract.json", text)
+        self.assertIn("--rules-file", text)
+        self.assertIn("--field-profile", text)
+        self.assertIn("--suggest-rule-pack-out", text)
+        self.assertIn("debug-uploaded-kibana-dashboard", text)
+
+    def test_review_enable_alerts_skill_keeps_alert_rules_safe(self):
+        text = REVIEW_ALERTS_SKILL.read_text(encoding="utf-8")
+        self.assertIn("obs-migrate verify-alert-rules", text)
+        self.assertIn("obs-migrate audit-rules", text)
+        self.assertIn("alert_rule_upload_results.json", text)
+        self.assertIn("monitor_rule_upload_results.json", text)
+        self.assertIn("disabled", text)
+        self.assertIn("Do NOT enable", text)
+
     def test_dashboard_delete_docs_match_clear_placeholder_behavior(self):
         contract_text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         revert_text = REVERT_MIGRATION_SKILL.read_text(encoding="utf-8")
@@ -198,6 +229,23 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("prometheus_native", text)
         # Metric names are NOT a no-op: they are rewritten per profile.
         self.assertNotIn("PromQL metric names pass through to ES", text)
+
+    def test_prepare_target_telemetry_skill_routes_pre_migration_setup(self):
+        text = PREPARE_TARGET_TELEMETRY_SKILL.read_text(encoding="utf-8")
+        # Covers both sources' target-layout mechanics in one place.
+        self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_native", text)
+        self.assertIn("--field-profile", text)
+        # Datadog has NO auto-detection (the key honesty contrast vs Prometheus).
+        self.assertIn("auto-detect", text)
+        # Ingest-first dependency + the package-native verify surface.
+        self.assertIn("--es-url", text)
+        self.assertIn("seed-sample-data", text)
+        self.assertIn("required_target_contract.json", text)
+        self.assertIn("obs-migrate schema-report", text)
+        # Routes to existing skills instead of duplicating their setup docs.
+        self.assertIn("understand-source-schema", text)
+        self.assertIn("remediate-field-mapping-gaps", text)
 
     def test_understand_source_schema_skill_documents_three_profile_model(self):
         text = UNDERSTAND_SCHEMA_SKILL.read_text(encoding="utf-8")
