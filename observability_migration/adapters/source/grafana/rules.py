@@ -33,7 +33,21 @@ DEFAULT_WARNING_PATTERNS = [
     (r"\bpredict_linear\b", "predict_linear has no ES|QL equivalent"),
 ]
 
-DEFAULT_COUNTER_SUFFIXES = ["_total", "_seconds_total", "_bytes_total", "_created"]
+# Canonical Prometheus counter naming conventions. ``_total`` (and the
+# unit-qualified ``_seconds_total`` / ``_bytes_total``) plus ``_created`` are the
+# explicit-counter spellings; ``_bucket`` / ``_count`` / ``_sum`` are the
+# monotonic component series Prometheus emits for histograms and summaries.
+# Treating the latter as counters lets rate()/irate()/increase() over them emit
+# RATE/IRATE/INCREASE instead of the gauge fallback (AVG_OVER_TIME/MAX_OVER_TIME).
+DEFAULT_COUNTER_SUFFIXES = [
+    "_total",
+    "_seconds_total",
+    "_bytes_total",
+    "_created",
+    "_bucket",
+    "_count",
+    "_sum",
+]
 
 
 @dataclass
