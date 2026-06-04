@@ -741,5 +741,114 @@ class RemoveSampleDataSubcommandTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
 
+class CompareSubcommandTests(unittest.TestCase):
+    def _artifact_dir(self, tmp, packets):
+        d = Path(tmp) / "dashboards"
+        d.mkdir(parents=True)
+        (d / "verification_packets.json").write_text(json.dumps({"summary": {}, "packets": packets}), encoding="utf-8")
+        return d
+
+    def test_compare_threads_tls_and_writes_report(self):
+        from observability_migration.app import cli
+
+        captured = {}
+
+        def fake_make_es_request(es_url, api_key, *, verify=True, timeout=120):
+            captured["verify"] = verify
+            return "REQ"
+
+        class V:  # fake Comparison
+            def __init__(self, verdict):
+                self._v = verdict
+                self.max_relative_error = 0.0
+                self.compared_points = 3
+                self.notes = []
+                self.skipped_reason = ""
+                self.translated_error = ""
+                self.native_error = ""
+            def verdict(self):
+                return self._v
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "go_goroutines", "translated_query": "TS metrics-*", "semantic_gate": "Green"},
+            ])
+            out = Path(tmp) / "comparison_report.json"
+            with (
+                mock.patch.object(cli, "make_es_request", side_effect=fake_make_es_request),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V("STRICT_PASS")),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test",
+                          "--api-key", "k", "--insecure", "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertFalse(captured["verify"])
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(report["summary"]["panels"], 1)
+            self.assertEqual(report["panels"][0]["verdict"], "STRICT_PASS")
+
+    def test_compare_structural_only_when_no_oracle(self):
+        from observability_migration.app import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "datadog", "semantic_gate": "Green",
+                 "source_query": "", "translated_query": "FROM metrics-*"},
+            ])
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=False),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(Path(tmp) / "comparison_report.json")])
+            self.assertEqual(ctx.exception.code, 0)  # structural-only never fails the run
+
+    def test_compare_fail_verdict_exits_1(self):
+        from observability_migration.app import cli
+
+        class V:
+            max_relative_error = 0.9
+            compared_points = 3
+            notes: list = []
+            skipped_reason = ""
+            translated_error = ""
+            native_error = ""
+            def verdict(self):
+                return "FAIL"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "x", "translated_query": "TS metrics-*", "semantic_gate": "Red"},
+            ])
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V()),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(Path(tmp) / "comparison_report.json")])
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_compare_invalid_packets_json_exits_2(self):
+        from observability_migration.app import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "dashboards"
+            d.mkdir(parents=True)
+            (d / "verification_packets.json").write_text("{not valid json", encoding="utf-8")
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(d), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(Path(tmp) / "comparison_report.json")])
+            self.assertEqual(ctx.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

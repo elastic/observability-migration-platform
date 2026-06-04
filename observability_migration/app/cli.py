@@ -38,6 +38,10 @@ from observability_migration.core.telemetry_contract import (
     build_telemetry_contract,
     write_telemetry_contract,
 )
+from observability_migration.core.verification.parity_oracle import (
+    compare_panel,
+    native_promql_available,
+)
 from observability_migration.sample_dashboards.catalog import list_samples, resolve_input_dir
 from observability_migration.targets.kibana.alerting import (
     audit_migrated_rules,
@@ -532,6 +536,31 @@ def _build_parser() -> argparse.ArgumentParser:
                             help="Actually delete. Without this flag the command only prints the plan (dry-run).")
     _add_tls_arguments(remove_cmd)
 
+    compare_cmd = sub.add_parser(
+        "compare",
+        help="Side-by-side parity: compare each migrated panel's ES|QL against the "
+             "source query using Elasticsearch's native PROMQL oracle (PromQL/Grafana); "
+             "degrade to the semantic gate otherwise.",
+        description=(
+            "Read migrated artifact verification_packets.json and, per panel, run the "
+            "emitted ES|QL and native PROMQL(source query) on the target cluster to "
+            "compute numeric parity. PromQL panels are numerically verified; Datadog / "
+            "non-PromQL / clusters without native PROMQL degrade to a structural "
+            "(semantic-gate) report, clearly labeled. Exit 2 when ES is unreachable or "
+            "inputs are invalid, 1 when any panel parity FAILs, 0 otherwise."
+        ),
+    )
+    compare_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
+                             help="Migrated dashboard artifact dir (contains verification_packets.json). Repeat to combine.")
+    compare_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+                             help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
+    compare_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
+    compare_cmd.add_argument("--index", default="", help="Override the ES index pattern for the native PROMQL oracle (default: infer per panel).")
+    compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
+    compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
+    compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
+    _add_tls_arguments(compare_cmd)
+
     return parser
 
 
@@ -572,6 +601,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_seed_sample_data(args))
     elif args.command == "remove-sample-data":
         sys.exit(_run_remove_sample_data(args))
+    elif args.command == "compare":
+        sys.exit(_run_compare(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -1112,6 +1143,98 @@ def _run_verify_alert_rules(args: Any) -> int:
     ):
         return 1
     return 0
+
+
+def _run_compare(args: Any) -> int:
+    """Per-panel side-by-side parity for migrated dashboards (PromQL native oracle)."""
+    if not args.es_url or not args.api_key:
+        print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
+        return 2
+    packets: list[dict[str, Any]] = []
+    for raw in args.artifact_dir:
+        path = Path(raw) / "verification_packets.json"
+        if not path.exists():
+            print(json.dumps({"error": "missing_verification_packets", "path": str(path)}, indent=2))
+            return 2
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"error": "invalid_verification_packets", "path": str(path), "detail": str(exc)}, indent=2))
+            return 2
+        if not isinstance(data, dict):
+            print(json.dumps({"error": "invalid_verification_packets", "path": str(path), "detail": "expected a JSON object"}, indent=2))
+            return 2
+        packets.extend(data.get("packets") or [])
+
+    from datetime import UTC, datetime, timedelta
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=args.window_minutes)
+    start_iso = start.isoformat().replace("+00:00", "Z")
+    end_iso = end.isoformat().replace("+00:00", "Z")
+
+    verify = _tls_verify(args)
+    request = make_es_request(args.es_url, args.api_key, verify=verify)
+    try:
+        oracle_ok = native_promql_available(request, args.index or "metrics-*")
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+
+    rows: list[dict[str, Any]] = []
+    for pkt in packets:
+        is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
+        if oracle_ok and is_promql:
+            index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
+            try:
+                cmp_ = compare_panel(
+                    request, source_query=pkt["source_query"], translated_query=pkt["translated_query"],
+                    index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
+                )
+            except NetworkError as exc:
+                print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+                return 2
+            rows.append({
+                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                "mode": "native_oracle", "verdict": cmp_.verdict(),
+                "max_relative_error": cmp_.max_relative_error, "compared_points": cmp_.compared_points,
+                "reason": cmp_.skipped_reason or cmp_.translated_error or cmp_.native_error or "",
+                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
+            })
+        else:
+            rows.append({
+                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                "mode": "structural", "verdict": "STRUCTURAL", "semantic_gate": pkt.get("semantic_gate", ""),
+                "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
+            })
+
+    summary = {"panels": len(rows)}
+    for r in rows:
+        summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
+    report = {"summary": summary, "oracle_available": oracle_ok, "panels": rows}
+    out = Path(args.report_out)
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+    return 1 if any(r["verdict"] == "FAIL" for r in rows) else 0
+
+
+def _infer_index(esql: str) -> str:
+    """Best-effort index pattern from a leading FROM/TS source command."""
+    for kw in ("FROM ", "TS "):
+        if kw in esql:
+            tail = esql.split(kw, 1)[1].strip()
+            return tail.split()[0].split("|")[0].strip().rstrip(",") if tail else ""
+    return ""
+
+
+def _render_compare_md(report: dict[str, Any]) -> str:
+    lines = ["# Side-by-side comparison", "", f"Oracle available: {report['oracle_available']}", "",
+             "| Dashboard | Panel | Mode | Verdict | Max rel err | Reason |", "|---|---|---|---|---|---|"]
+    for r in report["panels"]:
+        err = f"{r.get('max_relative_error', 0):.4f}" if r.get("mode") == "native_oracle" else "-"
+        lines.append(f"| {r.get('dashboard','')} | {r.get('panel','')} | {r.get('mode','')} | {r.get('verdict','')} | {err} | {r.get('reason','')} |")
+    return "\n".join(lines) + "\n"
 
 
 def _run_seed_sample_data(args: Any) -> int:
