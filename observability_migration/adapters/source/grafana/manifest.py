@@ -63,7 +63,14 @@ def infer_query_language(query_text: str, datasource_type: str = "", panel_type:
 
 
 def _datasource_identity(meta: dict[str, str]) -> str:
-    return "::".join([meta.get("type", ""), meta.get("uid", ""), meta.get("name", "")])
+    uid = str(meta.get("uid") or "").strip()
+    if uid:
+        return f"uid::{uid}"
+    return "::".join([
+        "legacy",
+        str(meta.get("type") or "").strip(),
+        str(meta.get("name") or "").strip(),
+    ])
 
 
 def analyze_panel_targets(panel: dict[str, Any]) -> dict[str, Any]:

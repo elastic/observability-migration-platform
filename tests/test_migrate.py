@@ -57,6 +57,64 @@ migrate = SimpleNamespace(
 )
 
 
+class DatasourceIdentityTests(unittest.TestCase):
+    """analyze_panel_targets must treat the datasource UID as the authoritative
+    identity when present (issue #56). The four scenarios below mirror the
+    behaviour table in that issue so the comparison cannot silently regress in
+    either direction.
+    """
+
+    @staticmethod
+    def _panel(*datasources):
+        return {
+            "type": "graph",
+            "targets": [
+                {"refId": chr(ord("A") + idx), "datasource": ds}
+                for idx, ds in enumerate(datasources)
+            ],
+        }
+
+    def test_same_uid_with_missing_type_is_not_mixed(self):
+        panel = self._panel(
+            {"type": "cloudwatch", "uid": "cw"},
+            {"uid": "cw"},
+        )
+        self.assertFalse(manifest.analyze_panel_targets(panel)["mixed_datasource"])
+
+    def test_same_type_different_uid_is_mixed(self):
+        panel = self._panel(
+            {"type": "cloudwatch", "uid": "cw-1"},
+            {"type": "cloudwatch", "uid": "cw-2"},
+        )
+        self.assertTrue(manifest.analyze_panel_targets(panel)["mixed_datasource"])
+
+    def test_different_uid_and_language_is_mixed(self):
+        panel = {
+            "type": "graph",
+            "targets": [
+                {"refId": "A", "expr": "rate(http_total[5m])",
+                 "datasource": {"type": "prometheus", "uid": "prom"}},
+                {"refId": "B", "expr": '{service="api"} |~ "error"',
+                 "datasource": {"type": "loki", "uid": "loki"}},
+            ],
+        }
+        self.assertTrue(manifest.analyze_panel_targets(panel)["mixed_datasource"])
+
+    def test_legacy_no_uid_same_type_and_name_is_not_mixed(self):
+        panel = self._panel(
+            {"type": "prometheus", "name": "Prom"},
+            {"type": "prometheus", "name": "Prom"},
+        )
+        self.assertFalse(manifest.analyze_panel_targets(panel)["mixed_datasource"])
+
+    def test_legacy_no_uid_same_name_different_type_is_mixed(self):
+        panel = self._panel(
+            {"type": "prometheus", "name": "shared"},
+            {"type": "loki", "name": "shared"},
+        )
+        self.assertTrue(manifest.analyze_panel_targets(panel)["mixed_datasource"])
+
+
 class TranslatorRegressionTests(unittest.TestCase):
     def setUp(self):
         self.rule_pack = migrate.RulePackConfig()
@@ -4648,6 +4706,34 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result.readiness, "manual_only")
         self.assertIn("Mixed datasource", result.reasons[0])
         self.assertTrue(any("manual redesign" in note.lower() for note in result.notes))
+
+    def test_same_uid_targets_with_missing_type_are_not_mixed_datasource(self):
+        panel = {
+            "title": "AWS EC2",
+            "type": "graph",
+            "gridPos": {"w": 24, "h": 8, "x": 0, "y": 0},
+            "targets": [
+                {
+                    "refId": "A",
+                    "namespace": "AWS/EC2",
+                    "metricName": "CPUUtilization",
+                    "datasource": {"type": "cloudwatch", "uid": "cloudwatch-uid-abc"},
+                },
+                {
+                    "refId": "B",
+                    "namespace": "AWS/EC2",
+                    "metricName": "NetworkIn",
+                    "datasource": {"uid": "cloudwatch-uid-abc"},
+                },
+            ],
+        }
+
+        _, result = self.translate_panel(panel)
+
+        self.assertEqual(result.status, "requires_manual")
+        self.assertEqual(result.readiness, "manual_only")
+        self.assertEqual(result.reasons, ["No PromQL expression found in panel targets"])
+        self.assertFalse(any("mixed datasource" in note.lower() for note in result.notes))
 
     def test_dashboard_translation_preserves_original_panel_positions(self):
         dashboard = {
