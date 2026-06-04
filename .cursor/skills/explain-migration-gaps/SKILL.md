@@ -41,6 +41,15 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
    - **`not_feasible` or `blocked`:** do **not** walk through a step-by-step tweak — explain the redesign constraint (what semantic capability Kibana lacks or must be re-modeled) and why, citing `reasons` (and Datadog `semantic_losses` when relevant). Only mention an alternative target if `recommended_target` or `target_candidates` genuinely offers one; otherwise say a net-new design is required.
 7. **Prioritize when many panels need work** — use `migration_summary.md` must-fix ordering; explain the highest-impact panels first unless the user names a specific one.
 
+## Parity failures (from validate-side-by-side)
+
+When **`validate-side-by-side`** routed a panel here, the manifest status may still be clean (`migrated` / `ok`) — the panel translated but **`obs-migrate compare`** did not pass numeric parity. Read `<output-dir>/dashboards/comparison_report.json` (or the sibling `.md` table with the same columns) and locate the row by dashboard + panel title/id.
+
+1. **Read the row** — start with `verdict`, `reason`, and `max_relative_error` (when present). A **`FAIL`** means bucket values diverged beyond the strict threshold; **`STRUCTURAL`** or **`ERROR`** on a panel you expected numeric proof means the oracle could not run or only a shape check ran.
+2. **Rule out data/window/step mismatch first** — a **`FAIL` is NOT automatically a translation defect.** Re-run `obs-migrate compare` with `--window-minutes` and `--step-seconds` aligned to the source panel's time range and resolution. When live telemetry is sparse or mismatched, use **`obs-migrate seed-sample-data`** so both sides read the same synthetic data, compare again, then **`obs-migrate remove-sample-data --confirm`** to tear down seeder-owned streams.
+3. **Only after mismatch is ruled out**, treat a persistent **`FAIL`** as a real translation defect — explain what the emitted ES|QL computes versus the source PromQL (from the verification packet / manifest query context) and give the same rebuild/redesign path as any other gap: `transformation_redesign_tasks`, `recommended_target`, `target_candidates`, and verification-packet sketches.
+4. **`SKIP` and `ERROR` are not passes** — they mean the oracle could not verify the panel (unsupported construct or ES query error). Say explicitly that numeric parity was **not** proven; do not treat them as green.
+
 ## Honest limits
 
 - **`obs-migrate migrate` does not populate the richer heuristic `review_explanation`.** Those fields appear only when the migration was run with `grafana-migrate --review-explanations` (or the equivalent flag on a Grafana migrate invocation). Default migrate output still has `reasons`, `notes`, and `transformation_redesign_tasks` on Grafana — use those first.

@@ -166,6 +166,7 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("blocked", text)  # Datadog-only status surfaced
         # Honest about the grafana-only richer explanations
         self.assertIn("--review-explanations", text)
+        self.assertIn("comparison_report", text)  # parity-FAIL handoff from validate-side-by-side
 
     def test_validate_sxs_skill_wraps_compare_and_is_honest(self):
         text = VALIDATE_SXS_SKILL.read_text(encoding="utf-8")
