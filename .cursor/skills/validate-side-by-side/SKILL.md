@@ -1,6 +1,6 @@
 ---
 name: validate-side-by-side
-description: Prove a migrated Kibana dashboard matches the original Grafana/Datadog source panel-by-panel by running obs-migrate compare, which numerically checks each PromQL panel's emitted ES|QL against Elasticsearch's native PROMQL oracle and degrades to a structural check otherwise. Use when the user asks to "validate the migration", "compare side by side", "did my panels translate correctly", "verify the numbers match", or "check parity". Writes nothing to the source; runs read-only queries against the target cluster. For an overall coverage summary use report-migration-coverage; to understand panels that failed use explain-migration-gaps.
+description: Check whether a migrated Kibana dashboard matches the original Grafana/Datadog source panel-by-panel — numerically where Elasticsearch's native PROMQL oracle applies, structural-only otherwise. Use when the user asks to "validate the migration", "compare side by side", "did my panels translate correctly", "verify the numbers match", or "check parity". Runs read-only queries against the target cluster and writes nothing to the source. For an overall coverage summary use report-migration-coverage; to understand panels that failed use explain-migration-gaps.
 ---
 
 # Validate side by side

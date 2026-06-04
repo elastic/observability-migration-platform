@@ -1,6 +1,6 @@
 ---
 name: explain-migration-gaps
-description: For panels and widgets that did NOT migrate cleanly, explain WHY in plain language and give step-by-step guidance to rebuild them manually in Kibana. Use when the user asks "why didn't this panel migrate", "what does not_feasible mean here", "how do I fix the panels that need manual work", "explain the warnings", or "how do I rebuild this in Kibana". Read-only: reads migration artifacts already on disk. For an overall coverage summary use report-migration-coverage; to numerically verify the panels that DID migrate use validate-side-by-side.
+description: Explain WHY panels and widgets did NOT migrate cleanly, in plain language, and give step-by-step guidance to rebuild them in Kibana. Use when the user asks "why didn't this panel migrate", "what does not_feasible mean here", "how do I fix the panels that need manual work", "explain the warnings", or "how do I rebuild this in Kibana". Read-only: reads migration artifacts already on disk. For an overall coverage summary use report-migration-coverage; to numerically verify the panels that DID migrate use validate-side-by-side.
 ---
 
 # Explain migration gaps
@@ -15,6 +15,8 @@ Filter `panels[]` in `<output-dir>/dashboards/migration_manifest.json` by `panel
 - **Datadog:** `warning`, `requires_manual`, `not_feasible`, `blocked`
 
 Skip panels whose status is clean (`migrated` on Grafana, `ok` on Datadog). When the user names a specific panel, match by `title`, `source_panel_id`, and dashboard title/id in the same manifest entry.
+
+> **Exception — clean panels that fail numeric parity:** a panel can be clean here yet still `FAIL` `obs-migrate compare`. If `validate-side-by-side` routed you here for a clean (`migrated` / `ok`) panel, do **not** skip it — use the **Parity failures (from validate-side-by-side)** section below.
 
 ## Inputs (artifact table)
 
