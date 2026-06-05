@@ -32,6 +32,7 @@ from .preflight import (
     _metric_candidates,
 )
 from .promql import (
+    _COUNTER_ONLY_RANGE_FUNCTIONS,
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
     PromQLFragment,
@@ -58,6 +59,7 @@ from .promql import (
     _parse_fragment,
     _parse_logql_search,
     _resolve_metric_field,
+    _should_degrade_counter_range_func,
     _summary_mode_from_metadata,
     classify_promql_complexity,
     gauge_default_agg_warning,
@@ -818,12 +820,16 @@ def join_family_rule(context):
             right_is_counter = resolver.is_counter(right_frag.metric) if resolver else _is_counter_fallback(right_frag.metric, rp)
             left_inner_func = left_info["inner_func"]
             right_inner_func = right_info["inner_func"]
-            if not left_is_counter and left_frag.range_func in {"rate", "irate", "increase"}:
+            if _should_degrade_counter_range_func(left_frag.range_func, left_frag.metric, left_is_counter, resolver):
                 left_inner_func, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
                 _append_unique(context.warnings, warning.format(metric=left_frag.metric))
-            if not right_is_counter and right_frag.range_func in {"rate", "irate", "increase"}:
+            elif not left_is_counter and left_frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+                left_is_counter = True
+            if _should_degrade_counter_range_func(right_frag.range_func, right_frag.metric, right_is_counter, resolver):
                 right_inner_func, warning = _gauge_fallback_for_counter_range_func(right_frag.range_func)
                 _append_unique(context.warnings, warning.format(metric=right_frag.metric))
+            elif not right_is_counter and right_frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+                right_is_counter = True
             left_prefer = "counter" if left_frag.range_func in {"rate", "irate", "increase"} and left_is_counter else "gauge"
             right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} and right_is_counter else "gauge"
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
@@ -978,11 +984,9 @@ def join_family_rule(context):
             esql_inner = AGG_FUNCTION_MAP[left_frag.range_func]
             w = left_frag.range_window or rp.default_rate_window
             # Same gauge-fallback story as range_agg_family_rule: emitting
-            # RATE/IRATE/INCREASE on a gauge-typed field hard-fails.
-            if (
-                not is_counter
-                and left_frag.range_func in {"rate", "irate", "increase"}
-            ):
+            # RATE/IRATE/INCREASE on a gauge-typed field hard-fails. Counter-only
+            # rate()/irate() keep their true form unless the target proves gauge.
+            if _should_degrade_counter_range_func(left_frag.range_func, left_frag.metric, is_counter, resolver):
                 esql_inner, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
                 _append_unique(context.warnings, warning.format(metric=left_frag.metric))
             inner_expr = f"{esql_inner}({physical_metric}, {w})"
@@ -1392,12 +1396,11 @@ def scaled_agg_family_rule(context):
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
     eval_line, final_alias = _frag_eval_line(alias, frag)
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-    if (
-        not is_counter
-        and frag.range_func in {"rate", "irate", "increase"}
-    ):
+    if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
         esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
         _append_unique(context.warnings, warning.format(metric=frag.metric))
+    elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+        is_counter = True
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
@@ -1487,12 +1490,11 @@ def nested_agg_family_rule(context):
     if frag.range_func in AGG_FUNCTION_MAP:
         esql_inner_name = AGG_FUNCTION_MAP[frag.range_func]
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
             esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             _append_unique(context.warnings, warning.format(metric=frag.metric))
+        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+            is_counter = True
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
         first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({physical_metric}, {frag.range_window}))"
@@ -1600,13 +1602,15 @@ def range_agg_family_rule(context):
     # heuristic, and the resulting ES|QL panel hard-fails with
     # ``first argument of [RATE(...)] must be counter``. Degrade the
     # query to a gauge-equivalent so the panel still renders honest
-    # numbers and surface a warning.
-    if (
-        not is_counter
-        and frag.range_func in {"rate", "irate", "increase"}
-    ):
+    # numbers and surface a warning -- but only when the source function
+    # tolerates gauge misuse (increase) or the target *proves* gauge; a
+    # bare rate()/irate() over a not-proven-gauge field keeps its true
+    # RATE/IRATE form (the telemetry contract seeds those fields as counters).
+    if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
         esql_inner_name, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
         _append_unique(context.warnings, warning.format(metric=frag.metric))
+    elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+        is_counter = True
     needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
     source = "TS" if needs_ts else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter

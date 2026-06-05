@@ -2,12 +2,11 @@ source: sum(rate(nginx_ingress_controller_requests{controller_pod=~"$controller"
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Dropped variable-driven label filters during migration
-warning: Source PromQL used rate() but nginx_ingress_controller_requests is typed as gauge in the target index; rendered as AVG_OVER_TIME instead. Fix the ingest mapping to mark this field as a counter to get a true rate.
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE nginx_ingress_controller_requests IS NOT NULL
-| STATS nginx_ingress_controller_requests_status_4_5_rate_sum = SUM(CASE((NOT (status RLIKE "[4-5].*")), AVG_OVER_TIME(nginx_ingress_controller_requests, 5m), NULL)), nginx_ingress_controller_requests_controller_pod_rate_sum = SUM(AVG_OVER_TIME(nginx_ingress_controller_requests, 5m)) BY time_bucket = TBUCKET(5 minute), controller
+| STATS nginx_ingress_controller_requests_status_4_5_rate_sum = SUM(CASE((NOT (status RLIKE "[4-5].*")), RATE(nginx_ingress_controller_requests, 5m), NULL)), nginx_ingress_controller_requests_controller_pod_rate_sum = SUM(RATE(nginx_ingress_controller_requests, 5m)) BY time_bucket = TBUCKET(5 minute), controller
 | EVAL computed_value = (nginx_ingress_controller_requests_status_4_5_rate_sum / nginx_ingress_controller_requests_controller_pod_rate_sum)
 | KEEP time_bucket, controller, computed_value
 | SORT time_bucket ASC

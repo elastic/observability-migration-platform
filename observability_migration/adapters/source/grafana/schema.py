@@ -415,6 +415,40 @@ class SchemaResolver:
                 return True
         return False
 
+    def refutes_counter(self, metric_name):
+        """True when the *target* has positive information that the metric is
+        NOT a usable ES|QL counter — an explicit rule-pack ``gauge`` kind, or a
+        resolved field that is present in the live capabilities but not
+        counter-typed (gauge, or plain numeric without ``time_series_metric``).
+
+        Returns False when the target is silent (offline migrate, or the field
+        is absent from the live caps) or when the field genuinely is a counter.
+        Callers use this to decide whether a counter-only PromQL range function
+        (``rate``/``irate``) may keep its true ES|QL ``RATE``/``IRATE`` form
+        (no refutation -> trust the source) or must degrade to a gauge analogue
+        (refuted -> emitting ``RATE`` would 400 in Kibana on a non-counter
+        field)."""
+        if not metric_name:
+            return False
+        kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
+        if kind == "gauge":
+            return True
+        if kind == "counter":
+            return False
+        if self.is_counter(metric_name):
+            return False
+        # Not a proven counter. Refute only when the target actually knows this
+        # field (live caps present and the resolved field exists); stay silent
+        # when offline or the field is unknown so the source signal can win.
+        for candidate in (
+            metric_name,
+            self.resolve_metric_field(metric_name, prefer="counter"),
+            self.resolve_metric_field(metric_name, prefer="gauge"),
+        ):
+            if candidate and self.field_exists(candidate):
+                return True
+        return False
+
     def resolve_control_field(self, variable_name):
         if variable_name in self._rule_pack.control_field_overrides:
             return self._rule_pack.control_field_overrides[variable_name]

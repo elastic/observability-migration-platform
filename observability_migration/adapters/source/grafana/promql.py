@@ -128,6 +128,35 @@ def _gauge_fallback_for_counter_range_func(range_func):
         )
     return result
 
+
+# ``rate``/``irate`` are *counter-only* in PromQL — a gauge cannot be rated — so
+# the source asserting one is authoritative proof the metric is a counter. Only
+# positive proof that the target types the field as a gauge (which would make
+# ES|QL ``RATE`` 400) should override that and force the gauge degradation.
+# ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
+# conservative heuristic-driven degradation.
+_COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
+
+
+def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver):
+    """Whether a counter-style range function must degrade to a gauge analogue.
+
+    Degrade when the resolved field is not a counter AND either the source
+    function tolerates gauge misuse (``increase``) or the target positively
+    refutes a counter (the field is present in the live caps but gauge / plain
+    numeric). A source ``rate``/``irate`` over a field the target does not
+    refute keeps its true ``RATE``/``IRATE`` form — the source asserts the
+    field is a counter (``rate`` is counter-only in PromQL) and the telemetry
+    contract seeds such fields as counters."""
+    if is_counter:
+        return False
+    if range_func not in {"rate", "irate", "increase"}:
+        return False
+    if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+        # Trust the source unless the target refutes the counter typing.
+        return bool(resolver and resolver.refutes_counter(metric))
+    return True
+
 OUTER_AGG_MAP = {
     "sum": "SUM",
     "avg": "AVG",
@@ -2399,13 +2428,16 @@ def _build_measure_spec(
         # heuristic, and the resulting ES|QL panel hard-fails with
         # ``first argument of [RATE(...)] must be counter``. Degrade the
         # query to a gauge-equivalent so the panel still renders honest
-        # numbers and surface a warning.
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        # numbers and surface a warning -- but only when the source function
+        # tolerates gauge misuse (increase) or the target *proves* gauge; a
+        # bare rate()/irate() over a not-proven-gauge field keeps its true
+        # RATE/IRATE form (the contract seeds those fields as counters).
+        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
+        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+            # Source rate()/irate() is counter-only; trust it over the gauge heuristic.
+            is_counter = True
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
@@ -2430,12 +2462,11 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
+        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+            is_counter = True
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)

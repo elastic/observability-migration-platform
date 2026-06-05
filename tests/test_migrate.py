@@ -1355,6 +1355,57 @@ class TranslatorRegressionTests(unittest.TestCase):
             r"counter metric|not a counter)",
         )
 
+    def test_rate_on_suffixless_counter_emits_rate_when_target_unknown(self):
+        """rate()/irate() are counter-only in PromQL: a gauge cannot be rated.
+        When the metric has no counter-name suffix (node_vmstat_oom_kill,
+        node_netstat_Icmp_InErrors) AND the target schema offers no proof it is
+        a gauge (offline migrate, or field absent from caps), the source rate()
+        is authoritative -> emit a true RATE. This pairs with the telemetry
+        contract seeding the field as counter, so the emitted ES|QL is valid and
+        numerically correct instead of collapsing to AVG_OVER_TIME (~0.998 err).
+        """
+        # No field caps seeded -> resolver cannot prove gauge (offline case).
+        translated = self.translate("rate(node_vmstat_oom_kill[5m])")
+        esql = translated.esql_query
+        self.assertIn("RATE(node_vmstat_oom_kill", esql)
+        self.assertNotIn("AVG_OVER_TIME(node_vmstat_oom_kill", esql)
+
+    def test_irate_on_suffixless_counter_emits_irate_when_target_unknown(self):
+        translated = self.translate("irate(node_netstat_Icmp_InErrors[5m])")
+        esql = translated.esql_query
+        self.assertIn("IRATE(node_netstat_Icmp_InErrors", esql)
+        self.assertNotIn("AVG_OVER_TIME(node_netstat_Icmp_InErrors", esql)
+
+    def test_rate_still_degrades_when_target_proves_gauge(self):
+        """The fix must NOT regress honest degradation: when the live target
+        explicitly types the field as gauge, emitting RATE would 400 in Kibana,
+        so degrade to AVG_OVER_TIME regardless of the source rate()."""
+        self.seed_field_caps({
+            "node_vmstat_oom_kill": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "gauge",
+                },
+            },
+        })
+        translated = self.translate("rate(node_vmstat_oom_kill[5m])")
+        esql = translated.esql_query
+        self.assertNotIn("RATE(node_vmstat_oom_kill", esql)
+        self.assertIn("AVG_OVER_TIME(node_vmstat_oom_kill", esql)
+
+    def test_increase_on_suffixless_metric_still_degrades_when_target_unknown(self):
+        """increase() is NOT forced to counter the way rate()/irate() are: it can
+        be misused on a real gauge, and ES|QL INCREASE() also requires counter
+        typing. With no counter suffix and no target proof, keep the conservative
+        gauge degradation (consistent with the contract's soft-counter treatment
+        of increase())."""
+        translated = self.translate("increase(weird_unknown_metric[5m])")
+        esql = translated.esql_query
+        self.assertNotIn("INCREASE(weird_unknown_metric", esql)
+        self.assertIn("MAX_OVER_TIME(weird_unknown_metric", esql)
+
     def test_rate_on_counter_typed_field_still_uses_RATE(self):
         """Regression guard: degradation must only fire for gauge-typed
         fields, not for proper counters."""
