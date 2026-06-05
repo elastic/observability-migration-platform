@@ -329,15 +329,16 @@ class TestMacroDrift(unittest.TestCase):
 class TestVariableErasure(unittest.TestCase):
     """Test plan item: Variable preservation/erasure test.
 
-    Variables that can be represented as Kibana params must be preserved.
-    Variables that are still dropped should produce warnings.
+    Grafana variables are represented as Kibana dashboard controls, not ES|QL
+    query params. Final ES|QL must therefore drop those matchers and warn
+    rather than upload unbound ``?var`` placeholders.
     """
 
-    def test_variable_in_label_filter_is_preserved_as_parameter(self):
+    def test_variable_in_label_filter_is_dropped_with_warning(self):
         ctx = _translate('rate(http_requests_total{job="$job"}[5m])')
         self.assertIn("feasible", ctx.feasibility)
-        self.assertIn("service.name == ?job", ctx.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
+        self.assertNotIn("?job", ctx.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
     def test_variable_panel_status_is_migrated_with_warnings(self):
         """A panel whose query relies on a variable filter must be
@@ -356,14 +357,15 @@ class TestVariableErasure(unittest.TestCase):
         if ctx.feasibility == "feasible" and ctx.esql_query:
             self.assertNotIn("$job", ctx.esql_query)
             self.assertNotIn("$instance", ctx.esql_query)
-            self.assertIn("service.name == ?job", ctx.esql_query)
-            self.assertIn("service.instance.id == ?instance", ctx.esql_query)
+            self.assertNotIn("?job", ctx.esql_query)
+            self.assertNotIn("?instance", ctx.esql_query)
+            self.assertIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
-    def test_logql_variable_in_stream_selector_is_preserved_as_parameter(self):
+    def test_logql_variable_in_stream_selector_is_dropped_with_warning(self):
         ctx = _translate('{service_name="$svc"} |~ "error"', panel_type="logs")
         if ctx.feasibility == "feasible":
-            self.assertIn("service.name == ?svc", ctx.esql_query)
-            self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
+            self.assertNotIn("?svc", ctx.esql_query)
+            self.assertIn("Dropped variable-driven LogQL label filters during migration", ctx.warnings)
 
     def test_clean_template_variables_strips_dollar_syntax(self):
         self.assertNotIn("$", display.clean_template_variables("CPU $instance"))

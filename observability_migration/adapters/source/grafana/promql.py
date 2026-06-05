@@ -824,18 +824,18 @@ def _matcher_to_esql(matcher, resolver):
     value = matcher["value"]
     if not label:
         return None
+    if _matcher_has_incompatible_target_field(matcher, label, resolver):
+        return None
     if op in {"=~", "!~"}:
         value = _strip_promql_regex_anchors(value)
     param_name = _grafana_param_name(value)
     if param_name:
-        if op == "=":
-            return f"{label} == ?{param_name}"
-        if op == "!=":
-            return f"{label} != ?{param_name}"
-        if op == "=~":
-            return f"{label} RLIKE ?{param_name}"
-        if op == "!~":
-            return f"NOT ({label} RLIKE ?{param_name})"
+        # Grafana query variables are emitted as ordinary dashboard filter
+        # controls, not ES|QL variable controls. Keeping ``?var`` here makes
+        # uploaded dashboards fail with "Unknown query parameter [var]".
+        # Drop the matcher and let the dashboard-level control apply the
+        # filter when the user selects a value.
+        return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
     # false-positives on regex end-of-string anchors like ".*cam(era)?$".
@@ -861,6 +861,20 @@ def _matcher_to_esql(matcher, resolver):
             return None
         return f"NOT ({label} RLIKE {_quote_esql_string(value)})"
     return None
+
+
+def _matcher_has_incompatible_target_field(matcher, label, resolver):
+    """Return True when field caps prove a string matcher would fail at runtime."""
+    if resolver is None or not hasattr(resolver, "is_text_like_field"):
+        return False
+    if matcher.get("label") in _FLOAT_LABEL_NAMES:
+        return False
+    if matcher.get("op") not in {"=", "!=", "=~", "!~"}:
+        return False
+    exists = resolver.field_exists(label) if hasattr(resolver, "field_exists") else None
+    if exists is not True:
+        return False
+    return resolver.field_type_family(label) == "numeric"
 
 
 def _common_matchers(left_matchers, right_matchers):
@@ -1373,8 +1387,16 @@ def _ast_aggregate_fragment(node, expr):
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if frag.outer_agg == "topk" and child.metric and not child.extra.get("not_feasible_reasons"):
-        topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), child)
+    if frag.outer_agg == "topk" and not child.extra.get("not_feasible_reasons"):
+        topk_source = child if child.metric else _find_summary_fragment(child)
+        if not topk_source or not topk_source.metric:
+            return frag
+        topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), topk_source)
+        if child.outer_agg:
+            topk_frag.outer_agg = child.outer_agg
+        if child.group_labels:
+            topk_frag.group_labels = list(child.group_labels)
+            topk_frag.group_mode = child.group_mode
         try:
             param = getattr(node, "param", None)
             topk_frag.extra["topk_limit"] = int(float(getattr(param, "val", param) or 10))
@@ -1890,10 +1912,21 @@ def _frag_filters(frag, resolver):
     return filters, had_vars
 
 
+def _frag_has_incompatible_target_fields(frag, resolver):
+    return any(
+        _matcher_has_incompatible_target_field(
+            m,
+            resolver.resolve_label(m["label"]) if resolver else m["label"],
+            resolver,
+        )
+        for m in frag.matchers
+    )
+
+
 def _matcher_has_dropped_variable(m):
     value = str(m.get("value", ""))
     if _grafana_param_name(value):
-        return False
+        return True
     return (
         bool(re.search(r"\$\w", value))
         or (m.get("op") == "=~" and value.strip() == ".*")
@@ -1931,6 +1964,29 @@ def _filter_missing_resolved_fields(fields, resolver):
     return kept
 
 
+def _group_field_is_usable(field_name, resolver, *, drop_missing=False):
+    if not field_name or resolver is None or not hasattr(resolver, "field_exists"):
+        return True
+    exists = resolver.field_exists(field_name)
+    if exists is False:
+        return not drop_missing
+    if exists is not True:
+        return True
+    if hasattr(resolver, "has_conflicting_types") and resolver.has_conflicting_types(field_name):
+        return False
+    if hasattr(resolver, "is_aggregatable_field") and not resolver.is_aggregatable_field(field_name):
+        return False
+    return True
+
+
+def _filter_usable_group_fields(fields, resolver, *, drop_missing=False):
+    return [
+        field_name
+        for field_name in (fields or [])
+        if _group_field_is_usable(field_name, resolver, drop_missing=drop_missing)
+    ]
+
+
 def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
     """Resolve fragment group labels through the resolver.
 
@@ -1941,9 +1997,20 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
     explicit = resolver.resolve_labels(raw) if resolver else list(raw)
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
-    if preferred_origin == "legend":
-        preferred = _filter_missing_resolved_fields(preferred, resolver)
+    explicit = _filter_usable_group_fields(explicit, resolver)
+    preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+
+
+def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
+    if frag is None:
+        return False
+    raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
+    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
+    preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    return any(not _group_field_is_usable(field_name, resolver) for field_name in explicit) or any(
+        not _group_field_is_usable(field_name, resolver, drop_missing=False) for field_name in preferred
+    )
 
 
 def _grouping_parts(bucket_expr, group_fields):
@@ -2220,12 +2287,17 @@ def _build_measure_spec(
     warnings = []
     if had_vars:
         warnings.append("Dropped variable-driven label filters during migration")
+    had_incompatible_fields = _frag_has_incompatible_target_fields(frag, resolver)
+    if had_incompatible_fields:
+        warnings.append("Dropped label filters with incompatible target field types during migration")
     group_fields = _frag_group_labels(
         frag,
         resolver,
         preferred_group_labels,
         preferred_origin=preferred_group_labels_origin,
     )
+    if _frag_has_incompatible_group_fields(frag, resolver, preferred_group_labels):
+        warnings.append("Dropped grouping fields with incompatible target field types during migration")
     if alias_hint:
         suffix = alias_hint
     else:
@@ -2390,10 +2462,14 @@ def _build_measure_spec(
                 start_matchers = frag.binary_rhs.matchers
         if not start_metric:
             return None
-        filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
+        start_frag = PromQLFragment(matchers=start_matchers)
+        filters, had_vars = _frag_filters(start_frag, resolver)
         warnings = []
         if had_vars:
             warnings.append("Dropped variable-driven label filters during migration")
+        had_incompatible_fields = _frag_has_incompatible_target_fields(start_frag, resolver)
+        if had_incompatible_fields:
+            warnings.append("Dropped label filters with incompatible target field types during migration")
         alias = _safe_alias(f"{start_metric}_start_time_ms", suffix)
         final_alias = _safe_alias(f"{start_metric}_uptime_seconds", alias_hint)
         source = "FROM"
@@ -2564,6 +2640,7 @@ _OUTER_TO_TS_AGG = {
     "COUNT": "COUNT_OVER_TIME",
 }
 _TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+_TS_AGG_FUNC_PATTERN = r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
 
 
 def _normalize_mixed_ts_stats_exprs(specs):
@@ -2601,13 +2678,13 @@ def _normalize_mixed_ts_stats_exprs(specs):
     """
     if not specs or specs[0].source_type != "TS":
         return specs
-    if not any(re.search(r"\b[A-Z_]+_OVER_TIME\(", spec.stats_expr or "") for spec in specs):
+    if not any(re.search(rf"\b{_TS_AGG_FUNC_PATTERN}\(", spec.stats_expr or "") for spec in specs):
         return specs
     window = _timeseries_stats_window(specs)
 
     has_extra_group_dims = any(spec.group_fields for spec in specs)
     has_wrapped_regular_ts = any(
-        re.search(r"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z_]+_OVER_TIME\(", spec.stats_expr or "")
+        re.search(rf"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*{_TS_AGG_FUNC_PATTERN}\(", spec.stats_expr or "")
         for spec in specs
     )
     # When grouping by extra dimensions, or when at least one term is already a
@@ -2627,7 +2704,7 @@ def _normalize_mixed_ts_stats_exprs(specs):
             expr,
         )
         bare_ts = re.fullmatch(
-            rf"([A-Z_]+_OVER_TIME)\(\s*{re.escape(metric_field)}\s*,\s*[^)]+\)",
+            rf"({_TS_AGG_FUNC_PATTERN})\(\s*{re.escape(metric_field)}\s*,\s*([^)]+)\)",
             expr,
         )
 
@@ -2635,10 +2712,11 @@ def _normalize_mixed_ts_stats_exprs(specs):
             # Target the wrapped ``OUTER(TS_FUNC(field, w))`` form.
             if bare_ts:
                 ts_func = bare_ts.group(1)
+                ts_window = bare_ts.group(2).strip()
                 outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
-                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                new_expr = f"{outer}({ts_func}({metric_field}, {ts_window}))"
                 warning = (
-                    f"Wrapped {ts_func}({metric_field}, {window}) in {outer}(...) so "
+                    f"Wrapped {ts_func}({metric_field}, {ts_window}) in {outer}(...) so "
                     f"the grouped TS panel target validates (no bare time-series "
                     f"aggregate mixed with regular aggregates)"
                 )
@@ -3026,9 +3104,16 @@ def _build_formula_plan(
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
-                    param = f"?{var_name}"
-                    expr = f"({param} {frag.binary_op} {plan.expr})" if phantom_on_left else f"({plan.expr} {frag.binary_op} {param})"
-                    warning = f"Grafana variable ${var_name} used as scalar arithmetic parameter ?{var_name}"
+                    replacement = "0"
+                    expr = (
+                        f"({replacement} {frag.binary_op} {plan.expr})"
+                        if phantom_on_left
+                        else f"({plan.expr} {frag.binary_op} {replacement})"
+                    )
+                    warning = (
+                        f"Grafana variable ${var_name} used as scalar arithmetic value "
+                        f"was replaced with literal {replacement}"
+                    )
                     if warning not in (plan.warnings or []):
                         plan.warnings.append(warning)
                     return FormulaPlan(specs=plan.specs, expr=expr, warnings=list(plan.warnings))
@@ -3168,6 +3253,8 @@ __all__ = [
     "_frag_eval_line",
     "_frag_filters",
     "_frag_group_labels",
+    "_frag_has_incompatible_group_fields",
+    "_frag_has_incompatible_target_fields",
     "_grouping_parts",
     "_inline_filters_into_stats_expr",
     "_matcher_alias_suffix",

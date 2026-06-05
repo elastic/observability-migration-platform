@@ -2867,7 +2867,7 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            concat_args.append(f'COALESCE({column}, "")')
+            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
         else:
             if segment == "":
                 continue
@@ -3319,6 +3319,14 @@ def _field_control_type(field_name, resolver):
     return "range" if assessment.capability.type_family == "numeric" else "options"
 
 
+def _field_has_ts_metadata_conflict(field_name, resolver):
+    cache = getattr(resolver, "_field_cache", None) or {}
+    variants = cache.get(field_name) or {}
+    has_dimension = any(bool(meta.get("time_series_dimension")) for meta in variants.values() if isinstance(meta, dict))
+    has_metric = any(bool(meta.get("time_series_metric")) for meta in variants.values() if isinstance(meta, dict))
+    return has_dimension and has_metric
+
+
 MIN_DATATABLE_HEIGHT = 5
 
 
@@ -3426,6 +3434,11 @@ def query_variable_rule(context):
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
         return f"skipped unavailable control field {field_name}"
+    if resolver and resolver.field_exists(field_name) is True:
+        if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
+            return f"skipped conflicting control field {field_name}"
+        if not resolver.is_aggregatable_field(field_name):
+            return f"skipped non-aggregatable control field {field_name}"
     control_type = _field_control_type(field_name, resolver)
     context.control = {
         "type": control_type,

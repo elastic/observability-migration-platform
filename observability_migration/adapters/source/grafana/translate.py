@@ -48,6 +48,8 @@ from .promql import (
     _frag_eval_line,
     _frag_filters,
     _frag_group_labels,
+    _frag_has_incompatible_group_fields,
+    _frag_has_incompatible_target_fields,
     _gauge_can_use_ts,
     _gauge_fallback_for_counter_range_func,
     _grouping_parts,
@@ -812,13 +814,23 @@ def join_family_rule(context):
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
             output_group = ["time_bucket"] + join_labels
             group_by_parts = [rp.ts_bucket] + join_labels
-            left_prefer = "counter" if left_frag.range_func in {"rate", "irate", "increase"} else "gauge"
-            right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} else "gauge"
+            left_is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
+            right_is_counter = resolver.is_counter(right_frag.metric) if resolver else _is_counter_fallback(right_frag.metric, rp)
+            left_inner_func = left_info["inner_func"]
+            right_inner_func = right_info["inner_func"]
+            if not left_is_counter and left_frag.range_func in {"rate", "irate", "increase"}:
+                left_inner_func, warning = _gauge_fallback_for_counter_range_func(left_frag.range_func)
+                _append_unique(context.warnings, warning.format(metric=left_frag.metric))
+            if not right_is_counter and right_frag.range_func in {"rate", "irate", "increase"}:
+                right_inner_func, warning = _gauge_fallback_for_counter_range_func(right_frag.range_func)
+                _append_unique(context.warnings, warning.format(metric=right_frag.metric))
+            left_prefer = "counter" if left_frag.range_func in {"rate", "irate", "increase"} and left_is_counter else "gauge"
+            right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} and right_is_counter else "gauge"
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
 
-            left_stats_call = _build_stats_call(left_info['outer_agg'], left_info['inner_func'], left_metric_field, left_info['range_window'])
-            right_stats_call = _build_stats_call(right_info['outer_agg'], right_info['inner_func'], right_metric_field, right_info['range_window'])
+            left_stats_call = _build_stats_call(left_info["outer_agg"], left_inner_func, left_metric_field, left_info["range_window"])
+            right_stats_call = _build_stats_call(right_info["outer_agg"], right_inner_func, right_metric_field, right_info["range_window"])
             # Apply per-side exclusive filters via CASE() so that label
             # selectors which appear on only one operand (e.g. mode="user" on
             # the numerator) are not silently dropped.
@@ -2124,6 +2136,14 @@ def stats_expression_rule(context):
         return f"built stats expression {context.stats_expr}"
 
     if context.inner_func in AGG_FUNCTION_MAP:
+        if context.source_type == "TS" and context.group_labels:
+            context.stats_expr = f"AVG({inner_expr})"
+            _append_unique(
+                context.warnings,
+                f"Added outer AVG() around {context.inner_func} because ES|QL requires an outer aggregation "
+                "when grouping TS functions by label fields",
+            )
+            return f"built stats expression {context.stats_expr}"
         context.stats_expr = inner_expr
         return f"built stats expression {context.stats_expr}"
 
@@ -2169,6 +2189,17 @@ def render_esql_rule(context):
     return "rendered ES|QL query"
 
 
+def _projected_metric_field_from_esql(esql_query):
+    for line in esql_query.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("| STATS") and not stripped.startswith("| EVAL"):
+            continue
+        match = re.match(r"\|\s+(?:STATS|EVAL)\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=", stripped)
+        if match:
+            return match.group(1)
+    return ""
+
+
 @QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)
 def value_wrapper_transforms_rule(context):
     """Apply ES|QL equivalents for sort/round/clamp_min wrapper functions."""
@@ -2176,7 +2207,14 @@ def value_wrapper_transforms_rule(context):
     if not frag or not context.esql_query or context.feasibility == "not_feasible":
         return None
 
-    metric_field = context.output_metric_field or "value"
+    metric_field = (
+        context.output_metric_field
+        or _projected_metric_field_from_esql(context.esql_query)
+        or context.metric_name
+        or "value"
+    )
+    if not context.output_metric_field and metric_field != "value":
+        context.output_metric_field = metric_field
     lines = context.esql_query.splitlines()
     applied = []
 
@@ -2350,6 +2388,24 @@ def metric_name_required_rule(context):
     return "missing metric name"
 
 
+@QUERY_VALIDATORS.register("dynamic_metric_name", priority=12)
+def dynamic_metric_name_rule(context):
+    if context.feasibility == "not_feasible":
+        return None
+    metric_name = str(context.metric_name or "")
+    if not metric_name.startswith("label_"):
+        return None
+    variable_name = metric_name.removeprefix("label_") or "metric"
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    _append_unique(
+        context.warnings,
+        f"PromQL metric name comes from Grafana template variable (${variable_name}); "
+        "dynamic metric selection requires manual redesign",
+    )
+    return "dynamic metric name"
+
+
 @QUERY_VALIDATORS.register("time_filter_source_alignment", priority=20)
 def time_filter_source_alignment_rule(context):
     if context.feasibility == "not_feasible":
@@ -2370,6 +2426,60 @@ def rendered_query_required_rule(context):
     context.confidence = 0.0
     _append_unique(context.warnings, "No ES|QL query was produced")
     return "missing ES|QL output"
+
+
+def _collect_source_metrics(frag, seen=None):
+    seen = seen or set()
+    metrics = []
+    if not frag or id(frag) in seen:
+        return metrics
+    seen.add(id(frag))
+    metric = str(getattr(frag, "metric", "") or "")
+    if metric and not metric.startswith("label_"):
+        metrics.append(metric)
+    for key in ("left_frag", "right_frag"):
+        child = frag.extra.get(key) if getattr(frag, "extra", None) else None
+        if child:
+            metrics.extend(_collect_source_metrics(child, seen))
+    rhs = getattr(frag, "binary_rhs", None)
+    if rhs:
+        metrics.extend(_collect_source_metrics(rhs, seen))
+    return list(dict.fromkeys(metrics))
+
+
+def _metric_exists_in_live_schema(metric, resolver):
+    candidates = [metric]
+    for prefer in ("gauge", "counter"):
+        resolved = _resolve_metric_field(resolver, metric, prefer=prefer)
+        if resolved and resolved not in candidates:
+            candidates.append(resolved)
+    statuses = [resolver.field_exists(candidate) for candidate in candidates]
+    if any(status is True for status in statuses):
+        return True
+    if any(status is None for status in statuses):
+        return None
+    return False
+
+
+@QUERY_VALIDATORS.register("live_metric_fields_exist", priority=25)
+def live_metric_fields_exist_rule(context):
+    resolver = context.resolver
+    if context.feasibility == "not_feasible" or not resolver:
+        return None
+    if resolver.discovery_status().get("status") != "ok":
+        return None
+    missing = []
+    for metric in _collect_source_metrics(context.fragment):
+        if _metric_exists_in_live_schema(metric, resolver) is False:
+            missing.append(metric)
+    if not missing:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    for metric in missing:
+        resolved = _resolve_metric_field(resolver, metric, prefer="gauge") or metric
+        _append_unique(context.warnings, f"Target field {resolved} is missing from live schema discovery")
+    return "missing live metric fields"
 
 
 _logger = logging.getLogger(__name__)
@@ -2443,6 +2553,14 @@ def translate_promql_to_esql(
     if context.feasibility == "not_feasible":
         context.confidence = 0.0
     else:
+        if context.fragment and _frag_has_incompatible_target_fields(context.fragment, context.resolver):
+            _append_unique(context.warnings, "Dropped label filters with incompatible target field types during migration")
+        if context.fragment and _frag_has_incompatible_group_fields(
+            context.fragment,
+            context.resolver,
+            context.metadata.get("preferred_group_labels", []),
+        ):
+            _append_unique(context.warnings, "Dropped grouping fields with incompatible target field types during migration")
         context.confidence = 0.85 if not context.warnings else 0.6
     context.query_ir = build_query_ir(context)
     contract, evaluation, fulfillment = _build_metric_contract_artifacts(

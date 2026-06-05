@@ -377,10 +377,21 @@ class SchemaResolver:
             if counter_metric and counter_metric != metric_name
             else None
         )
+        gauge_metric = self.resolve_metric_field(metric_name, prefer="gauge")
+        gauge_capability = (
+            self.field_capability(gauge_metric)
+            if gauge_metric and gauge_metric != metric_name
+            else None
+        )
         if is_counter_metric_field(capability):
             return True
         if is_counter_metric_field(counter_capability):
             return True
+        for field_capability in (capability, counter_capability, gauge_capability):
+            if getattr(field_capability, "time_series_metric_kind", "") == "gauge":
+                return False
+        if capability is not None and counter_capability is None:
+            return False
         component_suffixes = ("_bucket", "_count", "_sum")
         has_counter_suffix = any(metric_name.endswith(s) for s in self._rule_pack.counter_suffixes)
         has_component_suffix = any(
@@ -390,15 +401,6 @@ class SchemaResolver:
         if has_counter_suffix and not has_component_suffix:
             return True
         if has_component_suffix:
-            gauge_metric = self.resolve_metric_field(metric_name, prefer="gauge")
-            gauge_capability = (
-                self.field_capability(gauge_metric)
-                if gauge_metric and gauge_metric != metric_name
-                else None
-            )
-            for field_capability in (capability, gauge_capability):
-                if getattr(field_capability, "time_series_metric_kind", "") == "gauge":
-                    return False
             return True
         profile = self._current_schema_profile()
         # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
