@@ -170,8 +170,10 @@ the Datadog adapter.
 
 **Grafana** has four translation paths, chosen automatically per panel:
 
-1. **Native PROMQL** (`--native-promql`, preferred) — wraps the original PromQL
-   in `PROMQL index=… value=(expr)`. Highest fidelity.
+1. **Native PROMQL** (the default; when `--es-url` is set, target detection
+   downgrades to ES|QL translation if the `PROMQL` command is unsupported;
+   `--native-promql` forces it and `--no-native-promql` opts out) — wraps
+   the original PromQL in `PROMQL index=… value=(expr)`. Highest fidelity.
 2. **Rule-engine ES|QL** — parses PromQL AST via `promql-parser`, classifies,
    runs through priority-ordered translation rules, renders ES|QL.
 3. **LLM fallback** (optional) — for `not_feasible` panels, asks an LLM.

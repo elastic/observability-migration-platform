@@ -3972,6 +3972,25 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "probe")
         self.assertIn("rejects", profile[PROMQL_LABEL_MATCHER_PARAMS]["reason"])
 
+    def test_parse_args_defaults_native_promql_to_auto(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        args = parse_args([])
+
+        self.assertEqual(args.native_promql_flag, "auto")
+
+    def test_parse_args_native_promql_flags_override_auto_default(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertEqual(
+            parse_args(["--native-promql"]).native_promql_flag,
+            "force_on",
+        )
+        self.assertEqual(
+            parse_args(["--no-native-promql"]).native_promql_flag,
+            "force_off",
+        )
+
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
@@ -4002,6 +4021,58 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(rule_pack.native_promql)
         self.assertEqual(rule_pack.runtime_features, profile)
         self.assertFalse(is_feature_supported(rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
+
+    def test_apply_native_promql_auto_default_clears_default_dataset_filter(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="auto",
+        )
+        rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
+        }
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value=profile,
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "")
+
+    def test_apply_native_promql_auto_without_es_url_defaults_to_native(self):
+        """An offline run (no ``--es-url`` to probe) still defaults to native
+        PROMQL and clears the default ``"prometheus"`` dataset filter, with no
+        cluster probe attempted."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="",
+            es_api_key="",
+            native_promql_flag="auto",
+        )
+        rule_pack = rules.RulePackConfig()
+        self.assertEqual(rule_pack.metrics_dataset_filter, "prometheus")
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+        ) as detect:
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+            detect.assert_not_called()
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "")
 
     def test_apply_native_promql_force_on_records_detected_subfeatures(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -4181,7 +4252,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             self.assertTrue(_resolve_native_promql(args))
             det.assert_not_called()
 
-    def test_resolve_native_promql_auto_without_es_url_returns_false(self):
+    def test_resolve_native_promql_auto_without_es_url_defaults_to_native(self):
+        """With no cluster to probe, ``auto`` optimistically defaults to native
+        PROMQL (highest-fidelity path). ``--no-native-promql`` is the opt-out."""
         from observability_migration.adapters.source.grafana.cli import (
             _resolve_native_promql,
         )
@@ -4190,7 +4263,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             es_url="",
             es_api_key="",
         )
-        self.assertFalse(_resolve_native_promql(args))
+        self.assertTrue(_resolve_native_promql(args))
 
     def test_print_rule_catalog_skips_promql_probe(self):
         """`--print-rule-catalog` is an offline introspection command and

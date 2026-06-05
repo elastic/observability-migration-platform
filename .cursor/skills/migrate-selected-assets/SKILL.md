@@ -74,7 +74,6 @@ obs-migrate migrate \
   --input-dir ./selected_dashboards \
   --output-dir selected_out \
   --assets dashboards \
-  --native-promql \
   --data-view "metrics-*"
 ```
 

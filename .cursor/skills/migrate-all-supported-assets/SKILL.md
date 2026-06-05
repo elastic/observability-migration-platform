@@ -53,7 +53,6 @@ obs-migrate migrate \
   --input-mode api \
   --output-dir full_out \
   --assets all \
-  --native-promql \
   --data-view "metrics-*" \
   --esql-index "metrics-*" \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY" \

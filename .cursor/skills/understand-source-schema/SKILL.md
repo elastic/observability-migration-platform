@@ -36,7 +36,7 @@ export ELASTICSEARCH_ENDPOINT="https://...es..." KEY="<api-key>"
 obs-migrate migrate \
   --source grafana --input-mode api \
   --output-dir migration_output \
-  --assets dashboards --native-promql --preflight \
+  --assets dashboards --preflight \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
 ```
 
