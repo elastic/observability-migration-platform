@@ -136,6 +136,10 @@ def generate_documents(
             for field_name, info in (stream.get("fields") or {}).items()
             if info.get("role") == "metric"
         }
+        # Stable numeric ordering of the histogram bucket boundaries present in
+        # this stream's combinations, used to make ``*_bucket`` counters
+        # cumulative across ``le``.
+        le_order = _sorted_le_values(combinations)
 
         previous_ts: datetime.datetime | None = None
         for ts in timestamps:
@@ -161,7 +165,17 @@ def generate_documents(
                             key = (concrete_name, field_name, combo_idx)
                             counter_state[key] = counter_state.get(key, float(10 + combo_idx))
                             counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
-                            doc[field_name] = round(counter_state[key], 4)
+                            value = counter_state[key]
+                            if field_name.endswith("_bucket") and "le" in dimensions:
+                                # Prometheus cumulative histogram: bucket(le=v) counts
+                                # all observations <= v, so it must be non-decreasing as
+                                # le grows. Scale the per-series counter by the le rank
+                                # (1-based) so higher buckets always dominate lower ones
+                                # while each series stays monotonic in time.
+                                rank, total = _le_rank(dimensions["le"], le_order)
+                                if total:
+                                    value *= rank / total
+                            doc[field_name] = round(value, 4)
                         else:
                             denominator = _ratio_denominator(info)
                             ceiling = gauge_values.get(denominator) if denominator else None
@@ -508,6 +522,37 @@ def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: ran
     return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
 
 
+def _le_value_sort_key(value: str) -> tuple[int, float, str]:
+    """Sort key for a histogram ``le`` boundary.
+
+    Numeric boundaries order naturally; ``+Inf`` (Prometheus' open top bucket)
+    sorts last; anything non-numeric sorts after numbers but before ``+Inf`` so
+    ordering is always total and deterministic.
+    """
+    text = str(value).strip()
+    if text in {"+Inf", "Inf", "inf", "+inf"}:
+        return (2, float("inf"), text)
+    try:
+        return (0, float(text), text)
+    except ValueError:
+        return (1, 0.0, text)
+
+
+def _sorted_le_values(combinations: list[dict[str, str]]) -> list[str]:
+    values = {combo["le"] for combo in combinations if "le" in combo}
+    return sorted(values, key=_le_value_sort_key)
+
+
+def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
+    """Return ``(1-based rank, total)`` of *value* within *le_order*."""
+    if not le_order:
+        return (0, 0)
+    try:
+        return (le_order.index(value) + 1, len(le_order))
+    except ValueError:
+        return (len(le_order), len(le_order))
+
+
 def _gauge_value(
     field_name: str,
     hour: float,
@@ -656,14 +701,42 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
         ("\n".join(lines) + "\n").encode(),
         "application/x-ndjson",
     )
+    # Each document contributes two NDJSON lines (action + source), so the batch
+    # holds this many docs. We use it to reconcile the per-item results below.
+    attempted = len(lines) // 2
     items = result.get("items", []) if isinstance(result, dict) else []
+
+    if not items:
+        # The bulk request failed as a whole (HTTP 4xx/5xx -> error envelope, or
+        # an empty body) and returned no per-item results. Counting only
+        # ``items`` here would silently drop the batch and let the seed report
+        # success while no data landed.
+        if attempted > 1:
+            # Most whole-batch failures are payload-size (413) or transient
+            # throttling (429); both clear when the batch is smaller. Split and
+            # retry so the data still lands instead of being written off.
+            mid = (attempted // 2) * 2  # split on a doc boundary (2 lines/doc)
+            _flush_into_summary(lines[:mid], request, summary)
+            _flush_into_summary(lines[mid:], request, summary)
+            return
+        # A single document that still fails is a real, unrecoverable error.
+        summary.errors += attempted
+        if attempted and len(summary.error_samples) < 3:
+            reason = ""
+            if isinstance(result, dict):
+                err = result.get("error")
+                reason = (err.get("reason") if isinstance(err, dict) else str(err)) or ""
+            summary.error_samples.append((reason or "bulk request returned no items")[:240])
+        return
+
+    ok = errors = 0
     for item in items:
         if not isinstance(item, dict):
             continue
         operation = item.get("create") or item.get("index") or {}
         error = operation.get("error") if isinstance(operation, dict) else None
         if error:
-            summary.errors += 1
+            errors += 1
             if len(summary.error_samples) < 3:
                 if isinstance(error, dict):
                     sample = str(error.get("reason") or error)
@@ -671,7 +744,14 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
                     sample = str(error)
                 summary.error_samples.append(sample[:240])
         else:
-            summary.ok += 1
+            ok += 1
+    # Reconcile: if the server returned fewer items than we sent (truncated /
+    # partial response), the missing docs are failures, not successes.
+    missing = max(0, attempted - (ok + errors))
+    summary.ok += ok
+    summary.errors += errors + missing
+    if missing and len(summary.error_samples) < 3:
+        summary.error_samples.append(f"{missing} document(s) had no bulk result line")
 
 
 def _raise_on_error(result: dict[str, Any], action: str) -> None:
