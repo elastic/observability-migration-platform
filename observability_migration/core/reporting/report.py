@@ -388,6 +388,9 @@ def pct(n, total):
 
 
 def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None):
+    runtime_features = {}
+    for result in results:
+        runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
     report = {
         "summary": {
             "dashboards": len(results),
@@ -416,6 +419,7 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
                 for r in results
             ),
         },
+        "runtime_features": runtime_features,
         "dashboards": [],
     }
     if validation_summary or validation_records:

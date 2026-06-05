@@ -1080,6 +1080,15 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
     native = _resolve_native_promql(args, runtime_profile)
     if native:
         rule_pack.native_promql = True
+        if not runtime_profile and not getattr(args, "es_url", ""):
+            set_runtime_feature(
+                rule_pack,
+                PROMQL_COMMAND_V0,
+                supported=True,
+                source="default",
+                confidence="unverified",
+                reason="no --es-url configured; native PROMQL assumed for offline migration",
+            )
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""
 
@@ -1943,6 +1952,7 @@ def main(argv: list[str] | None = None):
         for item in review_summary.get("notes", [])[:2]:
             print(f"    note: {item}")
     for result in results:
+        result.runtime_features = dict(getattr(rule_pack, "runtime_features", {}) or {})
         result.verification_summary = {
             "green": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Green"),
             "yellow": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Yellow"),

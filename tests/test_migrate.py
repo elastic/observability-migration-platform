@@ -4056,6 +4056,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
         )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
 
         args = SimpleNamespace(
             dataset_filter="",
@@ -4073,6 +4076,16 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertTrue(rule_pack.native_promql)
         self.assertEqual(rule_pack.metrics_dataset_filter, "")
+        self.assertEqual(
+            rule_pack.runtime_features[PROMQL_COMMAND_V0],
+            {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": "no --es-url configured; native PROMQL assumed for offline migration",
+            },
+        )
 
     def test_apply_native_promql_force_on_records_detected_subfeatures(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -6420,6 +6433,29 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         panel = data["dashboards"][0]["panels"][0]
         self.assertEqual(panel["visual_ir"]["title"], "Serialized")
         self.assertEqual(panel["operational_ir"]["status"], "migrated")
+        os.unlink(path)
+
+    def test_report_includes_runtime_feature_profile(self):
+        from observability_migration.adapters.source.grafana.runtime_features import PROMQL_COMMAND_V0
+        from observability_migration.core.reporting.report import save_detailed_report
+
+        result = migrate.MigrationResult("Dash", "uid-1")
+        result.runtime_features = {
+            PROMQL_COMMAND_V0: {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": "no --es-url configured; native PROMQL assumed for offline migration",
+            }
+        }
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            path = f.name
+        save_detailed_report([result], [], path)
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data["runtime_features"], result.runtime_features)
         os.unlink(path)
 
 
