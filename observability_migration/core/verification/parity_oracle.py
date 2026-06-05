@@ -295,6 +295,16 @@ def _translated_reducer(esql: str) -> str:
     return agg if agg in {"avg", "max", "min", "sum"} else "sum"
 
 
+def _is_promql_passthrough(esql: str) -> bool:
+    """True when the translated query's leading command is native ``PROMQL``.
+
+    These queries return native-shaped columns (``value``/``step``/
+    ``_timeseries``), so the comparison must decode them with ``normalize_native``
+    rather than the ES|QL ``normalize_translated`` (which keys off ``time_bucket``).
+    """
+    return bool(re.match(r"^\s*PROMQL\b", esql or "", re.IGNORECASE))
+
+
 def _bucket_align(series, step):
     return {key: {int(ts // step) * step: v for ts, v in vs} for key, vs in series.items()}
 
@@ -381,10 +391,54 @@ _SINGLE_VALUE_REDUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_STATS_BY_RE = re.compile(r"^\s*STATS\b(?P<body>.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def _stats_groups_by_time_bucket(stats_command: str) -> bool:
+    """True when a single ``STATS ...`` command groups ``BY`` a clause that
+    contains ``time_bucket`` (i.e. it still yields a per-bucket time series).
+    A ``STATS`` with no ``BY`` at all, or a ``BY`` over dimensions only, does
+    not — it produces a single row per group (a stat snapshot)."""
+    match = _STATS_BY_RE.match(stats_command.strip())
+    if not match:
+        return False
+    body = match.group("body")
+    # The ``BY`` keyword splits aggregations from grouping; only the grouping
+    # side establishes the series shape. Match ``BY`` as a standalone keyword.
+    by_split = re.split(r"\bBY\b", body, maxsplit=1, flags=re.IGNORECASE)
+    if len(by_split) < 2:
+        return False  # no BY clause -> collapses to one row
+    grouping = by_split[1]
+    return bool(re.search(r"\btime_bucket\b", grouping, re.IGNORECASE))
+
 
 def is_single_value_reduction(esql: str) -> bool:
-    """True when the emitted ES|QL reduces the series to a single (stat) value."""
-    return bool(_SINGLE_VALUE_REDUCTION_RE.search(esql or ""))
+    """True when the emitted ES|QL reduces the series to a single (stat) value
+    instead of a per-time-bucket range series.
+
+    Grafana stat / single-stat / gauge panels translate to ES|QL whose terminal
+    aggregation drops the time dimension — e.g. a trailing
+    ``STATS time_bucket = MAX(time_bucket)`` collapse, a bare
+    ``STATS m = COUNT_DISTINCT(cpu)`` cardinality, a ``time()``-style
+    ``DATE_DIFF(..., NOW())`` uptime scalar, or a per-bucket STATS followed by a
+    terminal ``STATS ... BY <dimension>`` (no ``time_bucket``). There is no time
+    series to diff point-wise against the native range vector, so the oracle must
+    SKIP rather than emit a false FAIL.
+
+    The shape rule: split the pipeline into ``|`` stages; if there is at least
+    one ``STATS`` stage and the *last* one does not group ``BY time_bucket``, the
+    result is a single value (per group). Queries with no ``STATS`` at all are
+    left to point-wise comparison.
+    """
+    text = esql or ""
+    if _SINGLE_VALUE_REDUCTION_RE.search(text):
+        return True
+    stages = [stage.strip() for stage in text.split("|")]
+    stats_stages = [stage for stage in stages if re.match(r"(?i)^STATS\b", stage)]
+    if not stats_stages:
+        return False
+    # The terminal aggregation governs the output shape.
+    return not _stats_groups_by_time_bucket(stats_stages[-1])
 
 
 def sanitize_source_for_oracle(expr: str, step: int) -> str:
@@ -476,7 +530,16 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
 
     native = normalize_native(native_raw)
-    translated = normalize_translated(translated_raw)
+    # A translated query that is itself a native ``PROMQL ...`` command (the
+    # native-passthrough degrade path) emits native-shaped ``step``/``value``/
+    # ``_timeseries`` columns rather than ES|QL ``time_bucket``. Parsing it with
+    # normalize_translated yields 0 series (no time_bucket) -> a false cmp=0 FAIL,
+    # so decode it with the native parser instead.
+    if _is_promql_passthrough(cmp_.esql):
+        translated = normalize_native(translated_raw)
+        cmp_.notes.append("translated query is a native PROMQL passthrough; parsed with the native normalizer")
+    else:
+        translated = normalize_translated(translated_raw)
     cmp_.native_series = len(native)
     cmp_.translated_series = len(translated)
     common = set(native) & set(translated)

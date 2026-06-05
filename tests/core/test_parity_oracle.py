@@ -156,6 +156,50 @@ class NormalizeAndDiffTests(unittest.TestCase):
         self.assertEqual(namespaces, ["ns1", "ns2"])
 
 
+class SingleValueReductionTests(unittest.TestCase):
+    def test_terminal_time_bucket_collapse_is_single_value(self):
+        # Existing form: final STATS folds the per-bucket series to one row.
+        esql = ("TS metrics-* | STATS m = MAX(LAST_OVER_TIME(m)) BY time_bucket = TBUCKET(5 minute) "
+                "| SORT time_bucket ASC | STATS time_bucket = MAX(time_bucket), m = MAX(m) | KEEP time_bucket, m")
+        self.assertTrue(po.is_single_value_reduction(esql))
+
+    def test_count_distinct_only_is_single_value(self):
+        # Grafana ``count(count(node_cpu_seconds_total) by (cpu))`` -> a scalar cardinality.
+        esql = "FROM metrics-* | WHERE node_cpu_seconds_total IS NOT NULL | STATS node_cpu_seconds_total_count = COUNT_DISTINCT(cpu)"
+        self.assertTrue(po.is_single_value_reduction(esql))
+
+    def test_uptime_date_diff_scalar_is_single_value(self):
+        # ``time() - haproxy_process_start_time_seconds`` -> one scalar uptime value.
+        esql = ('FROM metrics-* | WHERE haproxy_process_start_time_seconds IS NOT NULL '
+                '| STATS start_time_ms = MAX(haproxy_process_start_time_seconds * 1000) '
+                '| EVAL uptime_seconds = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW()) | KEEP uptime_seconds')
+        self.assertTrue(po.is_single_value_reduction(esql))
+
+    def test_trailing_stats_without_time_bucket_is_single_value(self):
+        # MTU/Speed stat panels: per-bucket STATS then a terminal STATS with no BY time_bucket.
+        esql = ("TS metrics-* | WHERE node_network_mtu_bytes IS NOT NULL "
+                "| STATS node_network_mtu_bytes = AVG(node_network_mtu_bytes) BY time_bucket = TBUCKET(5 minute), device "
+                "| SORT time_bucket ASC | STATS node_network_mtu_bytes = MAX(node_network_mtu_bytes) BY device")
+        self.assertTrue(po.is_single_value_reduction(esql))
+
+    def test_multi_bucket_series_is_not_single_value(self):
+        # A genuine time series whose terminal STATS still groups BY time_bucket must NOT be flagged.
+        esql = ("TS metrics-* | WHERE m IS NOT NULL "
+                "| STATS m = AVG(RATE(m, 5m)) BY time_bucket = TBUCKET(5 minute), device | SORT time_bucket ASC")
+        self.assertFalse(po.is_single_value_reduction(esql))
+
+    def test_multi_bucket_with_eval_after_is_not_single_value(self):
+        # Trailing EVAL/KEEP that preserves time_bucket is still a series.
+        esql = ("TS metrics-* | STATS v = AVG(AVG_OVER_TIME(v, 5m)) BY time_bucket = TBUCKET(5 minute) "
+                "| EVAL computed_value = v * 8 | KEEP time_bucket, computed_value | SORT time_bucket ASC")
+        self.assertFalse(po.is_single_value_reduction(esql))
+
+    def test_from_aggregation_grouped_by_dimension_only_is_single_value(self):
+        # FROM ... STATS ... BY <dimension> (no time bucket anywhere) is a single snapshot per dim, not a range series.
+        esql = "FROM metrics-* | WHERE up IS NOT NULL | STATS up = MAX(up) BY instance"
+        self.assertTrue(po.is_single_value_reduction(esql))
+
+
 class SanitizeSourceForOracleTests(unittest.TestCase):
     """The native-PROMQL oracle must not be fed unexpanded Grafana template
     variables. ``{job="$job"}`` matches no seeded series, so every templated
@@ -330,3 +374,61 @@ class ExecutionTests(unittest.TestCase):
                                   index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
         self.assertEqual(result.verdict(), "ERROR")
         self.assertIn("bad ES|QL", result.translated_error)
+
+
+class PromqlPassthroughOracleTests(unittest.TestCase):
+    """A translated query that is itself a native ``PROMQL ...`` command (the
+    'native passthrough' degrade path) emits native-shaped ``step``/``value``/
+    ``_timeseries`` columns, NOT ES|QL ``time_bucket``. ``normalize_translated``
+    can't parse those (no time_bucket -> 0 series), turning every passthrough
+    panel into a false ``cmp=0`` FAIL. ``compare_panel`` must normalize a
+    passthrough translated query with the native parser instead."""
+
+    def _passthrough_request(self, native_data, translated_data):
+        """Native call has no ``params``; translated (run_translated) carries
+        ``params=[{_tstart},{_tend}]`` -- route on that so a PROMQL-passthrough
+        *translated* query is still served the translated payload."""
+        def request(method, path, body=None, content_type="application/json"):
+            is_translated = isinstance(body, dict) and "params" in body
+            return translated_data if is_translated else native_data
+        return request
+
+    def test_passthrough_translated_is_parsed_with_native_normalizer(self):
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        vals = [10.0, 20.0, 30.0, 40.0, 50.0]
+        # Native side: one series via _timeseries label blob.
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": [[v, t, json.dumps({"labels": {"view": "default"}})] for t, v in zip(stamps, vals)]}
+        # Translated side is a PROMQL passthrough: identical native-shaped columns.
+        translated = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                                  {"name": "_timeseries", "type": "keyword"}],
+                      "values": [[v, t, json.dumps({"labels": {"view": "default"}})] for t, v in zip(stamps, vals)]}
+        req = self._passthrough_request(native, translated)
+        esql = ("PROMQL index=metrics-* step=1m value=(rate(bind_responses_total{instance=\"1:1\"}[5m]))\n"
+                "| GROK _timeseries \"\\\"view\\\":\\\"%{DATA:view}\\\"\"\n"
+                "| KEEP step, value, view")
+        result = po.compare_panel(req, source_query="rate(bind_responses_total[5m])",
+                                  translated_query=esql, index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        # Before the fix: translated parsed by normalize_translated -> 0 series -> cmp=0 FAIL.
+        self.assertGreater(result.translated_series, 0,
+                           "passthrough translated query must yield series via the native parser")
+        self.assertGreaterEqual(result.compared_points, 1)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+
+    def test_non_passthrough_still_uses_translated_normalizer(self):
+        # Guard: a normal TS/ES|QL translated query must STILL be parsed by
+        # normalize_translated (time_bucket column), unchanged by the fix.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        vals = [10.0, 20.0, 30.0, 40.0, 50.0]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}, {"name": "host", "type": "keyword"}],
+                  "values": [[v, t, "a"] for t, v in zip(stamps, vals)]}
+        translated = {"columns": [{"name": "computed_value", "type": "double"}, {"name": "time_bucket", "type": "date"}, {"name": "host", "type": "keyword"}],
+                      "values": [[v, t, "a"] for t, v in zip(stamps, vals)]}
+        req = self._passthrough_request(native, translated)
+        result = po.compare_panel(req, source_query="go_goroutines",
+                                  translated_query="TS metrics-* | STATS computed_value = AVG(x) BY time_bucket = TBUCKET(5m), host",
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertGreaterEqual(result.compared_points, 1)
