@@ -101,19 +101,28 @@ def _drop_constants(
 
 
 def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Parse native PROMQL output: columns value/step/<labels>."""
+    """Parse native PROMQL output: columns value/step/<labels>.
+
+    Native PROMQL may return the series labels either as broken-out columns or
+    packed into a single ``_timeseries`` JSON column (the TS form). Both must be
+    decoded -- ignoring ``_timeseries`` collapses every grouped series into one
+    empty-key series, which can never intersect the translated side (which does
+    decode it), turning correct grouped panels into false FAILs.
+    """
     columns = [c["name"] for c in data.get("columns", [])]
     rows = data.get("values", [])
     if not columns or not rows:
         return {}
-    value_idx = step_idx = None
+    value_idx = step_idx = timeseries_idx = None
     label_idxs: list[tuple[int, str]] = []
     for i, name in enumerate(columns):
         if name == "value" or name.endswith("_value"):
             value_idx = i
         elif name == "step":
             step_idx = i
-        elif name != "_timeseries":
+        elif name == "_timeseries":
+            timeseries_idx = i
+        else:
             label_idxs.append((i, name))
     if value_idx is None or step_idx is None:
         return {}
@@ -127,6 +136,8 @@ def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
         if v is None:
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
+        if timeseries_idx is not None:
+            labels.update(_decode_timeseries_labels(row[timeseries_idx]))
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
     return _drop_constants([(dict(k), v) for k, v in bucket.items()])
 
@@ -226,24 +237,62 @@ def _decode_timeseries_labels(raw) -> dict[str, str]:
 def _project_to_subset(
     a: dict[SeriesKey, list[tuple[float, float]]],
     b: dict[SeriesKey, list[tuple[float, float]]],
+    reducer: str = "sum",
 ) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Re-aggregate ``a`` onto the label dimensions used by ``b`` (sum-align)."""
+    """Re-aggregate ``a`` onto the label dimensions used by ``b``.
+
+    ``reducer`` must match the outer aggregation the translated query applied
+    when it grouped by those labels. Summing native series onto a label subset
+    that the translated query AVERAGED reads N* too high (N = native series
+    collapsing into one subset key), which is the dominant source of false
+    SHAPE_PASS-at-~0.99 verdicts on grouped gauge panels.
+    """
     if not a or not b:
         return a
     b_labels: set[str] = set()
     for key in b:
         for name, _ in key.labels:
             b_labels.add(name)
-    projected: dict[SeriesKey, list[tuple[float, float]]] = {}
-    summed: dict[SeriesKey, dict[float, float]] = {}
+    grouped: dict[SeriesKey, dict[float, list[float]]] = {}
     for key, values in a.items():
         sub = tuple(sorted((n, v) for n, v in key.labels if n in b_labels))
-        acc = summed.setdefault(SeriesKey(sub), {})
+        acc = grouped.setdefault(SeriesKey(sub), {})
         for ts, val in values:
-            acc[ts] = acc.get(ts, 0.0) + val
-    for key, tsmap in summed.items():
-        projected[key] = sorted(tsmap.items())
+            acc.setdefault(ts, []).append(val)
+    projected: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for key, tsmap in grouped.items():
+        projected[key] = sorted((ts, _reduce_values(vals, reducer)) for ts, vals in tsmap.items())
     return projected
+
+
+def _reduce_values(values: list[float], reducer: str) -> float:
+    if not values:
+        return 0.0
+    if reducer == "avg":
+        return sum(values) / len(values)
+    if reducer == "max":
+        return max(values)
+    if reducer == "min":
+        return min(values)
+    return sum(values)
+
+
+# Outer aggregation in the emitted ES|QL ``| STATS <alias> = <AGG>(...) BY ...``.
+# Determines how native series must be collapsed when projecting onto the
+# translated label subset so the comparison is apples-to-apples.
+_TRANSLATED_REDUCER_RE = re.compile(
+    r"\|\s*STATS\s+[A-Za-z_][A-Za-z0-9_.]*\s*=\s*(?P<agg>AVG|SUM|MAX|MIN|COUNT)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _translated_reducer(esql: str) -> str:
+    """Return the outer STATS aggregation ('sum' default) of an ES|QL query."""
+    match = _TRANSLATED_REDUCER_RE.search(esql or "")
+    if not match:
+        return "sum"
+    agg = match.group("agg").lower()
+    return agg if agg in {"avg", "max", "min", "sum"} else "sum"
 
 
 def _bucket_align(series, step):
@@ -433,11 +482,15 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     common = set(native) & set(translated)
     native_for_diff = native
     if not common and native and translated:
-        projected = _project_to_subset(native, translated)
+        reducer = _translated_reducer(cmp_.esql)
+        projected = _project_to_subset(native, translated, reducer=reducer)
         if set(projected) & set(translated):
             native_for_diff = projected
             common = set(projected) & set(translated)
-            cmp_.notes.append(f"native re-aggregated {len(native)}->{len(projected)} series to match translated label subset")
+            cmp_.notes.append(
+                f"native re-aggregated {len(native)}->{len(projected)} series ({reducer}) "
+                "to match translated label subset"
+            )
     cmp_.common_series = len(common)
     points, rmax, rmean = compute_diff(native_for_diff, translated, step)
     cmp_.compared_points = points

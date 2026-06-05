@@ -1,6 +1,7 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import json
 import unittest
 
 from observability_migration.core.verification import parity_oracle as po
@@ -48,6 +49,49 @@ class NormalizeAndDiffTests(unittest.TestCase):
         out = po.normalize_native(data)
         self.assertEqual(len(out), 1)
 
+    def test_normalize_native_decodes_timeseries_label_column(self):
+        # Native PROMQL packs series labels into a ``_timeseries`` JSON column
+        # rather than broken-out columns. Ignoring it collapses every grouped
+        # series into one empty-key series, which can never match the translated
+        # side (which already decodes ``_timeseries``). Decode it symmetrically.
+        def ts(state):
+            return json.dumps({"labels": {"state": state, "job": "job_1", "instance": "1:1"}})
+        data = {
+            "columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                        {"name": "_timeseries", "type": "keyword"}],
+            "values": [
+                [10.0, "2026-01-01T00:00:00Z", ts("busy")],
+                [11.0, "2026-01-01T00:05:00Z", ts("busy")],
+                [20.0, "2026-01-01T00:00:00Z", ts("idle")],
+                [21.0, "2026-01-01T00:05:00Z", ts("idle")],
+            ],
+        }
+        out = po.normalize_native(data)
+        # Two distinct ``state`` values -> two series (job/instance are scrubbed
+        # as PROMETHEUS_ONLY_LABELS, leaving ``state`` as the distinguishing key).
+        self.assertEqual(len(out), 2)
+        states = sorted(dict(k.labels).get("state") for k in out)
+        self.assertEqual(states, ["busy", "idle"])
+
+    def test_normalize_native_matches_translated_series_for_grouped_panel(self):
+        # End-to-end symmetry: the same label set on both sides must yield the
+        # same SeriesKeys so common-series intersection is non-empty.
+        def native_ts(state):
+            return json.dumps({"labels": {"state": state, "job": "job_1"}})
+        native = po.normalize_native({
+            "columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                        {"name": "_timeseries", "type": "keyword"}],
+            "values": [[1.0, "2026-01-01T00:00:00Z", native_ts("busy")],
+                       [2.0, "2026-01-01T00:05:00Z", native_ts("busy")]],
+        })
+        translated = po.normalize_translated({
+            "columns": [{"name": "computed_value", "type": "double"}, {"name": "time_bucket", "type": "date"},
+                        {"name": "state", "type": "keyword"}],
+            "values": [[1.0, "2026-01-01T00:00:00Z", "busy"],
+                       [2.0, "2026-01-01T00:05:00Z", "busy"]],
+        })
+        self.assertTrue(set(native) & set(translated))
+
     def test_project_to_subset_sum_aligns_to_translated_dims(self):
         native = {
             po.SeriesKey((("dc", "x"), ("host", "a"))): [(0.0, 10.0)],
@@ -57,6 +101,42 @@ class NormalizeAndDiffTests(unittest.TestCase):
         projected = po._project_to_subset(native, translated)
         self.assertEqual(list(projected.keys()), [po.SeriesKey((("host", "a"),))])
         self.assertEqual(projected[po.SeriesKey((("host", "a"),))], [(0.0, 15.0)])
+
+    def test_project_to_subset_averages_when_reducer_is_avg(self):
+        # When the translated panel AVG()s by a label, collapsing native series
+        # onto that label must AVERAGE, not SUM -- otherwise N native series
+        # summed read N times the translated mean (rel err ~= (N-1)/N).
+        native = {
+            po.SeriesKey((("dc", "x"), ("host", "a"))): [(0.0, 10.0)],
+            po.SeriesKey((("dc", "y"), ("host", "a"))): [(0.0, 20.0)],
+            po.SeriesKey((("dc", "z"), ("host", "a"))): [(0.0, 30.0)],
+        }
+        translated = {po.SeriesKey((("host", "a"),)): [(0.0, 20.0)]}
+        projected = po._project_to_subset(native, translated, reducer="avg")
+        self.assertEqual(projected[po.SeriesKey((("host", "a"),))], [(0.0, 20.0)])
+
+    def test_project_to_subset_takes_max_when_reducer_is_max(self):
+        native = {
+            po.SeriesKey((("dc", "x"), ("host", "a"))): [(0.0, 10.0)],
+            po.SeriesKey((("dc", "y"), ("host", "a"))): [(0.0, 30.0)],
+        }
+        translated = {po.SeriesKey((("host", "a"),)): [(0.0, 30.0)]}
+        projected = po._project_to_subset(native, translated, reducer="max")
+        self.assertEqual(projected[po.SeriesKey((("host", "a"),))], [(0.0, 30.0)])
+
+    def test_translated_reducer_detects_outer_aggregation(self):
+        self.assertEqual(
+            po._translated_reducer("TS m | STATS x = AVG(x) BY time_bucket = TBUCKET(5 minute), state"),
+            "avg",
+        )
+        self.assertEqual(
+            po._translated_reducer("TS m | STATS x = SUM(RATE(x, 5 minute)) BY time_bucket, dc"),
+            "sum",
+        )
+        self.assertEqual(
+            po._translated_reducer("TS m | STATS x = MAX(x) BY time_bucket"),
+            "max",
+        )
 
     def test_normalize_translated_canonicalizes_otel_labels(self):
         data = {
@@ -174,6 +254,34 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result.verdict(), "STRICT_PASS")
         self.assertEqual(result.max_relative_error, 0.0)
         self.assertGreaterEqual(result.compared_points, 1)
+
+    def test_compare_panel_avg_panel_projection_uses_mean_not_sum(self):
+        # Real corpus shape: source is a bare gauge (many native series via the
+        # _timeseries label blob), translated AVG()s by one label. Native carries
+        # extra phantom labels so no key matches directly -> projection runs. The
+        # projection must AVERAGE native onto the translated label subset to match
+        # AVG(); summing N series reads N* too high (the SHAPE_PASS-at-0.99 bug).
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        # Three native series all collapse to state="busy"; each = 20 -> mean 20, sum 60.
+        nvals = []
+        for dc in ("x", "y", "z"):
+            for t in stamps:
+                nvals.append([20.0, t, json.dumps({"labels": {"state": "busy", "dc": dc}})])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": nvals}
+        translated = {"columns": [{"name": "computed_value", "type": "double"}, {"name": "time_bucket", "type": "date"},
+                                  {"name": "state", "type": "keyword"}],
+                      "values": [[20.0, t, "busy"] for t in stamps]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query="apache_workers",
+            translated_query="TS metrics-* | STATS computed_value = AVG(apache_workers) BY time_bucket = TBUCKET(5 minute), state",
+            index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertGreaterEqual(result.common_series, 1)
+        # mean(20,20,20) == 20 == translated -> near-zero error, a real pass.
+        self.assertLess(result.max_relative_error, 0.05)
+        self.assertIn(result.verdict(), {"STRICT_PASS", "FUZZY_PASS"})
 
     def test_compare_panel_native_unparseable_is_skip(self):
         req = self._fake_request({}, {}, native_error="could not parse")
