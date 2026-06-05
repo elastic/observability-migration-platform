@@ -3,6 +3,7 @@
 
 import datetime
 import json
+import re
 import unittest
 
 from observability_migration.core.telemetry_data import (
@@ -485,6 +486,153 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertIn("staging", environments)
         self.assertIn("development", environments)
 
+    def test_generate_documents_scopes_dimensions_to_cooccurring_metrics(self):
+        # Multiple dashboards collapse into one ``metrics-*`` stream, so the stream
+        # carries every metric and every dimension. A document for ``node_cpu`` must
+        # only carry the dimensions that co-occur with it in a query (cpu/mode), not
+        # unrelated ones harvested from other dashboards (balancer/chip). Otherwise
+        # legends and breakdowns cross-contaminate and per-dimension cardinality
+        # collapses under the combination cap.
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                        "apache_proxy_balancer_busy": {"role": "metric", "metric_kind": "gauge"},
+                        "cpu": {"role": "dimension"},
+                        "mode": {"role": "dimension"},
+                        "balancer": {"role": "dimension"},
+                        "chip": {"role": "dimension"},
+                    },
+                    "group_fields": ["cpu", "mode", "balancer", "chip"],
+                    "required_values": {},
+                    "required_patterns": {},
+                    "requirements": [
+                        {"metrics": ["node_cpu_seconds_total"], "dimensions": ["cpu", "mode"],
+                         "group_fields": ["cpu", "mode"]},
+                        {"metrics": ["apache_proxy_balancer_busy"], "dimensions": ["balancer", "chip"],
+                         "group_fields": ["balancer", "chip"]},
+                    ],
+                }
+            }
+        }
+        docs = [
+            doc for _, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1, interval_sec=3600,
+            )
+        ]
+        cpu_docs = [d for d in docs if "node_cpu_seconds_total" in d]
+        bal_docs = [d for d in docs if "apache_proxy_balancer_busy" in d]
+        self.assertTrue(cpu_docs)
+        self.assertTrue(bal_docs)
+        # node_cpu docs carry cpu/mode and NOT balancer/chip.
+        for d in cpu_docs:
+            self.assertIn("cpu", d)
+            self.assertNotIn("balancer", d, f"phantom dimension leaked onto node_cpu doc: {sorted(d)}")
+            self.assertNotIn("chip", d)
+        # balancer docs carry balancer/chip and NOT cpu/mode.
+        for d in bal_docs:
+            self.assertIn("balancer", d)
+            self.assertNotIn("cpu", d, f"phantom dimension leaked onto balancer doc: {sorted(d)}")
+        # The two metrics are not co-located in the same document.
+        self.assertFalse(any("node_cpu_seconds_total" in d and "apache_proxy_balancer_busy" in d for d in docs))
+
+    def test_generate_documents_dimension_cardinality_not_collapsed_by_unrelated_dims(self):
+        # With scoping, node_cpu's ``cpu`` should reach its full default cardinality
+        # (3 values) instead of being starved to 1 by the global combination cap
+        # being consumed by dozens of unrelated dimensions.
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                        "cpu": {"role": "dimension"},
+                        **{f"d{i}": {"role": "dimension"} for i in range(20)},
+                    },
+                    "group_fields": ["cpu", *[f"d{i}" for i in range(20)]],
+                    "required_values": {},
+                    "required_patterns": {},
+                    "requirements": [
+                        {"metrics": ["node_cpu_seconds_total"], "dimensions": ["cpu"], "group_fields": ["cpu"]},
+                    ],
+                }
+            }
+        }
+        docs = [
+            doc for _, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1, interval_sec=3600, max_combinations=12,
+            )
+        ]
+        cpu_values = {d.get("cpu") for d in docs if "node_cpu_seconds_total" in d}
+        self.assertGreaterEqual(len(cpu_values), 3, f"cpu cardinality collapsed: {cpu_values}")
+
+    def test_group_field_coverage_survives_high_cardinality_sibling(self):
+        # node_cpu groups by cpu AND mode; mode has 8 real values which exhaust the
+        # combination cap, leaving cpu pinned to a single value under a plain
+        # cartesian product. Every group field must reach its full value set so the
+        # legend shows all cpus and all modes.
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                        "cpu": {"role": "dimension"},
+                        "mode": {"role": "dimension"},
+                    },
+                    "group_fields": ["cpu", "mode"],
+                    "required_values": {
+                        "mode": ["user", "system", "idle", "iowait", "irq", "softirq", "steal", "nice"],
+                    },
+                    "required_patterns": {},
+                }
+            }
+        }
+        docs = [
+            doc for _, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1, interval_sec=3600, max_combinations=12,
+            )
+        ]
+        cpu_values = {d.get("cpu") for _, d in [(None, d) for d in docs]}
+        mode_values = {d.get("mode") for d in docs}
+        self.assertGreaterEqual(len(cpu_values), 3, f"cpu cardinality collapsed by mode: {cpu_values}")
+        self.assertGreaterEqual(len(mode_values), 8, f"mode coverage lost: {mode_values}")
+
+    def test_relabeled_required_value_is_not_seeded_verbatim(self):
+        # instance="$host:$port" is relabeled to ``label_host:label_port`` and recorded
+        # as an exact required_value (not a pattern). It is not a real instance value;
+        # seeding it verbatim produces a weird legend. It must be dropped in favour of
+        # clean defaults.
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "node_load1": {"role": "metric", "metric_kind": "gauge"},
+                        "instance": {"role": "dimension"},
+                    },
+                    "group_fields": ["instance"],
+                    "required_values": {"instance": ["label_host:label_port", "1:1"]},
+                    "required_patterns": {},
+                }
+            }
+        }
+        docs = [
+            doc for _, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1, interval_sec=3600,
+            )
+        ]
+        instances = {d.get("instance") for d in docs}
+        self.assertTrue(instances)
+        for value in instances:
+            self.assertNotIn("label_", value, f"relabeled required_value leaked: {value!r}")
+
 
 class CoherentGenerationTests(unittest.TestCase):
     def test_ratio_numerator_never_exceeds_denominator(self):
@@ -555,6 +703,69 @@ class ExpandPatternsTests(unittest.TestCase):
         values = _expand_patterns("service.name", [".*"])
         self.assertEqual(len(values), 1)
         self.assertNotIn(".", values[0])
+
+    def test_character_class_alternation_does_not_leak_raw_regex(self):
+        # node-exporter disk panels filter device=~"[a-z]+|nvme[0-9]+n[0-9]+|
+        # mmcblk[0-9]+". The alternatives are regexes, not literals, so emitting
+        # them verbatim seeds a single series legended with the raw regex string.
+        # Fall back to clean default device values instead.
+        values = _expand_patterns("device", ["[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"])
+        self.assertTrue(values, "must still seed *something* so the panel has data")
+        for v in values:
+            self.assertNotRegex(v, r"[\[\]()|+^$\\]", f"regex metachars leaked into value {v!r}")
+
+    def test_regex_alternation_values_satisfy_the_source_regex(self):
+        # The whole point of seeding device=~"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"
+        # is that a panel filtering on that regex finds data. Clean-but-non-matching
+        # values (e.g. "device_1") leave the panel empty (Prometheus =~ is a FULL
+        # match). Every seeded value MUST fullmatch the source regex.
+        pattern = "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"
+        values = _expand_patterns("device", [pattern])
+        self.assertTrue(values)
+        compiled = re.compile(pattern)
+        for v in values:
+            self.assertTrue(
+                compiled.fullmatch(v),
+                f"seeded value {v!r} does not fullmatch source regex {pattern!r}",
+            )
+
+    def test_bare_character_class_value_satisfies_regex(self):
+        # A bare "[a-z]+" should seed a lowercase-letters value (e.g. a disk like
+        # "sda"), not "device_1" (which contains a digit/underscore and fails [a-z]+).
+        pattern = "[a-z]+"
+        values = _expand_patterns("device", [pattern])
+        self.assertTrue(values)
+        compiled = re.compile(pattern)
+        for v in values:
+            self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
+
+    def test_literal_with_digit_class_satisfies_regex(self):
+        # eth[0-9]+ / nvme[0-9]+n[0-9]+ should yield matching interface/disk names.
+        for pattern in ("eth[0-9]+", "nvme[0-9]+n[0-9]+", "mmcblk[0-9]+"):
+            values = _expand_patterns("device", [pattern])
+            self.assertTrue(values, f"no values for {pattern!r}")
+            compiled = re.compile(pattern)
+            for v in values:
+                self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
+
+    def test_partial_literal_regex_does_not_leak_metachars(self):
+        # ``.*irq`` previously became the nonsense literal "sampleirq". A trailing
+        # literal stem is fine, but the value must not contain regex metachars and
+        # must not be a munged "sample"-prefixed token.
+        values = _expand_patterns("mode", [".*irq"])
+        self.assertTrue(values)
+        for v in values:
+            self.assertNotRegex(v, r"[\[\]()|+^$\\*.]", f"regex metachars leaked into value {v!r}")
+            self.assertNotIn("sample", v)
+
+    def test_relabeled_template_var_value_is_not_seeded_literally(self):
+        # ``instance="$node:$port"`` is relabeled to ``label_node:label_port`` by the
+        # migrator. That is not a real label value; seeding it produces series no
+        # panel query matches. Fall back to default instance values.
+        values = _expand_patterns("instance", ["label_node:label_port"])
+        self.assertTrue(values)
+        for v in values:
+            self.assertNotIn("label_", v, f"relabeled template var leaked into value {v!r}")
 
 
 class _RecordingRequest:

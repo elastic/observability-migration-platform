@@ -279,6 +279,8 @@ def build_telemetry_contract(
     for stream in streams.values():
         seconds = int(stream.pop("_lookback_seconds", 0))
         stream["minimum_lookback"] = _format_lookback(seconds)
+        for field_info in stream["fields"].values():
+            field_info.pop("_counter_locked", None)
         stream["fields"] = dict(sorted(stream["fields"].items()))
 
     metric_fields = {
@@ -746,16 +748,28 @@ def _extract_metrics(query: str) -> dict[str, str]:
         return metrics
     if query.startswith("PROMQL "):
         promql_line = query.split("\n", 1)[0]
-        # Metrics wrapped in rate()/increase()/irate() are counters by Prometheus convention.
-        counter_wrapped = set()
-        for m in re.finditer(r"\b(?:rate|increase|irate)\(([^)]+)\)", promql_line, re.IGNORECASE):
-            inner = m.group(1)
+        # Metrics wrapped in rate()/increase()/irate() are counters by Prometheus
+        # convention. rate()/irate() are *counter-only* in PromQL (a gauge cannot be
+        # rated), so they are an authoritative ("locked") counter signal that the
+        # downstream ES|QL AVG_OVER_TIME/MAX_OVER_TIME gauge vote must not flip —
+        # that gauge translation is itself a consequence of an earlier gauge guess.
+        # increase() can be misused on a real gauge, so it stays a soft counter that
+        # MAX_OVER_TIME may still downgrade.
+        rate_locked = set()
+        soft_counter = set()
+        for m in re.finditer(r"\b(rate|increase|irate)\(([^)]+)\)", promql_line, re.IGNORECASE):
+            func = m.group(1).lower()
+            inner = m.group(2)
             for name_m in re.finditer(r"\b([A-Za-z_:][\w:.]+)(?=\s*(?:\{|\[|$))", inner):
-                counter_wrapped.add(_normalize_field(name_m.group(1)))
+                name = _normalize_field(name_m.group(1))
+                if func in {"rate", "irate"}:
+                    rate_locked.add(name)
+                else:
+                    soft_counter.add(name)
         for field_name in _extract_promql_metric_names(query):
-            if field_name in counter_wrapped:
-                # rate()/increase() semantics imply counter; later ES|QL MAX_OVER_TIME
-                # can still downgrade to gauge via _merge_field counter→gauge override.
+            if field_name in rate_locked:
+                metrics[field_name] = "counter_locked"
+            elif field_name in soft_counter:
                 metrics[field_name] = "counter"
             else:
                 metrics[field_name] = _classify_metric(field_name)
@@ -948,6 +962,17 @@ def _extract_group_fields(query: str) -> list[str]:
                 normalized = _normalize_field(field_name)
                 if not _should_skip_field(normalized):
                     _append_unique(fields, normalized)
+        # A panel whose series split comes from its ``legendFormat`` (e.g.
+        # ``{{type}}``) carries no PromQL ``by (...)`` clause -- the translator
+        # instead pulls each legend label out of the native ``_timeseries`` JSON
+        # with ``| GROK _timeseries "...%{DATA:<label>}..."``. That GROK target is
+        # the grouping dimension, so it must be a contract group field (otherwise
+        # the seeder never seeds it and the migrated panel groups on an empty
+        # field). Scope strictly to ``_timeseries`` extractions so label_replace
+        # GROKs on other source columns are not mistaken for series dimensions.
+        for label in _grok_timeseries_labels(query):
+            if not _should_skip_field(label):
+                _append_unique(fields, label)
         return fields
     by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\|$|$)", re.IGNORECASE | re.DOTALL)
     for match in by_pattern.finditer(query):
@@ -959,6 +984,26 @@ def _extract_group_fields(query: str) -> list[str]:
             if not _should_skip_field(normalized):
                 _append_unique(fields, normalized)
     return fields
+
+
+def _grok_timeseries_labels(query: str) -> list[str]:
+    """Return legend labels a passthrough query extracts from ``_timeseries``.
+
+    Legend labels are pulled from the native ``_timeseries`` JSON by the
+    translator with ``| GROK _timeseries "...%{DATA:<label>}..."`` (see
+    ``panels._grok_label_extraction``). The ``%{...:<label>}`` capture name is
+    the Grafana ``legendFormat`` label and thus the panel's grouping dimension.
+    Matching per-line keeps each pipe's capture isolated.
+    """
+    labels: list[str] = []
+    for line in (query or "").splitlines():
+        stripped = line.strip()
+        if not stripped.lower().startswith("| grok _timeseries"):
+            continue
+        match = re.search(r"%\{[A-Z]+:([A-Za-z_][\w.]*)\}", stripped)
+        if match:
+            _append_unique(labels, _normalize_field(match.group(1)))
+    return labels
 
 
 def _extract_control_fields(query: str) -> list[str]:
@@ -1086,7 +1131,13 @@ def _extract_promql_metric_names(query: str) -> set[str]:
     promql_line = query.split("\n", 1)[0]
     names: set[str] = set()
     excluded_fields = set(_extract_group_fields(promql_line)) | _extract_promql_label_fields(promql_line)
-    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", promql_line):
+    # Blank quoted label-matcher values before the identifier scan. A regex value
+    # like device=~"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+" contains tokens
+    # (``nvme``/``n``/``mmcblk``) each followed by ``[`` — the metric-name
+    # lookahead would otherwise harvest them as phantom metric fields. Replace
+    # each quoted span with same-length spaces so identifier offsets are stable.
+    scan_line = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), promql_line)
+    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", scan_line):
         field_name = _normalize_field(match.group(1))
         if not _should_skip_field(field_name) and field_name not in excluded_fields:
             names.add(field_name)
@@ -1295,6 +1346,12 @@ def _merge_field(
     requires_native_promql: bool = False,
     keyword_multifield: bool = False,
 ) -> None:
+    # ``counter_locked`` is an authoritative counter signal (source rate()/irate(),
+    # which is counter-only in PromQL). It stores as ``counter`` but pins the kind so
+    # a later AVG_OVER_TIME/MAX_OVER_TIME gauge vote cannot flip it.
+    counter_locked = metric_kind == "counter_locked"
+    if counter_locked:
+        metric_kind = "counter"
     current = fields.setdefault(
         field_name,
         {
@@ -1306,11 +1363,20 @@ def _merge_field(
     )
     if current["role"] != role:
         current["role"] = "metric" if "metric" in {current["role"], role} else role
+    if counter_locked:
+        current["metric_kind"] = "counter"
+        current["_counter_locked"] = True
     if metric_kind and not current.get("metric_kind"):
         current["metric_kind"] = metric_kind
-    elif metric_kind == "gauge" and current.get("metric_kind") == "counter":
+    elif metric_kind == "counter" and current.get("metric_kind") == "gauge" and current.get("_counter_locked"):
+        # A locked counter was previously stored as gauge by an out-of-order signal;
+        # restore counter (the lock wins).
+        current["metric_kind"] = "counter"
+    elif metric_kind == "gauge" and current.get("metric_kind") == "counter" and not current.get("_counter_locked"):
         # ES|QL MAX_OVER_TIME(field) requires gauge_double and takes priority over a
-        # PROMQL increase()-based counter classification from verification packets.
+        # *soft* PROMQL increase()-based counter classification. A locked counter
+        # (source rate()/irate()) is exempt — that gauge translation is downstream of
+        # an earlier gauge guess, not independent evidence.
         current["metric_kind"] = "gauge"
     if requires_native_promql:
         current["requires_native_promql"] = True
