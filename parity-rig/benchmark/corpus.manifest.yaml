@@ -1,0 +1,85 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated, version-pinned benchmark corpus for the PromQL -> ES|QL oracle.
+#
+# Each source is a public Grafana/Prometheus dashboard repository pinned to an
+# exact commit SHA so a benchmark run is reproducible: the same SHA always
+# yields the same dashboard JSON, so the same translation, so a comparable
+# scorecard over time. `scripts/fetch_benchmark_corpus.py` clones each repo at
+# its pinned SHA (shallow, no history) and copies the files matched by `globs`
+# into the corpus output directory.
+#
+# This file is the single source of truth for "which dashboards do we benchmark
+# against". To refresh: bump `sha` (and `resolved` date) for a source, re-run
+# the fetch + benchmark, and commit the manifest change alongside the new
+# scorecard so the delta is auditable.
+#
+# NOTE: We do NOT vendor the dashboard JSON into the repo (licensing + bulk).
+# The manifest + fetch script reconstruct the corpus on demand into an ignored
+# scratch dir. Network access is required at fetch time only; the
+# migrate/seed/compare benchmark itself runs against the fetched copy and a
+# seeded Elasticsearch index. This manifest is the only committed benchmark
+# input -- the fetched dashboards and the scorecards live under the gitignored
+# validation/ scratch tree.
+
+version: 1
+
+# Default slice used when `--slice` is not given. "representative" is a small,
+# fast, high-signal set proving the end-to-end before/after delta; "full" is the
+# whole pinned corpus (100-200 dashboards) for a headline number.
+default_slice: representative
+
+slices:
+  representative:
+    description: >-
+      Small high-signal set of canonical Prometheus host/service dashboards
+      (node exporter + apache/haproxy/nfs/bind). Heavy on rate()/irate()
+      counters, *_bucket histograms, and mode/cpu/device label slicing -- the
+      exact shapes the translator fixes target. Proves the delta end-to-end
+      quickly.
+    sources: [node-exporter-full, host-services]
+  full:
+    description: Entire pinned corpus for a headline coverage + parity number.
+    sources: [node-exporter-full, host-services, kube-prometheus-mixin]
+
+sources:
+  # Node Exporter Full -- the canonical Prometheus host-metrics dashboard.
+  # Verified present at the pinned SHA (rfmoz/grafana-dashboards tree).
+  - id: node-exporter-full
+    repo: https://github.com/rfmoz/grafana-dashboards.git
+    sha: 4b1729d13b61
+    resolved: "2026-04-29"
+    license: Unlicense
+    globs:
+      - "prometheus/node-exporter-full.json"
+
+  # Companion service dashboards in the same pinned repo. All verified present
+  # at the pinned SHA. apache/haproxy/nfs/bind/unbound exercise a wider metric
+  # vocabulary (request rates, error ratios, latency histograms) than node
+  # exporter alone, broadening the parity surface without leaving the pin.
+  - id: host-services
+    repo: https://github.com/rfmoz/grafana-dashboards.git
+    sha: 4b1729d13b61
+    resolved: "2026-04-29"
+    license: Unlicense
+    globs:
+      - "prometheus/apache-full.json"
+      - "prometheus/haproxy.json"
+      - "prometheus/nfs-full.json"
+      - "prometheus/bind9-full.json"
+      - "prometheus/unbound-full.json"
+
+  # kube-prometheus / kubernetes-mixin compiled dashboards push the full slice
+  # toward 100-200 panels of container CPU/memory rate panels, kube-state
+  # gauges, and histogram_quantile latency. The dashboards live inside a
+  # ConfigMap YAML, so the fetch script extracts the embedded JSON. Disabled
+  # until the SHA is pinned so the representative slice stays honest.
+  - id: kube-prometheus-mixin
+    repo: https://github.com/prometheus-operator/kube-prometheus.git
+    sha: ""              # TODO(bench): pin before enabling in the full slice
+    resolved: ""
+    license: Apache-2.0
+    globs:
+      - "manifests/grafana-dashboardDefinitions.yaml"
+    enabled: false

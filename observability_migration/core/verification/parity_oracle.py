@@ -12,6 +12,7 @@ ES traffic goes through the shared make_es_request adapter (honors resolve_tls).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -280,6 +281,89 @@ def compute_diff(a, b, step) -> tuple[int, float, float]:
 # PromQL constructs the native PROMQL command does not parse / we don't compare.
 NATIVE_UNSUPPORTED = ("label_replace", "label_join")
 
+# Grafana range/interval macros -> a concrete duration the native PROMQL parser
+# accepts. The oracle only needs a *runnable* window; exact width does not change
+# whether the translated and native series line up (both use the same seeded data
+# over the same compare window), so a single sensible default is fine.
+_DEFAULT_RANGE = "5m"
+_RANGE_MACRO_RE = re.compile(
+    r"\$__rate_interval|\$__interval|\$__range|\$__auto_interval_\w+|\$interval", re.IGNORECASE
+)
+# A ``[ ... ]`` range selector whose contents are not a plain duration (i.e. it
+# embeds a template variable like ``[$myrange]`` or a subquery ``[$r:$s]``).
+_VAR_RANGE_SELECTOR_RE = re.compile(r"\[\s*\$[^\]]*\]")
+# One label matcher inside a ``{...}`` selector: name (op) "value".
+_MATCHER_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=~|!~|!=|=)\s*\"(?P<val>(?:[^\"\\]|\\.)*)\""
+)
+
+
+def _strip_variable_matchers(expr: str) -> str:
+    """Drop label matchers whose value contains a Grafana ``$variable``.
+
+    ``apache_uptime{job="$job", instance="$instance"}`` matches no seeded series
+    because nothing has a label equal to the literal ``$job``. The translated
+    side carries no such filter, so the faithful oracle comparison is against the
+    metric with the variable matchers removed (static matchers are preserved).
+    Selectors left empty collapse to the bare metric name.
+    """
+    out: list[str] = []
+    pos = 0
+    for brace in re.finditer(r"\{[^{}]*\}", expr):
+        out.append(expr[pos:brace.start()])
+        inner = brace.group(0)[1:-1]
+        kept = [
+            m.group(0)
+            for m in _MATCHER_RE.finditer(inner)
+            if "$" not in m.group("val")
+        ]
+        out.append("{" + ", ".join(kept) + "}" if kept else "")
+        pos = brace.end()
+    out.append(expr[pos:])
+    return "".join(out)
+
+
+# A translated panel that ends by collapsing every bucket into a single row
+# (Grafana stat / single-value panel): ``STATS time_bucket = MAX(time_bucket), ...``.
+# Its output is one scalar, so there is no time series to diff against the native
+# range vector -- comparing point-wise is meaningless and produces a false FAIL.
+_SINGLE_VALUE_REDUCTION_RE = re.compile(
+    r"STATS\s+time_bucket\s*=\s*(?:MAX|MIN|LAST|FIRST|AVG|SUM)\s*\(\s*time_bucket\s*\)",
+    re.IGNORECASE,
+)
+
+
+def is_single_value_reduction(esql: str) -> bool:
+    """True when the emitted ES|QL reduces the series to a single (stat) value."""
+    return bool(_SINGLE_VALUE_REDUCTION_RE.search(esql or ""))
+
+
+def sanitize_source_for_oracle(expr: str, step: int) -> str:
+    """Make a Grafana source PromQL expression runnable by native PROMQL.
+
+    Grafana panel queries embed template variables (``$job``, ``$node``) and
+    range macros (``$__rate_interval``) that Grafana interpolates at view time.
+    Fed verbatim to native PROMQL they either fail to parse or match zero series,
+    which would make every templated panel an unwinnable FAIL regardless of
+    translation quality. Normalize them so the oracle exercises the same data the
+    translated ES|QL does:
+
+    * variable-valued label matchers are dropped (static ones preserved);
+    * range/interval macros and ``[$var]`` selectors become a concrete duration;
+    * any residual bare ``$var`` is removed defensively.
+    """
+    if "$" not in expr:
+        return expr
+    result = _strip_variable_matchers(expr)
+    result = _RANGE_MACRO_RE.sub(_DEFAULT_RANGE, result)
+    result = _VAR_RANGE_SELECTOR_RE.sub(f"[{_DEFAULT_RANGE}]", result)
+    # Any leftover ${var} / $var not inside a matcher (e.g. used as a scalar):
+    # remove it so the expression at least parses. Capture-group backrefs ($1)
+    # and the special $__ macros have already been handled above.
+    result = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}", "", result)
+    result = re.sub(r"\$(?!\d)[A-Za-z_][A-Za-z0-9_]*", "", result)
+    return result
+
 
 def _run_query(request, query: str, params: list | None = None) -> dict:
     body: dict = {"query": query}
@@ -323,8 +407,16 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
         return cmp_
+    if is_single_value_reduction(cmp_.esql):
+        cmp_.skipped_reason = "translated panel reduces to a single value (stat panel); no time series to compare"
+        return cmp_
 
-    native_raw = run_native_promql(request, source_query, index, step, start_iso, end_iso)
+    # Strip Grafana template vars / range macros so native PROMQL runs against the
+    # same series the translated ES|QL does (a literal ``$job`` matches nothing).
+    native_query = sanitize_source_for_oracle(source_query, step)
+    if native_query != source_query:
+        cmp_.notes.append("source sanitized for oracle (template vars / range macros resolved)")
+    native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
         cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
         return cmp_

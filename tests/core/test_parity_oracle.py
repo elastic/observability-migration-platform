@@ -76,6 +76,71 @@ class NormalizeAndDiffTests(unittest.TestCase):
         self.assertEqual(namespaces, ["ns1", "ns2"])
 
 
+class SanitizeSourceForOracleTests(unittest.TestCase):
+    """The native-PROMQL oracle must not be fed unexpanded Grafana template
+    variables. ``{job="$job"}`` matches no seeded series, so every templated
+    panel would FAIL with 0 comparable points even when the translation is
+    correct. We drop variable-valued matchers (so the source side spans the
+    same series as the no-filter translated side) and concretize duration
+    macros so ``rate(x[$__rate_interval])`` is runnable.
+    """
+
+    def test_drops_simple_variable_matchers(self):
+        out = po.sanitize_source_for_oracle(
+            'apache_uptime_seconds_total{job="$job", instance="$instance"}', step=300
+        )
+        self.assertNotIn("$", out)
+        # Both matchers were variable-valued -> selector collapses to the bare metric.
+        self.assertEqual(out.replace(" ", ""), "apache_uptime_seconds_total")
+
+    def test_drops_regex_and_composite_variable_matchers_and_resolves_rate_interval(self):
+        out = po.sanitize_source_for_oracle(
+            'rate(node_nfs_connections_total{instance=~"$node:$port",job=~"$job"}[$__rate_interval])',
+            step=300,
+        )
+        self.assertNotIn("$", out)
+        self.assertIn("rate(node_nfs_connections_total[", out)
+        # The range macro became a concrete duration.
+        self.assertRegex(out, r"\[\d+[smhdw]\]")
+        # No surviving label matchers (all were variable-valued).
+        self.assertNotIn("{", out)
+
+    def test_keeps_static_matchers_drops_only_variable_ones(self):
+        out = po.sanitize_source_for_oracle(
+            'http_requests_total{status="200", job="$job"}', step=300
+        )
+        self.assertNotIn("$", out)
+        self.assertIn('status="200"', out)
+        self.assertNotIn("job=", out)
+
+    def test_passthrough_when_no_variables(self):
+        expr = "sum(rate(go_gc_duration_seconds_count[5m]))"
+        self.assertEqual(po.sanitize_source_for_oracle(expr, step=300), expr)
+
+    def test_compare_panel_sanitizes_before_native(self):
+        # A templated source must reach native PROMQL with the $vars removed.
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            if q.startswith("PROMQL"):
+                seen["native"] = q
+                return {"columns": [{"name": "value", "type": "double"},
+                                    {"name": "step", "type": "date"}],
+                        "values": [[1.0, "2026-01-01T00:00:00Z"]]}
+            return {"columns": [], "values": []}
+
+        po.compare_panel(
+            request,
+            source_query='apache_uptime_seconds_total{job="$job"}',
+            translated_query="TS metrics-* | STATS computed_value = MAX(x) BY time_bucket = TBUCKET(5m)",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("native", seen)
+        self.assertNotIn("$job", seen["native"])
+
+
 class ExecutionTests(unittest.TestCase):
     def _fake_request(self, native_data, translated_data, *, native_error=None):
         calls = []
@@ -127,6 +192,26 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(po.native_promql_available(ok, "metrics-*"))
         bad = self._fake_request({}, {}, native_error="unknown command [PROMQL]")
         self.assertFalse(po.native_promql_available(bad, "metrics-*"))
+
+    def test_single_value_reduction_is_skip_not_fail(self):
+        # A Grafana stat/single-value panel translates to ES|QL that collapses the
+        # per-bucket series to ONE row (final ``STATS time_bucket = MAX(time_bucket),
+        # m = MAX(m)``). There is no time series to diff against the native range
+        # vector, so point-wise comparison is meaningless -> SKIP, not a false FAIL.
+        series = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[1.0, "2026-01-01T00:00:00Z"], [2.0, "2026-01-01T00:05:00Z"], [3.0, "2026-01-01T00:10:00Z"]]}
+        single_row = {"columns": [{"name": "time_bucket", "type": "date"}, {"name": "m", "type": "double"}],
+                      "values": [["2026-01-01T00:10:00Z", 3.0]]}
+        req = self._fake_request(series, single_row)
+        esql = ("TS metrics-* | WHERE m IS NOT NULL "
+                "| STATS m = MAX(LAST_OVER_TIME(m)) BY time_bucket = TBUCKET(5 minute) "
+                "| SORT time_bucket ASC "
+                "| STATS time_bucket = MAX(time_bucket), m = MAX(m) "
+                "| KEEP time_bucket, m | SORT time_bucket ASC")
+        result = po.compare_panel(req, source_query="m", translated_query=esql,
+                                  index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("single", result.skipped_reason.lower())
 
     def test_compare_panel_translated_error_is_error(self):
         # native side returns data; translated (ES|QL) side returns an ES error body
