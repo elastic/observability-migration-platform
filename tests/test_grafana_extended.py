@@ -287,18 +287,33 @@ class TestMacroDrift(unittest.TestCase):
         result = promql.preprocess_grafana_macros("rate(foo[$custom_var])", rp)
         self.assertIn("[10m]", result)
 
-    def test_built_in_macros_ignore_custom_window(self):
-        """Built-in $__rate_interval is hardcoded to 5m, not custom window.
+    def test_built_in_macros_honor_custom_window(self):
+        """Built-in step macros honor rule_pack.default_rate_window (issue #87).
 
-        This IS the documented behavior, but it means two panels with the
-        same PromQL but different step expectations both get 5m — the test
-        plan calls this a correctness limitation we must document.
+        Previously $__rate_interval/$__interval/$interval/$__auto_interval_*
+        were hardcoded to 5m and ignored the rule pack; now they collapse to
+        the configured default_rate_window so the step is at least tunable.
         """
         rp = rules.RulePackConfig()
         rp.default_rate_window = "10m"
-        result = promql.preprocess_grafana_macros("rate(foo[$__rate_interval])", rp)
-        self.assertIn("[5m]", result,
-                      "Built-in macros are hardcoded to 5m regardless of rule_pack")
+        for expr in (
+            "rate(foo[$__rate_interval])",
+            "rate(foo[$__interval])",
+            "rate(foo[$interval])",
+            "rate(foo[$__auto_interval_my_panel])",
+        ):
+            with self.subTest(expr=expr):
+                result = promql.preprocess_grafana_macros(expr, rp)
+                self.assertIn("[10m]", result)
+                self.assertNotIn("[5m]", result)
+
+    def test_range_macro_ignores_custom_window(self):
+        """$__range is the full time range, not a step, so it stays 1h."""
+        rp = rules.RulePackConfig()
+        rp.default_rate_window = "10m"
+        result = promql.preprocess_grafana_macros("avg_over_time(foo[$__range])", rp)
+        self.assertIn("[1h]", result)
+        self.assertNotIn("$__range", result)
 
     def test_two_panels_same_promql_different_macro_produce_same_output(self):
         """This documents the known limitation: different Grafana macros

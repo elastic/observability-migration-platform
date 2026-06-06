@@ -434,16 +434,23 @@ def preprocess_grafana_macros(expr, rule_pack=None):
     """Replace Grafana-specific macros with valid PromQL placeholders."""
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
     expr = _normalize_count_scalar(expr)
+    # Grafana's dynamic step macros ($__interval / $__rate_interval /
+    # $__auto_interval_* / $interval) resolve at render time from the selected
+    # range and panel width; ES|QL has no equivalent, so they collapse to a
+    # single window here. Honor rule_pack.default_rate_window (issue #87) so the
+    # collapsed step is at least configurable per run instead of a hardcoded 5m.
+    # $__range is the full dashboard time range, not a step, and has no rule-pack
+    # knob, so it keeps its own 1h default.
     replacements = [
-        (r"\$__rate_interval", "5m"),
-        (r"\$__interval", "5m"),
+        (r"\$__rate_interval", default_window),
+        (r"\$__interval", default_window),
         (r"\$__range", "1h"),
-        (r"\$interval", "5m"),
-        (r"\[\$__interval\]", "[5m]"),
-        (r"\[\$__rate_interval\]", "[5m]"),
+        (r"\$interval", default_window),
+        (r"\[\$__interval\]", f"[{default_window}]"),
+        (r"\[\$__rate_interval\]", f"[{default_window}]"),
         (r"\[\$__range\]", "[1h]"),
-        (r"\[\$interval\]", "[5m]"),
-        (r"\$__auto_interval_\w+", "5m"),
+        (r"\[\$interval\]", f"[{default_window}]"),
+        (r"\$__auto_interval_\w+", default_window),
     ]
     result = substitute_grafana_range_macros(expr)
     for pattern, replacement in replacements:
