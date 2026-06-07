@@ -186,7 +186,10 @@ def generate_documents(
                             else:
                                 denominator = _ratio_denominator(info)
                                 ceiling = gauge_values.get(denominator) if denominator else None
-                                value = _gauge_value(field_name, hour, combo_idx, rng, ceiling=ceiling)
+                                value = _gauge_value(
+                                    field_name, hour, combo_idx, rng,
+                                    ceiling=ceiling, now_epoch=ts.timestamp(),
+                                )
                                 gauge_values[field_name] = value
                                 doc[field_name] = round(value, 4)
                     else:
@@ -811,9 +814,20 @@ def _gauge_value(
     rng: random.Random,
     *,
     ceiling: float | None = None,
+    now_epoch: float | None = None,
 ) -> float:
-    base = 10 + abs(hash(field_name)) % 500
-    value = base + combo_idx * 3 + 25 * _diurnal(hour) + rng.random()
+    profile = _value_profile(field_name)
+    if profile.unit == "epoch_seconds":
+        # Anchor near the document timestamp so sibling differences (now - boot)
+        # are small positive uptimes. Deterministic per (field, combo).
+        anchor = now_epoch if now_epoch is not None else 0.0
+        offset = (abs(hash(field_name)) % (90 * 86400)) + combo_idx * 3600
+        value = anchor - offset + 60 * _diurnal(hour)
+        if ceiling is not None:
+            value = min(value, ceiling)
+        return value
+    base = profile.base
+    value = base + combo_idx * 3 + profile.span * _diurnal(hour) + rng.random()
     if ceiling is not None:
         # Keep a ratio numerator strictly below its denominator while preserving
         # a diurnal swing, so e.g. "used / total" stays a believable utilisation.

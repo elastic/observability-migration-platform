@@ -45,6 +45,54 @@ class ValueProfileTests(unittest.TestCase):
         self.assertEqual(p.base, 10 + abs(hash("some_unknown_widget_gauge")) % 500)
 
 
+class GaugeMagnitudeTests(unittest.TestCase):
+    def _docs(self, fields, now=None):
+        contract = {"streams": {"metrics-*": {"fields": fields}}}
+        now = now or datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        return [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+
+    def test_bytes_gauge_is_gib_scale_in_documents(self):
+        fields = {"node_memory_MemTotal_bytes": {"role": "metric", "metric_kind": "gauge"}}
+        vals = [d["node_memory_MemTotal_bytes"] for d in self._docs(fields)]
+        self.assertTrue(vals)
+        self.assertTrue(all(v >= (1 << 30) for v in vals), vals)
+
+    def test_load_gauge_stays_small(self):
+        fields = {"node_load1": {"role": "metric", "metric_kind": "gauge"}}
+        vals = [d["node_load1"] for d in self._docs(fields)]
+        self.assertTrue(all(0.0 <= v <= 8.0 for v in vals), vals)
+
+    def test_epoch_seconds_near_timestamp(self):
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        epoch = now.timestamp()
+        fields = {"node_time_seconds": {"role": "metric", "metric_kind": "gauge"}}
+        vals = [d["node_time_seconds"] for d in self._docs(fields, now=now)]
+        # within 90 days before the document timestamp, never in the future
+        self.assertTrue(all(epoch - 90 * 86400 <= v <= epoch + 1 for v in vals), vals)
+
+    def test_unknown_gauge_value_unchanged_from_legacy(self):
+        # Guard: an unrecognised gauge keeps the exact legacy formula output.
+        # The legacy band was base + combo_idx*3 + 25*_diurnal(hour) + rng.random();
+        # the generic profile (base = 10 + hash%500, span = 25) must reproduce it
+        # bit-for-bit. We recompute in-process (hash is per-process salted) using
+        # the real first document's hour and the first Random(42) draw.
+        import random as _random
+
+        from observability_migration.core.telemetry_data import _diurnal, _document_timestamps
+
+        name = "widget_things"
+        fields = {name: {"role": "metric", "metric_kind": "gauge"}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        got = self._docs(fields, now=now)[0][name]
+
+        first_ts = _document_timestamps(now, data_hours=1, interval_sec=3600)[0]
+        hour = first_ts.hour + first_ts.minute / 60.0
+        base = 10 + abs(hash(name)) % 500
+        first_draw = _random.Random(42).random()
+        expected = round(base + 0 * 3 + 25 * _diurnal(hour) + first_draw, 4)
+        self.assertEqual(got, expected)
+
+
 class TelemetryDataTests(unittest.TestCase):
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")
