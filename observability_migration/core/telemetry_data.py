@@ -362,6 +362,18 @@ def _metric_families(
             metric_dims[metric_name] = shared
             metric_dims[denominator] = shared
 
+    # Control/group dimensions that co-occur with no metric (e.g. a dashboard
+    # variable like ``nodename``) would otherwise be mapped but never assigned a
+    # value, leaving the Kibana control dropdown empty. Attach them to a single
+    # family so they get seeded without polluting every family's combinations.
+    orphan_dims = (
+        set(stream.get("control_fields") or []) | set(stream.get("group_fields") or [])
+    ) - {dim for dims in metric_dims.values() for dim in dims}
+    orphan_dims = {dim for dim in orphan_dims if dim in (stream.get("fields") or {})}
+    if orphan_dims and metric_dims:
+        first_metric = sorted(metric_dims)[0]
+        metric_dims[first_metric] = metric_dims[first_metric] | orphan_dims
+
     # Group metrics that share an identical dimension signature into one family.
     families_by_sig: dict[frozenset[str], list[str]] = {}
     for metric_name in sorted(metric_dims):

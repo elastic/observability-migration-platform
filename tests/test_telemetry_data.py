@@ -130,6 +130,40 @@ class SiblingInvariantTests(unittest.TestCase):
             )
 
 
+class ControlOnlyDimensionSeedingTests(unittest.TestCase):
+    def test_control_only_dimension_gets_seeded_values(self):
+        # nodename is a dashboard control field; it co-occurs with no metric in
+        # any requirement, yet the control dropdown needs real values.
+        stream = {
+            "fields": {
+                "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                "cpu": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+                "nodename": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+            },
+            "control_fields": ["nodename"],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "yaml:node_exporter.yaml",
+                    "index": "metrics-*",
+                    "metrics": ["node_cpu_seconds_total"],
+                    "dimensions": ["cpu"],
+                    "control_fields": ["nodename"],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                }
+            ],
+        }
+        contract = {"streams": {"metrics-*": stream}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        docs = [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+        seeded = {d.get("nodename") for d in docs if d.get("nodename")}
+        self.assertTrue(seeded, "nodename was never seeded with a value")
+
+
 class TelemetryDataTests(unittest.TestCase):
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")
