@@ -362,28 +362,34 @@ def _metric_families(
             metric_dims[metric_name] = shared
             metric_dims[denominator] = shared
 
-    # Control/group dimensions that co-occur with no metric (e.g. a dashboard
-    # variable like ``nodename``) would otherwise be mapped but never assigned a
-    # value, leaving the Kibana control dropdown empty. Attach them to a single
-    # family so they get seeded without polluting every family's combinations.
-    orphan_dims = (
-        set(stream.get("control_fields") or []) | set(stream.get("group_fields") or [])
-    ) - {dim for dims in metric_dims.values() for dim in dims}
-    orphan_dims = {dim for dim in orphan_dims if dim in (stream.get("fields") or {})}
-    if orphan_dims and metric_dims:
-        first_metric = sorted(metric_dims)[0]
-        metric_dims[first_metric] = metric_dims[first_metric] | orphan_dims
-
     # Group metrics that share an identical dimension signature into one family.
     families_by_sig: dict[frozenset[str], list[str]] = {}
     for metric_name in sorted(metric_dims):
         sig = frozenset(metric_dims[metric_name])
         families_by_sig.setdefault(sig, []).append(metric_name)
 
+    # Control/group dimensions that co-occur with no metric (e.g. a dashboard
+    # variable like ``nodename``) would otherwise be mapped but never assigned a
+    # value, leaving the Kibana control dropdown empty. Attach them to one
+    # existing family at scope-build time so they get seeded -- WITHOUT changing
+    # any metric's dimension signature (which would split a metric out of a
+    # family it shares with a ratio sibling and break the ratio). The carrier is
+    # the family with the most metrics (ties broken by sorted signature) so the
+    # extra control values ride the largest doc set deterministically.
+    orphan_dims = frozenset(
+        dim
+        for dim in (set(stream.get("control_fields") or []) | set(stream.get("group_fields") or []))
+        if dim in (stream.get("fields") or {})
+    ) - {dim for dims in metric_dims.values() for dim in dims}
+    carrier_sig: frozenset[str] | None = None
+    if orphan_dims and families_by_sig:
+        carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
+
     families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
     for sig, names in families_by_sig.items():
         family_metrics = {name: metric_fields[name] for name in names}
-        scoped = _scoped_stream(stream, sig, set(names))
+        scope_dims = sig | orphan_dims if sig == carrier_sig else sig
+        scoped = _scoped_stream(stream, scope_dims, set(names))
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
     return families
