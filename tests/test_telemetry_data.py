@@ -93,6 +93,43 @@ class GaugeMagnitudeTests(unittest.TestCase):
         self.assertEqual(got, expected)
 
 
+class SiblingInvariantTests(unittest.TestCase):
+    def _docs(self, fields):
+        contract = {"streams": {"metrics-*": {"fields": fields}}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        return [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+
+    def test_mem_available_not_above_total(self):
+        fields = {
+            "node_memory_MemTotal_bytes": {"role": "metric", "metric_kind": "gauge"},
+            "node_memory_MemAvailable_bytes": {"role": "metric", "metric_kind": "gauge"},
+        }
+        for d in self._docs(fields):
+            self.assertLessEqual(
+                d["node_memory_MemAvailable_bytes"], d["node_memory_MemTotal_bytes"], d
+            )
+
+    def test_swap_free_not_above_total(self):
+        fields = {
+            "node_memory_SwapTotal_bytes": {"role": "metric", "metric_kind": "gauge"},
+            "node_memory_SwapFree_bytes": {"role": "metric", "metric_kind": "gauge"},
+        }
+        for d in self._docs(fields):
+            self.assertLessEqual(
+                d["node_memory_SwapFree_bytes"], d["node_memory_SwapTotal_bytes"], d
+            )
+
+    def test_boot_time_not_after_now(self):
+        fields = {
+            "node_time_seconds": {"role": "metric", "metric_kind": "gauge"},
+            "node_boot_time_seconds": {"role": "metric", "metric_kind": "gauge"},
+        }
+        for d in self._docs(fields):
+            self.assertLessEqual(
+                d["node_boot_time_seconds"], d["node_time_seconds"], d
+            )
+
+
 class TelemetryDataTests(unittest.TestCase):
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")

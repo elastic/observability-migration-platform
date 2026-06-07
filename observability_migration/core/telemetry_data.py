@@ -184,7 +184,10 @@ def generate_documents(
                                         value *= rank / total
                                 doc[field_name] = round(value, 4)
                             else:
-                                denominator = _ratio_denominator(info)
+                                denominator = (
+                                    _ratio_denominator(info)
+                                    or _static_invariant_denominator(field_name, metric_fields)
+                                )
                                 ceiling = gauge_values.get(denominator) if denominator else None
                                 value = _gauge_value(
                                     field_name, hour, combo_idx, rng,
@@ -703,33 +706,77 @@ def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
 
 
 def _ratio_denominator(info: dict[str, Any]) -> str | None:
-    """Return the denominator field this metric is bounded by, if any."""
+    """Return the query-derived denominator field this metric is bounded by."""
     for relation in info.get("relationships") or []:
         if relation.get("type") == "ratio_denominator" and relation.get("field"):
             return relation["field"]
     return None
 
 
-def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
-    """Order metric fields so each ratio denominator precedes its numerator.
+# Sibling upper-bound invariants that metric names/queries cannot express as a
+# plain A / B ratio. Maps a metric-name suffix to the suffix of the sibling that
+# bounds it from above (numerator <= denominator). Matched within the same
+# metric family so the prefix (e.g. "node_memory_") is shared.
+_STATIC_INVARIANT_SUFFIXES: tuple[tuple[str, str], ...] = (
+    ("_memavailable_bytes", "_memtotal_bytes"),
+    ("_memfree_bytes", "_memtotal_bytes"),
+    ("_swapfree_bytes", "_swaptotal_bytes"),
+    ("_filesystem_avail_bytes", "_filesystem_size_bytes"),
+    ("_filesystem_free_bytes", "_filesystem_size_bytes"),
+    ("_boot_time_seconds", "_time_seconds"),
+)
 
-    Falls back to insertion order for unrelated fields, so generation is
+
+def _static_invariant_denominator(field_name: str, candidates: Iterable[str]) -> str | None:
+    """Return the sibling field that bounds *field_name* from above, if present.
+
+    Resolves a numerator suffix to its denominator suffix via
+    ``_STATIC_INVARIANT_SUFFIXES`` and matches against the metrics actually
+    present (*candidates*) on a shared-prefix basis so e.g.
+    ``node_memory_MemAvailable_bytes`` binds to ``node_memory_MemTotal_bytes``.
+    """
+    lname = field_name.lower()
+    for num_suffix, denom_suffix in _STATIC_INVARIANT_SUFFIXES:
+        if not lname.endswith(num_suffix):
+            continue
+        prefix = lname[: -len(num_suffix)]
+        for cand in candidates:
+            lc = cand.lower()
+            if lc == lname:
+                continue
+            if lc.endswith(denom_suffix) and lc[: -len(denom_suffix)] == prefix:
+                return cand
+    return None
+
+
+def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
+    """Order metric fields so each denominator precedes the metric it bounds.
+
+    Combines query-derived ratio relationships with the static sibling-invariant
+    table. Falls back to insertion order for unrelated fields, so generation is
     byte-identical to the unordered path when no relationships are present.
     Cycles are broken by the visited guard.
     """
     ordered: list[str] = []
     visited: set[str] = set()
+    names = list(metric_fields)
+
+    def denom_for(field_name: str) -> str | None:
+        return (
+            _ratio_denominator(metric_fields[field_name])
+            or _static_invariant_denominator(field_name, names)
+        )
 
     def visit(field_name: str) -> None:
         if field_name in visited or field_name not in metric_fields:
             return
         visited.add(field_name)
-        denominator = _ratio_denominator(metric_fields[field_name])
+        denominator = denom_for(field_name)
         if denominator:
             visit(denominator)
         ordered.append(field_name)
 
-    for field_name in metric_fields:
+    for field_name in names:
         visit(field_name)
     return ordered
 
