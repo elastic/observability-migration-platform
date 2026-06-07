@@ -9,12 +9,40 @@ import unittest
 from observability_migration.core.telemetry_data import (
     _contract_index_patterns,
     _expand_patterns,
+    _value_profile,
     concrete_stream_name,
     generate_documents,
     ingest_documents,
     plan_index_template,
     purge_foreign_streams,
 )
+
+
+class ValueProfileTests(unittest.TestCase):
+    def test_bytes_metric_is_gib_scale(self):
+        p = _value_profile("node_memory_MemTotal_bytes")
+        self.assertEqual(p.unit, "bytes")
+        self.assertGreaterEqual(p.base, 1 << 30)  # at least 1 GiB
+
+    def test_load_metric_is_small(self):
+        p = _value_profile("node_load1")
+        self.assertEqual(p.unit, "load")
+        self.assertLessEqual(p.base + p.span, 8.0)
+
+    def test_epoch_seconds_metric_is_flagged(self):
+        self.assertEqual(_value_profile("node_time_seconds").unit, "epoch_seconds")
+        self.assertEqual(_value_profile("node_boot_time_seconds").unit, "epoch_seconds")
+
+    def test_ratio_metric_is_bounded(self):
+        p = _value_profile("node_cpu_utilization_ratio")
+        self.assertEqual(p.unit, "ratio")
+        self.assertLessEqual(p.base + p.span, 1.0)
+
+    def test_unknown_metric_uses_generic_legacy_band(self):
+        p = _value_profile("some_unknown_widget_gauge")
+        self.assertEqual(p.unit, "generic")
+        # legacy formula base = 10 + abs(hash(name)) % 500
+        self.assertEqual(p.base, 10 + abs(hash("some_unknown_widget_gauge")) % 500)
 
 
 class TelemetryDataTests(unittest.TestCase):

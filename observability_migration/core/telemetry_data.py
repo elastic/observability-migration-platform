@@ -767,6 +767,43 @@ def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
         return (len(le_order), len(le_order))
 
 
+_GIB = 1 << 30
+
+
+@dataclasses.dataclass(frozen=True)
+class ValueProfile:
+    """Plausible value band for a gauge metric, derived from its name."""
+
+    base: float
+    span: float
+    unit: str
+
+
+def _value_profile(field_name: str) -> ValueProfile:
+    """Classify a metric name into a physically plausible value band.
+
+    First match wins. Unknown names fall back to the legacy band so existing
+    seeded values for unrecognised metrics do not drift.
+    """
+    name = field_name.lower()
+    salt = abs(hash(field_name))
+    if name.endswith("_bytes") or name.endswith("_bytes_total"):
+        # 8-64 GiB, stable per metric.
+        return ValueProfile(base=float((8 + salt % 56) * _GIB), span=2.0 * _GIB, unit="bytes")
+    if any(tok in name for tok in ("load1", "load5", "load15")):
+        return ValueProfile(base=float(salt % 4), span=2.0, unit="load")
+    if name.endswith("_celsius") or "_temp" in name:
+        return ValueProfile(base=float(20 + salt % 40), span=10.0, unit="temperature")
+    if name.endswith("_seconds") or "time_seconds" in name or "_timestamp" in name:
+        # Band is applied relative to the document timestamp in _gauge_value.
+        return ValueProfile(base=0.0, span=0.0, unit="epoch_seconds")
+    if name.endswith("_percent"):
+        return ValueProfile(base=float(salt % 60), span=20.0, unit="ratio")
+    if name.endswith("_ratio") or "utilization" in name:
+        return ValueProfile(base=(salt % 60) / 100.0, span=0.2, unit="ratio")
+    return ValueProfile(base=float(10 + salt % 500), span=25.0, unit="generic")
+
+
 def _gauge_value(
     field_name: str,
     hour: float,
