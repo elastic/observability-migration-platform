@@ -45,6 +45,7 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 - Do not duplicate long command walkthroughs outside `docs/command-contract.md`.
 - Do not commit secrets or generated local artifacts.
 - Preserve the existing "degrade gracefully" behavior for unsupported translations instead of hiding semantic gaps.
+- Skills are mirrored in `.claude/skills/` and `.cursor/skills/` (one `SKILL.md` per skill in each tree). When you add or edit a skill, update **both** copies. They are byte-identical **except** self-referential path prefixes — `~/.claude/...` in the `.claude` copy vs `~/.cursor/...` in the `.cursor` copy — so don't blindly `cp` a skill that links to other skills; rewrite those prefixes for the destination tree.
 
 ## Commit And Push Workflow (For Agents)
 

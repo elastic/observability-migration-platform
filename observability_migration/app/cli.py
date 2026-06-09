@@ -32,6 +32,10 @@ from observability_migration.core.sample_data import (
     remove_sample_data,
     seed_sample_data,
 )
+from observability_migration.core.selection import (
+    add_selection_arguments,
+    selection_args_to_argv,
+)
 from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_schema_change_report,
@@ -229,6 +233,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Grafana password for HTTP basic auth (Grafana only; defaults to GRAFANA_PASS env var)",
     )
     _add_tls_arguments(migrate)
+    add_selection_arguments(migrate)
 
     sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
 
@@ -794,6 +799,7 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--ca-cert", args.ca_cert])
     if getattr(args, "insecure", False):
         legacy_argv.append("--insecure")
+    legacy_argv.extend(selection_args_to_argv(args))
     smoke_requested = (
         args.smoke
         or args.browser_audit
@@ -874,6 +880,7 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--ca-cert", args.ca_cert])
     if getattr(args, "insecure", False):
         legacy_argv.append("--insecure")
+    legacy_argv.extend(selection_args_to_argv(args))
     smoke_requested = (
         args.smoke
         or args.browser_audit

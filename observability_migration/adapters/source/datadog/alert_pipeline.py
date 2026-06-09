@@ -4,19 +4,28 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from observability_migration.core.assets.alerting import build_alerting_ir_from_datadog
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import map_alerts_batch
+from observability_migration.core.selection import (
+    apply_cli_selection,
+    criteria_from_args,
+)
 from observability_migration.targets.kibana.alerting import (
     create_rules_from_payloads,
     run_alerting_preflight,
     validate_rule_payload,
 )
 
-from .extract import extract_monitors_from_api, extract_monitors_from_files
+from .extract import (
+    extract_monitors_from_api,
+    extract_monitors_from_files,
+    selection_metadata_from_datadog_monitor,
+)
 from .report import build_monitor_comparison_results, build_monitor_migration_results
 from .verification import build_monitor_verification_lookup, validate_monitor_queries
 
@@ -37,6 +46,18 @@ def run_alert_pipeline(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_monitors = load_raw_monitors(args, dd_creds)
+    try:
+        criteria = criteria_from_args(args)
+    except ValueError as exc:
+        print(f"    ERROR: invalid --select-updated-* value: {exc}", file=sys.stderr)
+        sys.exit(1)
+    raw_monitors = apply_cli_selection(
+        raw_monitors,
+        selection_metadata_from_datadog_monitor,
+        criteria,
+        label="datadog monitor",
+        kind="monitor(s)",
+    )
     if not raw_monitors:
         print("    No monitors found")
         return {

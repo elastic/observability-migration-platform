@@ -11,6 +11,62 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from observability_migration.core.selection import (
+    AssetSelectionMetadata,
+    parse_selection_datetime,
+)
+
+
+def _safe_parse_dt(value: Any) -> Any:
+    """Best-effort datetime parse; return None on anything unusable."""
+    if value is None or value == "":
+        return None
+    try:
+        return parse_selection_datetime(str(value))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _team_from_tags(tags: list[str]) -> str | None:
+    """Derive a team from a ``team:<value>`` tag, if present."""
+    for tag in tags:
+        if isinstance(tag, str) and tag.casefold().startswith("team:"):
+            return tag.split(":", 1)[1]
+    return None
+
+
+def selection_metadata_from_datadog_dashboard(raw: dict[str, Any]) -> AssetSelectionMetadata:
+    """Map a raw Datadog dashboard dict into the source-agnostic selection view.
+
+    ``folder`` (Dashboard Lists API, not fetched) and ``starred`` (absent from
+    the ``get_dashboard`` payload) are ``None`` -> degrade gracefully.
+    """
+    tags = [str(t) for t in (raw.get("tags") or [])]
+    return AssetSelectionMetadata(
+        folder=None,
+        tags=tags,
+        datasources=["datadog"],
+        team=_team_from_tags(tags),
+        updated_at=_safe_parse_dt(raw.get("modified_at")),
+        starred=None,
+    )
+
+
+def selection_metadata_from_datadog_monitor(raw: dict[str, Any]) -> AssetSelectionMetadata:
+    """Map a raw Datadog monitor dict into the source-agnostic selection view.
+
+    folder/datasource/starred are ``None`` (not supplied by monitors).
+    """
+    tags = [str(t) for t in (raw.get("tags") or [])]
+    return AssetSelectionMetadata(
+        folder=None,
+        tags=tags,
+        datasources=None,
+        team=_team_from_tags(tags),
+        updated_at=_safe_parse_dt(raw.get("modified")),
+        starred=None,
+    )
+
 
 def _json_safe_api_value(value: Any) -> Any:
     """Convert Datadog API model values into plain JSON-safe data."""
