@@ -1,10 +1,10 @@
 source: time() - (alertmanager_build_info{instance=~"$instance"} * on (instance, cluster) group_left process_start_time_seconds{instance=~"$instance"})
 feasibility: feasible
+warning: Dropped variable-driven label filters during migration
 warning: Approximated time() - metric as uptime from metric timestamp
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| WHERE service.instance.id RLIKE ?instance
 | WHERE process_start_time_seconds IS NOT NULL
 | STATS start_time_ms = MAX(process_start_time_seconds * 1000) BY service.instance.id, k8s.cluster.name
 | EVAL process_start_time_seconds_uptime_seconds = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())

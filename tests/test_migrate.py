@@ -392,52 +392,52 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('cpu{host=?host, service=~?services}', query)
         self.assertNotIn('=~".*"', query)
 
-    def test_esql_preserves_exact_template_label_matcher_as_param_filter(self):
+    def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("host == ?host", result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+        self.assertNotIn("?host", result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", result.warnings)
 
-    def test_esql_preserves_regex_template_label_matcher_as_param_filter(self):
+    def test_esql_drops_regex_template_label_matcher_with_warning(self):
         result = self.translate('cpu{service=~"$services"}')
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("service RLIKE ?services", result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+        self.assertNotIn("?services", result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", result.warnings)
 
-    def test_esql_preserves_negative_template_label_matchers_as_param_filters(self):
+    def test_esql_drops_negative_template_label_matchers_with_warning(self):
         exact_result = self.translate('cpu{host!="$host"}')
         regex_result = self.translate('cpu{service!~"$services"}')
 
-        self.assertIn("host != ?host", exact_result.esql_query)
-        self.assertIn("NOT (service RLIKE ?services)", regex_result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", exact_result.warnings)
-        self.assertNotIn("Dropped variable-driven label filters during migration", regex_result.warnings)
+        self.assertNotIn("?host", exact_result.esql_query)
+        self.assertNotIn("?services", regex_result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", exact_result.warnings)
+        self.assertIn("Dropped variable-driven label filters during migration", regex_result.warnings)
 
-    def test_esql_preserves_braced_template_label_matcher_as_param_filter(self):
+    def test_esql_drops_braced_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="${host}"}')
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("host == ?host", result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+        self.assertNotIn("?host", result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", result.warnings)
 
-    def test_esql_preserves_bracket_template_label_matcher_as_param_filter(self):
+    def test_esql_drops_bracket_template_label_matcher_with_warning(self):
         result = self.translate('cpu{instance=~"[[instance]]"}')
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("service.instance.id RLIKE ?instance", result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+        self.assertNotIn("?instance", result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", result.warnings)
 
-    def test_esql_preserves_multiple_template_label_matchers_as_param_filters(self):
+    def test_esql_drops_multiple_template_label_matchers_with_warning(self):
         result = self.translate('cpu{host="$host",service=~"$services"}')
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("host == ?host", result.esql_query)
-        self.assertIn("service RLIKE ?services", result.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.warnings)
+        self.assertNotIn("?host", result.esql_query)
+        self.assertNotIn("?services", result.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", result.warnings)
 
-    def test_panel_translation_preserves_template_label_matcher_as_param(self):
+    def test_panel_translation_drops_template_label_matcher_with_warning(self):
         panel = {
             "title": "CPU by host",
             "type": "graph",
@@ -446,12 +446,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        # Bare gauge now assumes TSDS -> TS direct-gauge (STATS field = field), which
-        # preserves per-series rows. No FROM+AVG collapse, so no loss warning: status is
-        # a clean ``migrated`` (was ``migrated_with_warnings`` under the FROM fallback).
-        self.assertEqual(result.status, "migrated")
-        self.assertIn("host == ?host", yaml_panel["esql"]["query"])
-        self.assertNotIn("Dropped variable-driven label filters during migration", result.reasons)
+        # Panel-only translation has no dashboard control context, so dropping
+        # the variable-driven matcher is surfaced as a warning.
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertNotIn("?host", yaml_panel["esql"]["query"])
+        self.assertIn("Dropped variable-driven label filters during migration", result.reasons)
 
     def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
         panel = {
@@ -475,14 +474,66 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
 
-        self.assertEqual(result.status, "migrated")
+        self.assertEqual(result.status, "migrated_with_warnings")
         self.assertNotIn("PROMQL", yaml_panel["esql"]["query"])
-        self.assertIn("host == ?host", yaml_panel["esql"]["query"])
+        self.assertNotIn("?host", yaml_panel["esql"]["query"])
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Selected host CPU")
         self.assertIn(
             "Native PROMQL skipped: target does not support PromQL label matcher params yet",
             result.notes,
         )
+
+    def test_dashboard_control_variable_fallback_does_not_emit_unbound_esql_param(self):
+        """When native PROMQL skips a template label matcher, the ES|QL fallback
+        must still upload as a runnable dashboard.
+
+        Grafana query variables are emitted as ordinary Kibana dashboard filter
+        controls. Those controls do not bind ``?host``-style ES|QL variables, so
+        panel queries must not retain unbound query parameters.
+        """
+        dashboard = {
+            "title": "Template Controls",
+            "uid": "template-controls",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by host",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'sum(cpu{host="$host"}) by (host)',
+                        }
+                    ],
+                }
+            ],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
+        self.assertIn("controls:", rendered)
+        self.assertNotIn("?host", rendered)
 
     def test_panel_template_label_matcher_uses_native_when_runtime_feature_supported(self):
         from observability_migration.adapters.source.grafana.runtime_features import (
@@ -580,7 +631,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn(", info", query)
         self.assertNotIn("COALESCE(info", query)
 
-    def test_scalar_template_variable_in_arithmetic_becomes_query_param(self):
+    def test_scalar_template_variable_in_arithmetic_becomes_literal_with_warning(self):
         self.seed_field_caps({
             "prometheus_target_interval_length_seconds": {
                 "double": {"aggregatable": True, "time_series_metric": "gauge"}
@@ -594,8 +645,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.feasibility, "feasible")
-        self.assertIn("?scrape_interval", result.esql_query)
+        self.assertIn(" - 0", result.esql_query)
+        self.assertNotIn("?scrape_interval", result.esql_query)
         self.assertNotIn("prometheus.label_scrape_interval.value", result.esql_query)
+        self.assertIn(
+            "Grafana variable $scrape_interval used as scalar arithmetic value was replaced with literal 0",
+            result.warnings,
+        )
 
     def test_filtered_ts_stats_inline_case_inside_timeseries_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
@@ -685,6 +741,153 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate('sum(rate(http_requests_total{instance="prom-1:9100"}[5m])) by (instance)')
         self.assertIn('instance == "prom-1:9100"', translated.esql_query)
         self.assertNotIn("service.instance.id", translated.esql_query)
+
+    def test_static_string_label_filter_is_dropped_when_target_field_is_numeric(self):
+        """Node Exporter labels like `device`/`fstype` can collide with numeric
+        target metric fields. Emitting string predicates against those fields
+        makes the migrated panel fail at runtime, so drop the filter with a
+        semantic-loss warning instead."""
+        self.seed_field_caps({
+            "node_filesystem_size_bytes": {"float": {"aggregatable": True, "searchable": True}},
+            "device": {"float": {"aggregatable": True, "searchable": True}},
+        })
+
+        translated = self.translate('node_filesystem_size_bytes{device!~"rootfs"}')
+
+        self.assertNotIn("device RLIKE", translated.esql_query)
+        self.assertIn("node_filesystem_size_bytes", translated.esql_query)
+        self.assertIn("Dropped label filters with incompatible target field types during migration", translated.warnings)
+
+    def test_total_suffix_does_not_force_rate_when_live_field_is_plain_numeric(self):
+        """Live field capabilities should prevent RATE() on `_total` metrics
+        when the target field is plain numeric rather than a TSDS counter."""
+        self.seed_field_caps({
+            "node_cpu_guest_seconds_total": {"float": {"aggregatable": True, "searchable": True}},
+        })
+
+        translated = self.translate("sum(rate(node_cpu_guest_seconds_total[5m]))")
+
+        self.assertNotIn("RATE(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn("AVG_OVER_TIME(node_cpu_guest_seconds_total", translated.esql_query)
+
+    def test_binary_ratio_does_not_force_irate_for_plain_numeric_total_operand(self):
+        """Counter/gauge decisions must apply per operand in binary formulas,
+        not only in the simple range-aggregate path."""
+        self.seed_field_caps({
+            "node_cpu_guest_seconds_total": {"float": {"aggregatable": True, "searchable": True}},
+            "node_cpu_seconds_total": {"double": {"aggregatable": True, "searchable": True, "time_series_metric": "counter"}},
+            "instance": {
+                "keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}
+            },
+            "mode": {
+                "keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}
+            },
+        })
+
+        translated = self.translate(
+            'sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job", mode="user"}[1m])) '
+            '/ on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance="$node",job="$job"}[1m])))'
+        )
+
+        self.assertNotIn("IRATE(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn("AVG_OVER_TIME(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
+
+    def test_conflicting_group_field_is_dropped_when_target_wildcard_cannot_group_it(self):
+        """A broad metrics-* data view can contain a label in one stream and a
+        metric in another. ES|QL TS rejects grouping on that field, so keep the
+        usable group dimensions and warn about the dropped one."""
+        self.seed_field_caps({
+            "node_memory_MemTotal_bytes": {
+                "double": {"aggregatable": True, "searchable": True, "time_series_metric": "gauge"}
+            },
+            "instance": {
+                "keyword": {"aggregatable": True, "searchable": True, "time_series_dimension": True}
+            },
+            "job": {
+                "keyword": {
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_dimension": True,
+                    "indices": [".ds-metrics-prometheus-default-000001"],
+                },
+                "double": {
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "gauge",
+                    "indices": [".ds-metrics-generic-default-000001"],
+                },
+            },
+        })
+
+        translated = self.translate("avg(node_memory_MemTotal_bytes) by (instance, job)")
+
+        self.assertIn("BY time_bucket = TBUCKET(5 minute), instance", translated.esql_query)
+        self.assertNotIn(", job", translated.esql_query)
+        self.assertIn("Dropped grouping fields with incompatible target field types during migration", translated.warnings)
+
+    def test_clamp_wrapper_uses_real_output_field_when_panel_drops_unmigrated_target(self):
+        panel = {
+            "id": 22,
+            "title": "$node_name - Overall CPU Utilization",
+            "type": "graph",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": (
+                        'clamp_max(avg by (node_name,mode) ((avg by (mode) ( '
+                        '(clamp_max(rate(node_cpu_seconds_total{node_name=~"$node_name",mode!="idle"}[$interval]),1)) '
+                        'or (clamp_max(irate(node_cpu_seconds_total{node_name=~"$node_name",mode!="idle"}[5m]),1)) '
+                        '))*100 or (max_over_time(node_cpu_average{node_name=~"$node_name",mode=~"user|system|wait|steal|irq|nice"}[$interval]) '
+                        'or max_over_time(node_cpu_average{node_name=~"$node_name", mode=~"user|system|wait|steal|irq|nice"}[5m]))),100)'
+                    ),
+                    "legendFormat": "{{mode}}",
+                },
+                {
+                    "refId": "B",
+                    "expr": (
+                        'clamp_max(max by () ((sum by (cpu) ( '
+                        '(clamp_max(rate(node_cpu_seconds_total{node_name=~"$node_name",mode!="idle",mode!="iowait"}[$interval]),1)) '
+                        'or (clamp_max(irate(node_cpu_seconds_total{node_name=~"$node_name",mode!="idle",mode!="iowait"}[5m]),1)) '
+                        ')*100) or (max_over_time(node_cpu_average{node_name=~"$node_name", mode=~"user|system|wait|steal|irq|nice"}[$interval]) '
+                        'or max_over_time(node_cpu_average{node_name=~"$node_name", mode=~"user|system|wait|steal|irq|nice"}[5m]))),100)'
+                    ),
+                    "legendFormat": "Max Core Utilization",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertNotIn("EVAL value = LEAST(value", query)
+        self.assertIn("EVAL node_cpu_seconds_total = LEAST(node_cpu_seconds_total, 100)", query)
+
+    def test_topk_avg_by_range_fallback_keeps_ranking_shape(self):
+        translated = self.translate(
+            'topk(5,(avg by (service_name) ('
+            'max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[$interval]) '
+            'or max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[5m])'
+            ')))'
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
+        self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
+        self.assertIn("LIMIT 5", translated.esql_query)
+        self.assertIn("Translated grouped topk() as latest-bucket ES|QL top N", translated.warnings)
+
+    def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
+        translated = self.translate(
+            '(sum(rate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[$interval]) '
+            'or irate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[5m])) by (node_name)) '
+            '/ count(node_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}) by (node_name) * 100'
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("AVG(RATE(process_cpu_seconds_total, 5m))", translated.esql_query)
+        self.assertNotIn("= RATE(process_cpu_seconds_total, 5m) BY", translated.esql_query)
 
     def test_resolver_for_index_propagates_es_api_key(self):
         """Alternate-index resolvers (used for controls and logs) must inherit
@@ -928,6 +1131,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(self.resolver.is_counter("http_requests_total"))
         self.assertFalse(self.resolver.is_counter("process_resident_memory_bytes"))
 
+    def test_is_counter_respects_native_profile_gauge_cap_for_total_suffix(self):
+        self.seed_field_caps({
+            "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+
+        self.assertFalse(self.resolver.is_counter("http_requests_total"))
+
     def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
         """End-to-end: counter rate against a native /_prometheus endpoint target
         must produce ES|QL referencing `metrics.*` metric fields and `labels.*`
@@ -1144,6 +1355,57 @@ class TranslatorRegressionTests(unittest.TestCase):
             r"counter metric|not a counter)",
         )
 
+    def test_rate_on_suffixless_counter_emits_rate_when_target_unknown(self):
+        """rate()/irate() are counter-only in PromQL: a gauge cannot be rated.
+        When the metric has no counter-name suffix (node_vmstat_oom_kill,
+        node_netstat_Icmp_InErrors) AND the target schema offers no proof it is
+        a gauge (offline migrate, or field absent from caps), the source rate()
+        is authoritative -> emit a true RATE. This pairs with the telemetry
+        contract seeding the field as counter, so the emitted ES|QL is valid and
+        numerically correct instead of collapsing to AVG_OVER_TIME (~0.998 err).
+        """
+        # No field caps seeded -> resolver cannot prove gauge (offline case).
+        translated = self.translate("rate(node_vmstat_oom_kill[5m])")
+        esql = translated.esql_query
+        self.assertIn("RATE(node_vmstat_oom_kill", esql)
+        self.assertNotIn("AVG_OVER_TIME(node_vmstat_oom_kill", esql)
+
+    def test_irate_on_suffixless_counter_emits_irate_when_target_unknown(self):
+        translated = self.translate("irate(node_netstat_Icmp_InErrors[5m])")
+        esql = translated.esql_query
+        self.assertIn("IRATE(node_netstat_Icmp_InErrors", esql)
+        self.assertNotIn("AVG_OVER_TIME(node_netstat_Icmp_InErrors", esql)
+
+    def test_rate_still_degrades_when_target_proves_gauge(self):
+        """The fix must NOT regress honest degradation: when the live target
+        explicitly types the field as gauge, emitting RATE would 400 in Kibana,
+        so degrade to AVG_OVER_TIME regardless of the source rate()."""
+        self.seed_field_caps({
+            "node_vmstat_oom_kill": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "gauge",
+                },
+            },
+        })
+        translated = self.translate("rate(node_vmstat_oom_kill[5m])")
+        esql = translated.esql_query
+        self.assertNotIn("RATE(node_vmstat_oom_kill", esql)
+        self.assertIn("AVG_OVER_TIME(node_vmstat_oom_kill", esql)
+
+    def test_increase_on_suffixless_metric_still_degrades_when_target_unknown(self):
+        """increase() is NOT forced to counter the way rate()/irate() are: it can
+        be misused on a real gauge, and ES|QL INCREASE() also requires counter
+        typing. With no counter suffix and no target proof, keep the conservative
+        gauge degradation (consistent with the contract's soft-counter treatment
+        of increase())."""
+        translated = self.translate("increase(weird_unknown_metric[5m])")
+        esql = translated.esql_query
+        self.assertNotIn("INCREASE(weird_unknown_metric", esql)
+        self.assertIn("MAX_OVER_TIME(weird_unknown_metric", esql)
+
     def test_rate_on_counter_typed_field_still_uses_RATE(self):
         """Regression guard: degradation must only fire for gauge-typed
         fields, not for proper counters."""
@@ -1349,7 +1611,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(result.status, "migrated")
+        self.assertEqual(result.status, "migrated_with_warnings")
         query = yaml_panel["esql"]["query"]
         self.assertIn("foo_errors_total", query)
         self.assertIn("bar_errors_total", query)
@@ -1671,6 +1933,62 @@ class TranslatorRegressionTests(unittest.TestCase):
         # Per-target CASE filters must still appear so each target keeps its series.
         self.assertIn('CASE((state == "active"', query)
         self.assertIn('CASE((state == "failed"', query)
+
+    def test_reserved_word_legend_alias_is_backtick_quoted(self):
+        # A Grafana legendFormat that collides with an ES|QL reserved keyword
+        # (here "IN", the membership operator) must be emitted as a
+        # backtick-quoted column alias. Without quoting, ES|QL rejects
+        # ``EVAL IN = ...`` with ``mismatched input 'IN'`` and the panel 400s
+        # in Kibana. Reproduces the HAProxy "Front - Data transfer" panel
+        # (legends IN / OUT). "OUT" is not reserved and must stay bare.
+        self.seed_field_caps(
+            {
+                "haproxy_frontend_bytes_in_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "haproxy_frontend_bytes_out_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 301,
+            "type": "timeseries",
+            "title": "Front - Data transfer",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "expr": "rate(haproxy_frontend_bytes_in_total[$__rate_interval]) * 8",
+                    "refId": "A",
+                    "legendFormat": "IN",
+                },
+                {
+                    "expr": "rate(haproxy_frontend_bytes_out_total[$__rate_interval]) * 8",
+                    "refId": "B",
+                    "legendFormat": "OUT",
+                },
+            ],
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        # The reserved word must never appear as a bare ``EVAL`` / ``STATS`` /
+        # ``KEEP`` identifier (that is the parse error). It must be backticked.
+        self.assertNotRegex(query, r"\bEVAL IN\b")
+        self.assertIn("`IN`", query)
+        # The non-reserved sibling alias stays unquoted.
+        self.assertIn("OUT", query)
+        self.assertNotIn("`OUT`", query)
 
     def test_issue8_pre_agg_filter_on_proven_tsds_gauge_uses_ts(self):
         # Issue #8 (pre_agg_filter path): sum(gauge_metric > threshold) on a
@@ -2671,8 +2989,8 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        self.assertEqual(result.status, "migrated")
-        self.assertEqual(result.reasons, [])
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertIn("Dropped variable-driven label filters during migration", result.reasons)
         self.assertEqual(
             [metric["field"] for metric in yaml_panel["esql"]["metrics"]],
             ["Received_bytes_in", "Transmitted_bytes_in"],
@@ -2763,8 +3081,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn(", chip_name", query)
         self.assertIn(", sensor", query)
         self.assertIn('EVAL legend = CONCAT(', query)
-        self.assertIn('COALESCE(chip_name, "")', query)
-        self.assertIn('COALESCE(sensor, "")', query)
+        self.assertIn('COALESCE(TO_STRING(chip_name), "")', query)
+        self.assertIn('COALESCE(TO_STRING(sensor), "")', query)
         self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
         self.assertTrue(any("Dropped group_left label enrichment" in reason for reason in result.reasons))
 
@@ -3674,6 +3992,61 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
+    def test_query_variable_skips_conflicting_control_fields(self):
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "job": {
+                "keyword": {
+                    "type": "keyword",
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_dimension": True,
+                    "indices": [".ds-metrics-prometheus-default-000001"],
+                },
+                "double": {
+                    "type": "double",
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "gauge",
+                    "indices": [".ds-metrics-generic-default-000001"],
+                },
+            }
+        }
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "job",
+                "label": "Job",
+                "query": "label_values(node_uname_info, job)",
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        self.assertEqual(controls, [])
+
+    def test_live_missing_metric_field_is_not_marked_migrated(self):
+        self.seed_field_caps({
+            "some_other_metric": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
+        })
+        self.resolver._discovery_status = "ok"
+
+        translated = self.translate("missing_metric_total")
+
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertIn("Target field missing_metric_total is missing from live schema discovery", translated.warnings)
+
+    def test_template_variable_metric_name_is_not_marked_migrated(self):
+        translated = self.translate("$metric")
+
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertIn(
+            "PromQL metric name comes from Grafana template variable ($metric); "
+            "dynamic metric selection requires manual redesign",
+            translated.warnings,
+        )
+
     def test_query_variable_uses_label_values_field_not_variable_name(self):
         controls = migrate.translate_variables(
             [{
@@ -3972,6 +4345,25 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "probe")
         self.assertIn("rejects", profile[PROMQL_LABEL_MATCHER_PARAMS]["reason"])
 
+    def test_parse_args_defaults_native_promql_to_auto(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        args = parse_args([])
+
+        self.assertEqual(args.native_promql_flag, "auto")
+
+    def test_parse_args_native_promql_flags_override_auto_default(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertEqual(
+            parse_args(["--native-promql"]).native_promql_flag,
+            "force_on",
+        )
+        self.assertEqual(
+            parse_args(["--no-native-promql"]).native_promql_flag,
+            "force_off",
+        )
+
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
@@ -4002,6 +4394,71 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(rule_pack.native_promql)
         self.assertEqual(rule_pack.runtime_features, profile)
         self.assertFalse(is_feature_supported(rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
+
+    def test_apply_native_promql_auto_default_clears_default_dataset_filter(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="auto",
+        )
+        rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
+        }
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value=profile,
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "")
+
+    def test_apply_native_promql_auto_without_es_url_defaults_to_native(self):
+        """An offline run (no ``--es-url`` to probe) still defaults to native
+        PROMQL and clears the default ``"prometheus"`` dataset filter, with no
+        cluster probe attempted."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="",
+            es_api_key="",
+            native_promql_flag="auto",
+        )
+        rule_pack = rules.RulePackConfig()
+        self.assertEqual(rule_pack.metrics_dataset_filter, "prometheus")
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+        ) as detect:
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+            detect.assert_not_called()
+
+        self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.metrics_dataset_filter, "")
+        self.assertEqual(
+            rule_pack.runtime_features[PROMQL_COMMAND_V0],
+            {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": "no --es-url configured; native PROMQL assumed for offline migration",
+            },
+        )
 
     def test_apply_native_promql_force_on_records_detected_subfeatures(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -4181,7 +4638,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             self.assertTrue(_resolve_native_promql(args))
             det.assert_not_called()
 
-    def test_resolve_native_promql_auto_without_es_url_returns_false(self):
+    def test_resolve_native_promql_auto_without_es_url_defaults_to_native(self):
+        """With no cluster to probe, ``auto`` optimistically defaults to native
+        PROMQL (highest-fidelity path). ``--no-native-promql`` is the opt-out."""
         from observability_migration.adapters.source.grafana.cli import (
             _resolve_native_promql,
         )
@@ -4190,7 +4649,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             es_url="",
             es_api_key="",
         )
-        self.assertFalse(_resolve_native_promql(args))
+        self.assertTrue(_resolve_native_promql(args))
 
     def test_print_rule_catalog_skips_promql_probe(self):
         """`--print-rule-catalog` is an offline introspection command and
@@ -5859,9 +6318,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         query = result["esql"]["query"]
         self.assertIn('EVAL legend = CONCAT(', query)
-        self.assertIn('COALESCE(method, "")', query)
-        self.assertIn('COALESCE(path, "")', query)
-        self.assertIn('COALESCE(status, "")', query)
+        self.assertIn('COALESCE(TO_STRING(method), "")', query)
+        self.assertIn('COALESCE(TO_STRING(path), "")', query)
+        self.assertIn('COALESCE(TO_STRING(status), "")', query)
         self.assertIn('" - "', query)
         last_keep = query.strip().splitlines()[-1]
         self.assertIn("step", last_keep)
@@ -5899,9 +6358,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             legend_labels=["method", "path", "status"],
         )
         query = result["esql"]["query"]
-        self.assertIn('COALESCE(prometheus.labels.method, "")', query)
-        self.assertIn('COALESCE(prometheus.labels.path, "")', query)
-        self.assertIn('COALESCE(prometheus.labels.status, "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.method), "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.path), "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.status), "")', query)
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
 
     def test_apply_composite_legend_no_op_when_label_missing_from_query(self):
@@ -6063,9 +6522,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
         self.assertIn('EVAL legend = CONCAT(', result["esql"]["query"])
-        self.assertIn('COALESCE(method, "")', result["esql"]["query"])
-        self.assertIn('COALESCE(path, "")', result["esql"]["query"])
-        self.assertIn('COALESCE(status, "")', result["esql"]["query"])
+        self.assertIn('COALESCE(TO_STRING(method), "")', result["esql"]["query"])
+        self.assertIn('COALESCE(TO_STRING(path), "")', result["esql"]["query"])
+        self.assertIn('COALESCE(TO_STRING(status), "")', result["esql"]["query"])
 
 
 class TestVisualIRContract(unittest.TestCase):
@@ -6347,6 +6806,29 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         panel = data["dashboards"][0]["panels"][0]
         self.assertEqual(panel["visual_ir"]["title"], "Serialized")
         self.assertEqual(panel["operational_ir"]["status"], "migrated")
+        os.unlink(path)
+
+    def test_report_includes_runtime_feature_profile(self):
+        from observability_migration.adapters.source.grafana.runtime_features import PROMQL_COMMAND_V0
+        from observability_migration.core.reporting.report import save_detailed_report
+
+        result = migrate.MigrationResult("Dash", "uid-1")
+        result.runtime_features = {
+            PROMQL_COMMAND_V0: {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": "no --es-url configured; native PROMQL assumed for offline migration",
+            }
+        }
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            path = f.name
+        save_detailed_report([result], [], path)
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data["runtime_features"], result.runtime_features)
         os.unlink(path)
 
 
@@ -10891,7 +11373,7 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
         )
 
     def test_anchored_var_matcher_becomes_param_filter(self):
-        """^$Namespace$ strips anchors and becomes a dashboard param filter."""
+        """^$Namespace$ strips anchors and is dropped with a clear warning."""
         r = self._translate(
             'kube_pod_status_phase{namespace=~"^$Namespace$",phase="Running"} > 0'
         )
@@ -10901,8 +11383,8 @@ class TestAnchoredVariableMatcherQuality(unittest.TestCase):
             r.esql_query or "",
             "preprocessed variable label should not appear in WHERE RLIKE clause",
         )
-        self.assertIn("k8s.namespace.name RLIKE ?Namespace", r.esql_query or "")
-        self.assertNotIn("Dropped variable-driven label filters during migration", r.warnings)
+        self.assertNotIn("?Namespace", r.esql_query or "")
+        self.assertIn("Dropped variable-driven label filters during migration", r.warnings)
 
     def test_real_regex_end_anchor_stripped_for_esql(self):
         """status!~".*cam(era)?$" — end-anchor must not become literal $."""

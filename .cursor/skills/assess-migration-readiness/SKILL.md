@@ -37,7 +37,6 @@ grafana-migrate \
   --output-dir readiness_out \
   --assets all \
   --preflight \
-  --native-promql \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --es-api-key "$KEY" \
   --prometheus-url "https://prometheus.example.com" \

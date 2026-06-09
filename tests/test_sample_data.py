@@ -114,6 +114,66 @@ class MakeEsRequestTests(unittest.TestCase):
             with self.assertRaises(sample_data.NetworkError):
                 request("GET", "/x")
 
+    def test_request_uses_connect_read_timeout_tuple(self):
+        # A scalar requests timeout is per-read, not a total deadline: a server
+        # that trickles bytes resets the read timer forever and the bulk hangs.
+        # The adapter must pass a (connect, read) tuple so the read deadline is
+        # bounded and deterministic.
+        with mock.patch(
+            "observability_migration.core.sample_data.requests.request",
+            return_value=self._resp(200, '{"items": []}'),
+        ) as req:
+            request = sample_data.make_es_request("https://es", "k")
+            request("POST", "/_bulk", b'{"create":{}}\n', "application/x-ndjson")
+        timeout = req.call_args.kwargs["timeout"]
+        self.assertIsInstance(timeout, tuple)
+        self.assertEqual(len(timeout), 2)
+        connect_timeout, read_timeout = timeout
+        self.assertGreater(connect_timeout, 0)
+        self.assertGreater(read_timeout, 0)
+
+    def test_transient_failure_is_retried_then_raises(self):
+        # A stalled/dropped bulk surfaces as a Timeout/ConnectionError. The
+        # adapter must retry a bounded number of times (so a single transient
+        # blip doesn't fail the whole seed) and then raise NetworkError rather
+        # than hang or retry forever.
+        attempts = {"n": 0}
+
+        def always_timeout(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+        with mock.patch(
+            "observability_migration.core.sample_data.requests.request",
+            side_effect=always_timeout,
+        ), mock.patch("observability_migration.core.sample_data.time.sleep"):
+            request = sample_data.make_es_request("https://es", "k", max_retries=3)
+            with self.assertRaises(sample_data.NetworkError):
+                request("POST", "/_bulk", b'{"create":{}}\n', "application/x-ndjson")
+        # 1 initial try + 3 retries == 4 attempts, then give up.
+        self.assertEqual(attempts["n"], 4)
+
+    def test_transient_failure_then_success_recovers(self):
+        # If a retry succeeds, the call returns normally and does not raise.
+        seq = [
+            requests.exceptions.ConnectionError("reset"),
+            self._resp(200, '{"items": []}'),
+        ]
+
+        def flaky(*_args, **_kwargs):
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with mock.patch(
+            "observability_migration.core.sample_data.requests.request",
+            side_effect=flaky,
+        ), mock.patch("observability_migration.core.sample_data.time.sleep"):
+            request = sample_data.make_es_request("https://es", "k", max_retries=3)
+            result = request("POST", "/_bulk", b'{"create":{}}\n', "application/x-ndjson")
+        self.assertEqual(result, {"items": []})
+
 
 class SeedOrchestrationEdgeTests(unittest.TestCase):
     def test_seed_raises_on_empty_contract(self):

@@ -42,6 +42,7 @@ _ESQL_COMMAND_KEYWORDS = {
     "JOIN",
     "META",
     "LIKE",
+    "RLIKE",
     "NOT",
     "AND",
     "OR",
@@ -90,13 +91,18 @@ _TRANSLATOR_INTERNAL_PREFIX_RE = re.compile(
 # can match — the query filters on a sampled real value, never on ``$instance``.
 # Such tokens must be dropped from required value/pattern sets so the seeder
 # falls back to realistic, coherent defaults instead.
+# Anchored at the start (not the end) so a value that *begins* with a template
+# variable is rejected even when the rest is literal — e.g. a composite
+# ``$host:$port`` instance value. A fully literal value such as ``label_value``
+# or ``production`` is kept; ``label_*`` is a relabeled metric *name* handled by
+# the field skip-list, not a dimension value, so it must not be dropped here.
 _NON_LITERAL_VALUE_RE = re.compile(
     r"""
     ^\s*(?:
         \$\{?[\w.]+\}?            # Grafana template var: $instance / ${job}
       | \[\[[\w.]+\]\]            # legacy Grafana template var: [[instance]]
       | __obs_migration_param_\w* # migrator placeholder token
-    )\s*$
+    )
     """,
     re.VERBOSE,
 )
@@ -121,6 +127,16 @@ _SKIP_FIELDS = {
     "value",
     "current_value",
     "previous_value",
+    "computed_value",
+    "constant_value",
+    "inner_val",
+    "COUNT_OVER_TIME",
+    "SUM_OVER_TIME",
+    "AVG_OVER_TIME",
+    "MIN_OVER_TIME",
+    "MAX_OVER_TIME",
+    "LAST_OVER_TIME",
+    "PRESENT_OVER_TIME",
 } | _ESQL_COMMAND_KEYWORDS | _TRANSLATOR_INTERNAL_FIELDS
 _COUNTER_HINTS = (
     "_total",
@@ -257,11 +273,14 @@ def build_telemetry_contract(
         )
 
     _propagate_control_fields(streams)
+    _apply_dimension_evidence(streams)
     _apply_metric_kind_overrides(streams, metric_kind_overrides)
 
     for stream in streams.values():
         seconds = int(stream.pop("_lookback_seconds", 0))
         stream["minimum_lookback"] = _format_lookback(seconds)
+        for field_info in stream["fields"].values():
+            field_info.pop("_counter_locked", None)
         stream["fields"] = dict(sorted(stream["fields"].items()))
 
     metric_fields = {
@@ -439,6 +458,8 @@ def build_combined_telemetry_contract(
             target["requirements"].extend(stream.get("requirements") or [])
 
     _propagate_control_fields(combined["streams"])
+    _apply_dimension_evidence(combined["streams"])
+    _apply_metric_kind_overrides(combined["streams"], metric_kind_overrides)
     for stream in combined["streams"].values():
         stream["fields"] = dict(sorted(stream["fields"].items()))
     combined["streams"] = dict(sorted(combined["streams"].items()))
@@ -454,7 +475,6 @@ def build_combined_telemetry_contract(
         for field_name, field_info in stream["fields"].items()
         if field_info["role"] == "dimension"
     }
-    _apply_metric_kind_overrides(combined["streams"], metric_kind_overrides)
     combined["summary"] = {
         "streams": len(combined["streams"]),
         "metric_fields": len(metric_fields),
@@ -584,6 +604,35 @@ def _propagate_control_fields(streams: dict[str, dict[str, Any]]) -> None:
             )
 
 
+def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
+    """Resolve metric/dimension collisions in favour of explicit label evidence.
+
+    A TSDB field cannot be mapped as both ``time_series_metric`` (double) and
+    ``time_series_dimension`` (keyword); one role must win. Metric extraction is
+    the *noisy* signal: a CPU panel like ``node_cpu_seconds_total{mode="idle"}``
+    leaks the label values (``idle``/``system``/...) and the label key (``mode``)
+    as metric names. Explicit ``BY``/control/filter usage is the *authoritative*
+    signal that the field is a label. So when a field is used as a
+    group/control/filter dimension anywhere in the stream, the dimension role
+    wins — otherwise every panel filtering or grouping on that label fails to
+    match the synthetic data (the field would be a numeric column, not a
+    keyword).
+    """
+    for stream in streams.values():
+        evidence = set(stream.get("control_fields") or [])
+        evidence.update(stream.get("group_fields") or [])
+        evidence.update((stream.get("required_values") or {}).keys())
+        evidence.update((stream.get("required_patterns") or {}).keys())
+        for field_name in evidence:
+            info = (stream.get("fields") or {}).get(field_name)
+            if not info or info.get("role") != "metric":
+                continue
+            info["role"] = "dimension"
+            info["type_family"] = "keyword"
+            info["metric_kind"] = ""
+            info.pop("relationships", None)
+
+
 def _iter_artifact_queries(artifact_path: Path):
     yaml_dir = artifact_path / "yaml"
     if not yaml_dir.exists():
@@ -699,16 +748,28 @@ def _extract_metrics(query: str) -> dict[str, str]:
         return metrics
     if query.startswith("PROMQL "):
         promql_line = query.split("\n", 1)[0]
-        # Metrics wrapped in rate()/increase()/irate() are counters by Prometheus convention.
-        counter_wrapped = set()
-        for m in re.finditer(r"\b(?:rate|increase|irate)\(([^)]+)\)", promql_line, re.IGNORECASE):
-            inner = m.group(1)
+        # Metrics wrapped in rate()/increase()/irate() are counters by Prometheus
+        # convention. rate()/irate() are *counter-only* in PromQL (a gauge cannot be
+        # rated), so they are an authoritative ("locked") counter signal that the
+        # downstream ES|QL AVG_OVER_TIME/MAX_OVER_TIME gauge vote must not flip —
+        # that gauge translation is itself a consequence of an earlier gauge guess.
+        # increase() can be misused on a real gauge, so it stays a soft counter that
+        # MAX_OVER_TIME may still downgrade.
+        rate_locked = set()
+        soft_counter = set()
+        for m in re.finditer(r"\b(rate|increase|irate)\(([^)]+)\)", promql_line, re.IGNORECASE):
+            func = m.group(1).lower()
+            inner = m.group(2)
             for name_m in re.finditer(r"\b([A-Za-z_:][\w:.]+)(?=\s*(?:\{|\[|$))", inner):
-                counter_wrapped.add(_normalize_field(name_m.group(1)))
+                name = _normalize_field(name_m.group(1))
+                if func in {"rate", "irate"}:
+                    rate_locked.add(name)
+                else:
+                    soft_counter.add(name)
         for field_name in _extract_promql_metric_names(query):
-            if field_name in counter_wrapped:
-                # rate()/increase() semantics imply counter; later ES|QL MAX_OVER_TIME
-                # can still downgrade to gauge via _merge_field counter→gauge override.
+            if field_name in rate_locked:
+                metrics[field_name] = "counter_locked"
+            elif field_name in soft_counter:
                 metrics[field_name] = "counter"
             else:
                 metrics[field_name] = _classify_metric(field_name)
@@ -735,16 +796,20 @@ def _extract_metrics(query: str) -> dict[str, str]:
         else:
             metrics[field_name] = "counter" if function_name in {"RATE", "IRATE"} else _classify_metric(field_name)
 
-    # Aggregations over expressions, e.g. MAX(node_boot_time_seconds * 1000),
+    # Aggregations over expressions, e.g. MAX(node_boot_time_seconds * 1000) or
+    # AVG(CASE((NOT (fstype RLIKE "tmpfs")), node_filesystem_device_error, 0)),
     # are common in generated ES|QL. Capture the real source fields inside the
-    # expression while ignoring function names and translator aliases.
-    expression_pattern = re.compile(
-        r"\b(SUM|AVG|AVERAGE|MAX|MIN|MEDIAN|RATE|IRATE|INCREASE|MAX_OVER_TIME|AVG_OVER_TIME|PERCENTILE)\(([^)]*)\)",
-        re.IGNORECASE,
-    )
-    for match in expression_pattern.finditer(query):
-        function_name = match.group(1).upper()
-        for field_name in _extract_query_field_candidates(match.group(2)):
+    # *balanced* argument while ignoring function names and translator aliases.
+    # A flat ``([^)]*)`` regex stops at the first ``)`` and so misses fields that
+    # live after a nested ``CASE((...))`` (and harvests label names from the
+    # predicate instead).
+    for function_name, arg_text in _aggregation_arguments(query):
+        if function_name not in {
+            "SUM", "AVG", "AVERAGE", "MAX", "MIN", "MEDIAN",
+            "RATE", "IRATE", "INCREASE", "MAX_OVER_TIME", "AVG_OVER_TIME", "PERCENTILE",
+        }:
+            continue
+        for field_name in _extract_query_field_candidates(arg_text):
             if is_from_query:
                 metrics[field_name] = "gauge"
             elif function_name in {"RATE", "IRATE", "INCREASE"}:
@@ -775,7 +840,33 @@ def _extract_metrics(query: str) -> dict[str, str]:
         if not _should_skip_field(field_name):
             metrics[field_name] = "gauge"
 
+    # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
+    # computed/legend alias (e.g. ``EVAL CPU = node_pressure_cpu_..._A``), not a
+    # source index field, even when a later ``STATS CPU = MAX(CPU)`` re-aggregates
+    # it. Seeding such an alias would invent a phantom metric the panel never reads.
+    for alias in _eval_assigned_names(query):
+        metrics.pop(alias, None)
+
     return metrics
+
+
+def _eval_assigned_names(query: str) -> set[str]:
+    """Names introduced by ``EVAL`` assignments (left-hand sides) in an ES|QL query.
+
+    Handles single and comma-separated assignments across an ``EVAL`` pipe stage:
+    ``| EVAL a = x, b = y``. These are derived columns, never source fields.
+    """
+    names: set[str] = set()
+    # Each EVAL stage runs until the next pipe or end of query.
+    for stage in re.findall(r"(?:^|\|)\s*EVAL\s+(.+?)(?=\n\s*\||\|(?!\|)|$)", query, re.IGNORECASE | re.DOTALL):
+        for assignment in _split_top_level(stage):
+            lhs, sep, _rhs = assignment.partition("=")
+            if not sep:
+                continue
+            name = _normalize_field(lhs.strip())
+            if name:
+                names.add(name)
+    return names
 
 
 _RATIO_RE = re.compile(
@@ -834,7 +925,7 @@ def _extract_dimensions(query: str) -> set[str]:
         return dimensions
     metrics = set(_extract_metrics(query))
     where_pattern = re.compile(
-        rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|LIKE|NOT LIKE)\s*(?:\"|\(|-?\d|TRUE\b|FALSE\b)",
+        rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+LIKE|LIKE|NOT\s+RLIKE|RLIKE)\s*(?:\"|\(|-?\d|TRUE\b|FALSE\b)",
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -871,6 +962,17 @@ def _extract_group_fields(query: str) -> list[str]:
                 normalized = _normalize_field(field_name)
                 if not _should_skip_field(normalized):
                     _append_unique(fields, normalized)
+        # A panel whose series split comes from its ``legendFormat`` (e.g.
+        # ``{{type}}``) carries no PromQL ``by (...)`` clause -- the translator
+        # instead pulls each legend label out of the native ``_timeseries`` JSON
+        # with ``| GROK _timeseries "...%{DATA:<label>}..."``. That GROK target is
+        # the grouping dimension, so it must be a contract group field (otherwise
+        # the seeder never seeds it and the migrated panel groups on an empty
+        # field). Scope strictly to ``_timeseries`` extractions so label_replace
+        # GROKs on other source columns are not mistaken for series dimensions.
+        for label in _grok_timeseries_labels(query):
+            if not _should_skip_field(label):
+                _append_unique(fields, label)
         return fields
     by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\|$|$)", re.IGNORECASE | re.DOTALL)
     for match in by_pattern.finditer(query):
@@ -882,6 +984,26 @@ def _extract_group_fields(query: str) -> list[str]:
             if not _should_skip_field(normalized):
                 _append_unique(fields, normalized)
     return fields
+
+
+def _grok_timeseries_labels(query: str) -> list[str]:
+    """Return legend labels a passthrough query extracts from ``_timeseries``.
+
+    Legend labels are pulled from the native ``_timeseries`` JSON by the
+    translator with ``| GROK _timeseries "...%{DATA:<label>}..."`` (see
+    ``panels._grok_label_extraction``). The ``%{...:<label>}`` capture name is
+    the Grafana ``legendFormat`` label and thus the panel's grouping dimension.
+    Matching per-line keeps each pipe's capture isolated.
+    """
+    labels: list[str] = []
+    for line in (query or "").splitlines():
+        stripped = line.strip()
+        if not stripped.lower().startswith("| grok _timeseries"):
+            continue
+        match = re.search(r"%\{[A-Z]+:([A-Za-z_][\w.]*)\}", stripped)
+        if match:
+            _append_unique(labels, _normalize_field(match.group(1)))
+    return labels
 
 
 def _extract_control_fields(query: str) -> list[str]:
@@ -942,6 +1064,37 @@ def _add_dimension(dimensions: set[str], field_name: str, metrics: set[str]) -> 
         dimensions.add(normalized)
 
 
+def _aggregation_arguments(query: str) -> list[tuple[str, str]]:
+    """Yield ``(FUNCTION_NAME, balanced_argument_text)`` for every ``name(...)``.
+
+    Unlike a flat ``name\\(([^)]*)\\)`` regex, this walks parentheses so the inner
+    text of nested calls (e.g. ``CASE((...))`` inside ``AVG(...)``) is captured in
+    full -- the source field after a nested predicate is no longer truncated.
+    """
+    out: list[tuple[str, str]] = []
+    name_re = re.compile(r"([A-Za-z_][\w]*)\($")
+    i = 0
+    n = len(query)
+    while i < n:
+        if query[i] == "(":
+            prefix = query[: i + 1]
+            name_match = name_re.search(prefix)
+            depth = 1
+            j = i + 1
+            while j < n and depth:
+                if query[j] == "(":
+                    depth += 1
+                elif query[j] == ")":
+                    depth -= 1
+                j += 1
+            if name_match:
+                out.append((name_match.group(1).upper(), query[i + 1 : j - 1]))
+            i += 1
+        else:
+            i += 1
+    return out
+
+
 def _split_top_level(value: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -978,7 +1131,13 @@ def _extract_promql_metric_names(query: str) -> set[str]:
     promql_line = query.split("\n", 1)[0]
     names: set[str] = set()
     excluded_fields = set(_extract_group_fields(promql_line)) | _extract_promql_label_fields(promql_line)
-    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", promql_line):
+    # Blank quoted label-matcher values before the identifier scan. A regex value
+    # like device=~"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+" contains tokens
+    # (``nvme``/``n``/``mmcblk``) each followed by ``[`` — the metric-name
+    # lookahead would otherwise harvest them as phantom metric fields. Replace
+    # each quoted span with same-length spaces so identifier offsets are stable.
+    scan_line = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), promql_line)
+    for match in re.finditer(r"\b([A-Za-z_:][\w:.]*)(?=\s*(?:\{|\[))", scan_line):
         field_name = _normalize_field(match.group(1))
         if not _should_skip_field(field_name) and field_name not in excluded_fields:
             names.add(field_name)
@@ -1132,8 +1291,27 @@ _QUERY_FIELD_RESERVED_WORDS = {
 
 
 def _extract_query_field_candidates(expression: str) -> list[str]:
+    # Drop quoted string literals first: comparison values such as
+    # ``CASE((mode == "idle"), ...)`` are label *values*, not fields, and the
+    # identifier regex below would otherwise harvest ``idle`` as a metric. A
+    # backtick-quoted identifier IS a field, so only double/single quotes are
+    # stripped here.
+    expression = re.sub(r"\"[^\"]*\"|'[^']*'", " ", expression)
     fields: list[str] = []
-    for raw in re.findall(r"`[^`]+`|[A-Za-z_@][\w.@-]*", expression):
+    for match in re.finditer(r"`[^`]+`|[A-Za-z_@][\w.@-]*", expression):
+        raw = match.group(0)
+        if match.start() > 0 and expression[match.start() - 1].isdigit():
+            # Duration literals such as ``1m`` / ``30s`` are not fields; the
+            # regex sees the unit suffix as an identifier because it starts
+            # with a letter.
+            continue
+        # Identifiers that are the left operand of a comparison / match operator
+        # are label *predicates*, not numeric metrics: in
+        # ``CASE((fstype RLIKE "tmpfs"), metric, 0)`` the ``fstype`` is a
+        # dimension being filtered on, while ``metric`` is the real value.
+        trailing = expression[match.end():]
+        if re.match(r"\s*(?:==|!=|>=|<=|>|<|(?:NOT\s+)?R?LIKE\b)", trailing, re.IGNORECASE):
+            continue
         field_name = _normalize_field(raw)
         if not field_name:
             continue
@@ -1168,6 +1346,12 @@ def _merge_field(
     requires_native_promql: bool = False,
     keyword_multifield: bool = False,
 ) -> None:
+    # ``counter_locked`` is an authoritative counter signal (source rate()/irate(),
+    # which is counter-only in PromQL). It stores as ``counter`` but pins the kind so
+    # a later AVG_OVER_TIME/MAX_OVER_TIME gauge vote cannot flip it.
+    counter_locked = metric_kind == "counter_locked"
+    if counter_locked:
+        metric_kind = "counter"
     current = fields.setdefault(
         field_name,
         {
@@ -1179,11 +1363,20 @@ def _merge_field(
     )
     if current["role"] != role:
         current["role"] = "metric" if "metric" in {current["role"], role} else role
+    if counter_locked:
+        current["metric_kind"] = "counter"
+        current["_counter_locked"] = True
     if metric_kind and not current.get("metric_kind"):
         current["metric_kind"] = metric_kind
-    elif metric_kind == "gauge" and current.get("metric_kind") == "counter":
+    elif metric_kind == "counter" and current.get("metric_kind") == "gauge" and current.get("_counter_locked"):
+        # A locked counter was previously stored as gauge by an out-of-order signal;
+        # restore counter (the lock wins).
+        current["metric_kind"] = "counter"
+    elif metric_kind == "gauge" and current.get("metric_kind") == "counter" and not current.get("_counter_locked"):
         # ES|QL MAX_OVER_TIME(field) requires gauge_double and takes priority over a
-        # PROMQL increase()-based counter classification from verification packets.
+        # *soft* PROMQL increase()-based counter classification. A locked counter
+        # (source rate()/irate()) is exempt — that gauge translation is downstream of
+        # an earlier gauge guess, not independent evidence.
         current["metric_kind"] = "gauge"
     if requires_native_promql:
         current["requires_native_promql"] = True

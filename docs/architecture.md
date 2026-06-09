@@ -41,7 +41,10 @@ is Elastic Serverless.
 
 That changes the preferred Grafana translation branch:
 
-- compatible PromQL panels prefer native `PROMQL` when `--native-promql` is enabled
+- compatible PromQL panels use native `PROMQL` by default; when `--es-url` is
+  configured, target capability detection downgrades to ES|QL translation if the
+  `PROMQL` command is unsupported. `--native-promql` forces native and skips
+  detection; `--no-native-promql` opts out
 - LogQL panels still translate to ES|QL against the configured logs index
 - source-native ES|QL can be reused directly
 - the local OTLP lab is a repeatable stand-in for local development and CI, not the primary production target

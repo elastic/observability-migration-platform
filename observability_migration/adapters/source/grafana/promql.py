@@ -28,6 +28,36 @@ def _is_counter_fallback(metric_name, rule_pack):
     return any(metric_name.endswith(s) for s in suffixes)
 
 
+# ES|QL reserved keywords that are illegal as a *bare* column identifier (in
+# ``EVAL <id> =``, ``STATS <id> =``, ``KEEP <id>``). A Grafana legendFormat can
+# legitimately be one of these (e.g. HAProxy's "IN"/"OUT" data-transfer legend),
+# so when such a token is used as a column alias it must be backtick-quoted or
+# ES|QL rejects the whole query (``mismatched input 'IN'``). Kept lowercase for
+# case-insensitive matching; the emitted alias text is preserved verbatim.
+_ESQL_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "and",
+        "as",
+        "asc",
+        "by",
+        "desc",
+        "false",
+        "first",
+        "in",
+        "is",
+        "last",
+        "like",
+        "limit",
+        "not",
+        "null",
+        "or",
+        "rlike",
+        "true",
+        "where",
+    }
+)
+
+
 def _esql_field(name: str) -> str:
     """Backtick-quote an ES|QL field reference that contains special characters.
 
@@ -38,6 +68,27 @@ def _esql_field(name: str) -> str:
     if name and re.search(r"[^a-zA-Z0-9_.]", name):
         escaped = name.replace("`", "\\`")
         return f"`{escaped}`"
+    return name
+
+
+def _esql_identifier(name: str) -> str:
+    """Quote a *column alias/identifier* for safe ES|QL emission.
+
+    Like :func:`_esql_field` but also backtick-quotes bare tokens that collide
+    with an ES|QL reserved keyword (``IN``, ``AS``, ``BY`` ...). Use this at
+    every site that renders a (possibly legend-derived) alias as an identifier
+    in the query text — ``EVAL``/``STATS``/``KEEP`` — so the stored column name
+    stays verbatim while the query still parses. The bare name must continue to
+    be used wherever Kibana matches a result *column* (panel ``metrics[].field``,
+    legend label hints), since Kibana strips the backticks.
+    """
+    if not name:
+        return name
+    if re.search(r"[^a-zA-Z0-9_.]", name):
+        escaped = name.replace("`", "\\`")
+        return f"`{escaped}`"
+    if name.lower() in _ESQL_RESERVED_IDENTIFIERS:
+        return f"`{name}`"
     return name
 
 
@@ -127,6 +178,35 @@ def _gauge_fallback_for_counter_range_func(range_func):
             f"expected one of {sorted(_COUNTER_TO_GAUGE_FALLBACK)}"
         )
     return result
+
+
+# ``rate``/``irate`` are *counter-only* in PromQL — a gauge cannot be rated — so
+# the source asserting one is authoritative proof the metric is a counter. Only
+# positive proof that the target types the field as a gauge (which would make
+# ES|QL ``RATE`` 400) should override that and force the gauge degradation.
+# ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
+# conservative heuristic-driven degradation.
+_COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
+
+
+def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver):
+    """Whether a counter-style range function must degrade to a gauge analogue.
+
+    Degrade when the resolved field is not a counter AND either the source
+    function tolerates gauge misuse (``increase``) or the target positively
+    refutes a counter (the field is present in the live caps but gauge / plain
+    numeric). A source ``rate``/``irate`` over a field the target does not
+    refute keeps its true ``RATE``/``IRATE`` form — the source asserts the
+    field is a counter (``rate`` is counter-only in PromQL) and the telemetry
+    contract seeds such fields as counters."""
+    if is_counter:
+        return False
+    if range_func not in {"rate", "irate", "increase"}:
+        return False
+    if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+        # Trust the source unless the target refutes the counter typing.
+        return bool(resolver and resolver.refutes_counter(metric))
+    return True
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
@@ -253,6 +333,10 @@ class FormulaPlan:
     specs: list
     expr: str
     warnings: list = field(default_factory=list)
+    # Raw ``<lhs> <op> <rhs>`` condition when ``expr`` is a PromQL ``bool``
+    # comparison indicator (``CASE(cond, 1, 0)``). A parent division uses this to
+    # re-render the indicator with a NULL false-branch so it never divides by 0.
+    bool_compare_cond: str = ""
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -824,18 +908,18 @@ def _matcher_to_esql(matcher, resolver):
     value = matcher["value"]
     if not label:
         return None
+    if _matcher_has_incompatible_target_field(matcher, label, resolver):
+        return None
     if op in {"=~", "!~"}:
         value = _strip_promql_regex_anchors(value)
     param_name = _grafana_param_name(value)
     if param_name:
-        if op == "=":
-            return f"{label} == ?{param_name}"
-        if op == "!=":
-            return f"{label} != ?{param_name}"
-        if op == "=~":
-            return f"{label} RLIKE ?{param_name}"
-        if op == "!~":
-            return f"NOT ({label} RLIKE ?{param_name})"
+        # Grafana query variables are emitted as ordinary dashboard filter
+        # controls, not ES|QL variable controls. Keeping ``?var`` here makes
+        # uploaded dashboards fail with "Unknown query parameter [var]".
+        # Drop the matcher and let the dashboard-level control apply the
+        # filter when the user selects a value.
+        return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
     # false-positives on regex end-of-string anchors like ".*cam(era)?$".
@@ -861,6 +945,20 @@ def _matcher_to_esql(matcher, resolver):
             return None
         return f"NOT ({label} RLIKE {_quote_esql_string(value)})"
     return None
+
+
+def _matcher_has_incompatible_target_field(matcher, label, resolver):
+    """Return True when field caps prove a string matcher would fail at runtime."""
+    if resolver is None or not hasattr(resolver, "is_text_like_field"):
+        return False
+    if matcher.get("label") in _FLOAT_LABEL_NAMES:
+        return False
+    if matcher.get("op") not in {"=", "!=", "=~", "!~"}:
+        return False
+    exists = resolver.field_exists(label) if hasattr(resolver, "field_exists") else None
+    if exists is not True:
+        return False
+    return resolver.field_type_family(label) == "numeric"
 
 
 def _common_matchers(left_matchers, right_matchers):
@@ -1373,8 +1471,16 @@ def _ast_aggregate_fragment(node, expr):
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if frag.outer_agg == "topk" and child.metric and not child.extra.get("not_feasible_reasons"):
-        topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), child)
+    if frag.outer_agg == "topk" and not child.extra.get("not_feasible_reasons"):
+        topk_source = child if child.metric else _find_summary_fragment(child)
+        if not topk_source or not topk_source.metric:
+            return frag
+        topk_frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), topk_source)
+        if child.outer_agg:
+            topk_frag.outer_agg = child.outer_agg
+        if child.group_labels:
+            topk_frag.group_labels = list(child.group_labels)
+            topk_frag.group_mode = child.group_mode
         try:
             param = getattr(node, "param", None)
             topk_frag.extra["topk_limit"] = int(float(getattr(param, "val", param) or 10))
@@ -1535,6 +1641,17 @@ def _ast_binary_fragment(node, expr):
     left = _ast_from_node(node.lhs, _ast_node_expr(node.lhs))
     right = _ast_from_node(node.rhs, _ast_node_expr(node.rhs))
     op = str(getattr(node, "op", "") or "")
+    return_bool = bool(getattr(getattr(node, "modifier", None), "return_bool", False))
+
+    # PromQL ``bool`` modifier (``A > bool B``) turns a comparison into a numeric
+    # 0/1 indicator rather than a filter that drops series. Model it as a
+    # ``binary_expr`` flagged ``bool_compare`` so the formula plan renders it as
+    # ``CASE(<lhs> <op> <rhs>, 1, 0)``. This is distinct from a bare comparison
+    # (no ``bool``), which keeps filter semantics via ``post_filter`` below.
+    if return_bool and op in {">", "<", ">=", "<=", "==", "!="}:
+        frag = _make_binary_fragment(expr, left, op, right)
+        frag.extra["bool_compare"] = True
+        return frag
 
     if op in {">", "<", ">=", "<=", "==", "!="} and right.is_scalar and right.scalar_value is not None:
         frag = _copy_fragment_summary(_new_fragment(expr, family=left.family), left)
@@ -1890,10 +2007,21 @@ def _frag_filters(frag, resolver):
     return filters, had_vars
 
 
+def _frag_has_incompatible_target_fields(frag, resolver):
+    return any(
+        _matcher_has_incompatible_target_field(
+            m,
+            resolver.resolve_label(m["label"]) if resolver else m["label"],
+            resolver,
+        )
+        for m in frag.matchers
+    )
+
+
 def _matcher_has_dropped_variable(m):
     value = str(m.get("value", ""))
     if _grafana_param_name(value):
-        return False
+        return True
     return (
         bool(re.search(r"\$\w", value))
         or (m.get("op") == "=~" and value.strip() == ".*")
@@ -1931,6 +2059,29 @@ def _filter_missing_resolved_fields(fields, resolver):
     return kept
 
 
+def _group_field_is_usable(field_name, resolver, *, drop_missing=False):
+    if not field_name or resolver is None or not hasattr(resolver, "field_exists"):
+        return True
+    exists = resolver.field_exists(field_name)
+    if exists is False:
+        return not drop_missing
+    if exists is not True:
+        return True
+    if hasattr(resolver, "has_conflicting_types") and resolver.has_conflicting_types(field_name):
+        return False
+    if hasattr(resolver, "is_aggregatable_field") and not resolver.is_aggregatable_field(field_name):
+        return False
+    return True
+
+
+def _filter_usable_group_fields(fields, resolver, *, drop_missing=False):
+    return [
+        field_name
+        for field_name in (fields or [])
+        if _group_field_is_usable(field_name, resolver, drop_missing=drop_missing)
+    ]
+
+
 def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=None):
     """Resolve fragment group labels through the resolver.
 
@@ -1941,9 +2092,20 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
     explicit = resolver.resolve_labels(raw) if resolver else list(raw)
     preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
-    if preferred_origin == "legend":
-        preferred = _filter_missing_resolved_fields(preferred, resolver)
+    explicit = _filter_usable_group_fields(explicit, resolver)
+    preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+
+
+def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
+    if frag is None:
+        return False
+    raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
+    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
+    preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    return any(not _group_field_is_usable(field_name, resolver) for field_name in explicit) or any(
+        not _group_field_is_usable(field_name, resolver, drop_missing=False) for field_name in preferred
+    )
 
 
 def _grouping_parts(bucket_expr, group_fields):
@@ -1972,18 +2134,25 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     # reviewing the Node Exporter Full "Pressure" bar chart, which had
     # data in every bucket but rendered all-null bars.
     reduced = ", ".join(
-        f"{field} = MAX({field})" for field in keep_fields
+        f"{_esql_identifier(field)} = MAX({_esql_identifier(field)})" for field in keep_fields
     )
     if group_fields:
         parts.append("| SORT time_bucket ASC")
-        parts.append(f"| STATS {reduced} BY {', '.join(group_fields)}")
-        parts.append(f"| KEEP {', '.join(group_fields + keep_fields)}")
+        parts.append(
+            f"| STATS {reduced} BY {', '.join(_esql_identifier(f) for f in group_fields)}"
+        )
+        parts.append(
+            "| KEEP "
+            + ", ".join(_esql_identifier(f) for f in group_fields + keep_fields)
+        )
         return group_fields
     if output_group_fields != ["time_bucket"]:
         return None
     parts.append("| SORT time_bucket ASC")
     parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
-    parts.append(f"| KEEP time_bucket, {', '.join(keep_fields)}")
+    parts.append(
+        "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
+    )
     return []
 
 
@@ -2220,12 +2389,17 @@ def _build_measure_spec(
     warnings = []
     if had_vars:
         warnings.append("Dropped variable-driven label filters during migration")
+    had_incompatible_fields = _frag_has_incompatible_target_fields(frag, resolver)
+    if had_incompatible_fields:
+        warnings.append("Dropped label filters with incompatible target field types during migration")
     group_fields = _frag_group_labels(
         frag,
         resolver,
         preferred_group_labels,
         preferred_origin=preferred_group_labels_origin,
     )
+    if _frag_has_incompatible_group_fields(frag, resolver, preferred_group_labels):
+        warnings.append("Dropped grouping fields with incompatible target field types during migration")
     if alias_hint:
         suffix = alias_hint
     else:
@@ -2327,13 +2501,16 @@ def _build_measure_spec(
         # heuristic, and the resulting ES|QL panel hard-fails with
         # ``first argument of [RATE(...)] must be counter``. Degrade the
         # query to a gauge-equivalent so the panel still renders honest
-        # numbers and surface a warning.
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        # numbers and surface a warning -- but only when the source function
+        # tolerates gauge misuse (increase) or the target *proves* gauge; a
+        # bare rate()/irate() over a not-proven-gauge field keeps its true
+        # RATE/IRATE form (the contract seeds those fields as counters).
+        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
+        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+            # Source rate()/irate() is counter-only; trust it over the gauge heuristic.
+            is_counter = True
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
@@ -2358,12 +2535,11 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
-        if (
-            not is_counter
-            and frag.range_func in {"rate", "irate", "increase"}
-        ):
+        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
             esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
             warnings.append(warning.format(metric=frag.metric))
+        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+            is_counter = True
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
@@ -2390,10 +2566,14 @@ def _build_measure_spec(
                 start_matchers = frag.binary_rhs.matchers
         if not start_metric:
             return None
-        filters, had_vars = _frag_filters(PromQLFragment(matchers=start_matchers), resolver)
+        start_frag = PromQLFragment(matchers=start_matchers)
+        filters, had_vars = _frag_filters(start_frag, resolver)
         warnings = []
         if had_vars:
             warnings.append("Dropped variable-driven label filters during migration")
+        had_incompatible_fields = _frag_has_incompatible_target_fields(start_frag, resolver)
+        if had_incompatible_fields:
+            warnings.append("Dropped label filters with incompatible target field types during migration")
         alias = _safe_alias(f"{start_metric}_start_time_ms", suffix)
         final_alias = _safe_alias(f"{start_metric}_uptime_seconds", alias_hint)
         source = "FROM"
@@ -2523,7 +2703,7 @@ def _build_shared_measure_pipeline(index, specs):
         )
         if not scoped_expr:
             return None
-        stats_terms.append(f"{spec.alias} = {scoped_expr}")
+        stats_terms.append(f"{_esql_identifier(spec.alias)} = {scoped_expr}")
     parts = [
         f"{base.source_type} {index}",
         f"| WHERE {base.time_filter}",
@@ -2543,7 +2723,10 @@ def _build_shared_measure_pipeline(index, specs):
     metric_fields = []
     for spec in specs:
         if spec.eval_expr:
-            parts.append(f"| EVAL {spec.final_alias} = {spec.eval_expr}")
+            # ``final_alias`` may be a legend-derived reserved word (e.g. "IN");
+            # quote the emitted identifier while keeping the bare name in
+            # ``metric_fields`` for Kibana column/label matching.
+            parts.append(f"| EVAL {_esql_identifier(spec.final_alias)} = {spec.eval_expr}")
         metric_fields.append(spec.final_alias)
     return parts, group_fields, metric_fields
 
@@ -2564,6 +2747,7 @@ _OUTER_TO_TS_AGG = {
     "COUNT": "COUNT_OVER_TIME",
 }
 _TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+_TS_AGG_FUNC_PATTERN = r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
 
 
 def _normalize_mixed_ts_stats_exprs(specs):
@@ -2601,13 +2785,13 @@ def _normalize_mixed_ts_stats_exprs(specs):
     """
     if not specs or specs[0].source_type != "TS":
         return specs
-    if not any(re.search(r"\b[A-Z_]+_OVER_TIME\(", spec.stats_expr or "") for spec in specs):
+    if not any(re.search(rf"\b{_TS_AGG_FUNC_PATTERN}\(", spec.stats_expr or "") for spec in specs):
         return specs
     window = _timeseries_stats_window(specs)
 
     has_extra_group_dims = any(spec.group_fields for spec in specs)
     has_wrapped_regular_ts = any(
-        re.search(r"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*[A-Z_]+_OVER_TIME\(", spec.stats_expr or "")
+        re.search(rf"\b(AVG|SUM|MIN|MAX|COUNT)\(\s*{_TS_AGG_FUNC_PATTERN}\(", spec.stats_expr or "")
         for spec in specs
     )
     # When grouping by extra dimensions, or when at least one term is already a
@@ -2627,7 +2811,7 @@ def _normalize_mixed_ts_stats_exprs(specs):
             expr,
         )
         bare_ts = re.fullmatch(
-            rf"([A-Z_]+_OVER_TIME)\(\s*{re.escape(metric_field)}\s*,\s*[^)]+\)",
+            rf"({_TS_AGG_FUNC_PATTERN})\(\s*{re.escape(metric_field)}\s*,\s*([^)]+)\)",
             expr,
         )
 
@@ -2635,10 +2819,11 @@ def _normalize_mixed_ts_stats_exprs(specs):
             # Target the wrapped ``OUTER(TS_FUNC(field, w))`` form.
             if bare_ts:
                 ts_func = bare_ts.group(1)
+                ts_window = bare_ts.group(2).strip()
                 outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
-                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                new_expr = f"{outer}({ts_func}({metric_field}, {ts_window}))"
                 warning = (
-                    f"Wrapped {ts_func}({metric_field}, {window}) in {outer}(...) so "
+                    f"Wrapped {ts_func}({metric_field}, {ts_window}) in {outer}(...) so "
                     f"the grouped TS panel target validates (no bare time-series "
                     f"aggregate mixed with regular aggregates)"
                 )
@@ -3026,9 +3211,16 @@ def _build_formula_plan(
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
-                    param = f"?{var_name}"
-                    expr = f"({param} {frag.binary_op} {plan.expr})" if phantom_on_left else f"({plan.expr} {frag.binary_op} {param})"
-                    warning = f"Grafana variable ${var_name} used as scalar arithmetic parameter ?{var_name}"
+                    replacement = "0"
+                    expr = (
+                        f"({replacement} {frag.binary_op} {plan.expr})"
+                        if phantom_on_left
+                        else f"({plan.expr} {frag.binary_op} {replacement})"
+                    )
+                    warning = (
+                        f"Grafana variable ${var_name} used as scalar arithmetic value "
+                        f"was replaced with literal {replacement}"
+                    )
                     if warning not in (plan.warnings or []):
                         plan.warnings.append(warning)
                     return FormulaPlan(specs=plan.specs, expr=expr, warnings=list(plan.warnings))
@@ -3124,6 +3316,29 @@ def _build_formula_plan(
         for warning in left_plan.warnings + right_plan.warnings:
             if warning not in warnings:
                 warnings.append(warning)
+
+        # PromQL ``bool`` comparison: render a numeric 0/1 indicator instead of
+        # a boolean, so the result composes with surrounding arithmetic.
+        if frag.extra.get("bool_compare"):
+            condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+            return FormulaPlan(
+                specs=left_plan.specs + right_plan.specs,
+                expr=f"CASE({condition}, 1, 0)",
+                warnings=warnings,
+                bool_compare_cond=condition,
+            )
+
+        # Guard a ``bool`` indicator used as a divisor: 1 stays 1, but the false
+        # branch becomes NULL (not 0) so we never divide by zero — matching
+        # PromQL, where ``x / (y > bool 0)`` yields no sample when y <= 0.
+        if frag.binary_op == "/" and right_plan.bool_compare_cond:
+            divisor = f"CASE({right_plan.bool_compare_cond}, 1, NULL)"
+            return FormulaPlan(
+                specs=left_plan.specs + right_plan.specs,
+                expr=f"({left_plan.expr} / {divisor})",
+                warnings=warnings,
+            )
+
         return FormulaPlan(
             specs=left_plan.specs + right_plan.specs,
             expr=f"({left_plan.expr} {frag.binary_op} {right_plan.expr})",
@@ -3168,6 +3383,8 @@ __all__ = [
     "_frag_eval_line",
     "_frag_filters",
     "_frag_group_labels",
+    "_frag_has_incompatible_group_fields",
+    "_frag_has_incompatible_target_fields",
     "_grouping_parts",
     "_inline_filters_into_stats_expr",
     "_matcher_alias_suffix",

@@ -63,7 +63,8 @@ export ELASTICSEARCH_ENDPOINT="https://...es..." KIBANA_ENDPOINT="https://...kbn
 
 # Re-run Step 1 with live target discovery / query validation:
 #   ...append: --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
-#   (Grafana: add --native-promql for Prometheus-style panels)
+#   (Grafana uses native PromQL by default; with --es-url it verifies target
+#    support and downgrades to ES|QL translation if unsupported)
 
 # Then upload the one migrated dashboard:
 obs-migrate upload \

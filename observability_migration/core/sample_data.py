@@ -13,6 +13,7 @@ that honors the shared ``resolve_tls`` policy.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,16 +42,37 @@ class NetworkError(RuntimeError):
     """Raised when the Elasticsearch endpoint cannot be reached at all."""
 
 
-def make_es_request(es_url: str, api_key: str, *, verify: bool | str = True, timeout: int = 120) -> RequestFn:
+def make_es_request(
+    es_url: str,
+    api_key: str,
+    *,
+    verify: bool | str = True,
+    timeout: int = 120,
+    connect_timeout: float = 10.0,
+    max_retries: int = 3,
+    backoff_sec: float = 1.0,
+) -> RequestFn:
     """Build a ``(method, path, body, content_type) -> dict`` ES request adapter.
 
     Routes through ``requests`` so the resolved ``verify`` value (system bundle,
     custom CA path, or ``False`` for --insecure) is applied uniformly. Raises
     ``NetworkError`` when the endpoint is unreachable; HTTP error responses are
     returned as parsed bodies so callers' ``_raise_on_error`` can surface them.
+
+    Reliability: the request uses a ``(connect_timeout, read_timeout)`` tuple
+    rather than a single scalar. A scalar ``requests`` timeout is a *per-read*
+    deadline, not a total one -- a load balancer that trickles bytes resets the
+    read timer indefinitely, so a stalled bulk can hang forever. The explicit
+    read timeout makes that deterministic, and transient ``Timeout`` /
+    ``ConnectionError`` failures are retried up to ``max_retries`` times with a
+    linear backoff before raising ``NetworkError`` (so one stalled bulk neither
+    hangs the seed nor fails it on a single blip).
     """
     base = es_url.rstrip("/")
     headers = {"Authorization": f"ApiKey {api_key}"}
+    read_timeout = float(timeout)
+    request_timeout = (float(connect_timeout), read_timeout)
+    attempts = max(1, max_retries + 1)
 
     def request(method: str, path: str, body: Any | None = None, content_type: str = "application/json") -> dict[str, Any]:
         url = f"{base}{path}"
@@ -65,10 +87,31 @@ def make_es_request(es_url: str, api_key: str, *, verify: bool | str = True, tim
         send_headers = dict(headers)
         if content_type:
             send_headers["Content-Type"] = content_type
-        try:
-            resp = requests.request(method, url, data=data, headers=send_headers, verify=verify, timeout=timeout)
-        except requests.exceptions.RequestException as exc:
-            raise NetworkError(str(exc)) from exc
+
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                resp = requests.request(
+                    method, url, data=data, headers=send_headers,
+                    verify=verify, timeout=request_timeout,
+                )
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                # Transient: stalled read, dropped socket, or refused connect.
+                # Retry a bounded number of times so a single blip doesn't sink
+                # a long seed, but never loop forever.
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(backoff_sec * (attempt + 1))
+                    continue
+                raise NetworkError(str(exc)) from exc
+            except requests.exceptions.RequestException as exc:
+                # Non-transient (malformed URL, TLS verify failure, etc.): do
+                # not retry -- surface immediately.
+                raise NetworkError(str(exc)) from exc
+        else:  # pragma: no cover - defensive; loop either breaks or raises
+            raise NetworkError(str(last_exc) if last_exc else "request failed")
+
         if resp.status_code == 404 and method == "DELETE":
             return {"acknowledged": True}
         text = resp.text

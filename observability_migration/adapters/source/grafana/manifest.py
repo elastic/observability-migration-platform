@@ -245,7 +245,9 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
     all_annotations = []
     all_alert_tasks = []
     all_transform_tasks = []
+    runtime_features: dict[str, Any] = {}
     for result in results:
+        runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
         runtime_summary = build_runtime_summary(result)
         result.runtime_summary = runtime_summary
         dashboard_links = list(getattr(result, "dashboard_links", []) or [])
@@ -371,6 +373,7 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "transformation_redesign": transformation_summary,
             "alert_migration": alert_summary,
         },
+        "runtime_features": runtime_features,
         "dashboards": dashboards,
         "panels": flat_panels,
     }

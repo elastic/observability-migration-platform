@@ -132,6 +132,24 @@ class ManifestWiringTests(unittest.TestCase):
         self.assertEqual(payload["dashboards"][0]["dashboard_links"][0]["title"], "Docs")
         self.assertEqual(payload["panels"][0]["link_migrations"][0]["title"], "Runbook")
 
+    def test_manifest_includes_runtime_feature_profile(self):
+        from observability_migration.adapters.source.grafana.runtime_features import PROMQL_COMMAND_V0
+
+        result = MigrationResult("Native PromQL", "grafana-uid-2")
+        result.runtime_features = {
+            PROMQL_COMMAND_V0: {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": "no --es-url configured; native PROMQL assumed for offline migration",
+            }
+        }
+
+        payload = manifest_module.build_migration_manifest([result])
+
+        self.assertEqual(payload["runtime_features"], result.runtime_features)
+
 
 class AlertTraversalTests(unittest.TestCase):
     def test_extract_alerts_from_row_panels(self):

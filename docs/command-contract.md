@@ -154,7 +154,7 @@ Examples below use the canonical environment names
 `$ES_API_KEY` are still accepted by every CLI and refer to the same values.
 
 ```bash
-# Grafana dashboards only (files)
+# Grafana dashboards only (files); native PROMQL is the default
 .venv/bin/obs-migrate migrate \
   --source grafana \
   --input-mode files \
@@ -163,8 +163,7 @@ Examples below use the canonical environment names
   --assets dashboards \
   --field-profile otel \
   --data-view "metrics-*" \
-  --esql-index "metrics-*" \
-  --native-promql
+  --esql-index "metrics-*"
 
 # Datadog alerts only (API)
 .venv/bin/obs-migrate migrate \
@@ -185,7 +184,6 @@ KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=a
   --output-dir migration_output \
   --assets all \
   --field-profile otel \
-  --native-promql \
   --data-view "metrics-*" \
   --esql-index "metrics-*"
 ```
@@ -212,12 +210,15 @@ the active profile controls the metric index (`otel` uses `metrics-*`,
 `prometheus` uses `metrics-prometheus-*`, and custom YAML profiles can set their
 own `metric_index`).
 
-For Grafana `--native-promql` validation, this repo is exercised against
+For Grafana native PromQL validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
 including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
-lab's `metrics-*` data view. If you point `--data-view` at a different
-Prometheus integration layout, verify the target schema first before treating
-empty panels as a migration bug.
+lab's `metrics-*` data view. Grafana migration emits native PROMQL by default;
+when `--es-url` is set it probes the target and downgrades to ES|QL translation
+if the `PROMQL` command is unsupported. Pass `--no-native-promql` to always
+force ES|QL translation. If you point `--data-view` at a different Prometheus
+integration layout, verify the target schema first before treating empty panels
+as a migration bug.
 
 Dashboard migrations also write `schema_change_report.md` and
 `telemetry_contract.json` inside the per-source `dashboards/` artifact
@@ -310,7 +311,8 @@ set -a && source serverless_creds.env && set +a
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets all \
-  --native-promql \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY" \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY" \
   --upload \
@@ -611,14 +613,13 @@ Use the shared asset contract above for `--assets` and the deprecated
 source adapter](sources/grafana.md).
 
 ```bash
-# Files: dashboards only
+# Files: dashboards only (native PROMQL is the default)
 .venv/bin/grafana-migrate \
   --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --assets dashboards \
   --field-profile otel \
-  --native-promql \
   --data-view "metrics-*" \
   --esql-index "metrics-*"
 
@@ -636,9 +637,9 @@ KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=a
   --output-dir migration_output \
   --assets all \
   --field-profile otel \
-  --native-promql \
   --data-view "metrics-*" \
   --esql-index "metrics-*" \
+  --es-api-key "$KEY" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --smoke \
   --browser-audit \
@@ -734,7 +735,8 @@ set -a && source serverless_creds.env && set +a
   --input-dir examples/alerting/grafana \
   --output-dir alert_migration_output \
   --assets all \
-  --native-promql \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY" \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY" \
   --upload \
