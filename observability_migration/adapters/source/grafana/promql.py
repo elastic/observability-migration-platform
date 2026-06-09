@@ -28,6 +28,36 @@ def _is_counter_fallback(metric_name, rule_pack):
     return any(metric_name.endswith(s) for s in suffixes)
 
 
+# ES|QL reserved keywords that are illegal as a *bare* column identifier (in
+# ``EVAL <id> =``, ``STATS <id> =``, ``KEEP <id>``). A Grafana legendFormat can
+# legitimately be one of these (e.g. HAProxy's "IN"/"OUT" data-transfer legend),
+# so when such a token is used as a column alias it must be backtick-quoted or
+# ES|QL rejects the whole query (``mismatched input 'IN'``). Kept lowercase for
+# case-insensitive matching; the emitted alias text is preserved verbatim.
+_ESQL_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "and",
+        "as",
+        "asc",
+        "by",
+        "desc",
+        "false",
+        "first",
+        "in",
+        "is",
+        "last",
+        "like",
+        "limit",
+        "not",
+        "null",
+        "or",
+        "rlike",
+        "true",
+        "where",
+    }
+)
+
+
 def _esql_field(name: str) -> str:
     """Backtick-quote an ES|QL field reference that contains special characters.
 
@@ -38,6 +68,27 @@ def _esql_field(name: str) -> str:
     if name and re.search(r"[^a-zA-Z0-9_.]", name):
         escaped = name.replace("`", "\\`")
         return f"`{escaped}`"
+    return name
+
+
+def _esql_identifier(name: str) -> str:
+    """Quote a *column alias/identifier* for safe ES|QL emission.
+
+    Like :func:`_esql_field` but also backtick-quotes bare tokens that collide
+    with an ES|QL reserved keyword (``IN``, ``AS``, ``BY`` ...). Use this at
+    every site that renders a (possibly legend-derived) alias as an identifier
+    in the query text — ``EVAL``/``STATS``/``KEEP`` — so the stored column name
+    stays verbatim while the query still parses. The bare name must continue to
+    be used wherever Kibana matches a result *column* (panel ``metrics[].field``,
+    legend label hints), since Kibana strips the backticks.
+    """
+    if not name:
+        return name
+    if re.search(r"[^a-zA-Z0-9_.]", name):
+        escaped = name.replace("`", "\\`")
+        return f"`{escaped}`"
+    if name.lower() in _ESQL_RESERVED_IDENTIFIERS:
+        return f"`{name}`"
     return name
 
 
@@ -282,6 +333,10 @@ class FormulaPlan:
     specs: list
     expr: str
     warnings: list = field(default_factory=list)
+    # Raw ``<lhs> <op> <rhs>`` condition when ``expr`` is a PromQL ``bool``
+    # comparison indicator (``CASE(cond, 1, 0)``). A parent division uses this to
+    # re-render the indicator with a NULL false-branch so it never divides by 0.
+    bool_compare_cond: str = ""
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -1586,6 +1641,17 @@ def _ast_binary_fragment(node, expr):
     left = _ast_from_node(node.lhs, _ast_node_expr(node.lhs))
     right = _ast_from_node(node.rhs, _ast_node_expr(node.rhs))
     op = str(getattr(node, "op", "") or "")
+    return_bool = bool(getattr(getattr(node, "modifier", None), "return_bool", False))
+
+    # PromQL ``bool`` modifier (``A > bool B``) turns a comparison into a numeric
+    # 0/1 indicator rather than a filter that drops series. Model it as a
+    # ``binary_expr`` flagged ``bool_compare`` so the formula plan renders it as
+    # ``CASE(<lhs> <op> <rhs>, 1, 0)``. This is distinct from a bare comparison
+    # (no ``bool``), which keeps filter semantics via ``post_filter`` below.
+    if return_bool and op in {">", "<", ">=", "<=", "==", "!="}:
+        frag = _make_binary_fragment(expr, left, op, right)
+        frag.extra["bool_compare"] = True
+        return frag
 
     if op in {">", "<", ">=", "<=", "==", "!="} and right.is_scalar and right.scalar_value is not None:
         frag = _copy_fragment_summary(_new_fragment(expr, family=left.family), left)
@@ -2068,18 +2134,25 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     # reviewing the Node Exporter Full "Pressure" bar chart, which had
     # data in every bucket but rendered all-null bars.
     reduced = ", ".join(
-        f"{field} = MAX({field})" for field in keep_fields
+        f"{_esql_identifier(field)} = MAX({_esql_identifier(field)})" for field in keep_fields
     )
     if group_fields:
         parts.append("| SORT time_bucket ASC")
-        parts.append(f"| STATS {reduced} BY {', '.join(group_fields)}")
-        parts.append(f"| KEEP {', '.join(group_fields + keep_fields)}")
+        parts.append(
+            f"| STATS {reduced} BY {', '.join(_esql_identifier(f) for f in group_fields)}"
+        )
+        parts.append(
+            "| KEEP "
+            + ", ".join(_esql_identifier(f) for f in group_fields + keep_fields)
+        )
         return group_fields
     if output_group_fields != ["time_bucket"]:
         return None
     parts.append("| SORT time_bucket ASC")
     parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
-    parts.append(f"| KEEP time_bucket, {', '.join(keep_fields)}")
+    parts.append(
+        "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
+    )
     return []
 
 
@@ -2630,7 +2703,7 @@ def _build_shared_measure_pipeline(index, specs):
         )
         if not scoped_expr:
             return None
-        stats_terms.append(f"{spec.alias} = {scoped_expr}")
+        stats_terms.append(f"{_esql_identifier(spec.alias)} = {scoped_expr}")
     parts = [
         f"{base.source_type} {index}",
         f"| WHERE {base.time_filter}",
@@ -2650,7 +2723,10 @@ def _build_shared_measure_pipeline(index, specs):
     metric_fields = []
     for spec in specs:
         if spec.eval_expr:
-            parts.append(f"| EVAL {spec.final_alias} = {spec.eval_expr}")
+            # ``final_alias`` may be a legend-derived reserved word (e.g. "IN");
+            # quote the emitted identifier while keeping the bare name in
+            # ``metric_fields`` for Kibana column/label matching.
+            parts.append(f"| EVAL {_esql_identifier(spec.final_alias)} = {spec.eval_expr}")
         metric_fields.append(spec.final_alias)
     return parts, group_fields, metric_fields
 
@@ -3240,6 +3316,29 @@ def _build_formula_plan(
         for warning in left_plan.warnings + right_plan.warnings:
             if warning not in warnings:
                 warnings.append(warning)
+
+        # PromQL ``bool`` comparison: render a numeric 0/1 indicator instead of
+        # a boolean, so the result composes with surrounding arithmetic.
+        if frag.extra.get("bool_compare"):
+            condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+            return FormulaPlan(
+                specs=left_plan.specs + right_plan.specs,
+                expr=f"CASE({condition}, 1, 0)",
+                warnings=warnings,
+                bool_compare_cond=condition,
+            )
+
+        # Guard a ``bool`` indicator used as a divisor: 1 stays 1, but the false
+        # branch becomes NULL (not 0) so we never divide by zero — matching
+        # PromQL, where ``x / (y > bool 0)`` yields no sample when y <= 0.
+        if frag.binary_op == "/" and right_plan.bool_compare_cond:
+            divisor = f"CASE({right_plan.bool_compare_cond}, 1, NULL)"
+            return FormulaPlan(
+                specs=left_plan.specs + right_plan.specs,
+                expr=f"({left_plan.expr} / {divisor})",
+                warnings=warnings,
+            )
+
         return FormulaPlan(
             specs=left_plan.specs + right_plan.specs,
             expr=f"({left_plan.expr} {frag.binary_op} {right_plan.expr})",

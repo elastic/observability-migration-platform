@@ -1934,6 +1934,62 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('CASE((state == "active"', query)
         self.assertIn('CASE((state == "failed"', query)
 
+    def test_reserved_word_legend_alias_is_backtick_quoted(self):
+        # A Grafana legendFormat that collides with an ES|QL reserved keyword
+        # (here "IN", the membership operator) must be emitted as a
+        # backtick-quoted column alias. Without quoting, ES|QL rejects
+        # ``EVAL IN = ...`` with ``mismatched input 'IN'`` and the panel 400s
+        # in Kibana. Reproduces the HAProxy "Front - Data transfer" panel
+        # (legends IN / OUT). "OUT" is not reserved and must stay bare.
+        self.seed_field_caps(
+            {
+                "haproxy_frontend_bytes_in_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "haproxy_frontend_bytes_out_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 301,
+            "type": "timeseries",
+            "title": "Front - Data transfer",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "expr": "rate(haproxy_frontend_bytes_in_total[$__rate_interval]) * 8",
+                    "refId": "A",
+                    "legendFormat": "IN",
+                },
+                {
+                    "expr": "rate(haproxy_frontend_bytes_out_total[$__rate_interval]) * 8",
+                    "refId": "B",
+                    "legendFormat": "OUT",
+                },
+            ],
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        # The reserved word must never appear as a bare ``EVAL`` / ``STATS`` /
+        # ``KEEP`` identifier (that is the parse error). It must be backticked.
+        self.assertNotRegex(query, r"\bEVAL IN\b")
+        self.assertIn("`IN`", query)
+        # The non-reserved sibling alias stays unquoted.
+        self.assertIn("OUT", query)
+        self.assertNotIn("`OUT`", query)
+
     def test_issue8_pre_agg_filter_on_proven_tsds_gauge_uses_ts(self):
         # Issue #8 (pre_agg_filter path): sum(gauge_metric > threshold) on a
         # proven TSDS gauge must use TS. Under FROM, the WHERE filter still
