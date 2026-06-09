@@ -3339,6 +3339,49 @@ def _field_has_ts_metadata_conflict(field_name, resolver):
     return has_dimension and has_metric
 
 
+def _esql_values_control_query(field_name, data_view):
+    """Build an ES|QL query that enumerates a control's selectable values.
+
+    Mirrors Grafana's ``label_values()`` query variable: return the field's
+    distinct values, sorted, so the Kibana control can populate its dropdown
+    at render time.
+    """
+    field = _esql_identifier(field_name)
+    index = data_view or "metrics-*"
+    return (
+        f"FROM {index} | WHERE {field} IS NOT NULL"
+        f" | STATS count = COUNT(*) BY {field}"
+        f" | SORT {field} ASC | KEEP {field} | LIMIT 1000"
+    )
+
+
+def _build_esql_param_control(variable_name, label, field_name, data_view):
+    """Build an ES|QL parameter-binding control (issue #87 follow-up, #107).
+
+    When the target supports the ``promql_label_matcher_params`` capability the
+    engine rewrites full-value Grafana template-variable matchers into native
+    ES|QL named parameters (``WHERE instance == ?node``). A generic
+    options/range data-view control does NOT define that ES|QL variable, so the
+    uploaded panels fail to parse with "Unknown query parameter [node]". The
+    control has to be an ES|QL control that binds the variable.
+
+    A query-driven values control is emitted: it enumerates the resolved
+    field's values at render time and binds them to the ES|QL variable named
+    after the Grafana variable (which is exactly the parameter the query
+    references). Single-select is used because the rewritten matchers reference
+    the parameter in scalar positions (``== ?var`` / ``RLIKE ?var``); a
+    multi-value binding would be invalid ES|QL there.
+    """
+    return {
+        "type": "esql",
+        "label": label,
+        "variable_name": variable_name,
+        "variable_type": "values",
+        "query": _esql_values_control_query(field_name, data_view),
+        "multiple": False,
+    }
+
+
 MIN_DATATABLE_HEIGHT = 5
 
 
@@ -3451,6 +3494,25 @@ def query_variable_rule(context):
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
             return f"skipped non-aggregatable control field {field_name}"
+    if is_feature_supported(context.rule_pack, PROMQL_LABEL_MATCHER_PARAMS):
+        # The target binds Grafana template variables as native ES|QL
+        # parameters (``?<name>``), so the control must DEFINE that ES|QL
+        # variable rather than emit a generic data-view filter; otherwise the
+        # panel queries fail with "Unknown query parameter [name]" (issue #107).
+        context.control = _build_esql_param_control(
+            variable_name=name,
+            label=label or name,
+            field_name=field_name,
+            data_view=context.data_view,
+        )
+        if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
+            context.trace.append(
+                f"variable '{name}' was multi-select in Grafana but binds a scalar "
+                "ES|QL parameter; emitted a single-select control"
+            )
+        context.handled = True
+        return f"translated variable {name} as ES|QL parameter control"
+
     control_type = _field_control_type(field_name, resolver)
     context.control = {
         "type": control_type,

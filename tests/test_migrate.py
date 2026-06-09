@@ -4092,6 +4092,77 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertTrue(controls[0]["multiple"])
 
+    def test_query_variable_emits_esql_param_control_when_feature_supported(self):
+        """Issue #107: when the target binds Grafana template variables as
+        native ES|QL parameters (``?var``), the control must DEFINE that ES|QL
+        variable, not emit a generic options/range data-view filter (which
+        leaves the panel queries failing with "Unknown query parameter")."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=True,
+            source="probe",
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": False,
+                "query": 'label_values(node_uname_info{job="$job"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(len(controls), 1)
+        control = controls[0]
+        self.assertEqual(control["type"], "esql")
+        self.assertEqual(control["variable_name"], "node")
+        self.assertEqual(control["variable_type"], "values")
+        self.assertIs(control["multiple"], False)
+        # ES|QL binding controls populate values from a query over the resolved
+        # field and never carry generic data-view filter keys.
+        self.assertNotIn("field", control)
+        self.assertNotIn("data_view", control)
+        self.assertIn("FROM metrics-*", control["query"])
+        self.assertIn("service.instance.id", control["query"])
+
+    def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
+        """A multi-select Grafana variable still binds a scalar ES|QL parameter
+        (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
+        to keep the query valid (issue #107)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=True,
+            source="probe",
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": True,
+                "query": 'label_values(node_uname_info{job="$job"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(controls[0]["type"], "esql")
+        self.assertIs(controls[0]["multiple"], False)
+
     def test_repeat_driver_variable_forces_single_select_control(self):
         controls = migrate.translate_variables(
             [{
