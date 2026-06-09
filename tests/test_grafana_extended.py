@@ -1185,6 +1185,54 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("_timeseries", query)
         self.assertEqual(panels._native_promql_result_shape(expr), ("value", ["service.name"]))
 
+    def test_native_promql_empty_legend_format_adds_no_label_pipe(self):
+        """Issue #101: an empty ``legendFormat`` (``""``) must NOT cause any
+        synthetic label/``_timeseries`` extraction to be appended. Grafana shows
+        a single unlabeled series for an empty legend, so the migrated query must
+        stay the bare ``PROMQL ... value=(...)`` source command. Previously we
+        dumped ``EVAL _ts = COALESCE(_timeseries, "") | EVAL label = CASE(...)``,
+        which 400s on aggregating queries (``_timeseries`` is not accessible) and
+        renders the stringified label tuple as the legend on non-aggregating ones.
+        """
+        # Non-aggregating query: ``_timeseries`` IS accessible, but with an empty
+        # legendFormat we must still not extract it.
+        expr = "rate(http_requests_total[5m])"
+        query = panels.build_native_promql_query(
+            expr,
+            index="metrics-*",
+            legend_labels=panels._extract_legend_labels(""),
+            kibana_type="line",
+            legend_format="",
+        )
+        self.assertEqual(query, "PROMQL index=metrics-* step=1m value=(rate(http_requests_total[5m]))")
+        self.assertNotIn("_timeseries", query)
+        self.assertNotIn("EVAL", query)
+        self.assertNotIn("COALESCE", query)
+        self.assertNotIn("KEEP", query)
+
+    def test_native_promql_aggregation_with_legend_format_never_extracts_timeseries(self):
+        """Issue #101: when the query aggregates (a ``by`` clause collapses
+        series) the ``_timeseries`` column does not exist, so even a placeholder
+        ``legendFormat`` that references an aggregated-away label must not produce
+        a ``GROK _timeseries`` / ``COALESCE(_timeseries, ...)`` pipe. The series
+        identity comes from the real grouping column the aggregation keeps.
+        """
+        expr = "sum by (http.route) (rate(http_request_duration_seconds_count[5m]))"
+        # ``{{instance}}`` is aggregated away by ``by (http.route)`` — unreachable.
+        query = panels.build_native_promql_query(
+            expr,
+            index="metrics-*",
+            legend_labels=panels._extract_legend_labels("{{instance}}"),
+            kibana_type="line",
+            legend_format="{{instance}}",
+        )
+        self.assertNotIn("_timeseries", query)
+        self.assertNotIn("COALESCE", query)
+        self.assertNotIn("GROK", query)
+        self.assertEqual(
+            panels._native_promql_result_shape(expr), ("value", ["http.route"])
+        )
+
     def test_native_promql_legend_labels_use_grok_not_backtracking_replace(self):
         """Series-label extraction from ``_timeseries`` must use a single GROK
         scan per label, not ``REPLACE(_ts, \"\"\".*\"k\":\"...\".*\"\"\", \"$1\")``
