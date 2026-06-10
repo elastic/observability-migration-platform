@@ -29,6 +29,7 @@ from .alerts import (
 from .extract import (
     extract_all_alerting_resources,
     extract_all_alerting_resources_from_files,
+    filter_unified_alert_rules,
 )
 
 
@@ -61,20 +62,44 @@ def build_legacy_alert_irs_from_dashboards(
     ]
 
 
+def _alert_selection_filters(args) -> tuple[list[str] | None, list[str] | None]:
+    """Parse --alert-uids and --alert-folder args into filter lists."""
+    raw_uids = getattr(args, "alert_uids", "") or ""
+    uids = [u.strip() for u in raw_uids.split(",") if u.strip()] if raw_uids else None
+    raw_folders = getattr(args, "alert_folder", "") or ""
+    folders = [f.strip() for f in raw_folders.split(",") if f.strip()] if raw_folders else None
+    return uids, folders
+
+
 def load_unified_alerting_resources(args) -> dict[str, Any]:
     grafana_token = getattr(args, "grafana_token", "") or os.getenv("GRAFANA_TOKEN", "")
     if getattr(args, "source", "files") == "api":
         grafana_url = getattr(args, "grafana_url", "") or os.getenv("GRAFANA_URL", "http://localhost:3000")
         grafana_user = getattr(args, "grafana_user", "") or os.getenv("GRAFANA_USER", "admin")
         grafana_password = getattr(args, "grafana_pass", "") or os.getenv("GRAFANA_PASS", "admin")
-        return extract_all_alerting_resources(
+        resources = extract_all_alerting_resources(
             grafana_url,
             user=grafana_user,
             password=grafana_password,
             token=grafana_token,
             verify=_verify_from_args(args),
         )
-    return extract_all_alerting_resources_from_files(getattr(args, "input_dir", ""))
+    else:
+        resources = extract_all_alerting_resources_from_files(getattr(args, "input_dir", ""))
+
+    uids, folders = _alert_selection_filters(args)
+    if uids is not None or folders is not None:
+        original_count = len(resources.get("alert_rules", []) or [])
+        resources = dict(resources)
+        resources["alert_rules"] = filter_unified_alert_rules(
+            resources.get("alert_rules") or [],
+            uids=uids,
+            folder_uids=folders,
+        )
+        filtered_count = len(resources["alert_rules"])
+        if original_count != filtered_count:
+            print(f"    Alert selection: {filtered_count} of {original_count} rules selected")
+    return resources
 
 
 def build_unified_alert_irs(unified_resources: dict[str, Any]) -> list[Any]:
@@ -314,6 +339,7 @@ def run_alert_pipeline(
 
 
 __all__ = [
+    "_alert_selection_filters",
     "build_legacy_alert_irs_from_dashboards",
     "build_legacy_alert_tasks_from_dashboards",
     "build_unified_alert_irs",

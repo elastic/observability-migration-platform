@@ -2992,6 +2992,62 @@ class TestGrafanaExtractAllAlertingResources(unittest.TestCase):
 
 
 # =====================================================================
+# filter_unified_alert_rules tests
+# =====================================================================
+
+
+class TestFilterUnifiedAlertRules(unittest.TestCase):
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.extract import filter_unified_alert_rules
+        self.filter = filter_unified_alert_rules
+        self.rules = [
+            {"uid": "rule-1", "folderUID": "folder-a", "title": "Alpha"},
+            {"uid": "rule-2", "folderUID": "folder-a", "title": "Beta"},
+            {"uid": "rule-3", "folderUID": "folder-b", "title": "Gamma"},
+        ]
+
+    def test_no_filters_returns_all(self):
+        result = self.filter(self.rules)
+        self.assertEqual(result, self.rules)
+
+    def test_filter_by_single_uid(self):
+        result = self.filter(self.rules, uids=["rule-1"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["uid"], "rule-1")
+
+    def test_filter_by_multiple_uids(self):
+        result = self.filter(self.rules, uids=["rule-1", "rule-3"])
+        self.assertEqual([r["uid"] for r in result], ["rule-1", "rule-3"])
+
+    def test_filter_by_folder(self):
+        result = self.filter(self.rules, folder_uids=["folder-a"])
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(r["folderUID"] == "folder-a" for r in result))
+
+    def test_filter_by_uid_and_folder_intersection(self):
+        result = self.filter(self.rules, uids=["rule-1", "rule-2"], folder_uids=["folder-a"])
+        self.assertEqual([r["uid"] for r in result], ["rule-1", "rule-2"])
+
+    def test_uid_and_folder_no_intersection(self):
+        result = self.filter(self.rules, uids=["rule-3"], folder_uids=["folder-a"])
+        self.assertEqual(result, [])
+
+    def test_unknown_uid_returns_empty(self):
+        result = self.filter(self.rules, uids=["does-not-exist"])
+        self.assertEqual(result, [])
+
+    def test_empty_input_returns_empty(self):
+        result = self.filter([], uids=["rule-1"])
+        self.assertEqual(result, [])
+
+    def test_non_dict_entries_skipped(self):
+        rules_with_garbage = self.rules + ["not-a-dict", None]  # type: ignore[list-item]
+        result = self.filter(rules_with_garbage, uids=["rule-1"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["uid"], "rule-1")
+
+
+# =====================================================================
 # Datadog monitor file extraction tests
 # =====================================================================
 
@@ -3221,6 +3277,74 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
             token="token-a",
             verify="/tmp/ca.pem",
         )
+
+    def test_load_unified_alerting_resources_filters_by_alert_uids(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        rules = [
+            {"uid": "rule-1", "folderUID": "folder-a", "title": "Keep"},
+            {"uid": "rule-2", "folderUID": "folder-a", "title": "Skip"},
+        ]
+        args = SimpleNamespace(
+            source="files",
+            input_dir="",
+            grafana_token="",
+            alert_uids="rule-1",
+            alert_folder="",
+        )
+        with patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.extract_all_alerting_resources_from_files",
+            return_value={"alert_rules": rules},
+        ):
+            result = alert_pipeline.load_unified_alerting_resources(args)
+
+        self.assertEqual(len(result["alert_rules"]), 1)
+        self.assertEqual(result["alert_rules"][0]["uid"], "rule-1")
+
+    def test_load_unified_alerting_resources_filters_by_alert_folder(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        rules = [
+            {"uid": "rule-1", "folderUID": "folder-a", "title": "Keep"},
+            {"uid": "rule-2", "folderUID": "folder-b", "title": "Skip"},
+        ]
+        args = SimpleNamespace(
+            source="files",
+            input_dir="",
+            grafana_token="",
+            alert_uids="",
+            alert_folder="folder-a",
+        )
+        with patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.extract_all_alerting_resources_from_files",
+            return_value={"alert_rules": rules},
+        ):
+            result = alert_pipeline.load_unified_alerting_resources(args)
+
+        self.assertEqual(len(result["alert_rules"]), 1)
+        self.assertEqual(result["alert_rules"][0]["folderUID"], "folder-a")
+
+    def test_load_unified_alerting_resources_no_filter_returns_all(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        rules = [
+            {"uid": "rule-1", "folderUID": "folder-a", "title": "A"},
+            {"uid": "rule-2", "folderUID": "folder-b", "title": "B"},
+        ]
+        args = SimpleNamespace(
+            source="files",
+            input_dir="",
+            grafana_token="",
+            alert_uids="",
+            alert_folder="",
+        )
+        with patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.extract_all_alerting_resources_from_files",
+            return_value={"alert_rules": rules},
+        ):
+            result = alert_pipeline.load_unified_alerting_resources(args)
+
+        self.assertEqual(len(result["alert_rules"]), 2)
 
 
 # =====================================================================
@@ -3824,6 +3948,26 @@ class TestGrafanaCliFetchAlertsFlag(unittest.TestCase):
         from observability_migration.adapters.source.grafana.cli import parse_args
         args = parse_args(["--fetch-alerts", "--create-alert-rules"])
         self.assertTrue(args.create_alert_rules)
+
+    def test_grafana_parser_has_alert_uids(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+        args = parse_args(["--alert-uids", "rule-uid-1,rule-uid-2"])
+        self.assertEqual(args.alert_uids, "rule-uid-1,rule-uid-2")
+
+    def test_grafana_parser_has_alert_folder(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+        args = parse_args(["--alert-folder", "folder-uid-a"])
+        self.assertEqual(args.alert_folder, "folder-uid-a")
+
+    def test_grafana_parser_alert_uids_defaults_to_empty(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+        args = parse_args([])
+        self.assertEqual(args.alert_uids, "")
+
+    def test_grafana_parser_alert_folder_defaults_to_empty(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+        args = parse_args([])
+        self.assertEqual(args.alert_folder, "")
 
 
 class TestDatadogCliFetchMonitorsFlag(unittest.TestCase):
