@@ -4,6 +4,10 @@
 # Example declarative rule pack for the Grafana migration CLI
 
 query:
+  # Fallback range window for rate()/increase()/*_over_time() when the source
+  # query has none, and the window that Grafana's dynamic interval macros
+  # ($__interval / $__rate_interval / $__auto_interval_* / $interval) collapse
+  # to (ES|QL has no render-time auto interval). $__range keeps its own 1h.
   default_rate_window: 5m
   default_gauge_agg: AVG
   logs_index: logs-*
