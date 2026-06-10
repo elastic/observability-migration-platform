@@ -339,7 +339,6 @@ def run_alert_pipeline(
 
 
 __all__ = [
-    "_alert_selection_filters",
     "build_legacy_alert_irs_from_dashboards",
     "build_legacy_alert_tasks_from_dashboards",
     "build_unified_alert_irs",
