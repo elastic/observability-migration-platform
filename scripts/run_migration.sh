@@ -93,10 +93,20 @@ if [ "$SKIP_DATA" = false ]; then
   echo "============================================================"
   echo "  Step 2: Generate & ingest synthetic telemetry data"
   echo "============================================================"
+  # Remove leftover data streams that overlap metrics-*/logs-* but were not
+  # created by this seeder (old parity/experiment streams). Their incompatible
+  # mappings make shared fields conflict across the wildcard, so panels querying
+  # metrics-* return zero rows. Default on for parity with run_seed_data.sh; set
+  # PURGE_FOREIGN_STREAMS=0 to skip.
+  PURGE_FOREIGN_STREAMS="${PURGE_FOREIGN_STREAMS:-1}"
+  PURGE_FLAG=()
+  if [ "$PURGE_FOREIGN_STREAMS" = "1" ]; then
+    PURGE_FLAG=(--purge-foreign-streams)
+  fi
   DATA_HOURS="${DATA_HOURS:-6}" \
   INTERVAL_SEC="${INTERVAL_SEC:-30}" \
   BATCH_DOC_LIMIT="${BATCH_DOC_LIMIT:-8000}" \
-    $VENV "$SCRIPT_DIR/setup_telemetry_data.py" "$DASHBOARD_YAML_DIR"
+    $VENV "$SCRIPT_DIR/setup_telemetry_data.py" "$DASHBOARD_YAML_DIR" "${PURGE_FLAG[@]}"
 fi
 
 if [ "$SKIP_UPLOAD" = false ]; then

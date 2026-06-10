@@ -21,9 +21,12 @@ step, the emitted Kibana query, and a semantic verdict.
 The Grafana adapter selects one of four paths per panel target, in order of
 preference:
 
-1. **Native PROMQL** (`--native-promql`) — wraps the original PromQL in
-   `PROMQL index=… value=(expr)`. Used for Elastic Serverless; highest
-   fidelity for `rate()`, `increase()`, grouped aggregations.
+1. **Native PROMQL** (the default; when `--es-url` is set, target detection
+   downgrades to ES|QL translation if the `PROMQL` command is unsupported;
+   `--native-promql` forces it and `--no-native-promql` opts out) — wraps
+   the original PromQL in `PROMQL index=… value=(expr)`. Used for Elastic
+   Serverless; highest fidelity for `rate()`, `increase()`, grouped
+   aggregations.
 2. **Rule-engine ES|QL** — parses PromQL AST via `promql-parser`, classifies
    the expression family, runs it through the rule pipeline, renders ES|QL.
 3. **LLM fallback ES|QL** — for panels the rule engine marks `not_feasible`,

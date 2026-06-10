@@ -409,6 +409,25 @@ CASES: list[tuple[str, str, str]] = [
         "sum(increase(prometheus_rule_evaluation_failures_total[5m])) by (instance) > 0",
         "timeseries",
     ),
+    # --- PromQL ``bool`` modifier: numeric 0/1 indicator (not a filter) -------
+    # Node Exporter "SWAP Used": the ``> bool 0`` guard reads 1 when swap is
+    # configured, 0 otherwise, so the percentage is zeroed (not NaN/garbage)
+    # on swap-less hosts. Must render CASE(cond, 1, 0), never the bare metric.
+    (
+        "bool_indicator_swap_used_percent",
+        (
+            "((node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)"
+            " / (node_memory_SwapTotal_bytes)) * (node_memory_SwapTotal_bytes > bool 0) * 100"
+        ),
+        "stat",
+    ),
+    # A ``bool`` indicator used as a divisor is NULL-guarded so it never
+    # divides by zero (PromQL yields no sample when the comparison is false).
+    (
+        "bool_indicator_divisor_null_guarded",
+        "node_memory_SwapFree_bytes / (node_memory_SwapTotal_bytes > bool 0)",
+        "timeseries",
+    ),
     (
         "histogram_bucket_rate_by_le",
         "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)",

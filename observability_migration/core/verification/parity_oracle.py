@@ -12,6 +12,7 @@ ES traffic goes through the shared make_es_request adapter (honors resolve_tls).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -100,19 +101,28 @@ def _drop_constants(
 
 
 def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Parse native PROMQL output: columns value/step/<labels>."""
+    """Parse native PROMQL output: columns value/step/<labels>.
+
+    Native PROMQL may return the series labels either as broken-out columns or
+    packed into a single ``_timeseries`` JSON column (the TS form). Both must be
+    decoded -- ignoring ``_timeseries`` collapses every grouped series into one
+    empty-key series, which can never intersect the translated side (which does
+    decode it), turning correct grouped panels into false FAILs.
+    """
     columns = [c["name"] for c in data.get("columns", [])]
     rows = data.get("values", [])
     if not columns or not rows:
         return {}
-    value_idx = step_idx = None
+    value_idx = step_idx = timeseries_idx = None
     label_idxs: list[tuple[int, str]] = []
     for i, name in enumerate(columns):
         if name == "value" or name.endswith("_value"):
             value_idx = i
         elif name == "step":
             step_idx = i
-        elif name != "_timeseries":
+        elif name == "_timeseries":
+            timeseries_idx = i
+        else:
             label_idxs.append((i, name))
     if value_idx is None or step_idx is None:
         return {}
@@ -126,6 +136,8 @@ def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
         if v is None:
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
+        if timeseries_idx is not None:
+            labels.update(_decode_timeseries_labels(row[timeseries_idx]))
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
     return _drop_constants([(dict(k), v) for k, v in bucket.items()])
 
@@ -225,24 +237,72 @@ def _decode_timeseries_labels(raw) -> dict[str, str]:
 def _project_to_subset(
     a: dict[SeriesKey, list[tuple[float, float]]],
     b: dict[SeriesKey, list[tuple[float, float]]],
+    reducer: str = "sum",
 ) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Re-aggregate ``a`` onto the label dimensions used by ``b`` (sum-align)."""
+    """Re-aggregate ``a`` onto the label dimensions used by ``b``.
+
+    ``reducer`` must match the outer aggregation the translated query applied
+    when it grouped by those labels. Summing native series onto a label subset
+    that the translated query AVERAGED reads N* too high (N = native series
+    collapsing into one subset key), which is the dominant source of false
+    SHAPE_PASS-at-~0.99 verdicts on grouped gauge panels.
+    """
     if not a or not b:
         return a
     b_labels: set[str] = set()
     for key in b:
         for name, _ in key.labels:
             b_labels.add(name)
-    projected: dict[SeriesKey, list[tuple[float, float]]] = {}
-    summed: dict[SeriesKey, dict[float, float]] = {}
+    grouped: dict[SeriesKey, dict[float, list[float]]] = {}
     for key, values in a.items():
         sub = tuple(sorted((n, v) for n, v in key.labels if n in b_labels))
-        acc = summed.setdefault(SeriesKey(sub), {})
+        acc = grouped.setdefault(SeriesKey(sub), {})
         for ts, val in values:
-            acc[ts] = acc.get(ts, 0.0) + val
-    for key, tsmap in summed.items():
-        projected[key] = sorted(tsmap.items())
+            acc.setdefault(ts, []).append(val)
+    projected: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for key, tsmap in grouped.items():
+        projected[key] = sorted((ts, _reduce_values(vals, reducer)) for ts, vals in tsmap.items())
     return projected
+
+
+def _reduce_values(values: list[float], reducer: str) -> float:
+    if not values:
+        return 0.0
+    if reducer == "avg":
+        return sum(values) / len(values)
+    if reducer == "max":
+        return max(values)
+    if reducer == "min":
+        return min(values)
+    return sum(values)
+
+
+# Outer aggregation in the emitted ES|QL ``| STATS <alias> = <AGG>(...) BY ...``.
+# Determines how native series must be collapsed when projecting onto the
+# translated label subset so the comparison is apples-to-apples.
+_TRANSLATED_REDUCER_RE = re.compile(
+    r"\|\s*STATS\s+[A-Za-z_][A-Za-z0-9_.]*\s*=\s*(?P<agg>AVG|SUM|MAX|MIN|COUNT)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _translated_reducer(esql: str) -> str:
+    """Return the outer STATS aggregation ('sum' default) of an ES|QL query."""
+    match = _TRANSLATED_REDUCER_RE.search(esql or "")
+    if not match:
+        return "sum"
+    agg = match.group("agg").lower()
+    return agg if agg in {"avg", "max", "min", "sum"} else "sum"
+
+
+def _is_promql_passthrough(esql: str) -> bool:
+    """True when the translated query's leading command is native ``PROMQL``.
+
+    These queries return native-shaped columns (``value``/``step``/
+    ``_timeseries``), so the comparison must decode them with ``normalize_native``
+    rather than the ES|QL ``normalize_translated`` (which keys off ``time_bucket``).
+    """
+    return bool(re.match(r"^\s*PROMQL\b", esql or "", re.IGNORECASE))
 
 
 def _bucket_align(series, step):
@@ -279,6 +339,133 @@ def compute_diff(a, b, step) -> tuple[int, float, float]:
 
 # PromQL constructs the native PROMQL command does not parse / we don't compare.
 NATIVE_UNSUPPORTED = ("label_replace", "label_join")
+
+# Grafana range/interval macros -> a concrete duration the native PROMQL parser
+# accepts. The oracle only needs a *runnable* window; exact width does not change
+# whether the translated and native series line up (both use the same seeded data
+# over the same compare window), so a single sensible default is fine.
+_DEFAULT_RANGE = "5m"
+_RANGE_MACRO_RE = re.compile(
+    r"\$__rate_interval|\$__interval|\$__range|\$__auto_interval_\w+|\$interval", re.IGNORECASE
+)
+# A ``[ ... ]`` range selector whose contents are not a plain duration (i.e. it
+# embeds a template variable like ``[$myrange]`` or a subquery ``[$r:$s]``).
+_VAR_RANGE_SELECTOR_RE = re.compile(r"\[\s*\$[^\]]*\]")
+# One label matcher inside a ``{...}`` selector: name (op) "value".
+_MATCHER_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=~|!~|!=|=)\s*\"(?P<val>(?:[^\"\\]|\\.)*)\""
+)
+
+
+def _strip_variable_matchers(expr: str) -> str:
+    """Drop label matchers whose value contains a Grafana ``$variable``.
+
+    ``apache_uptime{job="$job", instance="$instance"}`` matches no seeded series
+    because nothing has a label equal to the literal ``$job``. The translated
+    side carries no such filter, so the faithful oracle comparison is against the
+    metric with the variable matchers removed (static matchers are preserved).
+    Selectors left empty collapse to the bare metric name.
+    """
+    out: list[str] = []
+    pos = 0
+    for brace in re.finditer(r"\{[^{}]*\}", expr):
+        out.append(expr[pos:brace.start()])
+        inner = brace.group(0)[1:-1]
+        kept = [
+            m.group(0)
+            for m in _MATCHER_RE.finditer(inner)
+            if "$" not in m.group("val")
+        ]
+        out.append("{" + ", ".join(kept) + "}" if kept else "")
+        pos = brace.end()
+    out.append(expr[pos:])
+    return "".join(out)
+
+
+# A translated panel that ends by collapsing every bucket into a single row
+# (Grafana stat / single-value panel): ``STATS time_bucket = MAX(time_bucket), ...``.
+# Its output is one scalar, so there is no time series to diff against the native
+# range vector -- comparing point-wise is meaningless and produces a false FAIL.
+_SINGLE_VALUE_REDUCTION_RE = re.compile(
+    r"STATS\s+time_bucket\s*=\s*(?:MAX|MIN|LAST|FIRST|AVG|SUM)\s*\(\s*time_bucket\s*\)",
+    re.IGNORECASE,
+)
+
+_STATS_BY_RE = re.compile(r"^\s*STATS\b(?P<body>.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def _stats_groups_by_time_bucket(stats_command: str) -> bool:
+    """True when a single ``STATS ...`` command groups ``BY`` a clause that
+    contains ``time_bucket`` (i.e. it still yields a per-bucket time series).
+    A ``STATS`` with no ``BY`` at all, or a ``BY`` over dimensions only, does
+    not — it produces a single row per group (a stat snapshot)."""
+    match = _STATS_BY_RE.match(stats_command.strip())
+    if not match:
+        return False
+    body = match.group("body")
+    # The ``BY`` keyword splits aggregations from grouping; only the grouping
+    # side establishes the series shape. Match ``BY`` as a standalone keyword.
+    by_split = re.split(r"\bBY\b", body, maxsplit=1, flags=re.IGNORECASE)
+    if len(by_split) < 2:
+        return False  # no BY clause -> collapses to one row
+    grouping = by_split[1]
+    return bool(re.search(r"\btime_bucket\b", grouping, re.IGNORECASE))
+
+
+def is_single_value_reduction(esql: str) -> bool:
+    """True when the emitted ES|QL reduces the series to a single (stat) value
+    instead of a per-time-bucket range series.
+
+    Grafana stat / single-stat / gauge panels translate to ES|QL whose terminal
+    aggregation drops the time dimension — e.g. a trailing
+    ``STATS time_bucket = MAX(time_bucket)`` collapse, a bare
+    ``STATS m = COUNT_DISTINCT(cpu)`` cardinality, a ``time()``-style
+    ``DATE_DIFF(..., NOW())`` uptime scalar, or a per-bucket STATS followed by a
+    terminal ``STATS ... BY <dimension>`` (no ``time_bucket``). There is no time
+    series to diff point-wise against the native range vector, so the oracle must
+    SKIP rather than emit a false FAIL.
+
+    The shape rule: split the pipeline into ``|`` stages; if there is at least
+    one ``STATS`` stage and the *last* one does not group ``BY time_bucket``, the
+    result is a single value (per group). Queries with no ``STATS`` at all are
+    left to point-wise comparison.
+    """
+    text = esql or ""
+    if _SINGLE_VALUE_REDUCTION_RE.search(text):
+        return True
+    stages = [stage.strip() for stage in text.split("|")]
+    stats_stages = [stage for stage in stages if re.match(r"(?i)^STATS\b", stage)]
+    if not stats_stages:
+        return False
+    # The terminal aggregation governs the output shape.
+    return not _stats_groups_by_time_bucket(stats_stages[-1])
+
+
+def sanitize_source_for_oracle(expr: str, step: int) -> str:
+    """Make a Grafana source PromQL expression runnable by native PROMQL.
+
+    Grafana panel queries embed template variables (``$job``, ``$node``) and
+    range macros (``$__rate_interval``) that Grafana interpolates at view time.
+    Fed verbatim to native PROMQL they either fail to parse or match zero series,
+    which would make every templated panel an unwinnable FAIL regardless of
+    translation quality. Normalize them so the oracle exercises the same data the
+    translated ES|QL does:
+
+    * variable-valued label matchers are dropped (static ones preserved);
+    * range/interval macros and ``[$var]`` selectors become a concrete duration;
+    * any residual bare ``$var`` is removed defensively.
+    """
+    if "$" not in expr:
+        return expr
+    result = _strip_variable_matchers(expr)
+    result = _RANGE_MACRO_RE.sub(_DEFAULT_RANGE, result)
+    result = _VAR_RANGE_SELECTOR_RE.sub(f"[{_DEFAULT_RANGE}]", result)
+    # Any leftover ${var} / $var not inside a matcher (e.g. used as a scalar):
+    # remove it so the expression at least parses. Capture-group backrefs ($1)
+    # and the special $__ macros have already been handled above.
+    result = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}", "", result)
+    result = re.sub(r"\$(?!\d)[A-Za-z_][A-Za-z0-9_]*", "", result)
+    return result
 
 
 def _run_query(request, query: str, params: list | None = None) -> dict:
@@ -323,8 +510,16 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
         return cmp_
+    if is_single_value_reduction(cmp_.esql):
+        cmp_.skipped_reason = "translated panel reduces to a single value (stat panel); no time series to compare"
+        return cmp_
 
-    native_raw = run_native_promql(request, source_query, index, step, start_iso, end_iso)
+    # Strip Grafana template vars / range macros so native PROMQL runs against the
+    # same series the translated ES|QL does (a literal ``$job`` matches nothing).
+    native_query = sanitize_source_for_oracle(source_query, step)
+    if native_query != source_query:
+        cmp_.notes.append("source sanitized for oracle (template vars / range macros resolved)")
+    native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
         cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
         return cmp_
@@ -335,17 +530,30 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
 
     native = normalize_native(native_raw)
-    translated = normalize_translated(translated_raw)
+    # A translated query that is itself a native ``PROMQL ...`` command (the
+    # native-passthrough degrade path) emits native-shaped ``step``/``value``/
+    # ``_timeseries`` columns rather than ES|QL ``time_bucket``. Parsing it with
+    # normalize_translated yields 0 series (no time_bucket) -> a false cmp=0 FAIL,
+    # so decode it with the native parser instead.
+    if _is_promql_passthrough(cmp_.esql):
+        translated = normalize_native(translated_raw)
+        cmp_.notes.append("translated query is a native PROMQL passthrough; parsed with the native normalizer")
+    else:
+        translated = normalize_translated(translated_raw)
     cmp_.native_series = len(native)
     cmp_.translated_series = len(translated)
     common = set(native) & set(translated)
     native_for_diff = native
     if not common and native and translated:
-        projected = _project_to_subset(native, translated)
+        reducer = _translated_reducer(cmp_.esql)
+        projected = _project_to_subset(native, translated, reducer=reducer)
         if set(projected) & set(translated):
             native_for_diff = projected
             common = set(projected) & set(translated)
-            cmp_.notes.append(f"native re-aggregated {len(native)}->{len(projected)} series to match translated label subset")
+            cmp_.notes.append(
+                f"native re-aggregated {len(native)}->{len(projected)} series ({reducer}) "
+                "to match translated label subset"
+            )
     cmp_.common_series = len(common)
     points, rmax, rmean = compute_diff(native_for_diff, translated, step)
     cmp_.compared_points = points

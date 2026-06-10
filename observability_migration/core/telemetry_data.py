@@ -130,12 +130,19 @@ def generate_documents(
         is_metrics = stream_type == "metrics"
         dataset = _dataset_from_stream(concrete_name)
         namespace = _namespace_from_stream(concrete_name)
-        combinations = _dimension_combinations(stream, max_combinations=max_combinations)
-        metric_fields = {
+        all_metric_fields = {
             field_name: info
             for field_name, info in (stream.get("fields") or {}).items()
             if info.get("role") == "metric"
         }
+        # Split the stream into metric families that each only carry the
+        # dimensions they actually co-occur with in a query. Without this, a
+        # stream merged from many dashboards puts every metric and every
+        # dimension into one document, so unrelated dimensions cross-contaminate
+        # legends and the per-dimension cardinality collapses under the
+        # combination cap. Falls back to the whole stream when no requirements
+        # are recorded (preserving the unscoped behaviour).
+        families = _metric_families(stream, all_metric_fields, max_combinations=max_combinations)
 
         previous_ts: datetime.datetime | None = None
         for ts in timestamps:
@@ -145,32 +152,52 @@ def generate_documents(
                 if previous_ts is not None
                 else min(interval_sec, 60)
             )
-            for combo_idx, dimensions in enumerate(combinations):
-                doc: dict[str, Any] = {
-                    "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "data_stream.type": stream_type,
-                    "data_stream.dataset": dataset,
-                    "data_stream.namespace": namespace,
-                    **dimensions,
-                }
-                if is_metrics:
-                    gauge_values: dict[str, float] = {}
-                    for field_name in _coherence_order(metric_fields):
-                        info = metric_fields[field_name]
-                        if info.get("metric_kind") == "counter":
-                            key = (concrete_name, field_name, combo_idx)
-                            counter_state[key] = counter_state.get(key, float(10 + combo_idx))
-                            counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
-                            doc[field_name] = round(counter_state[key], 4)
-                        else:
-                            denominator = _ratio_denominator(info)
-                            ceiling = gauge_values.get(denominator) if denominator else None
-                            value = _gauge_value(field_name, hour, combo_idx, rng, ceiling=ceiling)
-                            gauge_values[field_name] = value
-                            doc[field_name] = round(value, 4)
-                else:
-                    doc.setdefault("message", _log_message(doc, combo_idx))
-                yield concrete_name, doc
+            for family_idx, (metric_fields, combinations, le_order) in enumerate(families):
+                for combo_idx, dimensions in enumerate(combinations):
+                    # Namespace the counter/combo key by family so the same
+                    # global combo index across families never aliases state.
+                    state_combo = (family_idx, combo_idx)
+                    doc: dict[str, Any] = {
+                        "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                        "data_stream.type": stream_type,
+                        "data_stream.dataset": dataset,
+                        "data_stream.namespace": namespace,
+                        **dimensions,
+                    }
+                    if is_metrics:
+                        gauge_values: dict[str, float] = {}
+                        for field_name in _coherence_order(metric_fields):
+                            info = metric_fields[field_name]
+                            if info.get("metric_kind") == "counter":
+                                key = (concrete_name, field_name, state_combo)
+                                counter_state[key] = counter_state.get(key, float(10 + combo_idx))
+                                counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
+                                value = counter_state[key]
+                                if field_name.endswith("_bucket") and "le" in dimensions:
+                                    # Prometheus cumulative histogram: bucket(le=v) counts
+                                    # all observations <= v, so it must be non-decreasing as
+                                    # le grows. Scale the per-series counter by the le rank
+                                    # (1-based) so higher buckets always dominate lower ones
+                                    # while each series stays monotonic in time.
+                                    rank, total = _le_rank(dimensions["le"], le_order)
+                                    if total:
+                                        value *= rank / total
+                                doc[field_name] = round(value, 4)
+                            else:
+                                denominator = (
+                                    _ratio_denominator(info)
+                                    or _static_invariant_denominator(field_name, metric_fields)
+                                )
+                                ceiling = gauge_values.get(denominator) if denominator else None
+                                value = _gauge_value(
+                                    field_name, hour, combo_idx, rng,
+                                    ceiling=ceiling, now_epoch=ts.timestamp(),
+                                )
+                                gauge_values[field_name] = value
+                                doc[field_name] = round(value, 4)
+                    else:
+                        doc.setdefault("message", _log_message(doc, combo_idx))
+                    yield concrete_name, doc
             previous_ts = ts
 
 
@@ -297,6 +324,93 @@ def _dotted_field_prefixes(field_names: Iterable[str]) -> set[str]:
     }
 
 
+def _metric_families(
+    stream: dict[str, Any],
+    metric_fields: dict[str, dict[str, Any]],
+    *,
+    max_combinations: int,
+) -> list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]]:
+    """Split a stream into metric families scoped to co-occurring dimensions.
+
+    Each family is ``(metric_fields_subset, combinations, le_order)``. A merged
+    ``metrics-*`` stream lists every metric and every dimension from every
+    dashboard; pairing them all in one document cross-contaminates legends and
+    starves per-dimension cardinality. Using the per-query ``requirements`` we
+    only pair a metric with the dimensions it actually appears with.
+
+    With no ``requirements`` (or no metrics) the whole stream is one family, so
+    behaviour is unchanged for callers that do not record requirements.
+    """
+    requirements = stream.get("requirements") or []
+    if not requirements or not metric_fields:
+        combos = _dimension_combinations(stream, max_combinations=max_combinations)
+        return [(metric_fields, combos, _sorted_le_values(combos))]
+
+    # Union the dimensions each metric co-occurs with across all requirements.
+    metric_dims: dict[str, set[str]] = {name: set() for name in metric_fields}
+    for requirement in requirements:
+        dims = set(requirement.get("dimensions") or []) | set(requirement.get("group_fields") or [])
+        for metric_name in requirement.get("metrics") or []:
+            if metric_name in metric_dims:
+                metric_dims[metric_name] |= dims
+    # A ratio numerator must travel with its denominator (same document) and
+    # share its dimensions so the bound holds per series.
+    for metric_name, info in metric_fields.items():
+        denominator = _ratio_denominator(info)
+        if denominator and denominator in metric_dims:
+            shared = metric_dims[metric_name] | metric_dims[denominator]
+            metric_dims[metric_name] = shared
+            metric_dims[denominator] = shared
+
+    # Group metrics that share an identical dimension signature into one family.
+    families_by_sig: dict[frozenset[str], list[str]] = {}
+    for metric_name in sorted(metric_dims):
+        sig = frozenset(metric_dims[metric_name])
+        families_by_sig.setdefault(sig, []).append(metric_name)
+
+    # Control/group dimensions that co-occur with no metric (e.g. a dashboard
+    # variable like ``nodename``) would otherwise be mapped but never assigned a
+    # value, leaving the Kibana control dropdown empty. Attach them to one
+    # existing family at scope-build time so they get seeded -- WITHOUT changing
+    # any metric's dimension signature (which would split a metric out of a
+    # family it shares with a ratio sibling and break the ratio). The carrier is
+    # the family with the most metrics (ties broken by sorted signature) so the
+    # extra control values ride the largest doc set deterministically.
+    orphan_dims = frozenset(
+        dim
+        for dim in (set(stream.get("control_fields") or []) | set(stream.get("group_fields") or []))
+        if dim in (stream.get("fields") or {})
+    ) - {dim for dims in metric_dims.values() for dim in dims}
+    carrier_sig: frozenset[str] | None = None
+    if orphan_dims and families_by_sig:
+        carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
+
+    families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
+    for sig, names in families_by_sig.items():
+        family_metrics = {name: metric_fields[name] for name in names}
+        scope_dims = sig | orphan_dims if sig == carrier_sig else sig
+        scoped = _scoped_stream(stream, scope_dims, set(names))
+        combos = _dimension_combinations(scoped, max_combinations=max_combinations)
+        families.append((family_metrics, combos, _sorted_le_values(combos)))
+    return families
+
+
+def _scoped_stream(stream: dict[str, Any], dimensions: frozenset[str], metrics: set[str]) -> dict[str, Any]:
+    """A shallow stream view restricted to *dimensions* and *metrics*."""
+    fields = {
+        name: info
+        for name, info in (stream.get("fields") or {}).items()
+        if name in metrics or name in dimensions
+    }
+    return {
+        "fields": fields,
+        "control_fields": [f for f in (stream.get("control_fields") or []) if f in dimensions],
+        "group_fields": [f for f in (stream.get("group_fields") or []) if f in dimensions],
+        "required_values": {k: v for k, v in (stream.get("required_values") or {}).items() if k in dimensions},
+        "required_patterns": {k: v for k, v in (stream.get("required_patterns") or {}).items() if k in dimensions},
+    }
+
+
 def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) -> list[dict[str, str]]:
     fields = {
         field_name: info
@@ -330,7 +444,7 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
         and not ("." not in n and n in dotted_prefixes)
     }
     for field_name in sorted(dimension_names):
-        values = list(required_values.get(field_name) or [])
+        values = [v for v in (required_values.get(field_name) or []) if _seedable_value(v)]
         values.extend(_expand_patterns(field_name, required_patterns.get(field_name) or []))
         if field_name in set(group_fields) | set(control_fields) and not values:
             values.extend(_default_dimension_values(field_name, count=3))
@@ -349,7 +463,7 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
     _ensure_dimension_value_coverage(
         combos,
         value_options,
-        sorted(set(control_fields) | set(required_values) | set(required_patterns)),
+        sorted(set(control_fields) | set(group_fields) | set(required_values) | set(required_patterns)),
     )
     return combos or [{}]
 
@@ -403,6 +517,20 @@ def _ensure_dimension_value_coverage(
 _LITERALISH_RE = re.compile(r"^[\w./:@-]+$")
 
 
+def _seedable_value(value: str) -> bool:
+    """False for exact required-values that are not real label values.
+
+    Grafana template variables that the migrator relabels (``$host`` ->
+    ``label_host``) reach the contract as exact ``required_values`` (not
+    patterns). Seeding ``label_host:label_port`` verbatim produces a weird
+    legend the panel query never matches, so drop it and let the field fall
+    back to clean defaults.
+    """
+    if not value:
+        return False
+    return "label_" not in value
+
+
 def _expand_patterns(field_name: str, patterns: list[str]) -> list[str]:
     values: list[str] = []
     for pattern in patterns:
@@ -410,10 +538,100 @@ def _expand_patterns(field_name: str, patterns: list[str]) -> list[str]:
     return values
 
 
+def _instantiate_regex(pattern: str) -> str | None:
+    """Synthesize one concrete string that ``re.fullmatch``es ``pattern``.
+
+    Handles the regex shapes Prometheus label matchers use in practice —
+    character classes (``[a-z]+``, ``[0-9]+``, ``[A-Z]``), literal runs
+    (``nvme``, ``eth``), and simple quantifiers (``+``/``*``/``?``/``{n}``).
+    Returns ``None`` for anything it cannot confidently instantiate so the
+    caller can fall back to a coherent default instead of guessing.
+
+    A matching value is what makes a ``device=~"[a-z]+|nvme[0-9]+n[0-9]+"``
+    panel actually find data — Prometheus ``=~`` is a *full* match, so a clean
+    but non-matching stem (``device_1``) leaves the panel empty.
+    """
+    body = pattern.strip().removeprefix("^").removesuffix("$")
+    if not body:
+        return None
+    out: list[str] = []
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        token: str
+        if ch == "[":
+            close = body.find("]", i + 1)
+            if close == -1:
+                return None
+            cls = body[i + 1 : close]
+            token = _sample_char_class(cls)
+            if token is None:
+                return None
+            i = close + 1
+        elif ch in "().|\\":
+            # Groups / alternation / escapes / wildcards inside a single
+            # alternative are beyond this lightweight instantiator.
+            return None
+        elif ch in "+*?":
+            # Quantifier with no preceding atom — malformed for our purposes.
+            return None
+        else:
+            token = ch
+            i += 1
+        # Apply a trailing quantifier to the atom we just consumed.
+        if i < n and body[i] in "+*?":
+            quant = body[i]
+            i += 1
+            if quant == "*":
+                # Zero-or-more: keep one sample so the value is non-empty/stable.
+                pass
+            # '+' and '?' both keep exactly one occurrence of the atom.
+        elif i < n and body[i] == "{":
+            close = body.find("}", i + 1)
+            if close == -1:
+                return None
+            i = close + 1  # honor the atom once; exact repetition count is not required to match a single char-class atom
+        out.append(token)
+    value = "".join(out)
+    return value or None
+
+
+def _sample_char_class(cls: str) -> str | None:
+    """Return one representative character for a regex character class body
+    (the text between ``[`` and ``]``). Supports common ranges; returns the
+    first literal for enumerations and ``None`` for negations/unknowns."""
+    if not cls or cls.startswith("^"):
+        return None
+    ranges = {
+        "a-z": "a",
+        "A-Z": "a",  # lowercased so values look like real device/interface names
+        "0-9": "0",
+        "a-zA-Z": "a",
+        "a-z0-9": "a",
+        "a-zA-Z0-9": "a",
+        "0-9a-z": "a",
+    }
+    if cls in ranges:
+        return ranges[cls]
+    # ``[abc]`` enumeration: take the first non-range literal character.
+    if "-" not in cls and "\\" not in cls:
+        return cls[0]
+    # A leading range we recognize (e.g. ``[a-z_]``) — sample its first range.
+    for key, sample in ranges.items():
+        if cls.startswith(key):
+            return sample
+    return None
+
+
 def _expand_single_pattern(field_name: str, pattern: str) -> list[str]:
     cleaned = pattern.strip()
     if not cleaned:
         return []
+    # Relabeled Grafana template variables (``$node`` -> ``label_node``) are not
+    # real label values; seeding them produces series no panel query matches.
+    if "label_" in cleaned:
+        return _default_dimension_values(field_name, count=1)
     # Status-code classes (``2..`` / ``5xx``) resolve to a concrete code so the
     # generated docs satisfy dashboards filtering on a status family.
     if re.fullmatch(r"\d\.\.", cleaned) or re.fullmatch(r"\dxx", cleaned, re.IGNORECASE):
@@ -428,21 +646,55 @@ def _expand_single_pattern(field_name: str, pattern: str) -> list[str]:
         if ")" not in inner and "(" not in inner:
             body = inner
     # Alternation — Grafana multi-value template variables become ``a|b|c``.
-    # Only expand when every alternative is a concrete literal.
     if "|" in body:
         alternatives = [alt.strip() for alt in body.split("|") if alt.strip()]
         if alternatives and all(_LITERALISH_RE.fullmatch(alt) for alt in alternatives):
             return _unique(alternatives)
+        # Mixed/regex alternatives (e.g. ``[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+``):
+        # synthesize one concrete value per alternative that actually fullmatches
+        # the source matcher, so a ``device=~`` panel finds data. Verify each
+        # against the *whole* pattern (Prometheus =~ is a full match); drop any
+        # we cannot confidently instantiate. Only if none instantiate do we fall
+        # back to coherent defaults (never leak the raw regex).
+        try:
+            compiled = re.compile(body)
+        except re.error:
+            compiled = None
+        seeded: list[str] = []
+        for alt in alternatives:
+            value = _instantiate_regex(alt)
+            if value and (compiled is None or compiled.fullmatch(value)):
+                seeded.append(value)
+        if seeded:
+            return _unique(seeded)
+        return _default_dimension_values(field_name, count=3)
     # Literal prefix followed by a trailing glob (``nginx-.*``) — emit distinct
     # concrete values rather than a single literal "sample".
     glob = re.fullmatch(r"(.+?)(?:\.\*|\.\+|\*)", body)
-    if glob:
+    if glob and _LITERALISH_RE.fullmatch(glob.group(1)):
         prefix = glob.group(1)
-        if _LITERALISH_RE.fullmatch(prefix):
-            return [f"{prefix}{idx}" for idx in range(3)]
-    # Plain literal (or unhandled regex): strip wildcards, keep what's concrete.
-    literal = body.strip("*").replace(".*", "sample")
-    return [literal] if literal else [_default_dimension_values(field_name, count=1)[0]]
+        return [f"{prefix}{idx}" for idx in range(3)]
+    # Leading glob followed by a literal suffix (``.*irq``) — keep the suffix.
+    suffix_glob = re.fullmatch(r"(?:\.\*|\.\+|\*)(.+)", body)
+    if suffix_glob and _LITERALISH_RE.fullmatch(suffix_glob.group(1)):
+        return [suffix_glob.group(1)]
+    # Plain literal: keep it only when it is genuinely literal. Any residual regex
+    # metacharacter means we could not extract a clean value, so fall back to a
+    # default rather than seed a value containing ``[``/``+``/``|`` etc.
+    literal = body.strip("*")
+    if literal and _LITERALISH_RE.fullmatch(literal):
+        return [literal]
+    # Bare regex (no alternation), e.g. ``[a-z]+`` or ``eth[0-9]+`` — synthesize a
+    # concrete value that fullmatches it so the panel's =~ matcher finds data.
+    if re.search(r"[\[\]+*?{}]", body):
+        try:
+            compiled = re.compile(body)
+        except re.error:
+            compiled = None
+        value = _instantiate_regex(body)
+        if value and (compiled is None or compiled.fullmatch(value)):
+            return [value]
+    return [_default_dimension_values(field_name, count=1)[0]]
 
 
 def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
@@ -472,33 +724,77 @@ def _default_dimension_values(field_name: str, *, count: int) -> list[str]:
 
 
 def _ratio_denominator(info: dict[str, Any]) -> str | None:
-    """Return the denominator field this metric is bounded by, if any."""
+    """Return the query-derived denominator field this metric is bounded by."""
     for relation in info.get("relationships") or []:
         if relation.get("type") == "ratio_denominator" and relation.get("field"):
             return relation["field"]
     return None
 
 
-def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
-    """Order metric fields so each ratio denominator precedes its numerator.
+# Sibling upper-bound invariants that metric names/queries cannot express as a
+# plain A / B ratio. Maps a metric-name suffix to the suffix of the sibling that
+# bounds it from above (numerator <= denominator). Matched within the same
+# metric family so the prefix (e.g. "node_memory_") is shared.
+_STATIC_INVARIANT_SUFFIXES: tuple[tuple[str, str], ...] = (
+    ("_memavailable_bytes", "_memtotal_bytes"),
+    ("_memfree_bytes", "_memtotal_bytes"),
+    ("_swapfree_bytes", "_swaptotal_bytes"),
+    ("_filesystem_avail_bytes", "_filesystem_size_bytes"),
+    ("_filesystem_free_bytes", "_filesystem_size_bytes"),
+    ("_boot_time_seconds", "_time_seconds"),
+)
 
-    Falls back to insertion order for unrelated fields, so generation is
+
+def _static_invariant_denominator(field_name: str, candidates: Iterable[str]) -> str | None:
+    """Return the sibling field that bounds *field_name* from above, if present.
+
+    Resolves a numerator suffix to its denominator suffix via
+    ``_STATIC_INVARIANT_SUFFIXES`` and matches against the metrics actually
+    present (*candidates*) on a shared-prefix basis so e.g.
+    ``node_memory_MemAvailable_bytes`` binds to ``node_memory_MemTotal_bytes``.
+    """
+    lname = field_name.lower()
+    for num_suffix, denom_suffix in _STATIC_INVARIANT_SUFFIXES:
+        if not lname.endswith(num_suffix):
+            continue
+        prefix = lname[: -len(num_suffix)]
+        for cand in candidates:
+            lc = cand.lower()
+            if lc == lname:
+                continue
+            if lc.endswith(denom_suffix) and lc[: -len(denom_suffix)] == prefix:
+                return cand
+    return None
+
+
+def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
+    """Order metric fields so each denominator precedes the metric it bounds.
+
+    Combines query-derived ratio relationships with the static sibling-invariant
+    table. Falls back to insertion order for unrelated fields, so generation is
     byte-identical to the unordered path when no relationships are present.
     Cycles are broken by the visited guard.
     """
     ordered: list[str] = []
     visited: set[str] = set()
+    names = list(metric_fields)
+
+    def denom_for(field_name: str) -> str | None:
+        return (
+            _ratio_denominator(metric_fields[field_name])
+            or _static_invariant_denominator(field_name, names)
+        )
 
     def visit(field_name: str) -> None:
         if field_name in visited or field_name not in metric_fields:
             return
         visited.add(field_name)
-        denominator = _ratio_denominator(metric_fields[field_name])
+        denominator = denom_for(field_name)
         if denominator:
             visit(denominator)
         ordered.append(field_name)
 
-    for field_name in metric_fields:
+    for field_name in names:
         visit(field_name)
     return ordered
 
@@ -508,6 +804,74 @@ def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: ran
     return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
 
 
+def _le_value_sort_key(value: str) -> tuple[int, float, str]:
+    """Sort key for a histogram ``le`` boundary.
+
+    Numeric boundaries order naturally; ``+Inf`` (Prometheus' open top bucket)
+    sorts last; anything non-numeric sorts after numbers but before ``+Inf`` so
+    ordering is always total and deterministic.
+    """
+    text = str(value).strip()
+    if text in {"+Inf", "Inf", "inf", "+inf"}:
+        return (2, float("inf"), text)
+    try:
+        return (0, float(text), text)
+    except ValueError:
+        return (1, 0.0, text)
+
+
+def _sorted_le_values(combinations: list[dict[str, str]]) -> list[str]:
+    values = {combo["le"] for combo in combinations if "le" in combo}
+    return sorted(values, key=_le_value_sort_key)
+
+
+def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
+    """Return ``(1-based rank, total)`` of *value* within *le_order*."""
+    if not le_order:
+        return (0, 0)
+    try:
+        return (le_order.index(value) + 1, len(le_order))
+    except ValueError:
+        return (len(le_order), len(le_order))
+
+
+_GIB = 1 << 30
+
+
+@dataclasses.dataclass(frozen=True)
+class ValueProfile:
+    """Plausible value band for a gauge metric, derived from its name."""
+
+    base: float
+    span: float
+    unit: str
+
+
+def _value_profile(field_name: str) -> ValueProfile:
+    """Classify a metric name into a physically plausible value band.
+
+    First match wins. Unknown names fall back to the legacy band so existing
+    seeded values for unrecognised metrics do not drift.
+    """
+    name = field_name.lower()
+    salt = abs(hash(field_name))
+    if name.endswith("_bytes") or name.endswith("_bytes_total"):
+        # 8-64 GiB, stable per metric.
+        return ValueProfile(base=float((8 + salt % 56) * _GIB), span=2.0 * _GIB, unit="bytes")
+    if any(tok in name for tok in ("load1", "load5", "load15")):
+        return ValueProfile(base=float(salt % 4), span=2.0, unit="load")
+    if name.endswith("_celsius") or "_temp" in name:
+        return ValueProfile(base=float(20 + salt % 40), span=10.0, unit="temperature")
+    if name.endswith("_seconds") or "time_seconds" in name or "_timestamp" in name:
+        # Band is applied relative to the document timestamp in _gauge_value.
+        return ValueProfile(base=0.0, span=0.0, unit="epoch_seconds")
+    if name.endswith("_percent"):
+        return ValueProfile(base=float(salt % 60), span=20.0, unit="ratio")
+    if name.endswith("_ratio") or "utilization" in name:
+        return ValueProfile(base=(salt % 60) / 100.0, span=0.2, unit="ratio")
+    return ValueProfile(base=float(10 + salt % 500), span=25.0, unit="generic")
+
+
 def _gauge_value(
     field_name: str,
     hour: float,
@@ -515,9 +879,20 @@ def _gauge_value(
     rng: random.Random,
     *,
     ceiling: float | None = None,
+    now_epoch: float | None = None,
 ) -> float:
-    base = 10 + abs(hash(field_name)) % 500
-    value = base + combo_idx * 3 + 25 * _diurnal(hour) + rng.random()
+    profile = _value_profile(field_name)
+    if profile.unit == "epoch_seconds":
+        # Anchor near the document timestamp so sibling differences (now - boot)
+        # are small positive uptimes. Deterministic per (field, combo).
+        anchor = now_epoch if now_epoch is not None else 0.0
+        offset = (abs(hash(field_name)) % (90 * 86400)) + combo_idx * 3600
+        value = anchor - offset + 60 * _diurnal(hour)
+        if ceiling is not None:
+            value = min(value, ceiling)
+        return value
+    base = profile.base
+    value = base + combo_idx * 3 + profile.span * _diurnal(hour) + rng.random()
     if ceiling is not None:
         # Keep a ratio numerator strictly below its denominator while preserving
         # a diurnal swing, so e.g. "used / total" stays a believable utilisation.
@@ -656,14 +1031,42 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
         ("\n".join(lines) + "\n").encode(),
         "application/x-ndjson",
     )
+    # Each document contributes two NDJSON lines (action + source), so the batch
+    # holds this many docs. We use it to reconcile the per-item results below.
+    attempted = len(lines) // 2
     items = result.get("items", []) if isinstance(result, dict) else []
+
+    if not items:
+        # The bulk request failed as a whole (HTTP 4xx/5xx -> error envelope, or
+        # an empty body) and returned no per-item results. Counting only
+        # ``items`` here would silently drop the batch and let the seed report
+        # success while no data landed.
+        if attempted > 1:
+            # Most whole-batch failures are payload-size (413) or transient
+            # throttling (429); both clear when the batch is smaller. Split and
+            # retry so the data still lands instead of being written off.
+            mid = (attempted // 2) * 2  # split on a doc boundary (2 lines/doc)
+            _flush_into_summary(lines[:mid], request, summary)
+            _flush_into_summary(lines[mid:], request, summary)
+            return
+        # A single document that still fails is a real, unrecoverable error.
+        summary.errors += attempted
+        if attempted and len(summary.error_samples) < 3:
+            reason = ""
+            if isinstance(result, dict):
+                err = result.get("error")
+                reason = (err.get("reason") if isinstance(err, dict) else str(err)) or ""
+            summary.error_samples.append((reason or "bulk request returned no items")[:240])
+        return
+
+    ok = errors = 0
     for item in items:
         if not isinstance(item, dict):
             continue
         operation = item.get("create") or item.get("index") or {}
         error = operation.get("error") if isinstance(operation, dict) else None
         if error:
-            summary.errors += 1
+            errors += 1
             if len(summary.error_samples) < 3:
                 if isinstance(error, dict):
                     sample = str(error.get("reason") or error)
@@ -671,7 +1074,14 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
                     sample = str(error)
                 summary.error_samples.append(sample[:240])
         else:
-            summary.ok += 1
+            ok += 1
+    # Reconcile: if the server returned fewer items than we sent (truncated /
+    # partial response), the missing docs are failures, not successes.
+    missing = max(0, attempted - (ok + errors))
+    summary.ok += ok
+    summary.errors += errors + missing
+    if missing and len(summary.error_samples) < 3:
+        summary.error_samples.append(f"{missing} document(s) had no bulk result line")
 
 
 def _raise_on_error(result: dict[str, Any], action: str) -> None:

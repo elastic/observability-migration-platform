@@ -1005,8 +1005,13 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
       ``--no-native-promql`` (force_off) → False
       ``--native-promql``    (force_on)  → True
       otherwise (auto)                   → cluster auto-detection
-    Auto-detection silently falls back to False when no ES URL is configured or
-    when the probe fails for any reason.
+
+    In ``auto`` mode native PROMQL is the default high-fidelity path. When an
+    ES URL is configured we probe the target and fall back to ES|QL translation
+    only if it reports the ``PROMQL`` command unsupported (or the probe is
+    inconclusive). When no ES URL is configured there is no cluster to probe, so
+    we optimistically default to native PROMQL; ``--no-native-promql`` is the
+    opt-out.
     """
     mode = getattr(args, "native_promql_flag", "auto")
     if mode == "force_off":
@@ -1015,7 +1020,11 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
         return True
     es_url = getattr(args, "es_url", "") or ""
     if not es_url:
-        return False
+        print(
+            "  No --es-url to probe; defaulting to native PROMQL "
+            "(use --no-native-promql to force ES|QL translation)"
+        )
+        return True
     es_api_key = getattr(args, "es_api_key", "") or None
     runtime_features = runtime_features or _detect_target_runtime_features(
         es_url, es_api_key, verify=_resolve_tls_from_args(args)
@@ -1071,6 +1080,15 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
     native = _resolve_native_promql(args, runtime_profile)
     if native:
         rule_pack.native_promql = True
+        if not runtime_profile and not getattr(args, "es_url", ""):
+            set_runtime_feature(
+                rule_pack,
+                PROMQL_COMMAND_V0,
+                supported=True,
+                source="default",
+                confidence="unverified",
+                reason="no --es-url configured; native PROMQL assumed for offline migration",
+            )
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""
 
@@ -1934,6 +1952,7 @@ def main(argv: list[str] | None = None):
         for item in review_summary.get("notes", [])[:2]:
             print(f"    note: {item}")
     for result in results:
+        result.runtime_features = dict(getattr(rule_pack, "runtime_features", {}) or {})
         result.verification_summary = {
             "green": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Green"),
             "yellow": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Yellow"),

@@ -377,10 +377,21 @@ class SchemaResolver:
             if counter_metric and counter_metric != metric_name
             else None
         )
+        gauge_metric = self.resolve_metric_field(metric_name, prefer="gauge")
+        gauge_capability = (
+            self.field_capability(gauge_metric)
+            if gauge_metric and gauge_metric != metric_name
+            else None
+        )
         if is_counter_metric_field(capability):
             return True
         if is_counter_metric_field(counter_capability):
             return True
+        for field_capability in (capability, counter_capability, gauge_capability):
+            if getattr(field_capability, "time_series_metric_kind", "") == "gauge":
+                return False
+        if capability is not None and counter_capability is None:
+            return False
         component_suffixes = ("_bucket", "_count", "_sum")
         has_counter_suffix = any(metric_name.endswith(s) for s in self._rule_pack.counter_suffixes)
         has_component_suffix = any(
@@ -390,15 +401,6 @@ class SchemaResolver:
         if has_counter_suffix and not has_component_suffix:
             return True
         if has_component_suffix:
-            gauge_metric = self.resolve_metric_field(metric_name, prefer="gauge")
-            gauge_capability = (
-                self.field_capability(gauge_metric)
-                if gauge_metric and gauge_metric != metric_name
-                else None
-            )
-            for field_capability in (capability, gauge_capability):
-                if getattr(field_capability, "time_series_metric_kind", "") == "gauge":
-                    return False
             return True
         profile = self._current_schema_profile()
         # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
@@ -410,6 +412,40 @@ class SchemaResolver:
         # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
         if profile == "prometheus_native":
             if is_counter_metric_field(self.field_capability(f"metrics.{metric_name}")):
+                return True
+        return False
+
+    def refutes_counter(self, metric_name):
+        """True when the *target* has positive information that the metric is
+        NOT a usable ES|QL counter — an explicit rule-pack ``gauge`` kind, or a
+        resolved field that is present in the live capabilities but not
+        counter-typed (gauge, or plain numeric without ``time_series_metric``).
+
+        Returns False when the target is silent (offline migrate, or the field
+        is absent from the live caps) or when the field genuinely is a counter.
+        Callers use this to decide whether a counter-only PromQL range function
+        (``rate``/``irate``) may keep its true ES|QL ``RATE``/``IRATE`` form
+        (no refutation -> trust the source) or must degrade to a gauge analogue
+        (refuted -> emitting ``RATE`` would 400 in Kibana on a non-counter
+        field)."""
+        if not metric_name:
+            return False
+        kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
+        if kind == "gauge":
+            return True
+        if kind == "counter":
+            return False
+        if self.is_counter(metric_name):
+            return False
+        # Not a proven counter. Refute only when the target actually knows this
+        # field (live caps present and the resolved field exists); stay silent
+        # when offline or the field is unknown so the source signal can win.
+        for candidate in (
+            metric_name,
+            self.resolve_metric_field(metric_name, prefer="counter"),
+            self.resolve_metric_field(metric_name, prefer="gauge"),
+        ):
+            if candidate and self.field_exists(candidate):
                 return True
         return False
 

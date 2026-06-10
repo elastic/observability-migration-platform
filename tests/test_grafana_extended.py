@@ -344,15 +344,16 @@ class TestMacroDrift(unittest.TestCase):
 class TestVariableErasure(unittest.TestCase):
     """Test plan item: Variable preservation/erasure test.
 
-    Variables that can be represented as Kibana params must be preserved.
-    Variables that are still dropped should produce warnings.
+    Grafana variables are represented as Kibana dashboard controls, not ES|QL
+    query params. Final ES|QL must therefore drop those matchers and warn
+    rather than upload unbound ``?var`` placeholders.
     """
 
-    def test_variable_in_label_filter_is_preserved_as_parameter(self):
+    def test_variable_in_label_filter_is_dropped_with_warning(self):
         ctx = _translate('rate(http_requests_total{job="$job"}[5m])')
         self.assertIn("feasible", ctx.feasibility)
-        self.assertIn("service.name == ?job", ctx.esql_query)
-        self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
+        self.assertNotIn("?job", ctx.esql_query)
+        self.assertIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
     def test_variable_panel_status_is_migrated_with_warnings(self):
         """A panel whose query relies on a variable filter must be
@@ -371,14 +372,15 @@ class TestVariableErasure(unittest.TestCase):
         if ctx.feasibility == "feasible" and ctx.esql_query:
             self.assertNotIn("$job", ctx.esql_query)
             self.assertNotIn("$instance", ctx.esql_query)
-            self.assertIn("service.name == ?job", ctx.esql_query)
-            self.assertIn("service.instance.id == ?instance", ctx.esql_query)
+            self.assertNotIn("?job", ctx.esql_query)
+            self.assertNotIn("?instance", ctx.esql_query)
+            self.assertIn("Dropped variable-driven label filters during migration", ctx.warnings)
 
-    def test_logql_variable_in_stream_selector_is_preserved_as_parameter(self):
+    def test_logql_variable_in_stream_selector_is_dropped_with_warning(self):
         ctx = _translate('{service_name="$svc"} |~ "error"', panel_type="logs")
         if ctx.feasibility == "feasible":
-            self.assertIn("service.name == ?svc", ctx.esql_query)
-            self.assertNotIn("Dropped variable-driven label filters during migration", ctx.warnings)
+            self.assertNotIn("?svc", ctx.esql_query)
+            self.assertIn("Dropped variable-driven LogQL label filters during migration", ctx.warnings)
 
     def test_clean_template_variables_strips_dollar_syntax(self):
         self.assertNotIn("$", display.clean_template_variables("CPU $instance"))
@@ -1831,6 +1833,77 @@ class TestBinaryExpressions(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "not_feasible")
         reasons = " ".join(getattr(ctx, "warnings", []) or [])
         self.assertRegex(reasons, r"(?i)set operator|unless|set difference")
+
+
+class TestBoolModifier(unittest.TestCase):
+    """PromQL ``bool`` modifier on comparisons yields a numeric 1/0 indicator,
+    not a row filter and not the bare left operand.
+
+    Regression: ``(node_memory_SwapTotal_bytes > bool 0) * 100`` was emitting
+    ``node_memory_SwapTotal_bytes * 100`` (multiplying by raw bytes), which made
+    the Node Exporter "SWAP Used" stat panel render ~3.27e12 %. ``> bool`` must
+    translate to ``CASE(<lhs> <op> <rhs>, 1, 0)``.
+    """
+
+    def test_scalar_bool_indicator_is_case_not_bare_metric(self):
+        ctx = _translate("(node_memory_SwapTotal_bytes > bool 0) * 100")
+        esql = ctx.esql_query
+        self.assertIn("CASE(", esql)
+        # The indicator collapses to 1/0; it must NOT leave the raw metric as a
+        # standalone multiplicative factor.
+        self.assertNotIn(
+            "(node_memory_SwapTotal_bytes * 100)", esql,
+            "bool indicator must not render as the bare left metric",
+        )
+        self.assertRegex(esql, r"CASE\(\s*node_memory_SwapTotal_bytes\s*>\s*0\s*,\s*1\s*,\s*0\s*\)")
+
+    def test_swap_used_formula_has_no_spurious_metric_factor(self):
+        # The real Node Exporter "SWAP Used" shape: a percentage guarded by a
+        # bool indicator so it reads 0 when no swap is configured.
+        expr = (
+            "((node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)"
+            " / (node_memory_SwapTotal_bytes)) * (node_memory_SwapTotal_bytes > bool 0) * 100"
+        )
+        ctx = _translate(expr)
+        esql = ctx.esql_query
+        self.assertIn("CASE(", esql)
+        # The bug rendered the guard as "... ) * node_memory_SwapTotal_bytes) * 100".
+        self.assertNotRegex(
+            esql,
+            r"/ node_memory_SwapTotal_bytes\) \* node_memory_SwapTotal_bytes",
+            "the bool guard must not multiply the ratio by raw swap bytes",
+        )
+
+    def test_vector_bool_comparison_is_numeric_case(self):
+        ctx = _translate(
+            "node_memory_MemAvailable_bytes > bool node_memory_MemTotal_bytes"
+        )
+        esql = ctx.esql_query
+        self.assertRegex(
+            esql,
+            r"CASE\(\s*node_memory_MemAvailable_bytes\s*>\s*node_memory_MemTotal_bytes\s*,\s*1\s*,\s*0\s*\)",
+        )
+
+    def test_bool_indicator_as_divisor_is_null_guarded(self):
+        # Dividing by a 0/1 indicator must not divide by literal 0 (PromQL
+        # yields no data); the false branch becomes NULL.
+        ctx = _translate(
+            "node_memory_SwapFree_bytes / (node_memory_SwapTotal_bytes > bool 0)"
+        )
+        esql = ctx.esql_query
+        self.assertRegex(
+            esql,
+            r"CASE\(\s*node_memory_SwapTotal_bytes\s*>\s*0\s*,\s*1\s*,\s*NULL\s*\)",
+        )
+
+    def test_plain_comparison_without_bool_stays_a_filter(self):
+        # Guard: a comparison WITHOUT ``bool`` keeps PromQL filter semantics
+        # (drops series where false) and must remain a WHERE clause, never a
+        # 1/0 CASE indicator.
+        ctx = _translate("rate(foo_total[5m]) > 0.5")
+        esql = ctx.esql_query
+        self.assertGreaterEqual(esql.count("WHERE"), 2)
+        self.assertNotIn("CASE(", esql)
 
 
 # =========================================================================

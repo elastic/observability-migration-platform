@@ -70,6 +70,7 @@ from .manifest import (
     target_query_text,
 )
 from .promql import (
+    _ESQL_RESERVED_IDENTIFIERS,
     _build_formula_plan,
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
@@ -2396,7 +2397,10 @@ def _build_multi_target_series_query(translations):
             esql_op = comp_ops.get(pf["op"], pf["op"])
             compare_value = _format_scalar_value(pf["value"])
             eval_expr = f"CASE({eval_expr} {esql_op} {compare_value}, {eval_expr}, NULL)"
-        parts.append(f"| EVAL {result_alias} = {eval_expr}")
+        # ``result_alias`` may be a legend-derived token that collides with an
+        # ES|QL reserved word (e.g. "IN"); quote it for the query text but keep
+        # the bare name in ``metric_fields``/hints for Kibana column matching.
+        parts.append(f"| EVAL {_esql_identifier(result_alias)} = {eval_expr}")
         metric_fields.append(result_alias)
         metric_label_hints[result_alias] = raw_alias
 
@@ -2405,7 +2409,13 @@ def _build_multi_target_series_query(translations):
     if summary_mode and plans[0][1].specs:
         collapsed = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed is None:
-        parts.append("| KEEP " + ", ".join(dict.fromkeys(output_group_fields + metric_fields)))
+        parts.append(
+            "| KEEP "
+            + ", ".join(
+                _esql_identifier(f)
+                for f in dict.fromkeys(output_group_fields + metric_fields)
+            )
+        )
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
     else:
@@ -2797,10 +2807,12 @@ def _esql_identifier(name):
 
     Bare alphanumeric/underscore names are emitted as-is (matching prior output);
     names with dots or other special characters are backtick-quoted so they are
-    valid in ``EVAL`` targets and ``KEEP`` lists.
+    valid in ``EVAL`` targets and ``KEEP`` lists. Tokens that collide with an
+    ES|QL reserved keyword (e.g. a legendFormat of ``IN``/``BY``) are also
+    quoted, otherwise ES|QL rejects ``EVAL IN = ...`` with ``mismatched input``.
     """
     text = str(name)
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text) and text.lower() not in _ESQL_RESERVED_IDENTIFIERS:
         return text
     return "`" + text.replace("`", "``") + "`"
 
@@ -2867,7 +2879,7 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            concat_args.append(f'COALESCE({column}, "")')
+            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
         else:
             if segment == "":
                 continue
@@ -3319,6 +3331,14 @@ def _field_control_type(field_name, resolver):
     return "range" if assessment.capability.type_family == "numeric" else "options"
 
 
+def _field_has_ts_metadata_conflict(field_name, resolver):
+    cache = getattr(resolver, "_field_cache", None) or {}
+    variants = cache.get(field_name) or {}
+    has_dimension = any(bool(meta.get("time_series_dimension")) for meta in variants.values() if isinstance(meta, dict))
+    has_metric = any(bool(meta.get("time_series_metric")) for meta in variants.values() if isinstance(meta, dict))
+    return has_dimension and has_metric
+
+
 MIN_DATATABLE_HEIGHT = 5
 
 
@@ -3426,6 +3446,11 @@ def query_variable_rule(context):
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
         return f"skipped unavailable control field {field_name}"
+    if resolver and resolver.field_exists(field_name) is True:
+        if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
+            return f"skipped conflicting control field {field_name}"
+        if not resolver.is_aggregatable_field(field_name):
+            return f"skipped non-aggregatable control field {field_name}"
     control_type = _field_control_type(field_name, resolver)
     context.control = {
         "type": control_type,

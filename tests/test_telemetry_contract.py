@@ -10,6 +10,7 @@ from unittest import mock
 import yaml
 
 from observability_migration.core.telemetry_contract import (
+    _extract_group_fields,
     build_combined_telemetry_contract,
     build_schema_change_report,
     build_telemetry_contract,
@@ -450,6 +451,467 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertEqual(fields["http_requests_total"]["role"], "metric")
         self.assertEqual(fields["service.name"]["role"], "dimension")
         self.assertEqual(fields["http.route"]["role"], "dimension")
+
+    def test_extract_group_fields_captures_grok_timeseries_legend_labels(self):
+        # Bind9-style panels group by a legendFormat-only label (e.g. {{type}})
+        # that is NOT in the PromQL body. The translator extracts it from the
+        # native _timeseries JSON with `GROK _timeseries "...%{DATA:type}..."`.
+        # That GROK target IS the grouping dimension and must be captured so the
+        # seeder seeds it (otherwise the migrated panel groups on a field that
+        # was never seeded -> empty / wrong-shape panel).
+        query = (
+            'PROMQL index=metrics-* step=1m '
+            'value=(rate(bind_incoming_queries_total{instance="1:1"}[5m]))\n'
+            '| GROK _timeseries """"type":"%{DATA:type}\\""""\n'
+            "| KEEP step, value, type"
+        )
+        self.assertIn("type", _extract_group_fields(query))
+
+    def test_extract_group_fields_ignores_label_replace_grok_on_other_source(self):
+        # A label_replace-style GROK extracts a COMPUTED column from a label
+        # column (not the _timeseries blob) and must NOT be treated as a seeded
+        # grouping dimension.
+        query = (
+            'PROMQL index=metrics-* step=1m value=(up)\n'
+            '| GROK instance "^%{GREEDYDATA:host}:%{GREEDYDATA:port}$"\n'
+            "| KEEP step, value, host"
+        )
+        self.assertNotIn("host", _extract_group_fields(query))
+
+    def test_contract_seeds_legend_only_grok_label_as_group_field(self):
+        # End to end: a panel whose ONLY grouping is a legendFormat label must
+        # land that label in both the stream group_fields and the per-metric
+        # requirement, so _metric_families scopes it onto the metric and the
+        # seeder generates it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                'PROMQL index=metrics-* step=1m '
+                                                'value=(rate(bind_incoming_queries_total{instance="1:1"}[5m]))\n'
+                                                '| GROK _timeseries """"type":"%{DATA:type}\\""""\n'
+                                                "| KEEP step, value, type"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertIn("type", stream["group_fields"])
+        self.assertEqual(stream["fields"]["type"]["role"], "dimension")
+        # The per-metric requirement must carry `type` so family-scoping seeds it
+        # alongside bind_incoming_queries_total.
+        type_reqs = [
+            r for r in stream["requirements"]
+            if "bind_incoming_queries_total" in (r.get("metrics") or [])
+            and "type" in (r.get("group_fields") or [])
+        ]
+        self.assertTrue(
+            type_reqs,
+            "expected a requirement pairing bind_incoming_queries_total with the 'type' group field",
+        )
+
+    def test_grouped_field_wins_over_metric_collision_in_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS value = AVG(mode) BY mode"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["mode"]["role"], "dimension")
+        self.assertEqual(fields["mode"].get("metric_kind", ""), "")
+
+    def test_contract_skips_translator_scaffold_aliases_as_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS computed_value = AVG(node_memory_MemAvailable_bytes)\n"
+                                                "| EVAL inner_val = computed_value\n"
+                                                "| STATS value = SUM(inner_val)\n"
+                                                "| STATS value = AVG(COUNT_OVER_TIME)"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("node_memory_MemAvailable_bytes", fields)
+        self.assertNotIn("computed_value", fields)
+        self.assertNotIn("inner_val", fields)
+        self.assertNotIn("COUNT_OVER_TIME", fields)
+
+    def test_contract_does_not_extract_rlike_operator_as_metric(self):
+        # RLIKE is an ES|QL regex-match operator. It appears inside generated
+        # aggregations such as AVG(CASE((NOT (fstype RLIKE "tmpfs")), metric, ...))
+        # (node-exporter "Filesystem in ReadOnly / Error"). The metric extractor
+        # must treat it as a keyword, never harvest it as a gauge field.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                '| WHERE NOT (device RLIKE "rootfs")\n'
+                                                "| STATS node_filesystem_device_error_B = "
+                                                'AVG(CASE((NOT (fstype RLIKE "tmpfs")), '
+                                                "node_filesystem_device_error, 0)) "
+                                                "BY time_bucket = TBUCKET(5 minute)"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("node_filesystem_device_error", fields)
+        self.assertNotIn("RLIKE", fields)
+        self.assertNotIn("fstype", set(fields) - {f for f, i in fields.items() if i["role"] == "dimension"})
+
+    def test_contract_does_not_harvest_regex_value_tokens_as_metrics(self):
+        # node-exporter disk panels filter device=~"[a-z]+|nvme[0-9]+n[0-9]+|
+        # mmcblk[0-9]+". The identifier-before-bracket scan must not treat the
+        # regex-internal tokens nvme/n/mmcblk (each followed by "[0-9]") as metric
+        # names; only the real metric(s) outside the label-matcher value count.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Node Exporter Full",
+                                "panel": "Disk IOps",
+                                "source_language": "promql",
+                                "source_query": (
+                                    'rate(node_disk_reads_completed_total{instance="$node",'
+                                    'job="$job",device=~"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"}'
+                                    "[$__rate_interval])"
+                                ),
+                                "translated_query": (
+                                    "TS metrics-*\n"
+                                    '| WHERE device RLIKE "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"\n'
+                                    "| STATS node_disk_reads_completed_total = "
+                                    "AVG(RATE(node_disk_reads_completed_total, 5m)) "
+                                    "BY time_bucket = TBUCKET(5 minute), device"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("node_disk_reads_completed_total", fields)
+        for token in ("nvme", "mmcblk", "n"):
+            self.assertNotIn(token, fields, f"regex token {token!r} leaked as a metric field")
+
+    def test_contract_does_not_treat_eval_legend_alias_as_metric(self):
+        # Multi-query panels alias real metrics to legend display names via
+        # ``EVAL CPU = <metric>_A`` and then re-aggregate the alias in a second
+        # STATS (``STATS CPU = MAX(CPU)``). CPU/Mem/Irq are derived ES|QL
+        # columns, not source index fields -- they must never be seeded as
+        # metrics (node-exporter "Pressure" panel leaked CPU/Mem/Irq/I_O).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| STATS node_pressure_cpu_waiting_seconds_total_A = "
+                                                "RATE(node_pressure_cpu_waiting_seconds_total, 5m) "
+                                                "BY time_bucket = TBUCKET(5 minute)\n"
+                                                "| EVAL CPU = node_pressure_cpu_waiting_seconds_total_A\n"
+                                                "| STATS time_bucket = MAX(time_bucket), CPU = MAX(CPU)\n"
+                                                "| KEEP time_bucket, CPU"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("node_pressure_cpu_waiting_seconds_total", fields)
+        self.assertNotIn("CPU", fields)
+
+    def test_contract_does_not_extract_duration_unit_as_metric(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| WHERE label_metric IS NOT NULL\n"
+                                                "| STATS v = AVG(COUNT_OVER_TIME(label_metric, 1m))"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("label_metric", fields)
+        self.assertNotIn("m", fields)
+
+    def test_contract_rejects_composite_template_required_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "PROMQL index=metrics-* step=1m "
+                                                "value=(up{instance=\"$host:$port\", job=\"node\"})"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertNotIn("$host:$port", stream["required_values"].get("instance", []))
+        self.assertEqual(stream["required_values"]["job"], ["node"])
+
+    def test_contract_keeps_literal_label_prefixed_dimension_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "PROMQL index=metrics-* step=1m "
+                                                "value=(up{tier=\"label_value\"})"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertEqual(stream["required_values"]["tier"], ["label_value"])
+
+    def test_label_evidence_wins_when_field_also_leaked_as_metric_name(self):
+        # A CPU panel ``node_cpu_seconds_total{mode="idle"}`` leaks the label key
+        # ``mode`` as a metric name in one panel while another panel groups BY
+        # mode. Explicit BY evidence is authoritative, so mode must be a keyword
+        # dimension (a numeric mapping would make the grouping panel return no
+        # rows).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS value = AVG(mode)"
+                                            )
+                                        }
+                                    },
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS value = AVG(node_cpu_seconds_total) BY mode"
+                                            )
+                                        }
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["mode"]["role"], "dimension")
+        self.assertEqual(fields["node_cpu_seconds_total"]["role"], "metric")
+
+    def test_string_literal_comparison_values_are_not_extracted_as_metrics(self):
+        # Generated ES|QL like ``AVG(CASE((mode == "idle"), RATE(metric), NULL))``
+        # must not extract the quoted label values (idle/system) as metric
+        # fields; only the real source metric is a field.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| WHERE node_cpu_seconds_total IS NOT NULL\n"
+                                                "| STATS a = AVG(CASE((mode == \"system\"), "
+                                                "RATE(node_cpu_seconds_total, 5m), NULL)), "
+                                                "b = AVG(CASE((mode == \"idle\"), "
+                                                "RATE(node_cpu_seconds_total, 5m), NULL)) "
+                                                "BY time_bucket = TBUCKET(5 minute), cpu"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["node_cpu_seconds_total"]["role"], "metric")
+        self.assertNotIn("idle", fields)
+        self.assertNotIn("system", fields)
 
     def test_dashboard_controls_and_filters_are_contract_dimensions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1144,6 +1606,90 @@ class TelemetryContractTests(unittest.TestCase):
             fields["nginx_http_requests"]["metric_kind"],
             "counter",
             "nginx_http_requests used inside rate() must remain counter",
+        )
+
+    def test_source_rate_counter_wins_over_translated_avg_over_time_gauge(self):
+        # node-exporter counters without a counter-name suffix (node_vmstat_oom_kill,
+        # node_netstat_Icmp_InErrors) are wrapped in rate() at source. The translator,
+        # seeing them typed as gauge, degrades rate() -> AVG_OVER_TIME — which then
+        # votes gauge in the contract and locks in the misclassification (circular).
+        # The source rate()/irate() signal is counter-only in PromQL and must win, so
+        # the field is seeded as a counter and the next translation emits a true RATE.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Node Exporter Full",
+                                "panel": "OOM Killer",
+                                "source_language": "promql",
+                                "source_query": (
+                                    'rate(node_vmstat_oom_kill{instance="$node",job="$job"}'
+                                    "[$__rate_interval])"
+                                ),
+                                "translated_query": (
+                                    "TS metrics-*\n"
+                                    "| WHERE node_vmstat_oom_kill IS NOT NULL\n"
+                                    "| STATS node_vmstat_oom_kill = "
+                                    "AVG(AVG_OVER_TIME(node_vmstat_oom_kill, 5m)) "
+                                    "BY time_bucket = TBUCKET(5 minute), service.instance.id"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(
+            fields["node_vmstat_oom_kill"]["metric_kind"],
+            "counter",
+            "source rate() must classify the field as counter despite AVG_OVER_TIME in the translation",
+        )
+
+    def test_translated_max_over_time_still_downgrades_increase_misuse_to_gauge(self):
+        # Guard the legitimate gauge-override: increase() can be MISused on a real
+        # gauge (it is not counter-only the way rate()/irate() are). When only an
+        # increase() source signal competes with a MAX_OVER_TIME gauge translation,
+        # gauge must still win so the seeded mapping is aggregatable in FROM mode.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "X",
+                                "panel": "Y",
+                                "source_language": "promql",
+                                "source_query": "increase(weird_gauge_level[5m])",
+                                "translated_query": (
+                                    "TS metrics-*\n"
+                                    "| STATS weird_gauge_level = "
+                                    "MAX(MAX_OVER_TIME(weird_gauge_level, 5m)) "
+                                    "BY time_bucket = TBUCKET(5 minute)"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(
+            fields["weird_gauge_level"]["metric_kind"],
+            "gauge",
+            "increase()+MAX_OVER_TIME must remain gauge (increase can be misused on gauges)",
         )
 
 
