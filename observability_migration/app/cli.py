@@ -179,6 +179,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Datadog monitor search query (Datadog only)")
     migrate.add_argument("--dashboard-ids", default="",
                          help="Comma-separated Datadog dashboard IDs to extract (Datadog only)")
+    migrate.add_argument("--alert-uids", default="",
+                         help="Comma-separated Grafana unified alert rule UIDs to migrate (Grafana only)")
+    migrate.add_argument("--alert-folder", default="",
+                         help="Comma-separated Grafana folder UIDs; only unified rules from those folders are migrated (Grafana only)")
     migrate.add_argument("--env-file", default="",
                          help="Path to credentials .env file (Datadog)")
     migrate.add_argument(
@@ -799,6 +803,10 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--ca-cert", args.ca_cert])
     if getattr(args, "insecure", False):
         legacy_argv.append("--insecure")
+    if getattr(args, "alert_uids", ""):
+        legacy_argv.extend(["--alert-uids", args.alert_uids])
+    if getattr(args, "alert_folder", ""):
+        legacy_argv.extend(["--alert-folder", args.alert_folder])
     legacy_argv.extend(selection_args_to_argv(args))
     smoke_requested = (
         args.smoke

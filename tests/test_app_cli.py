@@ -362,6 +362,64 @@ class TestUnifiedCliRouting(unittest.TestCase):
         finally:
             sys.argv = original_argv
 
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_alert_uids(self, mock_main):
+        args = self._make_grafana_args(
+            assets="alerts",
+            create_alert_rules=True,
+            alert_uids="rule-uid-1,rule-uid-2",
+            alert_folder="",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            forwarded = sys.argv
+            self.assertIn("--alert-uids", forwarded)
+            self.assertIn("rule-uid-1,rule-uid-2", forwarded)
+            self.assertNotIn("--alert-folder", forwarded)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_alert_folder(self, mock_main):
+        args = self._make_grafana_args(
+            assets="alerts",
+            create_alert_rules=True,
+            alert_uids="",
+            alert_folder="infra-folder-uid",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            forwarded = sys.argv
+            self.assertIn("--alert-folder", forwarded)
+            self.assertIn("infra-folder-uid", forwarded)
+            self.assertNotIn("--alert-uids", forwarded)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_omits_alert_selectors_by_default(self, mock_main):
+        args = self._make_grafana_args()
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            forwarded = sys.argv
+            self.assertNotIn("--alert-uids", forwarded)
+            self.assertNotIn("--alert-folder", forwarded)
+        finally:
+            sys.argv = original_argv
+
+    def test_migrate_parser_accepts_grafana_alert_selectors(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args([
+            "migrate", "--source", "grafana", "--assets", "alerts",
+            "--alert-uids", "rule-uid-1,rule-uid-2",
+            "--alert-folder", "infra-folder-uid",
+        ])
+        self.assertEqual(args.alert_uids, "rule-uid-1,rule-uid-2")
+        self.assertEqual(args.alert_folder, "infra-folder-uid")
+
     @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_select_flags(self, mock_main):
         args = SimpleNamespace(
