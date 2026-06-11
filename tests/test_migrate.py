@@ -4092,6 +4092,77 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertTrue(controls[0]["multiple"])
 
+    def test_query_variable_emits_esql_param_control_when_feature_supported(self):
+        """Issue #107: when the target binds Grafana template variables as
+        native ES|QL parameters (``?var``), the control must DEFINE that ES|QL
+        variable, not emit a generic options/range data-view filter (which
+        leaves the panel queries failing with "Unknown query parameter")."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=True,
+            source="probe",
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": False,
+                "query": 'label_values(node_uname_info{job="$job"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(len(controls), 1)
+        control = controls[0]
+        self.assertEqual(control["type"], "esql")
+        self.assertEqual(control["variable_name"], "node")
+        self.assertEqual(control["variable_type"], "values")
+        self.assertIs(control["multiple"], False)
+        # ES|QL binding controls populate values from a query over the resolved
+        # field and never carry generic data-view filter keys.
+        self.assertNotIn("field", control)
+        self.assertNotIn("data_view", control)
+        self.assertIn("FROM metrics-*", control["query"])
+        self.assertIn("service.instance.id", control["query"])
+
+    def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
+        """A multi-select Grafana variable still binds a scalar ES|QL parameter
+        (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
+        to keep the query valid (issue #107)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            supported=True,
+            source="probe",
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": True,
+                "query": 'label_values(node_uname_info{job="$job"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(controls[0]["type"], "esql")
+        self.assertIs(controls[0]["multiple"], False)
+
     def test_repeat_driver_variable_forces_single_select_control(self):
         controls = migrate.translate_variables(
             [{
@@ -5059,6 +5130,100 @@ class TranslatorRegressionTests(unittest.TestCase):
                 {"up_to": 100, "color": "#E7664C"},
             ],
         )
+
+    def test_native_promql_gauge_records_emitted_query_with_gauge_bounds(self):
+        """Issue #109: a native-PROMQL gauge appends ``| EVAL _gauge_*`` to its
+        emitted query, but ``panel_result.esql_query`` was set to the *bare*
+        ``PROMQL …`` command. The validate-stage ``sync_result_queries_to_yaml``
+        then overwrites the YAML query with that bare command, stripping the
+        ``EVAL`` and orphaning the min/max/goal accessors. The recorded
+        ``esql_query`` must match the emitted query so the sync is a no-op."""
+        self.rule_pack.native_promql = True
+        panel = {
+            "title": "CPU Busy",
+            "type": "gauge",
+            "gridPos": {"w": 6, "h": 6, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent",
+                    "min": 0,
+                    "max": 100,
+                    "thresholds": {
+                        "mode": "percentage",
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 85, "color": "red"},
+                        ],
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": '100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])))',
+                    "instant": True,
+                }
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "gauge")
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.lstrip().startswith("PROMQL "))
+        self.assertIn("_gauge_min = 0, _gauge_max = 100, _gauge_goal = 85", query)
+        self.assertEqual(yaml_panel["esql"]["minimum"], {"field": "_gauge_min"})
+        self.assertEqual(yaml_panel["esql"]["maximum"], {"field": "_gauge_max"})
+        self.assertEqual(yaml_panel["esql"]["goal"], {"field": "_gauge_goal"})
+        # The bug: esql_query must carry the same gauge bounds as the emitted
+        # query so the validate-stage resync does not strip them.
+        self.assertIn("_gauge_min", result.esql_query)
+        self.assertEqual(result.esql_query, query)
+
+    def test_sync_drops_gauge_bounds_when_query_no_longer_produces_columns(self):
+        """Issue #109 safety net: if a downstream resync ever replaces a gauge
+        query with one that no longer produces the ``_gauge_*`` columns, the
+        now-orphaned min/max/goal accessors must be dropped so the panel
+        degrades gracefully instead of erroring with "Provided column name or
+        index is invalid"."""
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("CPU Busy", "gauge", "gauge", "migrated", 0.9)
+        # Resynced query carries no ``| EVAL _gauge_*`` (columns absent).
+        panel.esql_query = "PROMQL index=metrics-* step=1m value=(avg(rate(node_cpu_seconds_total[5m])))"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "CPU Busy",
+                        "esql": {
+                            "type": "gauge",
+                            "query": (
+                                "PROMQL index=metrics-* step=1m value=(avg(rate(node_cpu_seconds_total[5m])))"
+                                "\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85"
+                            ),
+                            "metric": {"field": "value"},
+                            "minimum": {"field": "_gauge_min"},
+                            "maximum": {"field": "_gauge_max"},
+                            "goal": {"field": "_gauge_goal"},
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        esql = rewritten["dashboards"][0]["panels"][0]["esql"]
+        self.assertNotIn("minimum", esql)
+        self.assertNotIn("maximum", esql)
+        self.assertNotIn("goal", esql)
+        self.assertEqual(esql["metric"], {"field": "value"})
 
     def test_bucketed_gauge_keeps_ts_bucket_for_summary_query(self):
         panel = {

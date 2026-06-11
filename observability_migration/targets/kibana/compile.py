@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -164,6 +165,23 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
         for old_value, new_value in zip(old_by_cols, new_by_cols):
             for item in breakdowns:
                 _replace_field(item, old_value, new_value)
+
+    # Issue #109 safety net: a gauge's min/max/goal accessors must reference
+    # columns the (resynced) query actually produces. If a resync replaced the
+    # query with one that no longer carries the ``_gauge_*`` bounds (e.g. a
+    # native-PROMQL gauge whose trailing ``| EVAL _gauge_*`` was dropped), keep
+    # the bound only when its column still appears in the query. Otherwise drop
+    # it so the gauge degrades gracefully instead of erroring with "Provided
+    # column name or index is invalid".
+    if esql_config.get("type") == "gauge":
+        for bound_key in ("minimum", "maximum", "goal"):
+            bound = esql_config.get(bound_key)
+            if not isinstance(bound, dict):
+                continue
+            field = bound.get("field")
+            if field and not re.search(rf"\b{re.escape(field)}\b", new_query or ""):
+                esql_config.pop(bound_key, None)
+                changed = True
 
     return changed
 
