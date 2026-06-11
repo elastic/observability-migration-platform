@@ -34,6 +34,11 @@ from observability_migration.core.reporting.report import (
     save_detailed_report,
 )
 from observability_migration.core.reporting.summary_md import save_markdown_summary
+from observability_migration.core.selection import (
+    add_selection_arguments,
+    apply_cli_selection,
+    criteria_from_args,
+)
 from observability_migration.core.telemetry_contract import write_schema_report_artifacts
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
 from observability_migration.targets.kibana.compile import (
@@ -70,7 +75,11 @@ from .esql_validate import (
     validate_query_with_fixes,
     write_suggested_rule_pack,
 )
-from .extract import extract_dashboards_from_files, extract_dashboards_from_grafana
+from .extract import (
+    extract_dashboards_from_files,
+    extract_dashboards_from_grafana,
+    selection_metadata_from_grafana_dashboard,
+)
 from .links import build_links_summary, translate_dashboard_links, translate_panel_links
 from .local_ai import resolve_task_model
 from .manifest import save_migration_manifest
@@ -485,6 +494,7 @@ def parse_args(argv: list[str] | None = None):
             "Defaults to OBS_MIGRATE_INSECURE env var."
         ),
     )
+    add_selection_arguments(parser)
     args = parser.parse_args(argv)
     if args.source and args.input_mode and args.source != args.input_mode:
         parser.error("--source and --input-mode must match when both are provided")
@@ -1597,6 +1607,25 @@ def main(argv: list[str] | None = None):
                 "files (each with a top-level 'panels' or 'rows' key).",
                 file=sys.stderr,
             )
+        sys.exit(1)
+
+    try:
+        criteria = criteria_from_args(args)
+    except ValueError as exc:
+        print(f"  ERROR: invalid --select-updated-* value: {exc}", file=sys.stderr)
+        sys.exit(1)
+    dashboards = apply_cli_selection(
+        dashboards,
+        selection_metadata_from_grafana_dashboard,
+        criteria,
+        label="grafana dashboard",
+        kind="dashboards",
+    )
+    if not criteria.is_empty and not dashboards:
+        print(
+            "  ERROR: no Grafana dashboards matched the --select-* criteria.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     print(f"  Found {len(dashboards)} dashboards")
 

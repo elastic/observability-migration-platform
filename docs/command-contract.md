@@ -139,6 +139,7 @@ Datadog.
 | `--monitor-ids`, `--monitor-query` | Datadog alert pipeline | Scope Datadog monitor extraction | Only affect Datadog alert runs |
 | `--alert-uids` | Grafana alert pipeline | Comma-separated Grafana unified alert rule UIDs to migrate | Skips all other unified rules; does not affect legacy panel-embedded alerts |
 | `--alert-folder` | Grafana alert pipeline | Comma-separated Grafana folder UIDs; only unified rules from those folders are migrated | Combines with `--alert-uids` (AND logic) |
+| `--select-folder`, `--select-tag`, `--select-datasource`, `--select-team`, `--select-updated-after`, `--select-updated-before`, `--select-starred` | Grafana, Datadog (dashboards and alerts) | Metadata-aware selection: filter assets by folder/tag/datasource/team/last-updated/starred | Repeatable or comma-separated; OR within a flag, AND across flags; case-insensitive exact match. Client-side filter applied after extraction. Dimensions a source/asset cannot supply **degrade gracefully** (asset kept + `WARN`), per the [selection availability matrix](#metadata-selection-availability). A `--select-*` set matching no dashboards exits non-zero. |
 | `--grafana-url`, `--grafana-user`, `--grafana-pass`, `--grafana-token` | Grafana | Grafana API connection (basic auth or bearer token) | Flag-first with env fallback (`GRAFANA_URL` / `GRAFANA_USER` / `GRAFANA_PASS` / `GRAFANA_TOKEN`); forwarded to `grafana-migrate` |
 | `--ca-cert <path>` | Grafana, Datadog | Verify TLS against a custom CA bundle for **all** outbound connections (source, Elasticsearch, Kibana, incl. the Node upload step) | Env fallback `OBS_MIGRATE_CA_CERT`; keeps verification on |
 | `--insecure` | Grafana, Datadog | Disable TLS certificate verification for **all** outbound connections | Env fallback `OBS_MIGRATE_INSECURE`; testing/trusted-network only, prints a one-time warning. Prefer `--ca-cert` |
@@ -217,6 +218,27 @@ When a dashboard run discovers no input dashboards (for example
 expected source shape), `obs-migrate migrate` exits non-zero with a message
 naming the directory and the expected JSON shape, rather than reporting
 `0/0 dashboards compiled successfully`.
+
+#### Metadata selection availability
+
+The `--select-*` flags are uniform across both sources and both asset families,
+but the underlying metadata is not uniformly available. When a selected
+dimension cannot be supplied for a given source/asset, the engine **degrades
+gracefully**: the asset is kept (not dropped) and a `WARN` names the skipped
+dimension. Selection that genuinely matches nothing for a dashboard run exits
+non-zero; for alerts it yields an empty alert set. Each run prints
+`Selected N of M …` so the narrowing is auditable.
+
+| Dimension | Grafana dashboards | Grafana alerts | Datadog dashboards | Datadog monitors |
+|---|---|---|---|---|
+| `--select-folder` | ✅ folder title | legacy ✅ (via dashboard) · unified ⚠️ (folderUID only) | ⚠️ (Dashboard Lists API not fetched) | ⚠️ |
+| `--select-tag` | ✅ | ✅ (rule labels) | ✅ | ✅ |
+| `--select-datasource` | ✅ panel datasource types | ✅ rule query datasources | ⚠️ (`datadog`) | ⚠️ |
+| `--select-team` | ⚠️ (no first-class team) | ✅ (`team` label) | ✅ (`team:` tag) | ✅ (`team:` tag) |
+| `--select-updated-after` / `--select-updated-before` | ✅ | ⚠️ (only if rule carries `updated`) | ✅ (`modified_at`) | ✅ (`modified`) |
+| `--select-starred` | ✅ (`isStarred`) | ⚠️ | ⚠️ | ⚠️ |
+
+✅ = filters; ⚠️ = degrades gracefully (asset kept + `WARN`).
 
 ### Field Profile Contract
 
@@ -624,7 +646,9 @@ Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers 
 They accept the same `--input-mode {files,api}` extraction selector as unified
 `obs-migrate migrate`. The older dedicated-CLI spelling `--source files|api`
 is still accepted as a compatibility alias; if both are provided, they must
-match.
+match. Both dedicated CLIs also accept the same `--select-*` metadata selection
+flags described under [Migrate](#migrate) (with the same per-source availability
+and graceful-degradation behavior).
 
 ### Grafana
 

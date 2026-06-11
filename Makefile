@@ -31,6 +31,7 @@ test-e2e: sync ## Run e2e tests
 
 lint: sync ## Run ruff linter and source header check
 	$(PYTHON) scripts/check_source_headers.py
+	$(PYTHON) scripts/check_skill_mirror.py
 	$(PYTHON) -m ruff check .
 
 typecheck: sync ## Run targeted mypy type checks

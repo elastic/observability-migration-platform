@@ -303,6 +303,112 @@ class TestUnifiedCliRouting(unittest.TestCase):
         finally:
             sys.argv = original_argv
 
+    def test_migrate_parser_accepts_select_flags(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args([
+            "migrate", "--source", "grafana",
+            "--select-folder", "Prod",
+            "--select-tag", "team:infra", "--select-tag", "env:prod",
+            "--select-datasource", "prometheus",
+            "--select-team", "infra",
+            "--select-updated-after", "2026-01-01",
+            "--select-updated-before", "2026-02-01",
+            "--select-starred",
+        ])
+        self.assertEqual(args.select_folder, ["Prod"])
+        self.assertEqual(args.select_tag, ["team:infra", "env:prod"])
+        self.assertEqual(args.select_datasource, ["prometheus"])
+        self.assertEqual(args.select_team, ["infra"])
+        self.assertEqual(args.select_updated_after, "2026-01-01")
+        self.assertEqual(args.select_updated_before, "2026-02-01")
+        self.assertTrue(args.select_starred)
+
+    def test_migrate_parser_select_flag_defaults(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "datadog"])
+        self.assertEqual(args.select_folder, [])
+        self.assertEqual(args.select_tag, [])
+        self.assertEqual(args.select_datasource, [])
+        self.assertEqual(args.select_team, [])
+        self.assertEqual(args.select_updated_after, "")
+        self.assertEqual(args.select_updated_before, "")
+        self.assertFalse(args.select_starred)
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_select_flags(self, mock_main):
+        args = self._make_grafana_args(
+            select_folder=["Prod"],
+            select_tag=["team:infra"],
+            select_datasource=["prometheus"],
+            select_team=["infra"],
+            select_updated_after="2026-01-01",
+            select_updated_before="",
+            select_starred=True,
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_grafana_migration(args)
+            forwarded = sys.argv
+            self.assertIn("--select-folder", forwarded)
+            self.assertIn("Prod", forwarded)
+            self.assertIn("--select-tag", forwarded)
+            self.assertIn("team:infra", forwarded)
+            self.assertIn("--select-datasource", forwarded)
+            self.assertIn("--select-team", forwarded)
+            self.assertIn("--select-updated-after", forwarded)
+            self.assertIn("2026-01-01", forwarded)
+            self.assertNotIn("--select-updated-before", forwarded)
+            self.assertIn("--select-starred", forwarded)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_select_flags(self, mock_main):
+        args = SimpleNamespace(
+            input_mode="api",
+            input_dir="infra/datadog/dashboards",
+            output_dir="datadog_migration_output",
+            data_view="",
+            field_profile="otel",
+            logs_index="",
+            compile=True,
+            validate=False,
+            upload=False,
+            preflight=False,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+            select_folder=[],
+            select_tag=["team:payments"],
+            select_datasource=[],
+            select_team=[],
+            select_updated_after="",
+            select_updated_before="2026-03-01",
+            select_starred=False,
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_datadog_migration(args)
+            forwarded = sys.argv
+            self.assertIn("--select-tag", forwarded)
+            self.assertIn("team:payments", forwarded)
+            self.assertIn("--select-updated-before", forwarded)
+            self.assertIn("2026-03-01", forwarded)
+            self.assertNotIn("--select-folder", forwarded)
+            self.assertNotIn("--select-starred", forwarded)
+        finally:
+            sys.argv = original_argv
+
     @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_tls_flags(self, mock_main):
         args = SimpleNamespace(

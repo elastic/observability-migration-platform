@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,10 @@ from observability_migration.core.assets.alerting import (
 )
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import map_alerts_batch
+from observability_migration.core.selection import (
+    apply_cli_selection,
+    criteria_from_args,
+)
 from observability_migration.targets.kibana.alerting import (
     create_rules_from_payloads,
     run_alerting_preflight,
@@ -30,6 +35,8 @@ from .extract import (
     extract_all_alerting_resources,
     extract_all_alerting_resources_from_files,
     filter_unified_alert_rules,
+    selection_metadata_from_grafana_alert_rule,
+    selection_metadata_from_grafana_dashboard,
 )
 
 
@@ -278,12 +285,39 @@ def run_alert_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dashboards = list(raw_dashboards or [])
 
+    try:
+        criteria = criteria_from_args(args)
+    except ValueError as exc:
+        print(f"    ERROR: invalid --select-updated-* value: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    raw_dashboards = apply_cli_selection(
+        raw_dashboards,
+        selection_metadata_from_grafana_dashboard,
+        criteria,
+        label="grafana dashboard (alerts)",
+        kind="dashboard(s) for alerts",
+    )
+
     legacy_alert_tasks = build_legacy_alert_tasks_from_dashboards(raw_dashboards)
     legacy_alert_irs = [
         build_alerting_ir_from_grafana(task)
         for task in legacy_alert_tasks
     ]
     unified_resources = load_unified_alerting_resources(args)
+    unified_rules = unified_resources.get("alert_rules", [])
+    if isinstance(unified_rules, list) and not criteria.is_empty:
+        datasource_map = unified_resources.get("datasources", {})
+        if not isinstance(datasource_map, dict):
+            datasource_map = {}
+        filtered_rules = apply_cli_selection(
+            unified_rules,
+            lambda rule: selection_metadata_from_grafana_alert_rule(rule, datasource_map),
+            criteria,
+            label="grafana alert rule",
+            kind="alert rule(s)",
+        )
+        unified_resources = {**unified_resources, "alert_rules": filtered_rules}
     unified_alert_irs = build_unified_alert_irs(unified_resources)
     all_alert_irs = legacy_alert_irs + unified_alert_irs
 
