@@ -16,6 +16,117 @@ from urllib.parse import urlparse
 import requests
 
 from observability_migration.core.http import apply_tls
+from observability_migration.core.selection import (
+    AssetSelectionMetadata,
+    parse_selection_datetime,
+)
+
+
+def _safe_parse_dt(value: Any) -> Any:
+    """Best-effort datetime parse; return None on anything unusable."""
+    if value is None or value == "":
+        return None
+    try:
+        return parse_selection_datetime(str(value))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _datasource_token(datasource: Any) -> str:
+    """Return a datasource selection token (type for dicts, the string otherwise)."""
+    if isinstance(datasource, dict):
+        return str(datasource.get("type", "") or "")
+    if isinstance(datasource, str):
+        return datasource
+    return ""
+
+
+def selection_metadata_from_grafana_dashboard(dashboard: dict[str, Any]) -> AssetSelectionMetadata:
+    """Map a raw Grafana dashboard dict into the source-agnostic selection view.
+
+    ``folder``/``updated_at``/``starred`` come from the ``_grafana_meta`` block
+    (absent in bare file exports -> ``None`` -> degrade gracefully). ``team`` is
+    always ``None`` (Grafana dashboards have no first-class team).
+    """
+    meta = dashboard.get("_grafana_meta")
+    has_meta = isinstance(meta, dict)
+    meta = meta if has_meta else {}
+
+    datasources: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        if token and token not in seen:
+            seen.add(token)
+            datasources.append(token)
+
+    panels: list[dict[str, Any]] = []
+    for panel in dashboard.get("panels", []) or []:
+        if isinstance(panel, dict):
+            panels.append(panel)
+            panels.extend(p for p in (panel.get("panels", []) or []) if isinstance(p, dict))
+    for row in dashboard.get("rows", []) or []:
+        if isinstance(row, dict):
+            panels.extend(p for p in (row.get("panels", []) or []) if isinstance(p, dict))
+    for panel in panels:
+        _add(_datasource_token(panel.get("datasource")))
+        for target in panel.get("targets", []) or []:
+            if isinstance(target, dict):
+                _add(_datasource_token(target.get("datasource")))
+
+    folder = meta.get("folderTitle") if has_meta else None
+    starred = meta.get("isStarred") if has_meta else None
+    return AssetSelectionMetadata(
+        folder=folder,
+        tags=[str(t) for t in (dashboard.get("tags") or [])],
+        datasources=datasources,
+        team=None,
+        updated_at=_safe_parse_dt(meta.get("updated")) if has_meta else None,
+        starred=bool(starred) if starred is not None else None,
+    )
+
+
+def selection_metadata_from_grafana_alert_rule(
+    rule: dict[str, Any],
+    datasource_map: dict[str, dict[str, Any]] | None = None,
+) -> AssetSelectionMetadata:
+    """Map a Grafana Unified Alerting rule dict into the selection view.
+
+    ``folder`` is ``None``: unified rules expose only a ``folderUID`` (not the
+    folder name a user selects on), so folder selection degrades gracefully.
+    Labels are rendered as ``key:value`` tags; ``team`` is read from a ``team``
+    label.
+    """
+    datasource_map = datasource_map or {}
+    labels = rule.get("labels") if isinstance(rule.get("labels"), dict) else {}
+    tags = [f"{k}:{v}" for k, v in labels.items()]
+    team = None
+    for key, value in labels.items():
+        if str(key).casefold() == "team":
+            team = str(value)
+            break
+
+    datasources: list[str] = []
+    seen: set[str] = set()
+    for entry in rule.get("data", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        uid = str(entry.get("datasourceUid", "") or "")
+        if not uid:
+            continue
+        token = str((datasource_map.get(uid) or {}).get("type", "") or "") or uid
+        if token and token not in seen:
+            seen.add(token)
+            datasources.append(token)
+
+    return AssetSelectionMetadata(
+        folder=None,
+        tags=tags,
+        datasources=datasources,
+        team=team,
+        updated_at=_safe_parse_dt(rule.get("updated")),
+        starred=None,
+    )
 
 
 def extract_dashboards_from_grafana(

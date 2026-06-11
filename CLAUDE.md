@@ -21,6 +21,7 @@ this repo as the single source of truth for it. (See the Naming note in
 - Build / test / lint: see `AGENTS.md` (use `make test`, `make lint`, `make typecheck`).
 - Preserve "degrade gracefully" behavior for unsupported translations — do not silently hide semantic gaps.
 - Do not commit secrets or generated local artifacts.
+- Skills live in both `.claude/skills/` and `.cursor/skills/` — edit both copies in lockstep (see the mirroring rule in `AGENTS.md` for the `.claude`↔`.cursor` path-prefix caveat).
 
 ## Commit Workflow
 

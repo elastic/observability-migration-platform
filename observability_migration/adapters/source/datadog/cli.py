@@ -41,6 +41,11 @@ from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
 from observability_migration.core.reporting.summary_md import save_markdown_summary
+from observability_migration.core.selection import (
+    add_selection_arguments,
+    apply_cli_selection,
+    criteria_from_args,
+)
 from observability_migration.core.telemetry_contract import write_schema_report_artifacts
 from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
@@ -49,6 +54,7 @@ from .extract import (
     extract_dashboards_from_api,
     extract_dashboards_from_files,
     load_credentials_from_env,
+    selection_metadata_from_datadog_dashboard,
 )
 from .field_map import FieldMapProfile, load_profile
 from .generate import generate_dashboard_yaml
@@ -77,6 +83,15 @@ def _resolve_tls_from_args(args: argparse.Namespace) -> bool | str:
         ca_cert=getattr(args, "ca_cert", "") or "",
         insecure=bool(getattr(args, "insecure", False)),
     )
+
+
+def _selection_criteria_or_exit(args: argparse.Namespace) -> Any:
+    """Build SelectionCriteria from args, exiting 1 on an unparseable date."""
+    try:
+        return criteria_from_args(args)
+    except ValueError as exc:
+        print(f"  ERROR: invalid --select-updated-* value: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -213,6 +228,21 @@ def _run_dashboard_pipeline(
             f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
             "Point --input-dir at a directory of Datadog dashboard JSON "
             "exports (each with a top-level 'widgets' key).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    criteria = _selection_criteria_or_exit(args)
+    raw_dashboards = apply_cli_selection(
+        raw_dashboards,
+        selection_metadata_from_datadog_dashboard,
+        criteria,
+        label="datadog dashboard",
+        kind="dashboard(s)",
+    )
+    if not criteria.is_empty and not raw_dashboards:
+        print(
+            "  ERROR: no Datadog dashboards matched the --select-* criteria.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1457,6 +1487,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Defaults to OBS_MIGRATE_INSECURE env var."
         ),
     )
+    add_selection_arguments(parser)
 
     args = parser.parse_args(argv)
     if args.source and args.input_mode and args.source != args.input_mode:
