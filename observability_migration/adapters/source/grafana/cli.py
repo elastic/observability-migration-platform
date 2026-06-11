@@ -436,6 +436,22 @@ def parse_args(argv: list[str] | None = None):
         ),
     )
     parser.add_argument(
+        "--alert-uids", default="",
+        help=(
+            "Comma-separated Grafana unified alert rule UIDs to migrate. "
+            "When set, only the listed rules are extracted; all others are skipped. "
+            "Only affects unified alerting rules (not legacy panel-embedded alerts)."
+        ),
+    )
+    parser.add_argument(
+        "--alert-folder", default="",
+        help=(
+            "Comma-separated Grafana folder UIDs. Only unified alert rules "
+            "whose folderUID matches one of the supplied values are migrated. "
+            "Combines with --alert-uids (AND logic)."
+        ),
+    )
+    parser.add_argument(
         "--create-alert-rules", action="store_true",
         help=(
             "Create emitted Kibana alerting rules for alert-capable asset "

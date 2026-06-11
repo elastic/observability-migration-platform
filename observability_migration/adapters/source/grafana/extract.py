@@ -447,6 +447,30 @@ def extract_datasources(grafana_url, user="", password="", token="", verify: boo
     return datasources
 
 
+def filter_unified_alert_rules(
+    rules: list[dict[str, Any]],
+    *,
+    uids: list[str] | None = None,
+    folder_uids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return only the rules that match all supplied filters (AND semantics).
+
+    ``uids`` — keep rules whose ``uid`` is in the set.
+    ``folder_uids`` — keep rules whose ``folderUID`` is in the set.
+    Either filter is skipped when the corresponding argument is falsy.
+    """
+    uid_set = set(uids) if uids else None
+    folder_set = set(folder_uids) if folder_uids else None
+    if uid_set is None and folder_set is None:
+        return rules
+    return [
+        r for r in rules
+        if isinstance(r, dict)
+        and (uid_set is None or str(r.get("uid", "") or "") in uid_set)
+        and (folder_set is None or str(r.get("folderUID", "") or "") in folder_set)
+    ]
+
+
 def extract_all_alerting_resources(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch all unified alerting provisioning resources; each part degrades gracefully."""
     return {
@@ -593,4 +617,5 @@ __all__ = [
     "extract_unified_mute_timings",
     "extract_unified_notification_policies",
     "extract_unified_templates",
+    "filter_unified_alert_rules",
 ]
