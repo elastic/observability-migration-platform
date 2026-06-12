@@ -988,6 +988,109 @@ class CompareSubcommandTests(unittest.TestCase):
                           "--report-out", str(Path(tmp) / "comparison_report.json")])
             self.assertEqual([c["source_query"] for c in calls], ["rx_total", "-(tx_total)"])
 
+    def test_compare_same_metric_provenance_emits_label_scoped_rows(self):
+        # Same-metric collapsed panels: per-target rows scoped by label value;
+        # targets whose distinguishing matcher cannot be replayed client-side
+        # surface as SKIP with the recorded reason, not silently vanish.
+        from observability_migration.app import cli
+
+        calls = []
+
+        class V:
+            max_relative_error = 0.0
+            compared_points = 3
+            notes: list = []
+            skipped_reason = ""
+            fail_reason = ""
+            translated_error = ""
+            native_error = ""
+            native_series = 1
+            translated_series = 1
+            common_series = 1
+            def verdict(self):
+                return "STRICT_PASS"
+
+        def fake_compare(request, **kwargs):
+            calls.append(kwargs)
+            return V()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "Units", "source_language": "promql",
+                 "source_query": 'm{state="active"} ||| m{state=~"f.*"}',
+                 "translated_query": "TS metrics-* | STATS v = AVG(m) BY time_bucket = TBUCKET(5 minute), state",
+                 "semantic_gate": "Green",
+                 "query_ir": {"metadata": {"collapsed_targets": [
+                     {"ref_id": "A", "source_expr": 'm{state="active"}',
+                      "label_column": "state", "label_value": "active"},
+                     {"ref_id": "B", "source_expr": 'm{state=~"f.*"}',
+                      "unsupported_reason": "distinguishing matcher is non-equality or compound; per-target comparison is not supported"},
+                 ]}}},
+            ])
+            out = Path(tmp) / "comparison_report.json"
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", side_effect=fake_compare),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 0)
+            rows = json.loads(out.read_text(encoding="utf-8"))["panels"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["target"], "A")
+            self.assertEqual(rows[0]["verdict"], "STRICT_PASS")
+            self.assertEqual(rows[1]["target"], "B")
+            self.assertEqual(rows[1]["verdict"], "SKIP")
+            self.assertIn("non-equality", rows[1]["reason"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["source_query"], 'm{state="active"}')
+            self.assertEqual(calls[0]["translated_label_filter"], ("state", "active"))
+
+    def test_compare_surfaces_live_source_comparison_verdicts(self):
+        # Packets produced with --source-execution --validate carry live
+        # source-vs-target verdicts; compare must surface them as their own
+        # mode instead of hiding them behind STRUCTURAL, and material drift
+        # must fail the run like a numeric FAIL would.
+        from observability_migration.app import cli
+
+        def pkt(panel, status, reason="", diff="", counterexamples=None):
+            return {"dashboard": "DD", "panel": panel, "source_language": "datadog_metric",
+                    "source_query": "", "translated_query": "FROM metrics-*",
+                    "semantic_gate": "Green",
+                    "comparison": {"status": status, "comparator_family": "single_value",
+                                   "reason": reason, "diff_summary": diff,
+                                   "tolerance_used": {}, "counterexamples": counterexamples or []}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                pkt("ok", "within_tolerance", reason="matched", diff="0.1% drift"),
+                pkt("warn", "drift", reason="above tolerance", diff="7% drift"),
+                pkt("bad", "material_drift", reason="way off", diff="60% drift"),
+                pkt("broken", "target_broken", reason="target failed",
+                    counterexamples=["Unknown column [datadog_apm_host]"]),
+                pkt("plain", "not_attempted", reason="Live comparison was not requested"),
+            ])
+            out = Path(tmp) / "comparison_report.json"
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=False),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 1)  # material_drift fails the run
+            rows = {r["panel"]: r for r in json.loads(out.read_text(encoding="utf-8"))["panels"]}
+            self.assertEqual(rows["ok"]["mode"], "live_source")
+            self.assertEqual(rows["ok"]["verdict"], "SOURCE_PASS")
+            self.assertEqual(rows["warn"]["verdict"], "SOURCE_DRIFT")
+            self.assertEqual(rows["bad"]["verdict"], "SOURCE_FAIL")
+            self.assertEqual(rows["broken"]["verdict"], "ERROR")
+            self.assertIn("Unknown column", rows["broken"]["reason"])
+            self.assertEqual(rows["plain"]["mode"], "structural")
+            self.assertEqual(rows["plain"]["verdict"], "STRUCTURAL")
+
     def test_compare_invalid_packets_json_exits_2(self):
         from observability_migration.app import cli
 

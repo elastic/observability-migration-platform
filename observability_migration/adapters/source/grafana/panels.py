@@ -2010,6 +2010,37 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 primary.output_group_fields = merged_query["group_fields"]
                 for warning in merged_query["warnings"]:
                     _append_unique(primary.warnings, warning)
+    if (
+        len(targets_with_expr) > 1
+        and len(fused_series) == 1
+        and feasible_translations
+        and not primary.metadata.get("collapsed_targets")
+        and not primary.metadata.get("multi_series_metric_fields")
+        and primary.esql_query
+    ):
+        # Fusion kept only the primary target: the translated query IS that
+        # target's translation, so the parity oracle can verify it whole.
+        # The dropped siblings are recorded as explicitly unverifiable so
+        # they surface as reasoned SKIP rows instead of hiding inside the
+        # joined source_query.
+        primary_ref = primary.metadata.get("target_ref_id") or ""
+        unfused_provenance: list[dict[str, object]] = [{
+            "ref_id": primary_ref,
+            "source_expr": str(primary.metadata.get("target_source_expr") or ""),
+            "whole_translated": True,
+        }]
+        for t in translations:
+            ref = t.metadata.get("target_ref_id") or ""
+            if ref and ref != primary_ref:
+                unfused_provenance.append({
+                    "ref_id": ref,
+                    "source_expr": str(t.metadata.get("target_source_expr") or ""),
+                    "unsupported_reason": (
+                        "target was not migrated; the translated query covers "
+                        "the primary target only"
+                    ),
+                })
+        primary.metadata["collapsed_targets"] = unfused_provenance
     primary.query_ir = build_query_ir(primary)
 
     migrated_refs = {
@@ -2300,6 +2331,34 @@ def _try_collapse_same_metric_targets(translations):
         for t in translations
         if t.metadata.get("target_ref_id")
     ]
+    # Per-target provenance for the parity oracle. Unlike the formula merge
+    # (one output column per target), this collapse maps each target to a
+    # VALUE of the BY column, so verification scopes the translated response
+    # by (label_column, label_value). Non-equality matchers (regex / negated)
+    # would require re-implementing matcher semantics client-side - a
+    # false-verdict risk - so those targets carry an explicit
+    # unsupported_reason instead.
+    target_provenance = []
+    for translation, diff_set in zip(translations, diffs):
+        entry = {
+            "ref_id": translation.metadata.get("target_ref_id") or "",
+            "source_expr": str(translation.metadata.get("target_source_expr") or ""),
+        }
+        equality = [
+            (label, op, value)
+            for label, op, value in diff_set
+            if label == collapse_label and op in ("=", "==")
+        ]
+        if len(diff_set) == 1 and len(equality) == 1:
+            entry["label_column"] = collapse_label
+            entry["label_value"] = equality[0][2]
+        else:
+            entry["unsupported_reason"] = (
+                "distinguishing matcher is non-equality or compound; "
+                "per-target comparison is not supported"
+            )
+        target_provenance.append(entry)
+    collapsed.metadata["collapsed_targets"] = target_provenance
     full_exprs = []
     for translation in translations:
         expr = getattr(translation, "promql_expr", "")

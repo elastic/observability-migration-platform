@@ -1213,33 +1213,63 @@ def _run_compare(args: Any) -> int:
             index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
             # A merged multi-target panel with per-target provenance is
             # verified one target at a time: each sub-query against its own
-            # output column. Without provenance the comparator SKIPs the
+            # output column (formula merge) or its own BY-column value
+            # (same-metric collapse). Targets whose distinguishing matcher
+            # cannot be replayed client-side surface as SKIP rows with the
+            # recorded reason. Without provenance the comparator SKIPs the
             # joined query with an explanation.
             provenance = ((pkt.get("query_ir") or {}).get("metadata") or {}).get("collapsed_targets") or []
-            usable = [
+            column_targets = [
                 t for t in provenance
                 if t.get("source_expr") and t.get("value_column") and " ||| " not in t["source_expr"]
             ]
-            sub_compares: list[tuple[str, dict[str, Any]]] = (
-                [
-                    (
-                        t.get("ref_id", ""),
-                        {
-                            # A negated target (drawn below the axis) emits
-                            # ``-1 * expr``; negate the native reference to match.
-                            "source_query": f"-({t['source_expr']})" if t.get("negated") else t["source_expr"],
-                            "translated_value_column": t["value_column"],
-                            "translated_ignore_columns": frozenset(
-                                other["value_column"] for other in usable if other is not t
-                            ),
-                        },
-                    )
-                    for t in usable
-                ]
-                if usable
-                else [("", {"source_query": pkt["source_query"]})]
-            )
-            for target_ref, extra in sub_compares:
+            sub_compares: list[dict[str, Any]] = []
+            for t in provenance:
+                ref = t.get("ref_id", "")
+                expr = t.get("source_expr") or ""
+                if t.get("unsupported_reason"):
+                    sub_compares.append({"target": ref, "skip_reason": str(t["unsupported_reason"]),
+                                         "source_query": expr})
+                    continue
+                if not expr or " ||| " in expr:
+                    continue
+                # A negated target (drawn below the axis) emits ``-1 * expr``;
+                # negate the native reference to match.
+                source = f"-({expr})" if t.get("negated") else expr
+                if t.get("value_column"):
+                    sub_compares.append({"target": ref, "kwargs": {
+                        "source_query": source,
+                        "translated_value_column": t["value_column"],
+                        "translated_ignore_columns": frozenset(
+                            other["value_column"] for other in column_targets if other is not t
+                        ),
+                    }})
+                elif t.get("label_column") and t.get("label_value") is not None:
+                    sub_compares.append({"target": ref, "kwargs": {
+                        "source_query": source,
+                        "translated_label_filter": (t["label_column"], t["label_value"]),
+                    }})
+                elif t.get("whole_translated"):
+                    # Fusion kept only this target; the translated query is
+                    # its translation in full.
+                    sub_compares.append({"target": ref, "kwargs": {"source_query": source}})
+            if not sub_compares:
+                sub_compares = [{"target": "", "kwargs": {"source_query": pkt["source_query"]}}]
+            for job in sub_compares:
+                target_ref = job["target"]
+                if "skip_reason" in job:
+                    rows.append({
+                        "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                        "target": target_ref,
+                        "mode": "native_oracle", "verdict": "SKIP",
+                        "max_relative_error": 0.0, "compared_points": 0,
+                        "native_series": 0, "translated_series": 0, "common_series": 0,
+                        "notes": [], "reason": job["skip_reason"],
+                        "source_query": job["source_query"],
+                        "translated_query": pkt.get("translated_query", ""),
+                    })
+                    continue
+                extra = job["kwargs"]
                 try:
                     cmp_ = compare_panel(
                         request, translated_query=pkt["translated_query"],
@@ -1262,12 +1292,16 @@ def _run_compare(args: Any) -> int:
                     row["target"] = target_ref
                 rows.append(row)
         else:
-            rows.append({
-                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
-                "mode": "structural", "verdict": "STRUCTURAL", "semantic_gate": pkt.get("semantic_gate", ""),
-                "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
-                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
-            })
+            live = _live_source_row(pkt)
+            if live is not None:
+                rows.append(live)
+            else:
+                rows.append({
+                    "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                    "mode": "structural", "verdict": "STRUCTURAL", "semantic_gate": pkt.get("semantic_gate", ""),
+                    "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+                    "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
+                })
 
     summary = {"panels": len(rows)}
     for r in rows:
@@ -1277,7 +1311,40 @@ def _run_compare(args: Any) -> int:
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    return 1 if any(r["verdict"] == "FAIL" for r in rows) else 0
+    return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL") for r in rows) else 0
+
+
+# Live source-vs-target verdicts recorded by ``migrate --source-execution
+# --validate`` (see core/verification/comparators.py), mapped onto the
+# compare-report vocabulary. ``material_drift`` fails the run like a numeric
+# FAIL; ``target_broken`` is an ERROR (the target query never ran).
+_LIVE_COMPARISON_VERDICTS = {
+    "within_tolerance": "SOURCE_PASS",
+    "drift": "SOURCE_DRIFT",
+    "material_drift": "SOURCE_FAIL",
+    "target_broken": "ERROR",
+}
+
+
+def _live_source_row(pkt: dict[str, Any]) -> dict[str, Any] | None:
+    comparison = pkt.get("comparison") or {}
+    verdict = _LIVE_COMPARISON_VERDICTS.get(str(comparison.get("status", "")))
+    if verdict is None:
+        return None
+    counterexamples = [str(c) for c in (comparison.get("counterexamples") or [])]
+    reason = str(comparison.get("reason", "") or "")
+    if counterexamples:
+        reason = f"{reason}: {counterexamples[0]}" if reason else counterexamples[0]
+    return {
+        "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+        "mode": "live_source", "verdict": verdict,
+        "semantic_gate": pkt.get("semantic_gate", ""),
+        "comparator_family": str(comparison.get("comparator_family", "") or ""),
+        "reason": reason,
+        "notes": [str(comparison.get("diff_summary", "") or "")],
+        "source_query": pkt.get("source_query", ""),
+        "translated_query": pkt.get("translated_query", ""),
+    }
 
 
 def _infer_index(esql: str) -> str:

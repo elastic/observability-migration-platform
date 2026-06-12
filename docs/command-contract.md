@@ -600,12 +600,19 @@ reason). Numeric rows in the JSON report also carry `native_series`,
 `translated_series`, `common_series`, and `notes`, and every `FAIL` or `SKIP`
 verdict has a populated `reason` (e.g. "series keys did not align",
 "no data on either side in the compare window", "multi-query panel ... merged
-into one ES|QL").
+into one ES|QL"). Multi-target panels with per-target provenance produce one
+row per target (`target` carries the refId); stat panels whose terminal
+reduction is mirrorable (window `MAX`, latest-bucket `LAST`) are compared as
+scalars instead of SKIPping. Packets that carry live source-vs-target verdicts
+(from `migrate --source-execution --validate`) surface as `mode: live_source`
+rows with verdicts `SOURCE_PASS` / `SOURCE_DRIFT` / `SOURCE_FAIL` (or `ERROR`
+for `target_broken`) instead of `STRUCTURAL`.
 
 Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
 (missing/malformed `verification_packets.json`, missing credentials), `1` when
-any panel parity check returns `FAIL`, and `0` otherwise (structural-only rows
-never fail the run).
+any panel parity check returns `FAIL` or a live source comparison returns
+`SOURCE_FAIL` (material drift), and `0` otherwise (structural-only rows never
+fail the run).
 
 **Deterministic trial:** seed synthetic data both sides can read, compare parity,
 then clean up:
