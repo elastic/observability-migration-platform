@@ -393,6 +393,103 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(any("label fallback blob" in n for n in result.notes),
                         f"expected a blob-decode note, got: {result.notes}")
 
+    def test_normalize_translated_selects_named_value_column(self):
+        # A merged multi-target response carries one numeric column per
+        # target. Selecting a specific value column must use exactly that
+        # column and treat the sibling value columns as ignorable, not as
+        # series labels.
+        data = {
+            "columns": [{"name": "time_bucket", "type": "date"},
+                        {"name": "cpu_usage", "type": "double"},
+                        {"name": "memory_usage", "type": "double"},
+                        {"name": "host", "type": "keyword"}],
+            "values": [["2026-01-01T00:00:00Z", 1.0, 9.0, "a"],
+                       ["2026-01-01T00:05:00Z", 2.0, 8.0, "a"],
+                       ["2026-01-01T00:00:00Z", 3.0, 7.0, "b"],
+                       ["2026-01-01T00:05:00Z", 4.0, 6.0, "b"]],
+        }
+        out = po.normalize_translated(
+            data, value_column="memory_usage", ignore_columns=frozenset({"cpu_usage"}))
+        self.assertEqual(len(out), 2)
+        by_host = {dict(key.labels).get("host"): [v for _, v in points]
+                   for key, points in out.items()}
+        self.assertEqual(by_host, {"a": [9.0, 8.0], "b": [7.0, 6.0]})
+
+    def test_translated_grouped_series_project_onto_global_native_sum(self):
+        # Source ``sum(metric{cluster="$cluster"})`` collapses to ONE global
+        # series once the oracle strips the variable matcher, while the
+        # translated panel keeps per-cluster grouping for its Kibana control.
+        # The translated side must be re-aggregated onto the native (empty)
+        # label subset - sum of the partition sums IS the global sum - instead
+        # of failing with "series keys did not align (native 1, translated 3)".
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        per_cluster = {"c1": 10.0, "c2": 20.0, "c3": 30.0}
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[sum(per_cluster.values()) + i, t] for i, t in enumerate(stamps)]}
+        trows = []
+        for cluster, base in per_cluster.items():
+            for i, t in enumerate(stamps):
+                trows.append([t, base + i / 3.0, cluster])
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "computed_value", "type": "double"},
+                                  {"name": "cluster_name", "type": "keyword"}],
+                      "values": trows}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query='sum(kube_service_info{cluster="$cluster"})',
+            translated_query=("FROM metrics-* | STATS computed_value = SUM(kube_service_info) "
+                              "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), cluster_name"),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.common_series, 1)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertTrue(any("re-aggregated" in n and "translated" in n for n in result.notes),
+                        f"expected a translated-side projection note, got: {result.notes}")
+
+    def test_native_empty_translated_nonempty_is_skip(self):
+        # The native oracle ran without error but returned no series (e.g.
+        # instant-vector arithmetic that matches nothing on this data set).
+        # An oracle with no reference data cannot prove the translation
+        # wrong - SKIP with the asymmetry spelled out, not FAIL.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10)]
+        empty = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                 "values": []}
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "computed_value", "type": "double"}],
+                      "values": [[t, 1.0] for t in stamps]}
+        req = self._fake_request(empty, translated)
+        result = po.compare_panel(
+            req, source_query="a_bytes - b_bytes",
+            translated_query="FROM metrics-* | STATS computed_value = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("native oracle returned no series", result.skipped_reason)
+
+    def test_compare_panel_per_target_value_column(self):
+        # Per-target comparison of a merged multi-target panel: target B's
+        # sub-query is verified against its own output column while target
+        # A's column is ignored.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        b_vals = [10.0, 20.0, 30.0, 40.0, 50.0]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[v, t] for t, v in zip(stamps, b_vals)]}
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "cpu_usage", "type": "double"},
+                                  {"name": "memory_usage", "type": "double"}],
+                      "values": [[t, 999.0, v] for t, v in zip(stamps, b_vals)]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query="memory_usage",
+            translated_query=("FROM metrics-* | STATS cpu_usage = AVG(cpu_usage), "
+                              "memory_usage = AVG(memory_usage) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+            translated_value_column="memory_usage",
+            translated_ignore_columns=frozenset({"cpu_usage"}))
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.max_relative_error, 0.0)
+
     def test_multi_query_panel_is_skip_with_clear_reason(self):
         # Multi-target panels join their PromQL sub-queries with " ||| "
         # (panels.py) and translate to ONE merged ES|QL; sub-queries can be

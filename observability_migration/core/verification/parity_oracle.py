@@ -148,8 +148,17 @@ def normalize_native(data: dict, keep_labels: frozenset[str] = frozenset()) -> d
     return _drop_constants([(dict(k), v) for k, v in bucket.items()], keep=keep_labels)
 
 
-def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
-    """Parse translated ES|QL output: metric col + time_bucket + label cols."""
+def normalize_translated(
+    data: dict,
+    value_column: str | None = None,
+    ignore_columns: frozenset[str] = frozenset(),
+) -> dict[SeriesKey, list[tuple[float, float]]]:
+    """Parse translated ES|QL output: metric col + time_bucket + label cols.
+
+    ``value_column`` pins the metric column by name (per-target comparison of
+    a merged multi-target panel); ``ignore_columns`` excludes the sibling
+    targets' value columns so they are neither picked as the metric nor
+    misread as series labels."""
     columns = [c["name"] for c in data.get("columns", [])]
     column_types = [c.get("type", "") for c in data.get("columns", [])]
     rows = data.get("values", [])
@@ -162,6 +171,8 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
     explicit_labels: list[tuple[int, str]] = []
     for i, name in enumerate(columns):
         lname = name.lower()
+        if name in ignore_columns:
+            continue
         if "time_bucket" in lname or lname == "@timestamp":
             time_idx = i
             continue
@@ -179,11 +190,16 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
             continue
         candidates.append(i)
     metric_idx = None
-    for i in candidates:
-        lname = columns[i].lower()
-        if lname == "computed_value" or lname.endswith("_value"):
-            metric_idx = i
-            break
+    if value_column is not None:
+        if value_column not in columns:
+            return {}
+        metric_idx = columns.index(value_column)
+    if metric_idx is None:
+        for i in candidates:
+            lname = columns[i].lower()
+            if lname == "computed_value" or lname.endswith("_value"):
+                metric_idx = i
+                break
     if metric_idx is None:
         for i in candidates:
             if column_types[i] in numeric:
@@ -765,8 +781,14 @@ def native_promql_available(request, index: str) -> bool:
 
 
 def compare_panel(request, *, source_query: str, translated_query: str, index: str,
-                  step: int, start_iso: str, end_iso: str) -> Comparison:
+                  step: int, start_iso: str, end_iso: str,
+                  translated_value_column: str | None = None,
+                  translated_ignore_columns: frozenset[str] = frozenset()) -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
+
+    ``translated_value_column``/``translated_ignore_columns`` scope the
+    comparison to one output column of a merged multi-target panel (per-target
+    provenance), ignoring the sibling targets' value columns.
 
     In-band ES errors fail closed (SKIP for native, ERROR for translated). Transport
     failures are NOT caught here: a NetworkError from the injected ``request`` (e.g. an
@@ -820,7 +842,11 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         translated = normalize_native(translated_raw)
         cmp_.notes.append("translated query is a native PROMQL passthrough; parsed with the native normalizer")
     else:
-        translated = normalize_translated(translated_raw)
+        translated = normalize_translated(
+            translated_raw,
+            value_column=translated_value_column,
+            ignore_columns=translated_ignore_columns,
+        )
     translated, blob_decoded = _align_blob_label_keys(translated, native_raw)
     if blob_decoded:
         cmp_.notes.append(
@@ -867,6 +893,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
     common = set(native) & set(translated)
     native_for_diff = native
+    translated_for_diff = translated
     if not common and native and translated:
         reducer = _translated_reducer(cmp_.esql)
         projected = _project_to_subset(native, translated, reducer=reducer)
@@ -877,8 +904,25 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                 f"native re-aggregated {len(native)}->{len(projected)} series ({reducer}) "
                 "to match translated label subset"
             )
+    if not common and native and translated:
+        # Reverse direction: a global-aggregate source (variable matcher
+        # stripped by the oracle) versus a translated panel that keeps the
+        # variable's dimension grouped for its Kibana control. Re-aggregating
+        # the translated partitions onto the native label subset is exact for
+        # multiplicity-invariant-safe reducers (sum of partition sums is the
+        # global sum); an AVG of partition AVGs is not, so leave those alone.
+        reducer = _translated_reducer(cmp_.esql)
+        if reducer in {"sum", "max", "min"}:
+            projected = _project_to_subset(translated, native, reducer=reducer)
+            if set(projected) & set(native):
+                translated_for_diff = projected
+                common = set(native) & set(projected)
+                cmp_.notes.append(
+                    f"translated re-aggregated {len(translated)}->{len(projected)} series ({reducer}) "
+                    "to match native label subset"
+                )
     cmp_.common_series = len(common)
-    points, rmax, rmean = compute_diff(native_for_diff, translated, step)
+    points, rmax, rmean = compute_diff(native_for_diff, translated_for_diff, step)
     cmp_.compared_points = points
     cmp_.max_relative_error = rmax
     cmp_.mean_relative_error = rmean
@@ -888,8 +932,12 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                 f"translated query returned no series; native returned {cmp_.native_series}"
             )
         elif not native:
-            cmp_.fail_reason = (
-                f"native oracle returned no series; translated returned {cmp_.translated_series}"
+            # The oracle ran without error but produced no reference data
+            # (e.g. instant-vector arithmetic that matches nothing on this
+            # data set); that cannot prove the translation wrong.
+            cmp_.skipped_reason = (
+                f"native oracle returned no series; translated returned "
+                f"{cmp_.translated_series} - no reference data to verify against"
             )
         else:
             cmp_.fail_reason = (

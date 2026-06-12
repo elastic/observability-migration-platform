@@ -2878,6 +2878,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("cpu_usage", field_names)
         self.assertIn("memory_usage", field_names)
 
+    def test_multi_target_merge_records_per_target_provenance(self):
+        """A merged multi-target panel must record which source sub-query
+        produced which output column. Without this the parity oracle cannot
+        verify multi-query panels at all: the packet's source_query is a
+        '|||' join whose order need not match the output columns (targets can
+        be deduplicated or dropped), so 91/223 corpus panels were stuck at
+        SKIP."""
+        panel = {
+            "id": 909,
+            "type": "graph",
+            "title": "CPU and memory",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'cpu_usage{state="active"}', "refId": "A", "legendFormat": "cpu_usage"},
+                {"expr": 'memory_usage{state="active"}', "refId": "B", "legendFormat": "memory_usage"},
+            ],
+        }
+
+        _yaml_panel, result = self.translate_panel(panel)
+
+        targets = result.query_ir["metadata"].get("collapsed_targets")
+        self.assertIsNotNone(targets, "expected per-target provenance in metadata")
+        self.assertEqual([t["ref_id"] for t in targets], ["A", "B"])
+        self.assertEqual(
+            [t["source_expr"] for t in targets],
+            ['cpu_usage{state="active"}', 'memory_usage{state="active"}'],
+        )
+        # Each value_column must be one of the merged query's output columns.
+        fields = result.query_ir["metadata"].get("multi_series_metric_fields", [])
+        for t in targets:
+            self.assertIn(t["value_column"], fields)
+        self.assertEqual(len({t["value_column"] for t in targets}), 2)
+
     def test_lossless_multi_target_merge_does_not_warn(self):
         panel = {
             "id": 908,
