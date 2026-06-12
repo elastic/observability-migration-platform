@@ -14,6 +14,7 @@ Also implements the comprehensive Grafana migration test plan:
 - Layer E: Operational safety (determinism, idempotency)
 """
 
+import json
 import pathlib
 import re
 import sys
@@ -1264,14 +1265,51 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             kibana_type="timeseries",
         )
 
-        # New, linear extraction: one GROK per label binding the JSON value.
-        self.assertIn('GROK _timeseries """"type":"%{DATA:type}', query)
-        self.assertIn('GROK _timeseries """"info":"%{DATA:info}', query)
+        # New, linear extraction: one GROK per label binding the JSON value,
+        # anchored to top-level keys (see the nested-OTel-label test below).
+        self.assertIn('"type":"%{DATA:type}', query)
+        self.assertIn('"info":"%{DATA:info}', query)
+        self.assertEqual(query.count("GROK _timeseries"), 2)
         self.assertTrue(query.rstrip().endswith("| KEEP step, value, type, info"))
         # The old super-linear pattern must be gone entirely.
         self.assertNotIn("REPLACE(_ts", query)
         self.assertNotIn("REPLACE(REPLACE(", query)
         self.assertNotIn("_raw_", query)
+
+    def test_native_promql_legend_grok_binds_top_level_label_not_nested_otel(self):
+        """The GROK pattern must bind the TOP-LEVEL label, not a same-named key
+        nested inside OTel resource attributes: in alphabetical label order
+        ``k8s.cluster.name`` sorts before a top-level ``name`` and
+        ``service.name`` exists on any OTel-mapped cluster, so an unanchored
+        first-occurrence match extracts the wrong label's value (surfaced as
+        unalignable series keys in the seeded parity run)."""
+        query = panels.build_native_promql_query(
+            "node_systemd_socket_accepted_connections_total",
+            index="metrics-*",
+            legend_labels=["name"],
+            kibana_type="timeseries",
+        )
+        m = re.search(r'GROK _timeseries """(.+)"""', query)
+        self.assertIsNotNone(m, f"no GROK pipe in: {query}")
+        # Simulate the GROK semantics: %{DATA:x} is a lazy capture.
+        pattern = m.group(1).replace("%{DATA:name}", "(?P<name>.*?)")
+
+        blob = json.dumps({
+            "__name__": "m",
+            "k8s": {"cluster": {"name": "prod-cluster"}},
+            "name": "sshd.socket",
+            "service": {"name": "backend"},
+        }, separators=(",", ":"))
+        match = re.search(pattern, blob)
+        self.assertIsNotNone(match, f"pattern {pattern!r} matched nothing in {blob}")
+        self.assertEqual(match.group("name"), "sshd.socket")
+
+        # The wrapped form ({"labels": {...}}) must still match its first label.
+        wrapped = json.dumps({"labels": {"name": "sshd.socket", "zone": "a"}},
+                             separators=(",", ":"))
+        match = re.search(pattern, wrapped)
+        self.assertIsNotNone(match, f"pattern {pattern!r} matched nothing in {wrapped}")
+        self.assertEqual(match.group("name"), "sshd.socket")
 
     def test_native_promql_legend_label_with_dotted_name_is_backtick_quoted(self):
         """A dotted legend label (e.g. ``deployment.environment``) must be

@@ -884,6 +884,110 @@ class CompareSubcommandTests(unittest.TestCase):
             self.assertEqual(row["common_series"], 0)
             self.assertEqual(row["notes"], V.notes)
 
+    def test_compare_multi_target_provenance_emits_per_target_rows(self):
+        # A merged multi-target panel with per-target provenance must be
+        # verified one target at a time (each sub-query against its own
+        # output column) instead of a single multi-query SKIP.
+        from observability_migration.app import cli
+
+        calls = []
+
+        class V:
+            max_relative_error = 0.0
+            compared_points = 3
+            notes: list = []
+            skipped_reason = ""
+            fail_reason = ""
+            translated_error = ""
+            native_error = ""
+            native_series = 1
+            translated_series = 1
+            common_series = 1
+            def verdict(self):
+                return "STRICT_PASS"
+
+        def fake_compare(request, **kwargs):
+            calls.append(kwargs)
+            return V()
+
+        merged_esql = ("FROM metrics-* | STATS cpu_usage = AVG(cpu_usage), "
+                       "memory_usage = AVG(memory_usage) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)")
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "cpu_usage ||| memory_usage",
+                 "translated_query": merged_esql, "semantic_gate": "Green",
+                 "query_ir": {"metadata": {"collapsed_targets": [
+                     {"ref_id": "A", "source_expr": "cpu_usage", "value_column": "cpu_usage"},
+                     {"ref_id": "B", "source_expr": "memory_usage", "value_column": "memory_usage"},
+                 ]}}},
+            ])
+            out = Path(tmp) / "comparison_report.json"
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", side_effect=fake_compare),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 0)
+            rows = json.loads(out.read_text(encoding="utf-8"))["panels"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([r.get("target") for r in rows], ["A", "B"])
+            self.assertTrue(all(r["verdict"] == "STRICT_PASS" for r in rows))
+            self.assertEqual([c["source_query"] for c in calls], ["cpu_usage", "memory_usage"])
+            self.assertEqual([c["translated_value_column"] for c in calls], ["cpu_usage", "memory_usage"])
+            self.assertEqual(calls[0]["translated_ignore_columns"], frozenset({"memory_usage"}))
+            self.assertEqual(calls[1]["translated_ignore_columns"], frozenset({"cpu_usage"}))
+
+    def test_compare_negated_target_negates_native_reference(self):
+        # Grafana draws some targets below the axis (negate_result); the merged
+        # ES|QL emits ``-1 * expr`` for them. The oracle must negate its native
+        # reference too, or every such target reads as a 200% mismatch.
+        from observability_migration.app import cli
+
+        calls = []
+
+        class V:
+            max_relative_error = 0.0
+            compared_points = 3
+            notes: list = []
+            skipped_reason = ""
+            fail_reason = ""
+            translated_error = ""
+            native_error = ""
+            native_series = 1
+            translated_series = 1
+            common_series = 1
+            def verdict(self):
+                return "STRICT_PASS"
+
+        def fake_compare(request, **kwargs):
+            calls.append(kwargs)
+            return V()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "Net", "source_language": "promql",
+                 "source_query": "rx_total ||| tx_total",
+                 "translated_query": "FROM metrics-* | STATS rx = SUM(rx_total), tx = SUM(tx_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+                 "semantic_gate": "Green",
+                 "query_ir": {"metadata": {"collapsed_targets": [
+                     {"ref_id": "A", "source_expr": "rx_total", "value_column": "rx"},
+                     {"ref_id": "B", "source_expr": "tx_total", "value_column": "tx", "negated": True},
+                 ]}}},
+            ])
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", side_effect=fake_compare),
+                self.assertRaises(SystemExit),
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(Path(tmp) / "comparison_report.json")])
+            self.assertEqual([c["source_query"] for c in calls], ["rx_total", "-(tx_total)"])
+
     def test_compare_invalid_packets_json_exits_2(self):
         from observability_migration.app import cli
 

@@ -1960,6 +1960,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             t.feasibility = "not_feasible"
             t.warnings.append(f"Translation crashed: {type(exc).__name__}: {exc}")
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
+        # Keep the target's own expression: ``promql_expr`` is overwritten with
+        # the merged " ||| " join below, but per-target provenance (and the
+        # parity oracle that consumes it) needs the original sub-query.
+        t.metadata["target_source_expr"] = expr
         if negate_target:
             t.metadata["negate_result"] = True
         translations.append(t)
@@ -2001,6 +2005,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 primary.source_type = merged_query["source_type"]
                 primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
                 primary.metadata["multi_series_metric_labels"] = merged_query.get("metric_label_hints", {})
+                primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
                 primary.output_metric_field = merged_query["metric_fields"][0]
                 primary.output_group_fields = merged_query["group_fields"]
                 for warning in merged_query["warnings"]:
@@ -2380,6 +2385,7 @@ def _build_multi_target_series_query(translations):
     parts, output_group_fields, _ = shared
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
+    target_provenance: list[dict[str, str]] = []
     used_aliases = set()
     for idx, (translation, plan) in enumerate(plans, start=1):
         alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
@@ -2389,6 +2395,14 @@ def _build_multi_target_series_query(translations):
             used_aliases,
             fallback_suffix=alias_hint,
         )
+        provenance_entry = {
+            "ref_id": alias_hint,
+            "source_expr": str(translation.metadata.get("target_source_expr") or ""),
+            "value_column": result_alias,
+        }
+        if translation.metadata.get("negate_result"):
+            provenance_entry["negated"] = True
+        target_provenance.append(provenance_entry)
         eval_expr = plan.expr
         if translation.metadata.get("negate_result"):
             eval_expr = f"(-1 * {plan.expr})"
@@ -2427,6 +2441,7 @@ def _build_multi_target_series_query(translations):
         "group_fields": output_group_fields,
         "source_type": all_specs[0].source_type,
         "warnings": warnings,
+        "targets": target_provenance,
     }
 
 
@@ -2829,7 +2844,18 @@ def _grok_label_extraction(label):
     # Triple-quoted ES|QL string so inner double quotes need no escaping. The
     # pattern is ``"<label>":"%{DATA:<label>}\"`` — DATA (non-greedy) is bounded
     # by the trailing ``\"`` which matches the JSON value's closing quote.
-    pattern = f'"{literal}":"%{{DATA:{label}}}\\"'
+    #
+    # The key is anchored to a TOP-LEVEL position: object start (optionally
+    # through the ``{"labels":{...}}`` wrapper) or a preceding comma. An
+    # unanchored first-occurrence match binds a same-named key nested inside
+    # OTel resource attributes instead — ``k8s.cluster.name`` sorts before a
+    # top-level ``name`` and ``service.name`` exists on any OTel-mapped
+    # cluster — so the panel legend (and parity series keys) would carry the
+    # wrong label's value. Nested first keys are always preceded by ``:{``,
+    # which the anchor excludes; nested non-first keys are comma-preceded and
+    # remain theoretically ambiguous, but the known OTel collision shapes
+    # (service.name, host.name, k8s.*.name) are all single-key objects.
+    pattern = f'(?:\\A\\{{(?:"labels":\\{{)?|,)"{literal}":"%{{DATA:{label}}}\\"'
     return f'| GROK _timeseries """{pattern}"""'
 
 
