@@ -416,6 +416,31 @@ def _rename_labels(
     return rebuilt
 
 
+def _filter_series_by_label(
+    series: dict[SeriesKey, list[tuple[float, float]]],
+    label: str,
+    value: str,
+) -> dict[SeriesKey, list[tuple[float, float]]]:
+    """Scope a translated response to one target of a same-metric collapse.
+
+    Keeps only series whose key carries ``(label, value)`` - the raw or
+    canonical label name both match - and drops that label from the kept keys
+    so they can align with a native side that ran the sub-query with the
+    matcher applied (where the label is constant and already scrubbed)."""
+    names = {label, _canonical_label(label)}
+    out: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for key, values in series.items():
+        labels = dict(key.labels)
+        matched = False
+        for name in list(labels):
+            if name in names and labels[name] == value:
+                matched = True
+                labels.pop(name)
+        if matched:
+            out[SeriesKey(tuple(sorted(labels.items())))] = values
+    return out
+
+
 def _align_label_names_by_values(
     native: dict[SeriesKey, list[tuple[float, float]]],
     translated: dict[SeriesKey, list[tuple[float, float]]],
@@ -693,6 +718,137 @@ def _stats_groups_by_time_bucket(stats_command: str) -> bool:
     return bool(re.search(r"\btime_bucket\b", grouping, re.IGNORECASE))
 
 
+def _split_top_level_commas(text: str) -> list[str]:
+    """Split on commas that are not nested inside parentheses."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current))
+    return [p.strip() for p in parts if p.strip()]
+
+
+_SCALAR_ASSIGN_RE = re.compile(
+    r"^(?P<alias>`[^`]+`|[A-Za-z_][\w.]*)\s*=\s*(?P<func>MAX|LAST)\s*\(\s*(?P<arg>[^)]*)\)$",
+    re.IGNORECASE,
+)
+
+
+def _terminal_scalar_reduction(esql: str) -> dict[str, str] | None:
+    """Parse a terminal stat reduction the oracle can mirror on the native side.
+
+    Supported shapes (per column): ``alias = MAX(alias)`` (window max -
+    Grafana's dominant stat reduction, including the ``time_bucket =
+    MAX(time_bucket)`` companion) and ``alias = LAST(alias, time_bucket)``
+    (value at the latest bucket). Anything else - COUNT/COUNT_DISTINCT over
+    rows, scalar arithmetic, grouped tables (``BY <dim>``) - returns None so
+    the honest single-value SKIP applies; a false FAIL from an approximated
+    reduction would be worse."""
+    stages = [stage.strip() for stage in (esql or "").split("|")]
+    stats_stages = [stage for stage in stages if re.match(r"(?i)^STATS\b", stage)]
+    if not stats_stages:
+        return None
+    terminal = stats_stages[-1]
+    body_match = _STATS_BY_RE.match(terminal)
+    if not body_match:
+        return None
+    body = body_match.group("body")
+    if re.search(r"\bBY\b", body, re.IGNORECASE):
+        return None
+    reductions: dict[str, str] = {}
+    for part in _split_top_level_commas(body):
+        match = _SCALAR_ASSIGN_RE.match(part)
+        if not match:
+            return None
+        alias = match.group("alias").strip("`")
+        func = match.group("func").upper()
+        args = [a.strip().strip("`") for a in match.group("arg").split(",")]
+        if func == "MAX":
+            if args != [alias]:
+                return None
+            reductions[alias] = "max"
+        else:
+            if args != [alias, "time_bucket"]:
+                return None
+            reductions[alias] = "last"
+    value_columns = [name for name in reductions if name != "time_bucket"]
+    if not value_columns:
+        return None
+    return reductions
+
+
+def _compare_single_value(
+    cmp_: Comparison,
+    native_raw: dict,
+    translated_raw: dict,
+    reductions: dict[str, str],
+    value_column: str | None,
+) -> Comparison:
+    """Scalar comparison for stat panels: reduce the native series with the
+    same terminal reducer the translated query applied and diff the scalars."""
+    fallback = "translated panel reduces to a single value (stat panel); no time series to compare"
+    columns = [c["name"] for c in translated_raw.get("columns", [])]
+    rows = translated_raw.get("values", [])
+    value_columns = [name for name in reductions if name != "time_bucket"]
+    target_column = value_column or (value_columns[0] if len(value_columns) == 1 else None)
+    if target_column is None or target_column not in columns or len(rows) != 1:
+        cmp_.skipped_reason = fallback
+        return cmp_
+    translated_value = rows[0][columns.index(target_column)]
+    native = normalize_native(native_raw)
+    cmp_.native_series = len(native)
+    cmp_.translated_series = 1 if translated_value is not None else 0
+    if translated_value is None and not native:
+        cmp_.skipped_reason = (
+            "no data on either side in the compare window; seed sample data or "
+            "align --window-minutes/--step-seconds with the dashboard"
+        )
+        return cmp_
+    if not native:
+        cmp_.skipped_reason = (
+            "native oracle returned no series; translated returned a scalar - "
+            "no reference data to verify against"
+        )
+        return cmp_
+    if translated_value is None:
+        cmp_.fail_reason = "translated stat query returned no value; native returned data"
+        return cmp_
+    # Multiple native series first collapse with the inner per-bucket reducer
+    # (mirrors what the translated pipeline did before its terminal stage).
+    if len(native) > 1:
+        inner = _translated_reducer(cmp_.esql)
+        native = _project_to_subset(native, {SeriesKey(()): [(0.0, 0.0)]}, reducer=inner)
+        cmp_.notes.append(f"native series collapsed with inner reducer ({inner}) before scalar reduction")
+    points = sorted(p for series in native.values() for p in series)
+    if not points:
+        cmp_.skipped_reason = fallback
+        return cmp_
+    reducer = reductions[target_column]
+    native_value = points[-1][1] if reducer == "last" else max(v for _, v in points)
+    cmp_.common_series = 1
+    cmp_.compared_points = 1
+    translated_value = float(translated_value)
+    cmp_.max_relative_error = abs(native_value - translated_value) / max(
+        abs(native_value), abs(translated_value), 1e-9
+    )
+    cmp_.mean_relative_error = cmp_.max_relative_error
+    cmp_.notes.append(
+        f"single-value comparison ({reducer}): translated {translated_value} "
+        f"vs native {native_value}"
+    )
+    return cmp_
+
+
 def is_single_value_reduction(esql: str) -> bool:
     """True when the emitted ES|QL reduces the series to a single (stat) value
     instead of a per-time-bucket range series.
@@ -783,12 +939,15 @@ def native_promql_available(request, index: str) -> bool:
 def compare_panel(request, *, source_query: str, translated_query: str, index: str,
                   step: int, start_iso: str, end_iso: str,
                   translated_value_column: str | None = None,
-                  translated_ignore_columns: frozenset[str] = frozenset()) -> Comparison:
+                  translated_ignore_columns: frozenset[str] = frozenset(),
+                  translated_label_filter: tuple[str, str] | None = None) -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
 
     ``translated_value_column``/``translated_ignore_columns`` scope the
     comparison to one output column of a merged multi-target panel (per-target
     provenance), ignoring the sibling targets' value columns.
+    ``translated_label_filter`` scopes it to one label value of a same-metric
+    collapsed panel instead (targets map to BY-column values there).
 
     In-band ES errors fail closed (SKIP for native, ERROR for translated). Transport
     failures are NOT caught here: a NetworkError from the injected ``request`` (e.g. an
@@ -813,9 +972,14 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
         return cmp_
+    scalar_reductions = None
     if is_single_value_reduction(cmp_.esql):
-        cmp_.skipped_reason = "translated panel reduces to a single value (stat panel); no time series to compare"
-        return cmp_
+        # Mirrorable terminal reductions (window MAX / latest-bucket LAST) are
+        # compared as scalars below; everything else keeps the honest SKIP.
+        scalar_reductions = _terminal_scalar_reduction(cmp_.esql)
+        if scalar_reductions is None:
+            cmp_.skipped_reason = "translated panel reduces to a single value (stat panel); no time series to compare"
+            return cmp_
 
     # Strip Grafana template vars / range macros so native PROMQL runs against the
     # same series the translated ES|QL does (a literal ``$job`` matches nothing).
@@ -831,6 +995,11 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     if isinstance(translated_raw, dict) and translated_raw.get("error"):
         cmp_.translated_error = str(translated_raw["error"])[:200]
         return cmp_
+
+    if scalar_reductions is not None:
+        return _compare_single_value(
+            cmp_, native_raw, translated_raw, scalar_reductions, translated_value_column
+        )
 
     native = normalize_native(native_raw)
     # A translated query that is itself a native ``PROMQL ...`` command (the
@@ -852,6 +1021,12 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         cmp_.notes.append(
             "translated label fallback blob decoded into label pairs (panel grouping "
             "label absent from the data); series keys re-aligned with the native side"
+        )
+    if translated_label_filter and translated:
+        translated = _filter_series_by_label(translated, *translated_label_filter)
+        cmp_.notes.append(
+            f"translated response scoped to {translated_label_filter[0]}="
+            f"{translated_label_filter[1]!r} (same-metric collapsed target)"
         )
     if native and translated and not (set(native) & set(translated)):
         translated, renames = _align_label_names_by_values(native, translated)

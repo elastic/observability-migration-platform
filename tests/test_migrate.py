@@ -2794,6 +2794,110 @@ class TranslatorRegressionTests(unittest.TestCase):
             'node_systemd_units{instance="$node",job="$job",state="failed"}',
         )
 
+    def test_same_metric_collapse_records_per_target_provenance(self):
+        """The same-metric collapse maps targets to LABEL VALUES (one BY column),
+        not output columns, so its per-target provenance must carry
+        (ref_id, source_expr, label_column, label_value) for equality-matcher
+        targets - the parity oracle scopes the translated response to the rows
+        whose key carries that value. Without it these panels are stuck at
+        SKIP (the last 10 multi-query corpus panels)."""
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 101,
+            "type": "graph",
+            "title": "Systemd Units",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'node_systemd_units{instance="$node",job="$job",state="active"}', "refId": "A"},
+                {"expr": 'node_systemd_units{instance="$node",job="$job",state="failed"}', "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        targets = result.query_ir["metadata"].get("collapsed_targets")
+        self.assertIsNotNone(targets, "expected per-target provenance in metadata")
+        self.assertEqual(
+            targets,
+            [
+                {"ref_id": "A",
+                 "source_expr": 'node_systemd_units{instance="$node",job="$job",state="active"}',
+                 "label_column": "state", "label_value": "active"},
+                {"ref_id": "B",
+                 "source_expr": 'node_systemd_units{instance="$node",job="$job",state="failed"}',
+                 "label_column": "state", "label_value": "failed"},
+            ],
+        )
+
+    def test_same_metric_collapse_marks_nonequality_targets_unsupported(self):
+        """Regex / negated distinguishing matchers cannot be re-implemented
+        client-side without false-verdict risk; their provenance entries say
+        so explicitly instead of being silently absent."""
+        self.seed_field_caps(
+            {
+                "node_systemd_units": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+        panel = {
+            "id": 102,
+            "type": "graph",
+            "title": "Systemd Units",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'node_systemd_units{state="active"}', "refId": "A"},
+                {"expr": 'node_systemd_units{state=~"fail.*"}', "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        targets = result.query_ir["metadata"].get("collapsed_targets")
+        self.assertIsNotNone(targets, "expected per-target provenance in metadata")
+        by_ref = {t["ref_id"]: t for t in targets}
+        self.assertEqual(by_ref["A"].get("label_value"), "active")
+        self.assertNotIn("label_value", by_ref["B"])
+        self.assertIn("non-equality", by_ref["B"].get("unsupported_reason", ""))
+
+    def test_unfused_primary_target_records_whole_query_provenance(self):
+        """When fusion keeps only the primary target, the translated query IS
+        that target's translation - the parity oracle can verify it whole.
+        The dropped siblings must surface as explicitly unverifiable instead
+        of hiding inside a joined source_query the oracle can only SKIP."""
+        panel = {
+            "id": 103,
+            "type": "graph",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": ('sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) '
+                          '/ on(instance) sum by (instance) (rate(node_cpu_seconds_total[5m]))'),
+                 "refId": "A"},
+                {"expr": 'avg(sum by (core) (rate(windows_cpu_time_total{mode!="idle"}[5m])))',
+                 "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        targets = result.query_ir["metadata"].get("collapsed_targets")
+        self.assertIsNotNone(targets, "expected unfused-primary provenance in metadata")
+        by_ref = {t["ref_id"]: t for t in targets}
+        self.assertTrue(by_ref["A"].get("whole_translated"))
+        self.assertIn("rate(node_cpu_seconds_total", by_ref["A"]["source_expr"])
+        self.assertIn("primary target only", by_ref["B"].get("unsupported_reason", ""))
+
     def test_multi_target_live_gauge_with_divergent_filters_keeps_all_series(self):
         self.seed_field_caps(
             {

@@ -490,6 +490,116 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result.verdict(), "STRICT_PASS")
         self.assertEqual(result.max_relative_error, 0.0)
 
+    def test_terminal_scalar_reduction_parses_supported_shapes(self):
+        self.assertEqual(
+            po._terminal_scalar_reduction(
+                "TS m-* | STATS m = AVG(x) BY time_bucket = TBUCKET(5 minute) "
+                "| STATS time_bucket = MAX(time_bucket), m = MAX(m)"),
+            {"time_bucket": "max", "m": "max"},
+        )
+        self.assertEqual(
+            po._terminal_scalar_reduction(
+                "TS m-* | STATS v = AVG(x) BY time_bucket = TBUCKET(5 minute) "
+                "| STATS v = LAST(v, time_bucket)"),
+            {"v": "last"},
+        )
+        # Grouped tables, counts, and arithmetic are NOT scalar-comparable.
+        self.assertIsNone(po._terminal_scalar_reduction(
+            "TS m-* | STATS m = MAX(m) BY handler"))
+        self.assertIsNone(po._terminal_scalar_reduction(
+            "FROM m-* | STATS up_count = COUNT(up)"))
+        self.assertIsNone(po._terminal_scalar_reduction(
+            "FROM m-* | STATS start_time_ms = MAX(node_boot_time_seconds * 1000)"))
+
+    def test_stat_panel_single_value_comparison_passes(self):
+        # The dominant stat-panel shape reduces the bucketed series to its
+        # window MAX. The oracle can compare scalars: reduce the native series
+        # the same way instead of SKIPping ("no time series to compare").
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        vals = [10.0, 20.0, 50.0, 40.0, 30.0]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[v, t] for t, v in zip(stamps, vals)]}
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "m", "type": "double"}],
+                      "values": [["2026-01-01T00:20:00Z", 50.0]]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query="m_metric",
+            translated_query=("TS metrics-* | WHERE m IS NOT NULL "
+                              "| STATS m = MAX(LAST_OVER_TIME(m)) BY time_bucket = TBUCKET(5 minute) "
+                              "| SORT time_bucket ASC "
+                              "| STATS time_bucket = MAX(time_bucket), m = MAX(m)"),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.compared_points, 1)
+        self.assertEqual(result.max_relative_error, 0.0)
+        self.assertTrue(any("single-value" in n for n in result.notes),
+                        f"expected a single-value note, got: {result.notes}")
+
+    def test_stat_panel_single_value_mismatch_reports_error(self):
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10)]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[v, t] for t, v in zip(stamps, (10.0, 20.0, 30.0))]}
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "m", "type": "double"}],
+                      "values": [["2026-01-01T00:10:00Z", 90.0]]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query="m_metric",
+            translated_query=("TS metrics-* | STATS m = AVG(m) BY time_bucket = TBUCKET(5 minute) "
+                              "| STATS time_bucket = MAX(time_bucket), m = MAX(m)"),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.compared_points, 1)
+        self.assertGreater(result.max_relative_error, 0.5)
+        self.assertEqual(result.verdict(), "SHAPE_PASS")
+
+    def test_unsupported_stat_shape_still_skips(self):
+        # COUNT-style reductions cannot be mirrored faithfully; the honest
+        # SKIP must survive.
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[1.0, "2026-01-01T00:00:00Z"]]}
+        translated = {"columns": [{"name": "up_count", "type": "long"}], "values": [[3]]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query="count(up)",
+            translated_query="FROM metrics-* | STATS up_count = COUNT(up)",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("single value", result.skipped_reason)
+
+    def test_compare_panel_translated_label_filter_scopes_one_target(self):
+        # Same-metric collapse: targets map to VALUES of one BY column.
+        # Verifying target A means comparing its sub-query against only the
+        # translated rows whose key carries state="active" (the label is then
+        # dropped from the key so it can align with the native side).
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        active = [10.0, 20.0, 30.0, 40.0, 50.0]
+        failed = [7.0, 6.0, 5.0, 4.0, 3.0]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[v, t] for t, v in zip(stamps, active)]}
+        trows = []
+        for state, vals in (("active", active), ("failed", failed)):
+            for t, v in zip(stamps, vals):
+                trows.append([t, v, state])
+        translated = {"columns": [{"name": "time_bucket", "type": "date"},
+                                  {"name": "computed_value", "type": "double"},
+                                  {"name": "state", "type": "keyword"}],
+                      "values": trows}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(
+            req, source_query='node_systemd_units{state="active"}',
+            translated_query=("TS metrics-* | STATS computed_value = AVG(node_systemd_units) "
+                              "BY time_bucket = TBUCKET(5 minute), state"),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+            translated_label_filter=("state", "active"))
+        self.assertEqual(result.common_series, 1)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.max_relative_error, 0.0)
+
     def test_multi_query_panel_is_skip_with_clear_reason(self):
         # Multi-target panels join their PromQL sub-queries with " ||| "
         # (panels.py) and translate to ONE merged ES|QL; sub-queries can be
@@ -763,11 +873,13 @@ class ExecutionTests(unittest.TestCase):
         bad = self._fake_request({}, {}, native_error="unknown command [PROMQL]")
         self.assertFalse(po.native_promql_available(bad, "metrics-*"))
 
-    def test_single_value_reduction_is_skip_not_fail(self):
-        # A Grafana stat/single-value panel translates to ES|QL that collapses the
-        # per-bucket series to ONE row (final ``STATS time_bucket = MAX(time_bucket),
-        # m = MAX(m)``). There is no time series to diff against the native range
-        # vector, so point-wise comparison is meaningless -> SKIP, not a false FAIL.
+    def test_single_value_reduction_with_mirrorable_reducer_is_compared(self):
+        # A Grafana stat/single-value panel collapses the per-bucket series to
+        # ONE row (final ``STATS time_bucket = MAX(time_bucket), m = MAX(m)``).
+        # Point-wise comparison is meaningless, but the window-MAX reduction
+        # can be mirrored on the native side, so the scalar IS verified
+        # (previously a blanket SKIP; unsupported shapes still SKIP - see
+        # test_unsupported_stat_shape_still_skips).
         series = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
                   "values": [[1.0, "2026-01-01T00:00:00Z"], [2.0, "2026-01-01T00:05:00Z"], [3.0, "2026-01-01T00:10:00Z"]]}
         single_row = {"columns": [{"name": "time_bucket", "type": "date"}, {"name": "m", "type": "double"}],
@@ -780,8 +892,8 @@ class ExecutionTests(unittest.TestCase):
                 "| KEEP time_bucket, m | SORT time_bucket ASC")
         result = po.compare_panel(req, source_query="m", translated_query=esql,
                                   index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
-        self.assertEqual(result.verdict(), "SKIP")
-        self.assertIn("single", result.skipped_reason.lower())
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.compared_points, 1)
 
     def test_compare_panel_translated_error_is_error(self):
         # native side returns data; translated (ES|QL) side returns an ES error body

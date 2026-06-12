@@ -24,8 +24,9 @@ Repeat `--artifact-dir` to merge multiple migrate runs. Add `--ca-cert` / `--ins
 
 | Source / cluster | Mode | Verdicts | What it proves |
 |---|---|---|---|
-| PromQL / Grafana on a cluster with native PROMQL | Numeric | `STRICT_PASS` (≤1% max relative error), `FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, `ERROR` | Translated ES|QL buckets match Elasticsearch's native `PROMQL(<source query>)` oracle over the same index and time window |
-| Datadog panels, non-PromQL panels, or clusters without native PROMQL | Structural | `STRUCTURAL` | Semantic gate only — **not numerically verified**; the command checked shape/metadata, not bucket-by-bucket numbers |
+| PromQL / Grafana on a cluster with native PROMQL | Numeric | `STRICT_PASS` (≤1% max relative error), `FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, `ERROR` | Translated ES|QL buckets match Elasticsearch's native `PROMQL(<source query>)` oracle over the same index and time window. Multi-target panels verify one row per target (`target` = refId); mirrorable stat reductions (window `MAX` / latest-bucket `LAST`) compare as scalars |
+| Panels whose packets carry live source-vs-target verdicts (`migrate --source-execution --validate`) | Live source | `SOURCE_PASS`, `SOURCE_DRIFT`, `SOURCE_FAIL` (fails the run), `ERROR` (target broken) | The source API's own numbers vs the target ES|QL over the same window — only meaningful when both ingest the same telemetry |
+| Datadog panels without live comparison, non-PromQL panels, or clusters without native PROMQL | Structural | `STRUCTURAL` | Semantic gate only — **not numerically verified**; the command checked shape/metadata, not bucket-by-bucket numbers |
 
 Never describe a `STRUCTURAL` row as numeric proof. Never hide the structural fallback behind exit code `0`.
 
@@ -60,7 +61,7 @@ The command writes **`comparison_report.json`** (machine-readable) and a sibling
 **Exit codes:**
 
 - **`2`** — Elasticsearch unreachable or invalid input (missing credentials, bad/missing `verification_packets.json`).
-- **`1`** — at least one panel parity check returned `FAIL`.
+- **`1`** — at least one panel parity check returned `FAIL` (or a live source comparison returned `SOURCE_FAIL`).
 - **`0`** — otherwise (including runs where every row is `STRUCTURAL` or non-`FAIL` numeric verdicts).
 
 Besides **`FAIL`** (which sets exit `1`), verdicts **`ERROR`**, **`SKIP`**, and **`SHAPE_PASS`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` before trusting an all-green exit code.
