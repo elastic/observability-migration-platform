@@ -250,6 +250,11 @@ def _build_flag_map() -> dict[str, set[str]]:
     """Introspect the obs-migrate argparse parser into {subcommand: {flags}}.
 
     Includes a '__global__' entry for the top-level parser's options.
+
+    Assumes a single subparser level: every subcommand's flags are collected
+    directly off its parser (today ``cluster`` etc. use a positional ``action``
+    arg, not nested subparsers). If a leaf command ever gains its own
+    ``add_subparsers``, recurse here or its nested flags will falsely fail.
     """
     from observability_migration.app.cli import _build_parser
 
