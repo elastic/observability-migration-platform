@@ -2829,7 +2829,18 @@ def _grok_label_extraction(label):
     # Triple-quoted ES|QL string so inner double quotes need no escaping. The
     # pattern is ``"<label>":"%{DATA:<label>}\"`` — DATA (non-greedy) is bounded
     # by the trailing ``\"`` which matches the JSON value's closing quote.
-    pattern = f'"{literal}":"%{{DATA:{label}}}\\"'
+    #
+    # The key is anchored to a TOP-LEVEL position: object start (optionally
+    # through the ``{"labels":{...}}`` wrapper) or a preceding comma. An
+    # unanchored first-occurrence match binds a same-named key nested inside
+    # OTel resource attributes instead — ``k8s.cluster.name`` sorts before a
+    # top-level ``name`` and ``service.name`` exists on any OTel-mapped
+    # cluster — so the panel legend (and parity series keys) would carry the
+    # wrong label's value. Nested first keys are always preceded by ``:{``,
+    # which the anchor excludes; nested non-first keys are comma-preceded and
+    # remain theoretically ambiguous, but the known OTel collision shapes
+    # (service.name, host.name, k8s.*.name) are all single-key objects.
+    pattern = f'(?:\\A\\{{(?:"labels":\\{{)?|,)"{literal}":"%{{DATA:{label}}}\\"'
     return f'| GROK _timeseries """{pattern}"""'
 
 
