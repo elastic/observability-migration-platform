@@ -181,9 +181,12 @@ def _gauge_fallback_for_counter_range_func(range_func):
 
 
 # ``rate``/``irate`` are *counter-only* in PromQL — a gauge cannot be rated — so
-# the source asserting one is authoritative proof the metric is a counter. Only
-# positive proof that the target types the field as a gauge (which would make
-# ES|QL ``RATE`` 400) should override that and force the gauge degradation.
+# the source asserting one is authoritative proof the metric is a counter.
+# Live caps typing the field as gauge are treated as a stale/wrong ingest
+# (surfaced as a warning at the call site), NOT as refutation: the telemetry
+# contract locks rate()-ed fields as counters, so degrading on live caps bakes
+# in a translation that hard-fails (400) once the ingest follows the contract.
+# Only an explicit rule-pack ``metric_kinds: gauge`` pin forces the degrade.
 # ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
 # conservative heuristic-driven degradation.
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
@@ -193,20 +196,62 @@ def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver)
     """Whether a counter-style range function must degrade to a gauge analogue.
 
     Degrade when the resolved field is not a counter AND either the source
-    function tolerates gauge misuse (``increase``) or the target positively
-    refutes a counter (the field is present in the live caps but gauge / plain
-    numeric). A source ``rate``/``irate`` over a field the target does not
-    refute keeps its true ``RATE``/``IRATE`` form — the source asserts the
+    function tolerates gauge misuse (``increase``) or the user explicitly
+    pinned the metric as a gauge in the rule pack. A source ``rate``/``irate``
+    otherwise keeps its true ``RATE``/``IRATE`` form — the source asserts the
     field is a counter (``rate`` is counter-only in PromQL) and the telemetry
-    contract seeds such fields as counters."""
+    contract seeds such fields as counters, so live-caps gauge typing is a
+    stale/wrong ingest to be fixed, not a reason to change the translation."""
     if is_counter:
         return False
     if range_func not in {"rate", "irate", "increase"}:
         return False
     if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
-        # Trust the source unless the target refutes the counter typing.
-        return bool(resolver and resolver.refutes_counter(metric))
+        # Trust the source unless the user's rule pack explicitly pins gauge.
+        declared_gauge = getattr(resolver, "declared_gauge", None) if resolver else None
+        return bool(declared_gauge and declared_gauge(metric))
     return True
+
+
+def _target_gauge_disagreement_warning(range_func, metric):
+    """Warning for a counter-only range function kept as RATE/IRATE while the
+    live target currently types the field as gauge. The translation is
+    source-faithful; the panel will fail at runtime until the ingest mapping
+    is corrected (or the user pins the metric as gauge in the rule pack)."""
+    esql_func = AGG_FUNCTION_MAP.get(range_func, range_func.upper())
+    return (
+        f"Source PromQL used {range_func}() on {metric} but the target "
+        f"currently types this field as gauge; kept {esql_func} because "
+        f"{range_func}() is counter-only and contract-faithful ingest types "
+        "this field as a counter. Fix the ingest mapping to mark this field "
+        f"as a counter, or pin metric_kinds {metric}: gauge in the rule pack "
+        "if the gauge typing is intentional."
+    )
+
+
+def resolve_counter_range_translation(range_func, metric, is_counter, resolver, inner_func):
+    """Apply the counter-vs-gauge policy for a counter-style range function.
+
+    Single entry point for every translation path that emits
+    RATE/IRATE/INCREASE (or their gauge analogues), so the degrade decision
+    and its user-facing warnings stay consistent across call sites.
+
+    Returns ``(inner_func, warning, is_counter)``: the ES|QL inner function
+    to emit (the gauge analogue when degrading), an optional warning to
+    surface on the panel, and the effective counter flag (flipped True when
+    a counter-only source function overrides the gauge heuristic)."""
+    if _should_degrade_counter_range_func(range_func, metric, is_counter, resolver):
+        fallback_func, template = _gauge_fallback_for_counter_range_func(range_func)
+        return fallback_func, template.format(metric=metric), is_counter
+    warning = None
+    if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+        # Source rate()/irate() is counter-only; trust it over the gauge
+        # heuristic, but surface the disagreement when live caps refute it.
+        is_counter = True
+        if resolver and resolver.refutes_counter(metric):
+            warning = _target_gauge_disagreement_warning(range_func, metric)
+    return inner_func, warning, is_counter
+
 
 OUTER_AGG_MAP = {
     "sum": "SUM",
@@ -2502,22 +2547,16 @@ def _build_measure_spec(
             return None
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         # ES|QL's RATE / IRATE / INCREASE require a ``counter_*`` typed
-        # field. Some Prometheus counters don't end in ``_total`` (kernel
-        # vmstat / netstat / softnet); Elastic's ``/_prometheus/api/v1/write``
-        # ingest types those as ``gauge`` based on the metric-name
-        # heuristic, and the resulting ES|QL panel hard-fails with
-        # ``first argument of [RATE(...)] must be counter``. Degrade the
-        # query to a gauge-equivalent so the panel still renders honest
-        # numbers and surface a warning -- but only when the source function
-        # tolerates gauge misuse (increase) or the target *proves* gauge; a
-        # bare rate()/irate() over a not-proven-gauge field keeps its true
-        # RATE/IRATE form (the contract seeds those fields as counters).
-        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
-            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
-            warnings.append(warning.format(metric=frag.metric))
-        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
-            # Source rate()/irate() is counter-only; trust it over the gauge heuristic.
-            is_counter = True
+        # field; emitting them against a gauge-typed field hard-fails with
+        # ``first argument of [RATE(...)] must be counter``. The shared
+        # policy in resolve_counter_range_translation decides whether to
+        # degrade to a gauge analogue (warned) or keep the source-faithful
+        # counter form (warned when live caps disagree).
+        esql_inner, counter_warning, is_counter = resolve_counter_range_translation(
+            frag.range_func, frag.metric, is_counter, resolver, esql_inner
+        )
+        if counter_warning:
+            warnings.append(counter_warning)
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
@@ -2542,11 +2581,11 @@ def _build_measure_spec(
         time_filter = rule_pack.ts_time_filter
         bucket_expr = rule_pack.ts_bucket
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
-        if _should_degrade_counter_range_func(frag.range_func, frag.metric, is_counter, resolver):
-            esql_inner, warning = _gauge_fallback_for_counter_range_func(frag.range_func)
-            warnings.append(warning.format(metric=frag.metric))
-        elif not is_counter and frag.range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
-            is_counter = True
+        esql_inner, counter_warning, is_counter = resolve_counter_range_translation(
+            frag.range_func, frag.metric, is_counter, resolver, esql_inner
+        )
+        if counter_warning:
+            warnings.append(counter_warning)
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)

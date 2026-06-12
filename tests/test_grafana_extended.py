@@ -2400,5 +2400,62 @@ class TestCounterSuffixClassification(unittest.TestCase):
         self.assertNotIn("MAX_OVER_TIME", ctx.esql_query)
 
 
+class TestCounterOnlyRangeFuncTrustsSource(unittest.TestCase):
+    """rate()/irate() are counter-only in PromQL, and the telemetry contract
+    locks rate()-ed fields as counters (seed-sample-data seeds them as
+    ``counter_double``). Live field caps typing such a field as gauge are
+    treated as a stale/wrong ingest, not as refutation: the translation keeps
+    RATE/IRATE (with a warning about the disagreement) instead of baking an
+    AVG_OVER_TIME degrade that is guaranteed to 400 once the ingest follows
+    the contract. Only an explicit rule-pack ``metric_kinds: gauge`` pin may
+    force the degradation.
+    """
+
+    EXPR = "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)"
+
+    def _translate(self, expr, rp, resolver):
+        return translate.translate_promql_to_esql(
+            expr,
+            esql_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+
+    def _gauge_caps_resolver(self, rp):
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "http_request_duration_seconds_bucket": {
+                "double": {
+                    "type": "double",
+                    "time_series_metric": "gauge",
+                }
+            }
+        }
+        return resolver
+
+    def test_live_gauge_caps_keep_rate_and_warn(self):
+        rp = rules.RulePackConfig()
+        ctx = self._translate(self.EXPR, rp, self._gauge_caps_resolver(rp))
+        self.assertIn("RATE(http_request_duration_seconds_bucket", ctx.esql_query)
+        self.assertNotIn("AVG_OVER_TIME", ctx.esql_query)
+        self.assertTrue(
+            any("currently types this field as gauge" in w for w in ctx.warnings),
+            f"expected a target-disagreement warning, got: {ctx.warnings}",
+        )
+
+    def test_explicit_rule_pack_gauge_pin_still_degrades(self):
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["http_request_duration_seconds_bucket"] = "gauge"
+        ctx = self._translate(self.EXPR, rp, self._gauge_caps_resolver(rp))
+        self.assertIn("AVG_OVER_TIME(http_request_duration_seconds_bucket", ctx.esql_query)
+        self.assertNotIn("RATE(http_request_duration_seconds_bucket", ctx.esql_query)
+        self.assertTrue(
+            any("rendered as AVG_OVER_TIME" in w for w in ctx.warnings),
+            f"expected the degrade warning, got: {ctx.warnings}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
