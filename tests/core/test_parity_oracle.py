@@ -73,6 +73,18 @@ class NormalizeAndDiffTests(unittest.TestCase):
         states = sorted(dict(k.labels).get("state") for k in out)
         self.assertEqual(states, ["busy", "idle"])
 
+    def test_decode_timeseries_labels_flattens_nested_objects(self):
+        # ``_timeseries`` can carry nested label objects (OTel resource attrs).
+        # They must flatten to dotted paths, not stringified Python dicts, so
+        # keys can align with the translator's flattened label fallback.
+        out = po._decode_timeseries_labels(json.dumps({
+            "__name__": "m",
+            "job": "j",
+            "k8s": {"cluster": {"name": "c1"}},
+            "state": "busy",
+        }))
+        self.assertEqual(out, {"k8s.cluster.name": "c1", "state": "busy"})
+
     def test_normalize_native_matches_translated_series_for_grouped_panel(self):
         # End-to-end symmetry: the same label set on both sides must yield the
         # same SeriesKeys so common-series intersection is non-empty.
@@ -326,6 +338,315 @@ class ExecutionTests(unittest.TestCase):
         # mean(20,20,20) == 20 == translated -> near-zero error, a real pass.
         self.assertLess(result.max_relative_error, 0.05)
         self.assertIn(result.verdict(), {"STRICT_PASS", "FUZZY_PASS"})
+
+    def test_flattened_label_blob_series_align_with_native(self):
+        # Real corpus shape (Node Exporter Full "ARP Entries"): the panel groups
+        # by a label (``device``) absent from the data, so the translated
+        # passthrough's label-extraction fallback flattens the whole
+        # ``_timeseries`` JSON into one opaque string per series
+        # ('__name__:m, instance:host:9100, k8s:cluster:name:c1'). The
+        # comparator must decode that blob back into label pairs - resolving
+        # the colon ambiguity (instance values contain ':') against the label
+        # names observed on the native side - so per-series keys align instead
+        # of producing a false compared_points=0 FAIL.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        series_vals = {"c1": [10.0, 20.0, 30.0, 40.0, 50.0],
+                       "c2": [100.0, 200.0, 300.0, 400.0, 500.0]}
+
+        def native_ts(cluster, host):
+            return json.dumps({"__name__": "node_arp_entries", "instance": f"{host}:9100",
+                               "job": "node", "k8s": {"cluster": {"name": cluster}}})
+
+        def blob(cluster, host):
+            return (f"__name__:node_arp_entries, instance:{host}:9100, "
+                    f"job:node, k8s:cluster:name:{cluster}")
+
+        native_rows = []
+        translated_rows = []
+        for cluster, host in (("c1", "hosta"), ("c2", "hostb")):
+            for t, v in zip(stamps, series_vals[cluster]):
+                native_rows.append([v, t, native_ts(cluster, host)])
+                translated_rows.append([t, v, blob(cluster, host)])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": native_rows}
+        translated = {"columns": [{"name": "step", "type": "date"}, {"name": "value", "type": "double"},
+                                  {"name": "device", "type": "keyword"}],
+                      "values": translated_rows}
+        esql = ('PROMQL index=metrics-* step=5m value=(node_arp_entries)\n'
+                '| EVAL _ts = COALESCE(_timeseries, "")\n'
+                '| KEEP step, value, device')
+
+        # The translated query is itself a PROMQL passthrough, so the shared
+        # _fake_request (which routes on the PROMQL prefix) cannot tell the two
+        # sides apart; route on the exact translated text instead.
+        def req(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            return translated if q == esql else native
+        result = po.compare_panel(req, source_query="node_arp_entries",
+                                  translated_query=esql,
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.common_series, 2)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertEqual(result.max_relative_error, 0.0)
+        self.assertTrue(any("label fallback blob" in n for n in result.notes),
+                        f"expected a blob-decode note, got: {result.notes}")
+
+    def test_multi_query_panel_is_skip_with_clear_reason(self):
+        # Multi-target panels join their PromQL sub-queries with " ||| "
+        # (panels.py) and translate to ONE merged ES|QL; sub-queries can be
+        # reordered or dropped, so there is no per-target mapping the oracle
+        # could compare against. Feeding the joined text to native PROMQL
+        # produces a cryptic parse error; the verdict must be a SKIP that
+        # says exactly why the panel is not verifiable.
+        req = self._fake_request({}, {})
+        result = po.compare_panel(
+            req,
+            source_query='sum(rate(a_total[5m])) ||| sum(rate(b_total[5m])) ||| up',
+            translated_query="FROM metrics-* | STATS q0 = SUM(a_total), q1 = SUM(b_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("multi-query panel (3 sub-queries", result.skipped_reason)
+        # No queries should have been sent to the cluster at all.
+        self.assertEqual(req.calls, [])
+
+    def test_both_sides_empty_is_skip_with_reason(self):
+        # Neither the oracle nor the translated query returned any data:
+        # nothing was compared, so FAIL (which implies a translation defect)
+        # would be dishonest. SKIP and say why.
+        empty = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                 "values": []}
+        req = self._fake_request(empty, {"columns": [], "values": []})
+        result = po.compare_panel(req, source_query="up",
+                                  translated_query="TS metrics-* | STATS v = AVG(up) BY time_bucket = TBUCKET(5m)",
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("no data on either side", result.skipped_reason)
+
+    def test_translated_empty_native_nonempty_fail_carries_reason(self):
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10)]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[v, t] for v, t in zip((1.0, 2.0, 3.0), stamps)]}
+        req = self._fake_request(native, {"columns": [], "values": []})
+        result = po.compare_panel(req, source_query="m",
+                                  translated_query="TS metrics-* | STATS v = AVG(m) BY time_bucket = TBUCKET(5m)",
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "FAIL")
+        self.assertIn("translated query returned no series", result.fail_reason)
+
+    def test_unalignable_series_keys_fail_carries_reason(self):
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10)]
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "zone", "type": "keyword"}],
+                  "values": [[v, t, z] for z in ("a", "b") for v, t in zip((1.0, 2.0, 3.0), stamps)]}
+        translated = {"columns": [{"name": "computed_value", "type": "double"},
+                                  {"name": "time_bucket", "type": "date"},
+                                  {"name": "shard", "type": "keyword"}],
+                      "values": [[v, t, s] for s in ("x", "y") for v, t in zip((9.0, 8.0, 7.0), stamps)]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(req, source_query="m",
+                                  translated_query="TS metrics-* | STATS computed_value = AVG(m) BY time_bucket = TBUCKET(5m), shard",
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "FAIL")
+        self.assertIn("series keys did not align", result.fail_reason)
+        self.assertIn("native 2", result.fail_reason)
+        self.assertIn("translated 2", result.fail_reason)
+
+    def test_row_constant_translation_is_skip(self):
+        # A constant PromQL panel ("2") translates to ``ROW constant_value = 2.0``:
+        # a single row with no time series. Point-wise comparison is meaningless;
+        # this must SKIP like other single-value reductions, not FAIL.
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"}],
+                  "values": [[2.0, "2026-01-01T00:00:00Z"], [2.0, "2026-01-01T00:05:00Z"]]}
+        translated = {"columns": [{"name": "constant_value", "type": "double"}], "values": [[2.0]]}
+        req = self._fake_request(native, translated)
+        result = po.compare_panel(req, source_query="2",
+                                  translated_query="ROW constant_value = 2.0",
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("single value", result.skipped_reason)
+
+    def test_label_names_align_by_value_sets_when_keys_disagree(self):
+        # Real corpus shape (Node Exporter Full "Systemd Sockets"): the
+        # translated legend extraction names its column after the panel label
+        # (``name``) but the regex grabbed values that natively live under
+        # ``k8s.cluster.name``. Same series, same values, different label
+        # name -> 0 common keys -> false FAIL. When every translated label
+        # value set matches exactly one native label's value set, rename and
+        # compare per-series.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        series_vals = {"c1": [10.0, 20.0, 30.0, 40.0, 50.0],
+                       "c2": [100.0, 200.0, 300.0, 400.0, 500.0]}
+
+        def native_ts(cluster):
+            return json.dumps({"__name__": "m", "job": "node",
+                               "k8s": {"cluster": {"name": cluster}}})
+
+        native_rows = []
+        translated_rows = []
+        for cluster in ("c1", "c2"):
+            for t, v in zip(stamps, series_vals[cluster]):
+                native_rows.append([v, t, native_ts(cluster)])
+                translated_rows.append([t, v, cluster])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": native_rows}
+        translated = {"columns": [{"name": "step", "type": "date"}, {"name": "value", "type": "double"},
+                                  {"name": "name", "type": "keyword"}],
+                      "values": translated_rows}
+        esql = ('PROMQL index=metrics-* step=5m value=(m)\n'
+                '| EVAL _ts = COALESCE(_timeseries, "")\n'
+                '| KEEP step, value, name')
+
+        def req(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            return translated if q == esql else native
+
+        result = po.compare_panel(req, source_query="m", translated_query=esql,
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.common_series, 2)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertTrue(any("label name" in n for n in result.notes),
+                        f"expected a label-name alignment note, got: {result.notes}")
+
+    def test_flattened_blob_without_name_prefix_aligns(self):
+        # Real corpus shape (Node Exporter Full "File Nodes Free"): the
+        # _timeseries JSON for these series does not start with __name__
+        # (e.g. '{"device":"sda","instance":...}'), so the flatten fallback
+        # blob is 'device:sda, instance:..., job:...'. Blob detection must not
+        # depend on a __name__ prefix; any all-pairs blob whose anchors match
+        # native label names decodes.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        series_vals = {"sda": [10.0, 20.0, 30.0, 40.0, 50.0],
+                       "sdb": [100.0, 200.0, 300.0, 400.0, 500.0]}
+
+        def native_ts(device):
+            return json.dumps({"device": device, "instance": "host:9100", "job": "node"})
+
+        def blob(device):
+            return f"device:{device}, instance:host:9100, job:node"
+
+        native_rows = []
+        translated_rows = []
+        for device in ("sda", "sdb"):
+            for t, v in zip(stamps, series_vals[device]):
+                native_rows.append([v, t, native_ts(device)])
+                translated_rows.append([t, v, blob(device)])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": native_rows}
+        translated = {"columns": [{"name": "step", "type": "date"}, {"name": "value", "type": "double"},
+                                  {"name": "mountpoint", "type": "keyword"}],
+                      "values": translated_rows}
+        esql = ('PROMQL index=metrics-* step=5m value=(node_filesystem_files_free)\n'
+                '| EVAL _ts = COALESCE(_timeseries, "")\n'
+                '| KEEP step, value, mountpoint')
+
+        def req(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            return translated if q == esql else native
+
+        result = po.compare_panel(req, source_query="node_filesystem_files_free",
+                                  translated_query=esql,
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.common_series, 2)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+
+    def test_translated_label_matching_scrubbed_native_label_aligns(self):
+        # Real corpus shape (Node Exporter Full "Systemd Sockets"): the legend
+        # extraction regex (.*"name":"(...)".*) greedily matches the LAST
+        # "name": occurrence in the _timeseries JSON - service.name - so the
+        # translated label carries values of a native label the comparator
+        # normally scrubs (service.name -> job). The values still map 1:1 to
+        # series, so the comparator must key BOTH sides by that pre-scrub
+        # label and compare per-series instead of emitting a false
+        # "series keys did not align" FAIL.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+        series_vals = {"backend": [10.0, 20.0, 30.0, 40.0, 50.0],
+                       "frontend": [100.0, 200.0, 300.0, 400.0, 500.0]}
+        clusters = {"backend": "c1", "frontend": "c2"}
+
+        def native_ts(svc):
+            return json.dumps({"__name__": "m", "job": "node",
+                               "k8s": {"cluster": {"name": clusters[svc]}},
+                               "service": {"name": svc}})
+
+        native_rows = []
+        translated_rows = []
+        for svc in ("backend", "frontend"):
+            for t, v in zip(stamps, series_vals[svc]):
+                native_rows.append([v, t, native_ts(svc)])
+                translated_rows.append([t, v, svc])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": native_rows}
+        translated = {"columns": [{"name": "step", "type": "date"}, {"name": "value", "type": "double"},
+                                  {"name": "name", "type": "keyword"}],
+                      "values": translated_rows}
+        esql = ('PROMQL index=metrics-* step=5m value=(m)\n'
+                '| EVAL _ts = COALESCE(_timeseries, "")\n'
+                '| KEEP step, value, name')
+
+        def req(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            return translated if q == esql else native
+
+        result = po.compare_panel(req, source_query="m", translated_query=esql,
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.common_series, 2)
+        self.assertEqual(result.verdict(), "STRICT_PASS")
+        self.assertTrue(any("scrub" in n for n in result.notes),
+                        f"expected a scrubbed-label alignment note, got: {result.notes}")
+
+    def test_static_legend_collapse_on_multi_series_data_is_skip(self):
+        # Real corpus shape (Node Exporter Full "Memory Bounce"): the panel has
+        # a static legend, so the translated query emits a constant label and
+        # the response collapses every underlying series into one interleaved
+        # stream. On multi-series seeded data (template variables resolved to
+        # match-all) per-series comparison is impossible; reporting a 0.889
+        # "max relative error" against a sum-projection is a comparator
+        # artifact, not a measured translation error -> SKIP and say why.
+        stamps = [f"2026-01-01T00:{m:02d}:00Z" for m in (0, 5, 10, 15, 20)]
+
+        def native_ts(host):
+            return json.dumps({"__name__": "node_memory_Bounce_bytes", "instance": host,
+                               "k8s": {"cluster": {"name": host}}})
+
+        native_rows = []
+        translated_rows = []
+        for host, base in (("a", 10.0), ("b", 100.0), ("c", 1000.0)):
+            for i, t in enumerate(stamps):
+                native_rows.append([base + i, t, native_ts(host)])
+                translated_rows.append([t, base + i, "Bounce - Memory used"])
+        native = {"columns": [{"name": "value", "type": "double"}, {"name": "step", "type": "date"},
+                              {"name": "_timeseries", "type": "keyword"}],
+                  "values": native_rows}
+        translated = {"columns": [{"name": "step", "type": "date"}, {"name": "value", "type": "double"},
+                                  {"name": "label", "type": "keyword"}],
+                      "values": translated_rows}
+        esql = ('PROMQL index=metrics-* step=5m value=(node_memory_Bounce_bytes)\n'
+                '| EVAL label = "Bounce - Memory used"\n'
+                '| KEEP step, value, label')
+
+        def req(method, path, body=None, content_type="application/json"):
+            q = body.get("query", "") if isinstance(body, dict) else ""
+            return translated if q == esql else native
+
+        result = po.compare_panel(req, source_query="node_memory_Bounce_bytes",
+                                  translated_query=esql,
+                                  index="metrics-*", step=300,
+                                  start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
+        self.assertEqual(result.verdict(), "SKIP")
+        self.assertIn("static legend", result.skipped_reason)
 
     def test_compare_panel_native_unparseable_is_skip(self):
         req = self._fake_request({}, {}, native_error="could not parse")

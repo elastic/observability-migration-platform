@@ -764,8 +764,12 @@ class CompareSubcommandTests(unittest.TestCase):
                 self.compared_points = 3
                 self.notes = []
                 self.skipped_reason = ""
+                self.fail_reason = ""
                 self.translated_error = ""
                 self.native_error = ""
+                self.native_series = 1
+                self.translated_series = 1
+                self.common_series = 1
             def verdict(self):
                 return self._v
 
@@ -814,8 +818,12 @@ class CompareSubcommandTests(unittest.TestCase):
             compared_points = 3
             notes: list = []
             skipped_reason = ""
+            fail_reason = ""
             translated_error = ""
             native_error = ""
+            native_series = 1
+            translated_series = 1
+            common_series = 1
             def verdict(self):
                 return "FAIL"
 
@@ -833,6 +841,48 @@ class CompareSubcommandTests(unittest.TestCase):
                 cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
                           "--report-out", str(Path(tmp) / "comparison_report.json")])
             self.assertEqual(ctx.exception.code, 1)
+
+    def test_compare_fail_row_carries_diagnostics(self):
+        # A FAIL with an empty reason and no series counts is undebuggable;
+        # the report must carry the comparator's fail_reason, the
+        # native/translated/common series counts, and the notes.
+        from observability_migration.app import cli
+
+        class V:
+            max_relative_error = 0.0
+            compared_points = 0
+            notes = ["native re-aggregated 9->1 series (sum) to match translated label subset"]
+            skipped_reason = ""
+            fail_reason = "series keys did not align (native 9, translated 1 series)"
+            translated_error = ""
+            native_error = ""
+            native_series = 9
+            translated_series = 1
+            common_series = 0
+            def verdict(self):
+                return "FAIL"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "x", "translated_query": "TS metrics-*", "semantic_gate": "Red"},
+            ])
+            out = Path(tmp) / "comparison_report.json"
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V()),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test", "--api-key", "k",
+                          "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 1)
+            row = json.loads(out.read_text(encoding="utf-8"))["panels"][0]
+            self.assertEqual(row["reason"], "series keys did not align (native 9, translated 1 series)")
+            self.assertEqual(row["native_series"], 9)
+            self.assertEqual(row["translated_series"], 1)
+            self.assertEqual(row["common_series"], 0)
+            self.assertEqual(row["notes"], V.notes)
 
     def test_compare_invalid_packets_json_exits_2(self):
         from observability_migration.app import cli

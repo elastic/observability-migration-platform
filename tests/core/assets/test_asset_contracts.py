@@ -76,6 +76,47 @@ class TestQueryIR(unittest.TestCase):
         self.assertEqual(qir.output_shape, "time_series")
         self.assertEqual(len(qir.semantic_losses), 1)
 
+    def test_gauge_fallback_warning_is_semantic_loss(self):
+        # The rate()/irate()/increase() gauge degrade rewrites the panel to a
+        # different function family (AVG_OVER_TIME / MAX_OVER_TIME), changing
+        # the value scale of the result. That is a semantic loss and must
+        # surface in semantic_losses, not just warnings.
+        class FakeContext:
+            query_language = "promql"
+            promql_expr = "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)"
+            clean_expr = ""
+            panel_type = "heatmap"
+            datasource_type = "prometheus"
+            datasource_uid = ""
+            datasource_name = ""
+            metric_name = "http_request_duration_seconds_bucket"
+            inner_func = "rate"
+            range_window = "5m"
+            outer_agg = "sum"
+            group_labels = ["le"]
+            label_filters = []
+            index = "metrics-*"
+            esql_query = ""
+            output_metric_field = ""
+            output_group_fields = []
+            source_type = ""
+            metadata = {}
+            warnings = [
+                "Source PromQL used rate() but http_request_duration_seconds_bucket "
+                "is typed as gauge in the target index; rendered as AVG_OVER_TIME "
+                "instead. Fix the ingest mapping to mark this field as a counter "
+                "to get a true rate.",
+                "Source PromQL used increase() but node_vmstat_oom_kill is typed "
+                "as gauge in the target index; rendered as MAX_OVER_TIME "
+                "(cumulative ceiling) instead. Fix the ingest mapping to mark "
+                "this field as a counter to recover the true increase over the "
+                "window.",
+            ]
+            fragment = None
+
+        qir = build_query_ir(FakeContext())
+        self.assertEqual(qir.semantic_losses, qir.warnings)
+
     def test_infer_output_shape_table(self):
         self.assertEqual(infer_output_shape("table", [], "promql"), "table")
 

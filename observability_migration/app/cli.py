@@ -1218,7 +1218,9 @@ def _run_compare(args: Any) -> int:
                 "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
                 "mode": "native_oracle", "verdict": cmp_.verdict(),
                 "max_relative_error": cmp_.max_relative_error, "compared_points": cmp_.compared_points,
-                "reason": cmp_.skipped_reason or cmp_.translated_error or cmp_.native_error or "",
+                "native_series": cmp_.native_series, "translated_series": cmp_.translated_series,
+                "common_series": cmp_.common_series, "notes": list(cmp_.notes),
+                "reason": cmp_.skipped_reason or cmp_.fail_reason or cmp_.translated_error or cmp_.native_error or "",
                 "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
             })
         else:
@@ -1251,10 +1253,18 @@ def _infer_index(esql: str) -> str:
 
 def _render_compare_md(report: dict[str, Any]) -> str:
     lines = ["# Side-by-side comparison", "", f"Oracle available: {report['oracle_available']}", "",
-             "| Dashboard | Panel | Mode | Verdict | Max rel err | Reason |", "|---|---|---|---|---|---|"]
+             "| Dashboard | Panel | Mode | Verdict | Max rel err | Series (nat/tr/common) | Reason |",
+             "|---|---|---|---|---|---|---|"]
     for r in report["panels"]:
-        err = f"{r.get('max_relative_error', 0):.4f}" if r.get("mode") == "native_oracle" else "-"
-        lines.append(f"| {r.get('dashboard','')} | {r.get('panel','')} | {r.get('mode','')} | {r.get('verdict','')} | {err} | {r.get('reason','')} |")
+        if r.get("mode") == "native_oracle":
+            err = f"{r.get('max_relative_error', 0):.4f}"
+            series = f"{r.get('native_series', '-')}/{r.get('translated_series', '-')}/{r.get('common_series', '-')}"
+        else:
+            err = series = "-"
+        lines.append(
+            f"| {r.get('dashboard','')} | {r.get('panel','')} | {r.get('mode','')} "
+            f"| {r.get('verdict','')} | {err} | {series} | {r.get('reason','')} |"
+        )
     return "\n".join(lines) + "\n"
 
 

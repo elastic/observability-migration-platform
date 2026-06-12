@@ -758,21 +758,30 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("node_filesystem_size_bytes", translated.esql_query)
         self.assertIn("Dropped label filters with incompatible target field types during migration", translated.warnings)
 
-    def test_total_suffix_does_not_force_rate_when_live_field_is_plain_numeric(self):
-        """Live field capabilities should prevent RATE() on `_total` metrics
-        when the target field is plain numeric rather than a TSDS counter."""
+    def test_total_suffix_keeps_rate_and_warns_when_live_field_is_plain_numeric(self):
+        """Counter-only rate() wins over live caps: the telemetry contract
+        locks rate()-ed fields as counters (seed-sample-data ingests them as
+        counter_double), so degrading to AVG_OVER_TIME here bakes in a
+        translation that hard-fails once the ingest follows the contract.
+        Keep RATE and surface the live-caps disagreement as a warning that
+        points at the ingest fix (or the explicit rule-pack gauge pin)."""
         self.seed_field_caps({
             "node_cpu_guest_seconds_total": {"float": {"aggregatable": True, "searchable": True}},
         })
 
         translated = self.translate("sum(rate(node_cpu_guest_seconds_total[5m]))")
 
-        self.assertNotIn("RATE(node_cpu_guest_seconds_total", translated.esql_query)
-        self.assertIn("AVG_OVER_TIME(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn("RATE(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertNotIn("AVG_OVER_TIME(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertTrue(
+            any("currently types this field as gauge" in w for w in translated.warnings),
+            f"expected a target-disagreement warning, got: {translated.warnings}",
+        )
 
-    def test_binary_ratio_does_not_force_irate_for_plain_numeric_total_operand(self):
-        """Counter/gauge decisions must apply per operand in binary formulas,
-        not only in the simple range-aggregate path."""
+    def test_binary_ratio_keeps_irate_and_warns_per_operand(self):
+        """Counter/gauge decisions must apply per operand in binary formulas:
+        both operands keep their source-faithful IRATE, and the live-caps
+        disagreement warning fires only for the operand the target refutes."""
         self.seed_field_caps({
             "node_cpu_guest_seconds_total": {"float": {"aggregatable": True, "searchable": True}},
             "node_cpu_seconds_total": {"double": {"aggregatable": True, "searchable": True, "time_series_metric": "counter"}},
@@ -789,9 +798,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             '/ on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance="$node",job="$job"}[1m])))'
         )
 
-        self.assertNotIn("IRATE(node_cpu_guest_seconds_total", translated.esql_query)
-        self.assertIn("AVG_OVER_TIME(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn("IRATE(node_cpu_guest_seconds_total", translated.esql_query)
         self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
+        self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
+        disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
+        self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")
+        self.assertIn("node_cpu_guest_seconds_total", disagreements[0])
 
     def test_conflicting_group_field_is_dropped_when_target_wildcard_cannot_group_it(self):
         """A broad metrics-* data view can contain a label in one stream and a
@@ -1308,21 +1320,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         for label in ("method", "path", "status"):
             self.assertIn(label, joined_stats)
 
-    def test_rate_on_gauge_typed_field_degrades_to_gauge_equivalent(self):
+    def test_rate_on_gauge_typed_field_keeps_irate_and_warns(self):
         """Some Prometheus counters don't end in ``_total`` (kernel vmstat,
-        netstat, etc.). Elastic's ``/_prometheus/api/v1/write`` ingest
-        types them as ``gauge`` based on the name suffix heuristic. If the
-        translator emits ``RATE(X, 5m)`` against such a gauge-typed field,
-        ES|QL rejects with ``first argument of [RATE(...)] must be counter``
-        and the panel hard-fails in Kibana.
+        netstat, etc.) and a stale or heuristic ingest can type them as
+        ``gauge`` in live field caps. rate()/irate() are counter-only in
+        PromQL, and the telemetry contract locks rate()-ed fields as
+        counters (seed-sample-data ingests them as ``counter_double``), so
+        degrading to AVG_OVER_TIME on live caps bakes in a translation that
+        hard-fails once the ingest follows the contract - and silently
+        changes the panel's value scale meanwhile.
 
-        When the source PromQL asks for a counter-style range function
-        (``rate``/``irate``/``increase``) but the resolved field is typed
-        ``gauge``, degrade to a gauge equivalent so the panel still
-        renders something honest, and warn loudly.
-
-        Surfaced by validating the canonical Node Exporter Full dashboard
-        (id 1860) end-to-end against the parity-rig data.
+        Keep the source-faithful IRATE and surface the live-caps
+        disagreement as a warning pointing at the ingest fix; an explicit
+        rule-pack ``metric_kinds: gauge`` pin remains the escape hatch for
+        targets where the gauge typing is intentional (see
+        TestCounterOnlyRangeFuncTrustsSource in test_grafana_extended).
         """
         self.seed_field_caps({
             "node_vmstat_pgpgin": {
@@ -1338,21 +1350,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate("irate(node_vmstat_pgpgin[5m])")
         esql = translated.esql_query
 
-        # No bare RATE/IRATE/INCREASE call on the gauge-typed field.
-        self.assertNotIn("IRATE(node_vmstat_pgpgin", esql)
-        self.assertNotIn("RATE(node_vmstat_pgpgin", esql)
-        self.assertNotIn("INCREASE(node_vmstat_pgpgin", esql)
+        self.assertIn("IRATE(node_vmstat_pgpgin", esql)
+        self.assertNotIn("AVG_OVER_TIME(node_vmstat_pgpgin", esql)
 
-        # The query must still reference the metric (we degraded, not
-        # dropped) and produce a valid ES|QL pipeline.
-        self.assertIn("node_vmstat_pgpgin", esql)
-
-        # A loud warning explains the degradation.
-        warnings = " ".join(translated.warnings or [])
-        self.assertRegex(
-            warnings,
-            r"(?i)(counter[- ]typed|gauge[- ]typed|degraded|rate.*gauge|"
-            r"counter metric|not a counter)",
+        # A loud warning explains the source-vs-target disagreement.
+        self.assertTrue(
+            any("currently types this field as gauge" in w for w in translated.warnings),
+            f"expected a target-disagreement warning, got: {translated.warnings}",
         )
 
     def test_rate_on_suffixless_counter_emits_rate_when_target_unknown(self):
@@ -1376,10 +1380,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("IRATE(node_netstat_Icmp_InErrors", esql)
         self.assertNotIn("AVG_OVER_TIME(node_netstat_Icmp_InErrors", esql)
 
-    def test_rate_still_degrades_when_target_proves_gauge(self):
-        """The fix must NOT regress honest degradation: when the live target
-        explicitly types the field as gauge, emitting RATE would 400 in Kibana,
-        so degrade to AVG_OVER_TIME regardless of the source rate()."""
+    def test_rate_still_degrades_when_rule_pack_pins_gauge(self):
+        """Honest degradation is preserved behind an explicit, user-asserted
+        signal: a rule-pack ``metric_kinds: gauge`` pin degrades rate() to
+        AVG_OVER_TIME (with the loud "rendered as" warning). Live caps alone
+        no longer degrade - they can be stale and contradict the telemetry
+        contract's counter lock (see
+        test_rate_on_gauge_typed_field_keeps_irate_and_warns)."""
+        self.rule_pack.metric_kinds["node_vmstat_oom_kill"] = "gauge"
         self.seed_field_caps({
             "node_vmstat_oom_kill": {
                 "double": {
@@ -1394,6 +1402,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         esql = translated.esql_query
         self.assertNotIn("RATE(node_vmstat_oom_kill", esql)
         self.assertIn("AVG_OVER_TIME(node_vmstat_oom_kill", esql)
+        self.assertTrue(
+            any("rendered as AVG_OVER_TIME" in w for w in translated.warnings),
+            f"expected the degrade warning, got: {translated.warnings}",
+        )
 
     def test_increase_on_suffixless_metric_still_degrades_when_target_unknown(self):
         """increase() is NOT forced to counter the way rate()/irate() are: it can

@@ -59,6 +59,7 @@ class Comparison:
     esql: str = ""
     feasibility: str = ""
     skipped_reason: str = ""
+    fail_reason: str = ""
     translated_error: str = ""
     native_error: str = ""
     translated_series: int = 0
@@ -87,8 +88,9 @@ class Comparison:
 
 def _drop_constants(
     raw: list[tuple[dict[str, str], list[tuple[float, float]]]],
+    keep: frozenset[str] = frozenset(),
 ) -> dict[SeriesKey, list[tuple[float, float]]]:
-    raw = [({k: v for k, v in d.items() if k not in PROMETHEUS_ONLY_LABELS}, vs) for d, vs in raw]
+    raw = [({k: v for k, v in d.items() if k not in PROMETHEUS_ONLY_LABELS or k in keep}, vs) for d, vs in raw]
     if not raw:
         return {}
     all_keys = set.intersection(*(set(d.keys()) for d, _ in raw)) if raw else set()
@@ -100,7 +102,7 @@ def _drop_constants(
     return out
 
 
-def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
+def normalize_native(data: dict, keep_labels: frozenset[str] = frozenset()) -> dict[SeriesKey, list[tuple[float, float]]]:
     """Parse native PROMQL output: columns value/step/<labels>.
 
     Native PROMQL may return the series labels either as broken-out columns or
@@ -108,6 +110,10 @@ def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
     decoded -- ignoring ``_timeseries`` collapses every grouped series into one
     empty-key series, which can never intersect the translated side (which does
     decode it), turning correct grouped panels into false FAILs.
+
+    ``keep_labels`` exempts specific canonical label names from the
+    PROMETHEUS_ONLY scrub (used when the translated side's legend extraction
+    keys series by a normally-scrubbed label such as ``service.name``).
     """
     columns = [c["name"] for c in data.get("columns", [])]
     rows = data.get("values", [])
@@ -137,9 +143,9 @@ def normalize_native(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
             continue
         labels = {name: str(row[idx]) for idx, name in label_idxs if row[idx] is not None}
         if timeseries_idx is not None:
-            labels.update(_decode_timeseries_labels(row[timeseries_idx]))
+            labels.update(_decode_timeseries_labels(row[timeseries_idx], keep=keep_labels))
         bucket.setdefault(tuple(sorted(labels.items())), []).append((t, v))
-    return _drop_constants([(dict(k), v) for k, v in bucket.items()])
+    return _drop_constants([(dict(k), v) for k, v in bucket.items()], keep=keep_labels)
 
 
 def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]]]:
@@ -212,11 +218,29 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
     return _drop_constants([(dict(k), v) for k, v in bucket.items()])
 
 
-def _decode_timeseries_labels(raw) -> dict[str, str]:
+def _flatten_label_payload(labels: dict, prefix: str = "") -> dict[str, str]:
+    """Flatten nested label objects to dotted paths (``k8s.cluster.name``).
+
+    ``_timeseries`` cells can carry nested OTel resource attributes; dotted
+    paths keep them comparable with broken-out columns and with the
+    translator's flattened label fallback (see ``_decode_label_blob``)."""
+    out: dict[str, str] = {}
+    for name, value in (labels or {}).items():
+        path = f"{prefix}.{name}" if prefix else str(name)
+        if isinstance(value, dict):
+            out.update(_flatten_label_payload(value, path))
+        elif value is not None:
+            out[path] = str(value)
+    return out
+
+
+def _decode_timeseries_labels(raw, keep: frozenset[str] = frozenset()) -> dict[str, str]:
     """Extract comparable series labels from a TS ``_timeseries`` JSON cell.
 
-    Canonicalizes OTel field names back to Prometheus names and scrubs the
-    auto-attached PROMETHEUS_ONLY_LABELS so keys align with the native side.
+    Flattens nested label objects to dotted paths, canonicalizes OTel field
+    names back to Prometheus names and scrubs the auto-attached
+    PROMETHEUS_ONLY_LABELS so keys align with the native side. Canonical names
+    in ``keep`` are exempt from the scrub.
     """
     if not raw:
         return {}
@@ -226,12 +250,253 @@ def _decode_timeseries_labels(raw) -> dict[str, str]:
         return {}
     labels = payload.get("labels", payload) if isinstance(payload, dict) else {}
     out: dict[str, str] = {}
-    for name, value in (labels or {}).items():
-        canon = _canonical_label(str(name))
-        if canon in PROMETHEUS_ONLY_LABELS or value is None:
+    for name, value in _flatten_label_payload(labels).items():
+        canon = _canonical_label(name)
+        if canon in PROMETHEUS_ONLY_LABELS and canon not in keep:
             continue
-        out[canon] = str(value)
+        out[canon] = value
     return out
+
+
+# A flattened ``_timeseries`` blob produced by the translator's label-extraction
+# fallback usually starts with the metric name pair (``__name__`` sorts first),
+# but some series omit ``__name__`` from ``_timeseries`` entirely.
+_BLOB_SIGNATURE = "__name__:"
+
+
+def _looks_like_label_blob(value: str) -> bool:
+    """Heuristic for the flatten-fallback blob: ``name:value, name:value, ...``.
+
+    Either the canonical ``__name__:`` prefix, or a multi-pair shape where
+    every comma-separated part carries a colon. Decoding additionally requires
+    an anchor match against native label names (see ``_decode_label_blob``),
+    so a colon-bearing real label value cannot be misread as a blob."""
+    if value.startswith(_BLOB_SIGNATURE):
+        return True
+    if ", " not in value:
+        return False
+    return all(":" in part for part in value.split(", "))
+
+
+def _flattened_label_names(raw: dict) -> set[str]:
+    """All (dotted, pre-canonicalization) label names a native response carries.
+
+    Used to resolve the colon ambiguity when decoding a flattened label blob:
+    ``instance:host:9100`` is the label ``instance`` with a colon-bearing
+    value, while ``k8s:cluster:name:c1`` is the nested path
+    ``k8s.cluster.name`` - only the names observed on the native side can
+    tell the two apart."""
+    names: set[str] = set()
+    columns = [c["name"] for c in (raw or {}).get("columns", [])]
+    ts_idx = None
+    for i, name in enumerate(columns):
+        if name == "_timeseries":
+            ts_idx = i
+        elif name not in {"value", "step"} and not name.endswith("_value"):
+            names.add(name)
+    if ts_idx is not None:
+        for row in (raw or {}).get("values", []):
+            cell = row[ts_idx]
+            if not cell:
+                continue
+            try:
+                payload = json.loads(cell) if isinstance(cell, str) else cell
+            except (TypeError, ValueError):
+                continue
+            labels = payload.get("labels", payload) if isinstance(payload, dict) else {}
+            names.update(_flatten_label_payload(labels).keys())
+    return names
+
+
+def _decode_label_blob(blob: str, label_names: set[str]) -> dict[str, str] | None:
+    """Decode a flattened ``_timeseries`` blob back into label pairs.
+
+    The translator's fallback strips ``{}"`` from the ``_timeseries`` JSON and
+    spaces the commas: ``{"a":"b","k8s":{"cluster":{"name":"x"}}}`` becomes
+    ``a:b, k8s:cluster:name:x``. Known native label names (colon-joined for
+    nested paths) anchor each item; unmatched items fall back to splitting on
+    the first colon. Returns None when the text does not look like a blob, or
+    when no item is anchored by a native label name (a colon-bearing real
+    label value must not be misread as a blob)."""
+    if not _looks_like_label_blob(blob):
+        return None
+    anchors = sorted((name.replace(".", ":") for name in label_names), key=len, reverse=True)
+    decoded: dict[str, str] = {}
+    anchored = 0
+    for part in blob.split(", "):
+        if ":" not in part:
+            return None
+        name = value = None
+        for anchor in anchors:
+            if part.startswith(anchor + ":"):
+                name = anchor.replace(":", ".")
+                value = part[len(anchor) + 1:]
+                anchored += 1
+                break
+        if name is None:
+            name, _, value = part.partition(":")
+        decoded[name] = value
+    if not anchored and not blob.startswith(_BLOB_SIGNATURE):
+        return None
+    return decoded
+
+
+def _align_blob_label_keys(
+    translated: dict[SeriesKey, list[tuple[float, float]]],
+    native_raw: dict,
+) -> tuple[dict[SeriesKey, list[tuple[float, float]]], bool]:
+    """Re-key translated series whose label values are flattened blobs.
+
+    When a panel's grouping label is absent from the data, the translated
+    query's label-extraction fallback emits the whole flattened
+    ``_timeseries`` JSON as the group value, so its series keys can never
+    intersect the native side's decoded labels (a false compared_points=0
+    FAIL). Decode the blob back into real label pairs - canonicalized and
+    scrubbed like any other label set - so per-series comparison works.
+    Returns ``(series, decoded_any)``."""
+    if not any(
+        _looks_like_label_blob(value)
+        for key in translated
+        for _, value in key.labels
+    ):
+        return translated, False
+    label_names = _flattened_label_names(native_raw)
+    rebuilt: list[tuple[dict[str, str], list[tuple[float, float]]]] = []
+    decoded_any = False
+    for key, values in translated.items():
+        labels: dict[str, str] = {}
+        for name, value in key.labels:
+            decoded = _decode_label_blob(value, label_names) if _looks_like_label_blob(value) else None
+            if decoded is None:
+                labels[name] = value
+                continue
+            decoded_any = True
+            for blob_name, blob_value in decoded.items():
+                canon = _canonical_label(blob_name)
+                if canon not in PROMETHEUS_ONLY_LABELS:
+                    labels[canon] = blob_value
+        rebuilt.append((labels, values))
+    if not decoded_any:
+        return translated, False
+    return _drop_constants(rebuilt), True
+
+
+def _label_values_by_name(series: dict[SeriesKey, list[tuple[float, float]]]) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for key in series:
+        for name, value in key.labels:
+            out.setdefault(name, set()).add(value)
+    return out
+
+
+def _rename_labels(
+    series: dict[SeriesKey, list[tuple[float, float]]],
+    renames: dict[str, str],
+) -> dict[SeriesKey, list[tuple[float, float]]]:
+    rebuilt: dict[SeriesKey, list[tuple[float, float]]] = {}
+    for key, values in series.items():
+        labels = tuple(sorted((renames.get(n, n), v) for n, v in key.labels))
+        rebuilt[SeriesKey(labels)] = values
+    return rebuilt
+
+
+def _align_label_names_by_values(
+    native: dict[SeriesKey, list[tuple[float, float]]],
+    translated: dict[SeriesKey, list[tuple[float, float]]],
+) -> tuple[dict[SeriesKey, list[tuple[float, float]]], dict[str, str]]:
+    """Rename translated label names whose value sets exactly match one native label's.
+
+    The translated legend extraction names its output column after the panel's
+    label (e.g. ``name``); on data where that label is absent, the extracted
+    values can come from a differently-named native label (the extraction regex
+    scans the whole ``_timeseries`` JSON). When the values prove the
+    correspondence - exact value-set equality, unique on both sides - rename
+    the translated label so per-series comparison can proceed.
+    Returns ``(series, renames)``."""
+    native_values = _label_values_by_name(native)
+    translated_values = _label_values_by_name(translated)
+    renames: dict[str, str] = {}
+    for tname, tset in translated_values.items():
+        if tname in native_values:
+            continue
+        candidates = [n for n, s in native_values.items() if s == tset and n not in translated_values]
+        if len(candidates) == 1:
+            renames[tname] = candidates[0]
+    if not renames:
+        return translated, {}
+    return _rename_labels(translated, renames), renames
+
+
+def _raw_label_values(raw: dict) -> dict[str, set[str]]:
+    """Pre-scrub label name -> value set for a raw native response.
+
+    Includes the PROMETHEUS_ONLY labels the normalizers scrub, so the
+    comparator can recognize a translated legend label that extracted values
+    from one of them (e.g. ``service.name``)."""
+    out: dict[str, set[str]] = {}
+    columns = [c["name"] for c in (raw or {}).get("columns", [])]
+    ts_idx = None
+    label_cols: list[tuple[int, str]] = []
+    for i, name in enumerate(columns):
+        if name == "_timeseries":
+            ts_idx = i
+        elif name not in {"value", "step"} and not name.endswith("_value"):
+            label_cols.append((i, name))
+    for row in (raw or {}).get("values", []):
+        for i, name in label_cols:
+            if row[i] is not None:
+                out.setdefault(name, set()).add(str(row[i]))
+        if ts_idx is not None and row[ts_idx]:
+            try:
+                payload = json.loads(row[ts_idx]) if isinstance(row[ts_idx], str) else row[ts_idx]
+            except (TypeError, ValueError):
+                continue
+            labels = payload.get("labels", payload) if isinstance(payload, dict) else {}
+            for name, value in _flatten_label_payload(labels).items():
+                out.setdefault(name, set()).add(value)
+    return out
+
+
+def _align_translated_to_scrubbed_native_label(
+    native_raw: dict,
+    translated: dict[SeriesKey, list[tuple[float, float]]],
+) -> tuple[dict[SeriesKey, list[tuple[float, float]]], dict[SeriesKey, list[tuple[float, float]]] | None, dict[str, str]]:
+    """Second-chance alignment: key both sides by a normally-scrubbed label.
+
+    The legend extraction regex scans the whole ``_timeseries`` JSON and can
+    capture a label the comparator scrubs (e.g. ``service.name``, canonicalized
+    to ``job``). The extracted values still map 1:1 to series, so when a
+    translated label's value set exactly matches one scrubbed native label,
+    re-normalize the native side keeping that label and rename the translated
+    label to it. Returns ``(translated, native_or_None, renames)``."""
+    raw_values = _raw_label_values(native_raw)
+    translated_values = _label_values_by_name(translated)
+    renames: dict[str, str] = {}
+    keep: set[str] = set()
+    for tname, tset in translated_values.items():
+        candidates = sorted(
+            {_canonical_label(n) for n, s in raw_values.items()
+             if s == tset and _canonical_label(n) in PROMETHEUS_ONLY_LABELS}
+        )
+        if len(candidates) == 1:
+            renames[tname] = candidates[0]
+            keep.add(candidates[0])
+    if not renames:
+        return translated, None, {}
+    native = normalize_native(native_raw, keep_labels=frozenset(keep))
+    return _rename_labels(translated, renames), native, renames
+
+
+# A pure string-literal ``| EVAL <name> = "..."`` stage: the translated form of
+# a static Grafana legend. On multi-series data the constant label collapses
+# every underlying series into one interleaved stream.
+_STATIC_LEGEND_EVAL_RE = re.compile(
+    r'\|\s*EVAL\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*"(?:[^"\\]|\\.)*"\s*(?:$|[\n|])'
+)
+
+
+def _has_static_legend_label(esql: str) -> bool:
+    return bool(_STATIC_LEGEND_EVAL_RE.search(esql or ""))
 
 
 def _project_to_subset(
@@ -431,6 +696,10 @@ def is_single_value_reduction(esql: str) -> bool:
     left to point-wise comparison.
     """
     text = esql or ""
+    # ``ROW constant_value = 2.0`` (a constant PromQL panel) emits a single
+    # literal row with no time dimension at all.
+    if re.match(r"(?i)^\s*ROW\b", text):
+        return True
     if _SINGLE_VALUE_REDUCTION_RE.search(text):
         return True
     stages = [stage.strip() for stage in text.split("|")]
@@ -507,6 +776,18 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     if not cmp_.esql:
         cmp_.skipped_reason = "no translated ES|QL on this panel"
         return cmp_
+    if " ||| " in source_query:
+        # Multi-target panels join sub-queries with " ||| " (panels.py) and
+        # translate to ONE merged ES|QL whose columns can reorder or drop
+        # sub-queries; without per-target provenance there is nothing the
+        # single-query oracle can honestly compare.
+        sub_queries = source_query.count(" ||| ") + 1
+        cmp_.skipped_reason = (
+            f"multi-query panel ({sub_queries} sub-queries merged into one ES|QL); "
+            "the native oracle compares single queries, and per-target comparison "
+            "requires per-target provenance in the verification packet"
+        )
+        return cmp_
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
         return cmp_
@@ -540,8 +821,50 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         cmp_.notes.append("translated query is a native PROMQL passthrough; parsed with the native normalizer")
     else:
         translated = normalize_translated(translated_raw)
+    translated, blob_decoded = _align_blob_label_keys(translated, native_raw)
+    if blob_decoded:
+        cmp_.notes.append(
+            "translated label fallback blob decoded into label pairs (panel grouping "
+            "label absent from the data); series keys re-aligned with the native side"
+        )
+    if native and translated and not (set(native) & set(translated)):
+        translated, renames = _align_label_names_by_values(native, translated)
+        if renames:
+            cmp_.notes.append(
+                "translated label name(s) re-aligned by matching value sets: "
+                + ", ".join(f"{t}->{n}" for t, n in sorted(renames.items()))
+            )
+    if native and translated and not (set(native) & set(translated)):
+        translated, rekeyed_native, renames = _align_translated_to_scrubbed_native_label(
+            native_raw, translated
+        )
+        if rekeyed_native is not None:
+            native = rekeyed_native
+            cmp_.notes.append(
+                "translated legend label(s) carry values of normally-scrubbed native "
+                "label(s); both sides re-keyed by them: "
+                + ", ".join(f"{t}->{n}" for t, n in sorted(renames.items()))
+            )
     cmp_.native_series = len(native)
     cmp_.translated_series = len(translated)
+    if not native and not translated:
+        # Nothing was compared on either side; FAIL would read as a translation
+        # defect when the only proven fact is the absence of data.
+        cmp_.skipped_reason = (
+            "no data on either side in the compare window; seed sample data or "
+            "align --window-minutes/--step-seconds with the dashboard"
+        )
+        return cmp_
+    if cmp_.translated_series == 1 and cmp_.native_series > 1 and _has_static_legend_label(cmp_.esql):
+        # A static legend collapses every underlying series into one
+        # interleaved stream; any per-series (or projected) diff against it
+        # measures the collapse, not the translation.
+        cmp_.skipped_reason = (
+            f"translated query assigns a static legend label, collapsing {cmp_.native_series} "
+            "native series into one stream; per-series comparison impossible on multi-series "
+            "data (panel variables resolved to match-all for the oracle)"
+        )
+        return cmp_
     common = set(native) & set(translated)
     native_for_diff = native
     if not common and native and translated:
@@ -559,4 +882,20 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     cmp_.compared_points = points
     cmp_.max_relative_error = rmax
     cmp_.mean_relative_error = rmean
+    if cmp_.common_series == 0:
+        if not translated:
+            cmp_.fail_reason = (
+                f"translated query returned no series; native returned {cmp_.native_series}"
+            )
+        elif not native:
+            cmp_.fail_reason = (
+                f"native oracle returned no series; translated returned {cmp_.translated_series}"
+            )
+        else:
+            cmp_.fail_reason = (
+                f"series keys did not align (native {cmp_.native_series}, "
+                f"translated {cmp_.translated_series} series)"
+            )
+    elif cmp_.compared_points == 0:
+        cmp_.fail_reason = "no overlapping time buckets between native and translated points"
     return cmp_

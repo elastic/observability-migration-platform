@@ -94,6 +94,10 @@ def _is_semantic_loss_warning(warning: str) -> bool:
         "cannot be accurately represented",
         "requires both sides",
         "translation crashed",
+        # Counter->gauge degrades ("rendered as AVG_OVER_TIME instead", "rendered
+        # as MAX_OVER_TIME (cumulative ceiling) instead") substitute a different
+        # function family and change the value scale of the panel.
+        "rendered as",
     )
     return any(token in text for token in token_matches)
 

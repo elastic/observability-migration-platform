@@ -415,6 +415,16 @@ class SchemaResolver:
                 return True
         return False
 
+    def declared_gauge(self, metric_name):
+        """True when the user's rule pack explicitly pins this metric as a
+        gauge (``metric_kinds: <metric>: gauge``). This is the only signal
+        strong enough to degrade a counter-only PromQL range function
+        (``rate``/``irate``) to its gauge analogue: live caps can be stale,
+        and the telemetry contract locks rate()-ed fields as counters."""
+        if not metric_name:
+            return False
+        return str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower() == "gauge"
+
     def refutes_counter(self, metric_name):
         """True when the *target* has positive information that the metric is
         NOT a usable ES|QL counter — an explicit rule-pack ``gauge`` kind, or a

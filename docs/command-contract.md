@@ -586,7 +586,12 @@ ES|QL). `--step-seconds` sets the oracle bucket step (default `300`).
 `--window-minutes` sets the look-back window (default `60`). `--report-out`
 names the JSON report (default `comparison_report.json`); a sibling
 `comparison_report.md` is written with a panel-by-panel table (dashboard, panel,
-mode, verdict, max relative error, reason).
+mode, verdict, max relative error, native/translated/common series counts,
+reason). Numeric rows in the JSON report also carry `native_series`,
+`translated_series`, `common_series`, and `notes`, and every `FAIL` or `SKIP`
+verdict has a populated `reason` (e.g. "series keys did not align",
+"no data on either side in the compare window", "multi-query panel ... merged
+into one ES|QL").
 
 Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
 (missing/malformed `verification_packets.json`, missing credentials), `1` when

@@ -55,7 +55,7 @@ obs-migrate remove-sample-data \
 
 ## Reading the result
 
-The command writes **`comparison_report.json`** (machine-readable) and a sibling **`comparison_report.md`** with a panel-by-panel table: dashboard, panel, mode, verdict, max relative error, reason. **`--report-out` defaults to `comparison_report.json` in the current working directory** — pass `--report-out <output-dir>/dashboards/comparison_report.json` to keep the report beside the migration artifacts.
+The command writes **`comparison_report.json`** (machine-readable) and a sibling **`comparison_report.md`** with a panel-by-panel table: dashboard, panel, mode, verdict, max relative error, native/translated/common series counts, reason. Numeric JSON rows also carry `native_series`/`translated_series`/`common_series` and `notes`, and every FAIL or SKIP has a populated reason. **`--report-out` defaults to `comparison_report.json` in the current working directory** — pass `--report-out <output-dir>/dashboards/comparison_report.json` to keep the report beside the migration artifacts.
 
 **Exit codes:**
 
