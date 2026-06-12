@@ -340,14 +340,87 @@ def _load_dashboard_via_export(session, kibana_url, space_id, dashboard_id, time
     raise ValueError(f"Dashboard {dashboard_id} not found via _export")
 
 
-def validate_esql(es_url, query, timeout, es_api_key="", session=None):
+def _kbn_filter_to_dsl(kbn_filter):
+    """Convert one compiled Kibana filter into ``(dsl, negate)`` or ``None``.
+
+    Mirrors how Kibana resolves a saved-object filter into Query DSL: disabled
+    filters are dropped, ``meta.negate`` routes the clause to ``must_not``, and
+    combined (AND/OR) filters reconstruct their DSL from ``meta.params`` since
+    their top-level ``query`` is empty.
+    """
+    meta = kbn_filter.get("meta", {}) or {}
+    if meta.get("disabled"):
+        return None
+    negate = bool(meta.get("negate", False))
+    query = kbn_filter.get("query") or {}
+    if query:
+        return query, negate
+    if meta.get("type") == "combined":
+        relation = str(meta.get("relation", "AND") or "AND").upper()
+        clauses = []
+        for param in meta.get("params", []) or []:
+            resolved = _kbn_filter_to_dsl(param)
+            if resolved is None:
+                continue
+            sub_dsl, sub_negate = resolved
+            clauses.append({"bool": {"must_not": [sub_dsl]}} if sub_negate else sub_dsl)
+        if not clauses:
+            return None
+        if relation == "OR":
+            return {"bool": {"should": clauses, "minimum_should_match": 1}}, negate
+        return {"bool": {"filter": clauses}}, negate
+    return None
+
+
+def extract_dashboard_filter_dsl(attributes):
+    """Build the dashboard-level Query DSL filter from a saved object's attributes.
+
+    Kibana Lens merges ``kibanaSavedObjectMeta.searchSourceJSON`` filters into the
+    ``/_query`` request before dispatching to Elasticsearch; the smoke validator
+    must do the same so a mismatched filter (e.g. wrong ``data_stream.dataset``)
+    is caught instead of producing a false-clean report (#113). Returns a bool
+    Query DSL object, or ``None`` when there is no effective filter.
+    """
+    meta = attributes.get("kibanaSavedObjectMeta", {}) or {}
+    raw = meta.get("searchSourceJSON", "") or ""
+    if isinstance(raw, str):
+        if not raw or raw == "{}":
+            return None
+        try:
+            search_source = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    else:
+        search_source = raw or {}
+    must = []
+    must_not = []
+    for kbn_filter in search_source.get("filter", []) or []:
+        resolved = _kbn_filter_to_dsl(kbn_filter)
+        if resolved is None:
+            continue
+        dsl, negate = resolved
+        (must_not if negate else must).append(dsl)
+    if not must and not must_not:
+        return None
+    bool_query = {}
+    if must:
+        bool_query["filter"] = must
+    if must_not:
+        bool_query["must_not"] = must_not
+    return {"bool": bool_query}
+
+
+def validate_esql(es_url, query, timeout, es_api_key="", session=None, dsl_filter=None):
     materialized_query = materialize_dashboard_time_query(query)
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
     client = session or requests
+    body = {"query": materialized_query}
+    if dsl_filter:
+        body["filter"] = dsl_filter
     response = client.post(
         f"{es_url}/_query",
         params={"format": "json"},
-        json={"query": materialized_query},
+        json=body,
         headers=headers,
         timeout=timeout,
     )
@@ -843,6 +916,7 @@ def _runtime_gap_reason(panel: dict) -> str:
 
 def _validate_panel_queries(
     es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
+    dsl_filter=None,
 ):
     if not queries:
         return []
@@ -850,14 +924,18 @@ def _validate_panel_queries(
     def _run(query):
         session = requests.Session()
         apply_tls(session, verify)
-        return validate_esql(es_url, query, timeout, es_api_key=es_api_key, session=session)
+        return validate_esql(
+            es_url, query, timeout, es_api_key=es_api_key, session=session, dsl_filter=dsl_filter
+        )
 
     workers = max(1, int(validation_workers or 1))
     if workers == 1 or len(queries) == 1:
         session = requests.Session()
         apply_tls(session, verify)
         return [
-            validate_esql(es_url, query, timeout, es_api_key=es_api_key, session=session)
+            validate_esql(
+                es_url, query, timeout, es_api_key=es_api_key, session=session, dsl_filter=dsl_filter
+            )
             for query in queries
         ]
     with ThreadPoolExecutor(max_workers=min(workers, len(queries))) as pool:
@@ -906,6 +984,7 @@ def inspect_dashboard(
             "status": "has_runtime_errors",
             "panels": [],
         }
+    dashboard_filter = extract_dashboard_filter_dsl(attributes)
     panel_results = []
     failing_panels = []
     empty_panels = []
@@ -945,6 +1024,7 @@ def inspect_dashboard(
             es_api_key=es_api_key,
             validation_workers=validation_workers,
             verify=verify,
+            dsl_filter=dashboard_filter,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)

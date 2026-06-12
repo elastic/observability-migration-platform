@@ -293,6 +293,215 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(captured["headers"], {"Authorization": "ApiKey abc123"})
 
+    def test_validate_esql_applies_dashboard_dsl_filter(self):
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse({"columns": [{"name": "value"}], "values": [[1]]})
+
+        dsl_filter = {"bool": {"filter": [{"match_phrase": {"data_stream.dataset": "prometheus"}}]}}
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            result = smoke.validate_esql(
+                "http://localhost:9200",
+                "FROM metrics-* | LIMIT 1",
+                timeout=30,
+                dsl_filter=dsl_filter,
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(captured["body"]["filter"], dsl_filter)
+
+    def test_validate_esql_omits_filter_when_no_dashboard_dsl_filter(self):
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse({"columns": [{"name": "value"}], "values": [[1]]})
+
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            smoke.validate_esql("http://localhost:9200", "FROM metrics-* | LIMIT 1", timeout=30)
+
+        self.assertNotIn("filter", captured["body"])
+
+    def test_extract_dashboard_filter_dsl_builds_bool_from_phrase_filters(self):
+        attributes = {
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(
+                    {
+                        "filter": [
+                            {
+                                "meta": {"type": "phrase", "negate": False, "disabled": False},
+                                "query": {"match_phrase": {"data_stream.dataset": "prometheus"}},
+                            }
+                        ],
+                        "query": {"query": "", "language": "kuery"},
+                    }
+                )
+            }
+        }
+
+        dsl = smoke.extract_dashboard_filter_dsl(attributes)
+
+        self.assertEqual(
+            dsl,
+            {"bool": {"filter": [{"match_phrase": {"data_stream.dataset": "prometheus"}}]}},
+        )
+
+    def test_extract_dashboard_filter_dsl_routes_negated_filters_to_must_not(self):
+        attributes = {
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(
+                    {
+                        "filter": [
+                            {
+                                "meta": {"type": "phrase", "negate": True, "disabled": False},
+                                "query": {"match_phrase": {"host.name": "ignored"}},
+                            }
+                        ]
+                    }
+                )
+            }
+        }
+
+        dsl = smoke.extract_dashboard_filter_dsl(attributes)
+
+        self.assertEqual(
+            dsl,
+            {"bool": {"must_not": [{"match_phrase": {"host.name": "ignored"}}]}},
+        )
+
+    def test_extract_dashboard_filter_dsl_reconstructs_combined_or_filter(self):
+        # Combined AND/OR filters carry an empty top-level query; their DSL lives
+        # in meta.params, matching kb-dashboard-core's compile_or_filter output.
+        attributes = {
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(
+                    {
+                        "filter": [
+                            {
+                                "meta": {
+                                    "type": "combined",
+                                    "relation": "OR",
+                                    "negate": False,
+                                    "disabled": False,
+                                    "params": [
+                                        {
+                                            "meta": {"type": "phrase"},
+                                            "query": {"match_phrase": {"env": "prod"}},
+                                        },
+                                        {
+                                            "meta": {"type": "phrase"},
+                                            "query": {"match_phrase": {"env": "staging"}},
+                                        },
+                                    ],
+                                },
+                                "query": {},
+                            }
+                        ]
+                    }
+                )
+            }
+        }
+
+        dsl = smoke.extract_dashboard_filter_dsl(attributes)
+
+        self.assertEqual(
+            dsl,
+            {
+                "bool": {
+                    "filter": [
+                        {
+                            "bool": {
+                                "should": [
+                                    {"match_phrase": {"env": "prod"}},
+                                    {"match_phrase": {"env": "staging"}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+
+    def test_extract_dashboard_filter_dsl_skips_disabled_filters(self):
+        attributes = {
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(
+                    {
+                        "filter": [
+                            {
+                                "meta": {"type": "phrase", "negate": False, "disabled": True},
+                                "query": {"match_phrase": {"data_stream.dataset": "prometheus"}},
+                            }
+                        ]
+                    }
+                )
+            }
+        }
+
+        self.assertIsNone(smoke.extract_dashboard_filter_dsl(attributes))
+
+    def test_extract_dashboard_filter_dsl_returns_none_for_empty_search_source(self):
+        self.assertIsNone(
+            smoke.extract_dashboard_filter_dsl(
+                {"kibanaSavedObjectMeta": {"searchSourceJSON": "{}"}}
+            )
+        )
+        self.assertIsNone(smoke.extract_dashboard_filter_dsl({}))
+
+    def test_inspect_dashboard_reports_empty_when_dashboard_filter_matches_no_docs(self):
+        # Acceptance criterion (#113): a dashboard whose DSL filter matches 0 docs
+        # must report its panels as empty, not clean. The smoke validator must apply
+        # the kibanaSavedObjectMeta.searchSourceJSON filter to the /_query call the
+        # same way Kibana Lens does.
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {
+                "title": "Dashboard",
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps(
+                        {
+                            "filter": [
+                                {
+                                    "meta": {"type": "phrase", "negate": False, "disabled": False},
+                                    "query": {"match_phrase": {"data_stream.dataset": "prometheus"}},
+                                }
+                            ]
+                        }
+                    )
+                },
+                "panelsJSON": json.dumps(
+                    [
+                        {
+                            "panelIndex": "lens-1",
+                            "type": "lens",
+                            "embeddableConfig": {
+                                "attributes": {"state": {"query": {"esql": "FROM metrics-* | LIMIT 1"}}}
+                            },
+                            "gridData": {"x": 0, "y": 0, "w": 24, "h": 8},
+                        }
+                    ]
+                ),
+            },
+        }
+
+        def fake_post(url, params, json, headers, timeout):
+            # ES returns rows only when the dashboard filter is absent; the wrong
+            # dataset filter must collapse the result set to zero rows.
+            if json.get("filter"):
+                return _FakeResponse({"columns": [{"name": "value"}], "values": []})
+            return _FakeResponse({"columns": [{"name": "value"}], "values": [[1]]})
+
+        fake_session = mock.Mock()
+        fake_session.post.side_effect = fake_post
+        with mock.patch.object(smoke.requests, "Session", return_value=fake_session):
+            result = smoke.inspect_dashboard(saved_object, "http://localhost:9200", timeout=30)
+
+        self.assertEqual(len(result["empty_panels"]), 1)
+        self.assertEqual(result["status"], "has_empty_panels")
+
     def test_inspect_dashboard_uses_validation_worker_pool(self):
         saved_object = {
             "id": "dashboard-123",
