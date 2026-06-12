@@ -1206,23 +1206,56 @@ def _run_compare(args: Any) -> int:
         is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
         if oracle_ok and is_promql:
             index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
-            try:
-                cmp_ = compare_panel(
-                    request, source_query=pkt["source_query"], translated_query=pkt["translated_query"],
-                    index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
-                )
-            except NetworkError as exc:
-                print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
-                return 2
-            rows.append({
-                "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
-                "mode": "native_oracle", "verdict": cmp_.verdict(),
-                "max_relative_error": cmp_.max_relative_error, "compared_points": cmp_.compared_points,
-                "native_series": cmp_.native_series, "translated_series": cmp_.translated_series,
-                "common_series": cmp_.common_series, "notes": list(cmp_.notes),
-                "reason": cmp_.skipped_reason or cmp_.fail_reason or cmp_.translated_error or cmp_.native_error or "",
-                "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
-            })
+            # A merged multi-target panel with per-target provenance is
+            # verified one target at a time: each sub-query against its own
+            # output column. Without provenance the comparator SKIPs the
+            # joined query with an explanation.
+            provenance = ((pkt.get("query_ir") or {}).get("metadata") or {}).get("collapsed_targets") or []
+            usable = [
+                t for t in provenance
+                if t.get("source_expr") and t.get("value_column") and " ||| " not in t["source_expr"]
+            ]
+            sub_compares: list[tuple[str, dict[str, Any]]] = (
+                [
+                    (
+                        t.get("ref_id", ""),
+                        {
+                            # A negated target (drawn below the axis) emits
+                            # ``-1 * expr``; negate the native reference to match.
+                            "source_query": f"-({t['source_expr']})" if t.get("negated") else t["source_expr"],
+                            "translated_value_column": t["value_column"],
+                            "translated_ignore_columns": frozenset(
+                                other["value_column"] for other in usable if other is not t
+                            ),
+                        },
+                    )
+                    for t in usable
+                ]
+                if usable
+                else [("", {"source_query": pkt["source_query"]})]
+            )
+            for target_ref, extra in sub_compares:
+                try:
+                    cmp_ = compare_panel(
+                        request, translated_query=pkt["translated_query"],
+                        index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
+                        **extra,
+                    )
+                except NetworkError as exc:
+                    print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+                    return 2
+                row = {
+                    "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),
+                    "mode": "native_oracle", "verdict": cmp_.verdict(),
+                    "max_relative_error": cmp_.max_relative_error, "compared_points": cmp_.compared_points,
+                    "native_series": cmp_.native_series, "translated_series": cmp_.translated_series,
+                    "common_series": cmp_.common_series, "notes": list(cmp_.notes),
+                    "reason": cmp_.skipped_reason or cmp_.fail_reason or cmp_.translated_error or cmp_.native_error or "",
+                    "source_query": extra["source_query"], "translated_query": pkt.get("translated_query", ""),
+                }
+                if target_ref:
+                    row["target"] = target_ref
+                rows.append(row)
         else:
             rows.append({
                 "dashboard": pkt.get("dashboard", ""), "panel": pkt.get("panel", ""),

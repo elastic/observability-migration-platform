@@ -1960,6 +1960,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             t.feasibility = "not_feasible"
             t.warnings.append(f"Translation crashed: {type(exc).__name__}: {exc}")
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
+        # Keep the target's own expression: ``promql_expr`` is overwritten with
+        # the merged " ||| " join below, but per-target provenance (and the
+        # parity oracle that consumes it) needs the original sub-query.
+        t.metadata["target_source_expr"] = expr
         if negate_target:
             t.metadata["negate_result"] = True
         translations.append(t)
@@ -2001,6 +2005,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 primary.source_type = merged_query["source_type"]
                 primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
                 primary.metadata["multi_series_metric_labels"] = merged_query.get("metric_label_hints", {})
+                primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
                 primary.output_metric_field = merged_query["metric_fields"][0]
                 primary.output_group_fields = merged_query["group_fields"]
                 for warning in merged_query["warnings"]:
@@ -2380,6 +2385,7 @@ def _build_multi_target_series_query(translations):
     parts, output_group_fields, _ = shared
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
+    target_provenance: list[dict[str, str]] = []
     used_aliases = set()
     for idx, (translation, plan) in enumerate(plans, start=1):
         alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
@@ -2389,6 +2395,14 @@ def _build_multi_target_series_query(translations):
             used_aliases,
             fallback_suffix=alias_hint,
         )
+        provenance_entry = {
+            "ref_id": alias_hint,
+            "source_expr": str(translation.metadata.get("target_source_expr") or ""),
+            "value_column": result_alias,
+        }
+        if translation.metadata.get("negate_result"):
+            provenance_entry["negated"] = True
+        target_provenance.append(provenance_entry)
         eval_expr = plan.expr
         if translation.metadata.get("negate_result"):
             eval_expr = f"(-1 * {plan.expr})"
@@ -2427,6 +2441,7 @@ def _build_multi_target_series_query(translations):
         "group_fields": output_group_fields,
         "source_type": all_specs[0].source_type,
         "warnings": warnings,
+        "targets": target_provenance,
     }
 
 
