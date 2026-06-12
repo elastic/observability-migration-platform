@@ -213,6 +213,9 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--plugin", action="append", default=[])
     migrate.add_argument("--polish-metadata", action="store_true")
     migrate.add_argument("--preflight", action="store_true")
+    migrate.add_argument("--source-execution", action="store_true",
+                         help="Execute each panel's source query against the live source API "
+                              "(Datadog) to build source/target comparison packets")
     migrate.add_argument("--dataset-filter", default="",
                          help="Explicit data_stream.dataset filter for metrics")
     migrate.add_argument("--logs-dataset-filter", default="",
@@ -864,6 +867,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.append("--upload")
     if args.preflight:
         legacy_argv.append("--preflight")
+    if getattr(args, "source_execution", False):
+        legacy_argv.append("--source-execution")
     if args.dataset_filter:
         legacy_argv.extend(["--dataset-filter", args.dataset_filter])
     if args.logs_dataset_filter:

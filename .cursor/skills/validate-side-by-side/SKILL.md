@@ -79,4 +79,5 @@ Route panels with verdict **`FAIL`** or structural rows the user expected to be 
 - `report-migration-coverage` skill — shareable coverage summary from migrate artifacts.
 - `explain-migration-gaps` skill — why a panel did not migrate cleanly and how to rebuild it.
 - `obs-migrate seed-sample-data` / `obs-migrate remove-sample-data` — optional deterministic data setup and teardown (`docs/command-contract.md`).
+- For Datadog, `obs-migrate migrate --source datadog --source-execution --validate` fills the verification packets' `source_execution`/`comparison` blocks with live source-vs-target verdicts (needs DD creds and the same telemetry on both sides) — the closest thing to a numeric oracle for Datadog panels.
 - `docs/command-contract.md` — full compare, seed, and remove flag reference for the installed version.
