@@ -315,6 +315,13 @@ def ingest_documents(
     return summary
 
 
+# Prometheus identity labels every scrape target carries (plus their common
+# target-schema spellings). Used as the dimension fallback for metrics whose
+# queries reference no dimensions, so seeded documents always satisfy TSDB
+# routing.
+_IDENTITY_FALLBACK_DIMENSIONS = ("instance", "job", "service.name", "host.name")
+
+
 def _dotted_field_prefixes(field_names: Iterable[str]) -> set[str]:
     """Return the set of bare-name prefixes that have at least one dotted child."""
     return {
@@ -361,6 +368,23 @@ def _metric_families(
             shared = metric_dims[metric_name] | metric_dims[denominator]
             metric_dims[metric_name] = shared
             metric_dims[denominator] = shared
+
+    # A metric whose queries reference no dimensions at all (a bare ``up``)
+    # must still seed documents that carry at least one
+    # ``time_series_dimension`` value: TSDB routing rejects dimensionless
+    # documents wholesale ("Error extracting routing: source didn't contain
+    # any routing fields"), silently un-seeding the metric. Real Prometheus
+    # series always carry identity labels, so fall back to the stream's
+    # identity dimensions.
+    identity_dims = {
+        name
+        for name in _IDENTITY_FALLBACK_DIMENSIONS
+        if (stream.get("fields") or {}).get(name, {}).get("role") == "dimension"
+    }
+    if identity_dims:
+        for metric_name, dims in metric_dims.items():
+            if not dims:
+                metric_dims[metric_name] = set(identity_dims)
 
     # Group metrics that share an identical dimension signature into one family.
     families_by_sig: dict[frozenset[str], list[str]] = {}

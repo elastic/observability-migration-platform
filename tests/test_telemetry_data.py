@@ -164,6 +164,61 @@ class ControlOnlyDimensionSeedingTests(unittest.TestCase):
         self.assertTrue(seeded, "nodename was never seeded with a value")
 
 
+class DimensionlessMetricSeedingTests(unittest.TestCase):
+    def test_dimensionless_metric_seeds_identity_dimensions(self):
+        # A bare metric like ``up`` whose queries reference no dimensions must
+        # still seed documents carrying at least one time_series_dimension
+        # value: TSDB routing rejects dimensionless documents wholesale
+        # ("Error extracting routing: source didn't contain any routing
+        # fields"), silently un-seeding the metric. Real Prometheus series
+        # always carry identity labels, so fall back to the stream's identity
+        # dimensions (instance/job).
+        stream = {
+            "fields": {
+                "up": {"role": "metric", "metric_kind": "gauge"},
+                "node_cpu_seconds_total": {"role": "metric", "metric_kind": "counter"},
+                "instance": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+                "job": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+            },
+            "control_fields": [],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "verification_packet:Home:Target Health Status",
+                    "index": "metrics-*",
+                    "metrics": ["up"],
+                    "dimensions": [],
+                    "control_fields": [],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+                {
+                    "source": "verification_packet:NEF:CPU",
+                    "index": "metrics-*",
+                    "metrics": ["node_cpu_seconds_total"],
+                    "dimensions": ["instance"],
+                    "control_fields": [],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+            ],
+        }
+        contract = {"streams": {"metrics-*": stream}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        docs = [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+        up_docs = [d for d in docs if "up" in d]
+        self.assertTrue(up_docs, "up was never seeded")
+        for doc in up_docs:
+            self.assertTrue(
+                doc.get("instance") or doc.get("job"),
+                f"dimensionless doc would fail TSDB routing: {doc}",
+            )
+
+
 class TelemetryDataTests(unittest.TestCase):
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")
