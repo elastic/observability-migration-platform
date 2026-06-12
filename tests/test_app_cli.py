@@ -77,6 +77,51 @@ class TestUnifiedCliRouting(unittest.TestCase):
         mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_source_execution(self, mock_main):
+        # The Datadog source-side oracle (--source-execution) is implemented
+        # on the standalone datadog CLI; the canonical obs-migrate wrapper
+        # must expose and forward it, or users cannot reach live
+        # source-vs-target comparison through the documented interface.
+        args = SimpleNamespace(
+            input_mode="api",
+            input_dir="",
+            output_dir="out",
+            data_view="",
+            field_profile="otel",
+            logs_index="",
+            compile=True,
+            validate=True,
+            upload=False,
+            preflight=False,
+            source_execution=True,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertIn("--source-execution", sys.argv)
+        finally:
+            sys.argv = original_argv
+        mock_main.assert_called_once_with()
+
+    def test_migrate_parser_accepts_source_execution(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "datadog", "--source-execution"])
+        self.assertTrue(args.source_execution)
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_omits_default_data_view(self, mock_main):
         args = SimpleNamespace(
             input_mode="files",

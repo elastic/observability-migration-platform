@@ -262,6 +262,15 @@ force ES|QL translation. If you point `--data-view` at a different Prometheus
 integration layout, verify the target schema first before treating empty panels
 as a migration bug.
 
+For Datadog, `--source-execution` additionally executes each panel's source
+query against the live Datadog API (requires `DD_API_KEY`/`DD_APP_KEY` via env
+or `--env-file`) and, combined with `--validate`, fills the verification
+packets' `source_execution`/`comparison` blocks with live source-vs-target
+verdicts (`within_tolerance`/`drift`/`material_drift`); those verdicts can
+override the semantic gate. Off by default: translation stays fully offline
+and never calls the Datadog API. Numeric agreement is only meaningful when
+the source and the target ingest the same telemetry.
+
 Dashboard migrations also write `schema_change_report.md` and
 `telemetry_contract.json` inside the per-source `dashboards/` artifact
 directory. Live target readiness artifacts are source-specific: Grafana
