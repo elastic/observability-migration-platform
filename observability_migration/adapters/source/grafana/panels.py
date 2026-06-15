@@ -3448,7 +3448,42 @@ def _esql_values_control_query(field_name, data_view):
     )
 
 
-def _build_esql_param_control(variable_name, label, field_name, data_view):
+# Grafana's "All" selection (and any unknown default) maps to a regex
+# match-all so the rewritten ``label=~?var`` matcher binds to every series,
+# mirroring the source dashboard's default view instead of erroring.
+_MATCH_ALL_SELECTION = ".*"
+
+
+def _variable_default_selection(variable):
+    """Pick a default selection for a template variable's binding control.
+
+    Without a default the emitted control starts empty (``selectedOptions:
+    []``) and the bound ES|QL parameter stays unset, so Kibana renders
+    "Parameter [?var] value not found" on first load (issue #131). We mirror
+    the Grafana variable's ``current`` selection / ``All`` so the migrated
+    panel renders immediately, falling back to a regex match-all ("All") when
+    no concrete default is available.
+    """
+    if not isinstance(variable, dict):
+        return _MATCH_ALL_SELECTION
+    current = variable.get("current")
+    value = current.get("value") if isinstance(current, dict) else None
+    if isinstance(value, (list, tuple)):
+        # A scalar ES|QL parameter can hold only one value; a multi-value
+        # current selection has no faithful single binding, so fall back to
+        # "All" rather than arbitrarily picking one of the selected values.
+        value = value[0] if len(value) == 1 else None
+    # A concrete saved selection wins over "All" so the dashboard opens on the
+    # same value the source did.
+    if value not in (None, "", "$__all"):
+        return str(value)
+    if variable.get("includeAll"):
+        all_value = variable.get("allValue")
+        return str(all_value) if all_value else _MATCH_ALL_SELECTION
+    return _MATCH_ALL_SELECTION
+
+
+def _build_esql_param_control(variable_name, label, field_name, data_view, default=None):
     """Build an ES|QL parameter-binding control (issue #107).
 
     When the target supports the ``promql_label_matcher_params`` capability the
@@ -3464,8 +3499,11 @@ def _build_esql_param_control(variable_name, label, field_name, data_view):
     references). Single-select is used because the rewritten matchers reference
     the parameter in scalar positions (``== ?var`` / ``RLIKE ?var``); a
     multi-value binding would be invalid ES|QL there.
+
+    A ``default`` selection is emitted so the parameter is bound on first load
+    instead of leaving the control empty (issue #131).
     """
-    return {
+    control = {
         "type": "esql",
         "label": label,
         "variable_name": variable_name,
@@ -3473,6 +3511,9 @@ def _build_esql_param_control(variable_name, label, field_name, data_view):
         "query": _esql_values_control_query(field_name, data_view),
         "multiple": False,
     }
+    if default not in (None, ""):
+        control["default"] = default
+    return control
 
 
 MIN_DATATABLE_HEIGHT = 5
@@ -3597,6 +3638,7 @@ def query_variable_rule(context):
             label=label or name,
             field_name=field_name,
             data_view=context.data_view,
+            default=_variable_default_selection(context.variable),
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
             context.trace.append(
@@ -3676,6 +3718,102 @@ def translate_variables(
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
         if context.control:
             controls.append(context.control)
+    return controls
+
+
+# An ES|QL named parameter token (``?var``), excluding engine-internal params
+# such as ``?_tstart`` / ``?_tend`` / ``?_job`` which are materialized at
+# query time and never bound by a dashboard control.
+_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+# Quoted string literals, stripped before scanning so a ``?`` inside a value
+# (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
+_ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+
+
+def _query_param_names(query):
+    """Return the ES|QL named parameters referenced by a query string."""
+    if not isinstance(query, str):
+        return set()
+    unquoted = _ESQL_QUOTED_RE.sub('""', query)
+    return {match.group("name") for match in _ESQL_PARAM_RE.finditer(unquoted)}
+
+
+def _collect_emitted_param_names(panels):
+    """Return every ES|QL named parameter (``?var``) referenced by panels.
+
+    Both the native PROMQL path (``...{label=~?var}``) and the ES|QL path
+    (``WHERE field == ?var``) emit Grafana template variables as ES|QL named
+    parameters into ``esql.query``. Each one must have a binding control or the
+    panel fails with "Parameter [?var] value not found" (issue #131).
+    """
+    names: set[str] = set()
+    for panel in panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_cfg = panel.get("esql")
+        query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
+        names |= _query_param_names(query)
+    return names
+
+
+def _ensure_param_controls(
+    controls,
+    emitted_params,
+    variables,
+    data_view,
+    resolver=None,
+    rule_pack=None,
+):
+    """Guarantee a binding control exists for every emitted ``?var`` (issue #131).
+
+    Control generation is otherwise driven only by ``templating.list`` via the
+    registered variable translators, which miss two cases that still emit a
+    ``?var`` into panel queries:
+
+    * ``custom`` template variables (e.g. ArgoCD ``health_status`` /
+      ``sync_status``), which are routed to the time-picker rule and skipped.
+    * ``query`` variables skipped because their control field could not be
+      resolved or did not exist in the target.
+
+    For each referenced parameter without a control we synthesise an ES|QL
+    values control bound to the parameter, with a default selection so the
+    panel renders on first load.
+    """
+    bound = {
+        control.get("variable_name")
+        for control in controls
+        if isinstance(control, dict)
+        and control.get("type") == "esql"
+        and control.get("variable_name")
+    }
+    missing = sorted(name for name in emitted_params if name not in bound)
+    if not missing:
+        return controls
+    variables_by_name = {
+        var.get("name"): var
+        for var in variables
+        if isinstance(var, dict) and var.get("name")
+    }
+    for name in missing:
+        variable = variables_by_name.get(name, {})
+        label = variable.get("label") or name
+        source_field = (
+            _extract_variable_source_field(_variable_query_text(variable)) or name
+        )
+        field_name = source_field
+        if resolver:
+            resolved = resolver.resolve_control_field(source_field)
+            if resolved:
+                field_name = resolved
+        controls.append(
+            _build_esql_param_control(
+                variable_name=name,
+                label=label,
+                field_name=field_name,
+                data_view=data_view,
+                default=_variable_default_selection(variable),
+            )
+        )
     return controls
 
 
@@ -4819,7 +4957,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         else:
             flat_panels.append(panel)
 
-    _rewrite_variable_warnings(result.panel_results, control_variable_names)
+    # Parameters (``?var``) actually emitted by panel queries drive control
+    # completeness: every one needs a binding control, and any variable that
+    # became a control should no longer be reported as a dropped filter.
+    emitted_params = _collect_emitted_param_names(flat_panels)
+    _rewrite_variable_warnings(
+        result.panel_results, control_variable_names | emitted_params
+    )
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -4829,6 +4973,14 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+    )
+    controls = _ensure_param_controls(
+        controls,
+        emitted_params,
+        variables,
+        controls_data_view,
+        resolver=controls_resolver,
+        rule_pack=rule_pack,
     )
 
     yaml_doc = {

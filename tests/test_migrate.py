@@ -4312,6 +4312,211 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(controls[0]["type"], "esql")
         self.assertIs(controls[0]["multiple"], False)
 
+    def test_query_variable_control_default_is_match_all_for_include_all(self):
+        """Issue #131: a control with no default selection leaves the bound
+        ?param unset, so Kibana errors with "Parameter [?var] value not found".
+        An includeAll variable must default to a regex match-all ("All")."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": True,
+                "includeAll": True,
+                "query": "label_values(node_uname_info,instance)",
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(controls[0]["default"], ".*")
+
+    def test_query_variable_control_default_mirrors_current_value(self):
+        """A concrete Grafana ``current`` selection is mirrored as the control's
+        default so the migrated dashboard opens on the same value (issue #131)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "node",
+                "label": "Instance",
+                "multi": False,
+                "current": {"text": "host-01", "value": "host-01"},
+                "query": "label_values(node_uname_info,instance)",
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(controls[0]["default"], "host-01")
+
+    def test_esql_path_preserves_template_matcher_as_param_when_capability_on(self):
+        """Issue #64: when the target binds ``?var`` params, the ES|QL path must
+        preserve a $var label matcher as a native parameter instead of silently
+        dropping it (which queried all data, the "ES|QL looks fine" illusion)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        result = self.translate('sum(cpu{host=~"$host"}) by (host)')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("?host", result.esql_query)
+        self.assertNotIn(
+            "Dropped variable-driven label filters during migration",
+            result.warnings,
+        )
+
+    def test_esql_path_still_drops_template_matcher_when_capability_off(self):
+        """Capability-off targets cannot bind ``?var``; the ES|QL path must keep
+        dropping the matcher (and warn) so dashboards still upload (issue #100)."""
+        result = self.translate('sum(cpu{host=~"$host"}) by (host)')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn("?host", result.esql_query)
+        self.assertIn(
+            "Dropped variable-driven label filters during migration",
+            result.warnings,
+        )
+
+    def test_dashboard_emits_binding_control_for_custom_variable_param(self):
+        """Issue #131: a Grafana ``custom`` variable referenced as ?var in a
+        native PROMQL panel must get a binding control. Previously custom
+        variables were routed to the time-picker rule and got no control, so the
+        emitted ?var stayed unbound and the panel failed to render."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Custom Var",
+            "uid": "custom-var",
+            "templating": {
+                "list": [
+                    {
+                        "type": "custom",
+                        "name": "health_status",
+                        "label": "Health",
+                        "includeAll": True,
+                        "query": "Healthy,Progressing,Degraded",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Apps",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'sum(argocd_app_info{health_status=~"$health_status"})',
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
+        self.assertIn("?health_status", rendered)
+        controls = doc["dashboards"][0].get("controls", [])
+        control_names = {
+            c.get("variable_name") for c in controls if c.get("type") == "esql"
+        }
+        self.assertIn("health_status", control_names)
+        binding = next(c for c in controls if c.get("variable_name") == "health_status")
+        self.assertEqual(binding["default"], ".*")
+
+    def test_dashboard_emits_a_control_for_every_emitted_param(self):
+        """Issue #131: every ?var a panel emits must have a binding control, so
+        no panel can load with an unbound parameter. Covers a query variable
+        that the control translator skips (unresolved field) but whose ?var is
+        still emitted on the native PROMQL path."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Sync Status",
+            "uid": "sync-status",
+            "templating": {"list": []},
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "By sync status",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'sum(argocd_app_info{sync_status=~"$sync_status"})',
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        emitted = panels._collect_emitted_param_names(doc["dashboards"][0]["panels"])
+        controls = doc["dashboards"][0].get("controls", [])
+        bound = {c.get("variable_name") for c in controls if c.get("type") == "esql"}
+        self.assertTrue(emitted)
+        self.assertTrue(
+            emitted.issubset(bound),
+            f"unbound params: {emitted - bound}",
+        )
+
     def test_repeat_driver_variable_forces_single_select_control(self):
         controls = migrate.translate_variables(
             [{

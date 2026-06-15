@@ -61,5 +61,80 @@ class LintGateTests(unittest.TestCase):
         self.assertIn("esql-group-by-syntax", output)
 
 
+class UnboundParamGateTests(unittest.TestCase):
+    """Issue #131 regression gate: a panel ?param with no control must fail."""
+
+    def _run(self, yaml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dashboard.yaml").write_text(yaml_text, encoding="utf-8")
+            # External tool returns nothing; only the in-process gate runs.
+            with mock.patch.object(lint, "_run_lint_tool", return_value=([], "")):
+                return lint.lint_dashboard_yaml(tmp)
+
+    def test_native_promql_unbound_param_fails(self):
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                panels:
+                  - title: Apps
+                    esql:
+                      query: "PROMQL index=metrics-* step=1m value=(sum(argocd_app_info{namespace=~?namespace}))"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertFalse(ok, msg=output)
+        self.assertIn("unbound-esql-param", output)
+        self.assertIn("?namespace", output)
+
+    def test_param_with_matching_control_passes(self):
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                controls:
+                  - type: esql
+                    variable_name: namespace
+                    variable_type: values
+                    query: "FROM metrics-* | KEEP namespace"
+                    default: ".*"
+                panels:
+                  - title: Apps
+                    esql:
+                      query: "PROMQL index=metrics-* step=1m value=(sum(argocd_app_info{namespace=~?namespace}))"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertTrue(ok, msg=output)
+
+    def test_question_mark_inside_quoted_value_is_not_a_param(self):
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                panels:
+                  - title: Pattern
+                    esql:
+                      query: 'FROM metrics-* | WHERE host RLIKE "ab?c"'
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertTrue(ok, msg=output)
+
+    def test_internal_time_params_are_ignored(self):
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                panels:
+                  - title: TS
+                    esql:
+                      query: "FROM metrics-* | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertTrue(ok, msg=output)
+
+
 if __name__ == "__main__":
     unittest.main()
