@@ -4,8 +4,11 @@
 import datetime
 import json
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
+from observability_migration.core.telemetry_contract import build_telemetry_contract
 from observability_migration.core.telemetry_data import (
     _contract_index_patterns,
     _expand_patterns,
@@ -220,6 +223,45 @@ class DimensionlessMetricSeedingTests(unittest.TestCase):
 
 
 class TelemetryDataTests(unittest.TestCase):
+    def test_generate_documents_satisfies_logs_is_not_null_presence_field(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Logs",
+                                "panel": "Errors present",
+                                "translated_query": (
+                                    "FROM logs-*\n"
+                                    "| WHERE error.message IS NOT NULL\n"
+                                    "| STATS count = COUNT(*)"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            contract = build_telemetry_contract(artifact_dir)
+
+        docs = [
+            doc
+            for _index, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        ]
+
+        self.assertTrue(docs)
+        self.assertTrue(
+            any("error.message" in doc for doc in docs),
+            "log presence field was mapped but never seeded",
+        )
+
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")
         self.assertEqual(concrete_stream_name("metrics-*"), "metrics-generic-default")

@@ -196,6 +196,30 @@ def generate_documents(
                                 gauge_values[field_name] = value
                                 doc[field_name] = round(value, 4)
                     else:
+                        # Logs/traces can still carry numeric columns referenced
+                        # by FROM aggregations or presence filters. If the
+                        # contract mapped them, seed them so queries do not hit
+                        # empty or unknown columns.
+                        gauge_values: dict[str, float] = {}
+                        for field_name in _coherence_order(metric_fields):
+                            info = metric_fields[field_name]
+                            if info.get("metric_kind") == "counter":
+                                key = (concrete_name, field_name, state_combo)
+                                counter_state[key] = counter_state.get(key, float(10 + combo_idx))
+                                counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
+                                value = counter_state[key]
+                            else:
+                                denominator = (
+                                    _ratio_denominator(info)
+                                    or _static_invariant_denominator(field_name, metric_fields)
+                                )
+                                ceiling = gauge_values.get(denominator) if denominator else None
+                                value = _gauge_value(
+                                    field_name, hour, combo_idx, rng,
+                                    ceiling=ceiling, now_epoch=ts.timestamp(),
+                                )
+                                gauge_values[field_name] = value
+                            doc[field_name] = round(value, 4)
                         doc.setdefault("message", _log_message(doc, combo_idx))
                     yield concrete_name, doc
             previous_ts = ts
