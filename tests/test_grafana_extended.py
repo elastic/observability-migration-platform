@@ -1402,6 +1402,87 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertIn("time=?_tend", instant)
         self.assertNotIn("step=", instant)
 
+    def test_instant_table_panel_emits_native_instant_query(self):
+        """Issue #102: a Grafana target with ``instant: true`` on a table-format
+        panel must emit a native PROMQL *instant* query (``time=?_tend``), not a
+        ``step=`` range query, so the migrated datatable shows one row per group
+        (the current value) instead of a series over time."""
+        panel = _make_panel(
+            1, "sum by (http.route) (rate(http_requests_total[5m]))",
+            panel_type="table",
+        )
+        panel["targets"][0]["instant"] = True
+        panel["targets"][0]["format"] = "table"
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "datatable")
+        self.assertIn("time=?_tend", esql["query"])
+        self.assertNotIn("step=", esql["query"])
+
+    def test_range_table_panel_keeps_step_query(self):
+        """A table panel WITHOUT ``instant`` stays a ``step=`` range query: it
+        is a normal range table, not an instant snapshot."""
+        panel = _make_panel(
+            1, "sum by (http.route) (rate(http_requests_total[5m]))",
+            panel_type="table",
+        )
+        panel["targets"][0]["format"] = "table"
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("step=", query)
+        self.assertNotIn("time=?_tend", query)
+
+    def test_build_native_promql_query_instant_datatable(self):
+        """``build_native_promql_query`` honors ``instant=True`` for
+        non-single-value types: emit ``time=?_tend`` regardless of ``kibana_type``."""
+        expr = "sum by (http.route) (rate(http_requests_total[5m]))"
+        ranged = panels.build_native_promql_query(
+            expr, index="metrics-*", kibana_type="datatable"
+        )
+        self.assertIn("step=", ranged)
+        self.assertNotIn("time=?_tend", ranged)
+        instant = panels.build_native_promql_query(
+            expr, index="metrics-*", kibana_type="datatable", instant=True
+        )
+        self.assertIn("time=?_tend", instant)
+        self.assertNotIn("step=", instant)
+
+    def test_build_native_promql_query_instant_timeseries_legend_drops_step(self):
+        """An instant query has no ``step`` column, so the ``_timeseries`` +
+        legend-label extraction branch must KEEP value + labels but NOT ``step``
+        (a ``KEEP step`` would reference a column the instant command never emits)."""
+        expr = "rate(http_requests_total[5m])"
+        instant = panels.build_native_promql_query(
+            expr, index="metrics-*",
+            legend_labels=["instance"], kibana_type="datatable",
+            instant=True,
+        )
+        self.assertIn("time=?_tend", instant)
+        self.assertNotIn("step=", instant)
+        keep_lines = [ln for ln in instant.splitlines() if "KEEP" in ln]
+        self.assertTrue(keep_lines, f"expected a KEEP pipe in: {instant}")
+        keep_line = keep_lines[0]
+        self.assertNotIn("step", keep_line)
+        self.assertIn("value", keep_line)
+        self.assertIn("instance", keep_line)
+
+    def test_build_native_promql_query_instant_static_legend_drops_step(self):
+        """The static-legend branch must also drop ``step`` from its KEEP on an
+        instant query (same missing-column hazard as the label-extraction path)."""
+        expr = "rate(http_requests_total[5m])"
+        instant = panels.build_native_promql_query(
+            expr, index="metrics-*",
+            legend_labels=[], kibana_type="datatable",
+            legend_format="My Series", instant=True,
+        )
+        self.assertIn("time=?_tend", instant)
+        keep_lines = [ln for ln in instant.splitlines() if "KEEP" in ln]
+        self.assertTrue(keep_lines, f"expected a KEEP pipe in: {instant}")
+        self.assertNotIn("step", keep_lines[0])
+        self.assertIn("label", keep_lines[0])
+
 
 # =========================================================================
 # Display Enrichment
