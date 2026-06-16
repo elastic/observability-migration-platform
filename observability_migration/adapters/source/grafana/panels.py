@@ -1053,49 +1053,6 @@ def _extract_promql_metric_names(promql_expr):
     return seen
 
 
-def _native_promql_has_distinct_metric_arithmetic(promql_expr):
-    """Return True if *promql_expr* contains an arithmetic binary op
-    (``+``/``-``/``*``/``/``/``%``/``^``) between two operands that
-    reference different metric names.
-
-    Elastic's PROMQL preview can't infer the implicit 1:1 label-set
-    match Prometheus uses for such expressions and returns an empty
-    result or 400. The translator should detect this and fall through
-    to ES|QL translation, which performs the arithmetic at the bucket
-    level with explicit groupings.
-
-    Explicit ``ignoring(...)`` / ``on(...)`` modifiers are already
-    rejected by ``can_use_native_promql``; here we catch the
-    implicit-match case where the user just wrote ``A / B``. Grafana
-    template variables (``$var`` / ``${var}`` / ``[[var]]``) are
-    excluded from the metric-name extraction so panels like
-    ``up * $scale`` still route through native PROMQL.
-    """
-    if not promql_expr:
-        return False
-    sanitized = _strip_promql_string_literals(promql_expr)
-    # Replace label-set bodies so their contents don't leak operators.
-    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
-    # Remove Grafana template variable tokens so they don't get
-    # mistaken for metric references.
-    sanitized_no_vars = sanitized
-    for pattern in (
-        _GRAFANA_VAR_BRACED_RE,
-        _GRAFANA_VAR_BRACKET_RE,
-        _GRAFANA_VAR_PLAIN_RE,
-    ):
-        sanitized_no_vars = pattern.sub(" ", sanitized_no_vars)
-    metrics = _extract_promql_metric_names(sanitized_no_vars)
-    if len(metrics) < 2:
-        return False
-    # If the expression contains any arithmetic operator AND references
-    # two or more distinct metric names, treat it as distinct-metric
-    # arithmetic that Elastic's PROMQL preview can't safely evaluate.
-    if re.search(r"[+\-*/%^]", sanitized_no_vars):
-        return True
-    return False
-
-
 def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
     """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
     to a metric that the resolver has *positively* identified as
@@ -1179,15 +1136,6 @@ def _translate_panel_native_promql(
     # counters that don't end in ``_total`` (Elastic's auto-mapping
     # treats them as gauges).
     if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
-        return None
-    # Gate: Elastic's PROMQL preview can't perform implicit label-set
-    # match for arithmetic between two distinct instant vectors (e.g.
-    # ``A / B`` without ``on()``). Fall through to ES|QL translation,
-    # which does the math at the bucket level. Surfaced by reviewing
-    # uploaded NEF panels like ``Disk Space Used Basic`` that rendered
-    # "No results found" because the native PROMQL command rejected
-    # the query.
-    if _native_promql_has_distinct_metric_arithmetic(expr):
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
