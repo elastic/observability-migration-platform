@@ -1071,6 +1071,8 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
         value = match.group(3) or match.group(6) or ""
         if not field_name or _should_skip_field(field_name):
             continue
+        if operator in {"LIKE", "RLIKE"} and _is_parenthesized_negated_filter(query, match.start()):
+            continue
         if operator in {"!=", "NOT LIKE", "NOT RLIKE"}:
             continue
         if operator == "RLIKE":
@@ -1090,6 +1092,10 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
                 continue
             _append_required(values, normalized, value)
     return values, patterns
+
+
+def _is_parenthesized_negated_filter(query: str, field_start: int) -> bool:
+    return re.search(r"\bNOT\s*\(\s*$", query[:field_start], re.IGNORECASE) is not None
 
 
 def _add_dimension(dimensions: set[str], field_name: str, metrics: set[str]) -> None:

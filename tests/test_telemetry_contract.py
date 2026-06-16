@@ -807,6 +807,44 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertEqual(stream["required_patterns"]["service_name"], ["app_.*"])
         self.assertEqual(stream["fields"]["service_name"]["role"], "dimension")
 
+    def test_contract_skips_parenthesized_negated_rlike_filter_pattern(self):
+        # PromQL ``!~`` emits ``NOT (<field> RLIKE "...")``. That rejected regex
+        # must not become a required pattern, or the seeder will synthesize only
+        # values the panel immediately filters out.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                '| WHERE NOT (device RLIKE "rootfs")\n'
+                                                "| STATS v = AVG(node_filesystem_avail_bytes) BY "
+                                                "time_bucket = TBUCKET(5 minute), device"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertNotIn("device", stream["required_patterns"])
+        self.assertEqual(stream["fields"]["device"]["role"], "dimension")
+
     def test_contract_does_not_extract_duration_unit_as_metric(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

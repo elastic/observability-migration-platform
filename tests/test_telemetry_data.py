@@ -971,6 +971,16 @@ class ExpandPatternsTests(unittest.TestCase):
             for v in values:
                 self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
 
+    def test_one_or_more_flanked_literal_seeds_matching_value(self):
+        # ``.+`` requires at least one character, unlike ``.*``. Keep enough
+        # padding around the literal core that the seeded value still fullmatches.
+        pattern = ".+Foo.+"
+        values = _expand_patterns("service_name", [pattern])
+        self.assertTrue(values)
+        compiled = re.compile(pattern)
+        for v in values:
+            self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
+
     def test_relabeled_template_var_value_is_not_seeded_literally(self):
         # ``instance="$node:$port"`` is relabeled to ``label_node:label_port`` by the
         # migrator. That is not a real label value; seeding it produces series no

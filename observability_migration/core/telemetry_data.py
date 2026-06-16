@@ -702,12 +702,13 @@ def _expand_single_pattern(field_name: str, pattern: str) -> list[str]:
     suffix_glob = re.fullmatch(r"(?:\.\*|\.\+|\*)(.+)", body)
     if suffix_glob and _LITERALISH_RE.fullmatch(suffix_glob.group(1)):
         return [suffix_glob.group(1)]
-    # Literal core flanked by globs (``.*Foo.*``) — a substring-match filter. The
-    # literal alone fullmatches the pattern, so emit it rather than a default that
-    # would not match.
-    flanked = re.fullmatch(r"(?:\.\*|\.\+|\*)(.+?)(?:\.\*|\.\+|\*)", body)
-    if flanked and _LITERALISH_RE.fullmatch(flanked.group(1)):
-        return [flanked.group(1)]
+    # Literal core flanked by globs (``.*Foo.*`` / ``.+Foo.+``). Preserve the
+    # zero-width ``.*`` case, but add padding when ``.+`` requires a character.
+    flanked = re.fullmatch(r"(\.\*|\.\+|\*)(.+?)(\.\*|\.\+|\*)", body)
+    if flanked and _LITERALISH_RE.fullmatch(flanked.group(2)):
+        left = "x" if flanked.group(1) == ".+" else ""
+        right = "x" if flanked.group(3) == ".+" else ""
+        return [f"{left}{flanked.group(2)}{right}"]
     # Plain literal: keep it only when it is genuinely literal. Any residual regex
     # metacharacter means we could not extract a clean value, so fall back to a
     # default rather than seed a value containing ``[``/``+``/``|`` etc.
