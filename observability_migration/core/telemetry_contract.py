@@ -861,6 +861,7 @@ def _extract_metrics(query: str) -> dict[str, str]:
 
 
 _IS_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+(?:NOT\s+)?NULL\b", re.IGNORECASE)
+_NEGATION_PAREN_TOKENS_RE = re.compile(r"\bNOT\b|\(|\)", re.IGNORECASE)
 
 
 def _extract_is_null_fields(query: str) -> set[str]:
@@ -1095,7 +1096,31 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
 
 
 def _is_parenthesized_negated_filter(query: str, field_start: int) -> bool:
-    return re.search(r"\bNOT\s*\(\s*$", query[:field_start], re.IGNORECASE) is not None
+    """Return whether the current filter token sits inside ``NOT (...)``.
+
+    This must stay true for every matcher in a negated group, not only the
+    first one (e.g. ``NOT (a RLIKE "x" OR a RLIKE "y")``).
+    """
+    stack: list[bool] = []
+    pending_not_end = -1
+    for match in _NEGATION_PAREN_TOKENS_RE.finditer(query[:field_start]):
+        token = match.group(0).upper()
+        if token == "NOT":
+            pending_not_end = match.end()
+            continue
+        if token == "(":
+            is_negated = (
+                pending_not_end != -1
+                and not query[pending_not_end:match.start()].strip()
+            )
+            stack.append(is_negated)
+            pending_not_end = -1
+            continue
+        # Closing parenthesis.
+        if stack:
+            stack.pop()
+        pending_not_end = -1
+    return any(stack)
 
 
 def _add_dimension(dimensions: set[str], field_name: str, metrics: set[str]) -> None:
