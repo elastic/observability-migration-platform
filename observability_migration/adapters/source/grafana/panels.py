@@ -1205,7 +1205,16 @@ def _translate_panel_native_promql(
     # #102). ``_target_summary_mode`` already encodes that policy for the ES|QL
     # path, so reuse it for parity; ``kibana_type in (metric, gauge)`` keeps the
     # existing single-value behavior even when the panel type doesn't map there.
-    instant = _target_summary_mode(panel_type, target) or kibana_type in ("metric", "gauge")
+    #
+    # But never let an instant query reach an XY (line/bar/area) spec: those bind
+    # the x-axis to the ``step`` time column, which an instant query does NOT emit
+    # (phantom axis / 400 — the #127 failure mode). ``_target_summary_mode``
+    # returns True unconditionally for ``bargauge`` (→ ``bar``), so without this
+    # guard a Prometheus ``bargauge`` panel would regress to a broken bar chart.
+    instant = kibana_type in ("metric", "gauge") or (
+        _target_summary_mode(panel_type, target)
+        and kibana_type not in ("line", "bar", "area")
+    )
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,

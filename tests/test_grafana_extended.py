@@ -1483,6 +1483,33 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("step", keep_lines[0])
         self.assertIn("label", keep_lines[0])
 
+    def test_bargauge_panel_stays_range_query_on_native_path(self):
+        """Regression (#135 review): ``_target_summary_mode`` returns True
+        unconditionally for ``bargauge``, but ``bargauge`` maps to the XY
+        ``bar`` kibana type whose spec x-axes on the ``step`` time column. An
+        instant query emits no ``step``, so widening ``instant`` to summary-mode
+        must NOT reach ``bar``: doing so binds the x-axis to a phantom ``step``
+        column (the #127 failure mode). A native-path ``bargauge`` must keep its
+        ``step=`` range query and a valid ``step`` x-axis dimension."""
+        panel = _make_panel(
+            1, "rate(http_requests_total[5m])", panel_type="bargauge",
+        )
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        query = esql["query"]
+        # Only assert the phantom-axis invariant when the native PROMQL path
+        # actually handled this panel (PROMQL command emitted).
+        if query.startswith("PROMQL"):
+            self.assertIn("step=", query)
+            self.assertNotIn("time=?_tend", query)
+            dimension = esql.get("dimension") or {}
+            if dimension.get("field") == "step":
+                self.assertIn(
+                    "step=", query,
+                    "bar x-axis binds to step but query emits no step column",
+                )
+
 
 # =========================================================================
 # Display Enrichment
