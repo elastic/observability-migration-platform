@@ -7,18 +7,23 @@
 # Usage: bash upload-all.sh
 #
 # Requires:
-# - serverless_creds.env at /Users/subhamsarkar/mig-to-kbn/serverless_creds.env
-#   exporting ELASTICSEARCH_ENDPOINT, KIBANA_ENDPOINT, KEY
-# - The mig-to-kbn checkout used by run-all-parity.sh
+# - Credentials exporting ELASTICSEARCH_ENDPOINT, KIBANA_ENDPOINT, KEY —
+#   either already in the environment, or in a creds file at $CREDS_FILE
+#   (defaults to serverless_creds.env in the repo root).
+# - A .venv in the repo root (override the interpreter with $PYTHON).
 set -euo pipefail
 
-WORKTREE=/Users/subhamsarkar/.config/superpowers/worktrees/mig-to-kbn/semantic-first-grafana-contract
-RIG=$WORKTREE/parity-rig
+# Derive paths from this script's location: it lives in <repo>/parity-rig.
+RIG=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WORKTREE=$(cd "$RIG/.." && pwd)
 
-PYTHON=$WORKTREE/.venv/bin/python
-set -a
-source /Users/subhamsarkar/mig-to-kbn/serverless_creds.env
-set +a
+PYTHON="${PYTHON:-$WORKTREE/.venv/bin/python}"
+CREDS_FILE="${CREDS_FILE:-$WORKTREE/serverless_creds.env}"
+if [[ -f "$CREDS_FILE" ]]; then
+  set -a
+  source "$CREDS_FILE"
+  set +a
+fi
 
 if [[ -z "${KIBANA_ENDPOINT:-}" ]]; then
   echo "ERROR: KIBANA_ENDPOINT not set in serverless_creds.env" >&2

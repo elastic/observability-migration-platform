@@ -45,7 +45,14 @@ REPORT_PATH = os.environ.get(
 ESQL_INDEX = os.environ.get("ESQL_INDEX", "metrics-express.prometheus-parity")
 WINDOW_MINUTES = int(os.environ.get("PARITY_WINDOW_MINUTES", "10"))
 STEP_SECONDS = int(os.environ.get("PARITY_STEP_SECONDS", "60"))
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/Users/subhamsarkar/mig-to-kbn/parity-rig/reports"))
+OUTPUT_DIR = Path(
+    os.environ.get(
+        "OUTPUT_DIR",
+        # Default to ``parity-rig/reports`` relative to this file
+        # (parity-rig/harness/parity.py).
+        str(Path(__file__).resolve().parent.parent / "reports"),
+    )
+)
 
 ES_HEADERS = {"Authorization": f"ApiKey {ES_KEY}", "Content-Type": "application/json"}
 
