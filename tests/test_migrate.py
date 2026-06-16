@@ -392,6 +392,41 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('cpu{host=?host, service=~?services}', query)
         self.assertNotIn('=~".*"', query)
 
+    def test_native_promql_equality_matcher_on_match_all_var_uses_regex(self):
+        """PR #133 review: on the native PROMQL path an equality matcher
+        (``label="$var"``) whose variable defaults its control to the regex
+        match-all (".*") must be loosened to ``label=~?var`` so the default
+        selects every series, instead of ``label=?var`` which exact-matches the
+        literal string ".*" and renders empty on first load."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+        )
+
+        runtime_features = {PROMQL_LABEL_MATCHER_PARAMS: True}
+
+        # Without a regex-default declaration the exact operator is preserved.
+        plain = panels.build_native_promql_query(
+            'cpu{host="$host"}', index="metrics-*", runtime_features=runtime_features
+        )
+        self.assertIn("cpu{host=?host}", plain)
+
+        # Declared as regex-default -> equality is loosened to a regex match.
+        loosened = panels.build_native_promql_query(
+            'cpu{host="$host"}',
+            index="metrics-*",
+            runtime_features=runtime_features,
+            regex_default_params={"host"},
+        )
+        self.assertIn("cpu{host=~?host}", loosened)
+        # A regex matcher on a non-match-all var is untouched.
+        mixed = panels.build_native_promql_query(
+            'cpu{host="$host",svc=~"$svc"}',
+            index="metrics-*",
+            runtime_features=runtime_features,
+            regex_default_params={"host"},
+        )
+        self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
+
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
 
@@ -4397,6 +4432,207 @@ class TranslatorRegressionTests(unittest.TestCase):
             "Dropped variable-driven label filters during migration",
             result.warnings,
         )
+
+    def test_equality_matcher_on_match_all_var_emits_regex_not_literal(self):
+        """PR #133 review: an includeAll variable defaults its binding control
+        to the regex match-all (".*"). An equality matcher (``field == ?var``)
+        would compare the field against the literal string ".*" and render
+        empty on first load, so it must be emitted as a regex match instead so
+        the match-all default selects every series."""
+        from observability_migration.adapters.source.grafana.promql import (
+            _grafana_param_value,
+            _matcher_to_esql,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        matcher = {"label": "host", "op": "=", "value": _grafana_param_value("host")}
+
+        # No match-all default declared -> exact equality preserved.
+        self.assertEqual(
+            _matcher_to_esql(matcher, self.resolver),
+            f"{self.resolver.resolve_label('host')} == ?host",
+        )
+
+        # Declared as a regex-default param -> equality becomes a regex match.
+        self.rule_pack._regex_default_param_names = {"host"}
+        self.assertEqual(
+            _matcher_to_esql(matcher, self.resolver),
+            f"{self.resolver.resolve_label('host')} RLIKE ?host",
+        )
+
+    def test_dashboard_equality_matcher_on_include_all_var_renders_regex(self):
+        """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
+        includeAll must compile to ``RLIKE ?var`` (not ``== ?var``) so the
+        control's ".*" default selects every series on first load (PR #133)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig()
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Equality All",
+            "uid": "equality-all",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": True,
+                        "includeAll": True,
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$host"})'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
+        self.assertIn("RLIKE ?host", rendered)
+        self.assertNotIn("== ?host", rendered)
+        controls = doc["dashboards"][0].get("controls", [])
+        binding = next(c for c in controls if c.get("variable_name") == "host")
+        self.assertEqual(binding["default"], ".*")
+
+    def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
+        """End-to-end native PROMQL: a ``{label="$var"}`` equality matcher whose
+        variable is includeAll must render as ``label=~?var`` so the control's
+        ".*" default selects every series on first load (PR #133)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Native Equality All",
+            "uid": "native-equality-all",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": True,
+                        "includeAll": True,
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$host"})'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
+        self.assertIn("host=~?host", rendered)
+        self.assertNotIn("host=?host", rendered)
+
+    def test_dashboard_equality_matcher_on_concrete_var_keeps_exact_match(self):
+        """A variable with a concrete ``current`` value defaults its control to
+        that value, so an equality matcher must stay exact (``== ?var``) and
+        not be loosened into a regex match (PR #133)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig()
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Equality Concrete",
+            "uid": "equality-concrete",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": False,
+                        "current": {"text": "host-01", "value": "host-01"},
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$host"})'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
+        self.assertIn("== ?host", rendered)
+        self.assertNotIn("RLIKE ?host", rendered)
+        controls = doc["dashboards"][0].get("controls", [])
+        binding = next(c for c in controls if c.get("variable_name") == "host")
+        self.assertEqual(binding["default"], "host-01")
 
     def test_dashboard_emits_binding_control_for_custom_variable_param(self):
         """Issue #131: a Grafana ``custom`` variable referenced as ?var in a

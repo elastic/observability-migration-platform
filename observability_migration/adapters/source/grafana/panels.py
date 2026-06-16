@@ -643,14 +643,25 @@ def _promql_label_matcher_has_template_variable(expr):
 
 
 _NATIVE_PROMQL_LABEL_MATCHER_RE = re.compile(
-    r"(?P<prefix>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*)"
+    r"(?P<label>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*)"
+    r"(?P<op>=~|!~|=|!=)(?P<ws>\s*)"
     r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)(?P<suffix>\s*)$",
     re.DOTALL,
 )
 
 
-def _promql_label_matcher_vars_to_params(expr):
-    """Rewrite full-value Grafana label matcher variables to native params."""
+def _promql_label_matcher_vars_to_params(expr, regex_default_params=None):
+    """Rewrite full-value Grafana label matcher variables to native params.
+
+    ``regex_default_params`` names the variables whose binding control defaults
+    to the regex match-all (".*"). Exact-equality matchers (``label="$var"``)
+    on those variables are loosened to a regex match (``label=~?var``) so the
+    ".*" default matches every series on first load instead of comparing the
+    label against the literal string ".*" (PR #133 review). This mirrors
+    Grafana auto-rewriting ``label="$var"`` to ``label=~"..."`` for All/multi
+    variables and matches the ES|QL path's ``_matcher_to_esql`` handling.
+    """
+    regex_default_params = regex_default_params or frozenset()
 
     def rewrite_selector(selector_text):
         parts = []
@@ -664,7 +675,13 @@ def _promql_label_matcher_vars_to_params(expr):
             if not var_name or var_name.startswith("__"):
                 parts.append(part)
                 continue
-            parts.append(f"{matcher.group('prefix')}?{var_name}{matcher.group('suffix')}")
+            op = matcher.group("op")
+            if op == "=" and var_name in regex_default_params:
+                op = "=~"
+            parts.append(
+                f"{matcher.group('label')}{op}{matcher.group('ws')}"
+                f"?{var_name}{matcher.group('suffix')}"
+            )
             changed = True
         return ", ".join(parts) if changed else selector_text
 
@@ -780,7 +797,9 @@ def _promql_has_known_server_bug(expr):
     return False
 
 
-def _clean_promql_for_native_with_state(expr, runtime_features=None):
+def _clean_promql_for_native_with_state(
+    expr, runtime_features=None, regex_default_params=None
+):
     """Strip Grafana template variables from a PromQL expression so it can be
     sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
     had_bare_variable = False
@@ -800,7 +819,7 @@ def _clean_promql_for_native_with_state(expr, runtime_features=None):
     expr = re.sub(r"=~'([^']*)'", r'=~"\1"', expr)
 
     if is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS):
-        expr = _promql_label_matcher_vars_to_params(expr)
+        expr = _promql_label_matcher_vars_to_params(expr, regex_default_params)
 
     # Replace $variable references inside label selectors with wildcards.
     expr = re.sub(rf'=~"\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*"', '=~".*"', expr)
@@ -835,8 +854,12 @@ def _clean_promql_for_native_with_state(expr, runtime_features=None):
     return expr, had_bare_variable
 
 
-def _clean_promql_for_native(expr, runtime_features=None):
-    cleaned, _ = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
+def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=None):
+    cleaned, _ = _clean_promql_for_native_with_state(
+        expr,
+        runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
+    )
     return cleaned
 
 
@@ -881,7 +904,7 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False):
+                              instant=False, regex_default_params=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -905,7 +928,11 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     """
     if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
-    cleaned = _clean_promql_for_native(promql_expr, runtime_features=runtime_features)
+    cleaned = _clean_promql_for_native(
+        promql_expr,
+        runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
+    )
 
     if kibana_type in ("metric", "gauge"):
         if instant:
@@ -1193,9 +1220,11 @@ def _translate_panel_native_promql(
     legend_labels = _extract_legend_labels(legend_format)
 
     index = datasource_index or "metrics-prometheus-*"
+    regex_default_params = getattr(rule_pack, "_regex_default_param_names", frozenset())
     cleaned_expr, had_bare_variable = _clean_promql_for_native_with_state(
         expr,
         runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
     if kibana_type in ("metric", "gauge") and group_cols:
@@ -1205,7 +1234,8 @@ def _translate_panel_native_promql(
                                              kibana_type=kibana_type,
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
-                                             instant=kibana_type in ("metric", "gauge"))
+                                             instant=kibana_type in ("metric", "gauge"),
+                                             regex_default_params=regex_default_params)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1328,7 +1358,13 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        cleaned, bare = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
+        cleaned, bare = _clean_promql_for_native_with_state(
+            expr,
+            runtime_features=runtime_features,
+            regex_default_params=getattr(
+                rule_pack, "_regex_default_param_names", frozenset()
+            ),
+        )
         had_bare_variable = had_bare_variable or bare
         target_fragments.append(_parse_fragment(cleaned or expr))
 
@@ -3518,6 +3554,26 @@ def _variable_default_selection(variable):
     return _MATCH_ALL_SELECTION
 
 
+def _collect_regex_default_param_names(variables):
+    """Names of template variables whose binding control defaults to the regex
+    match-all (".*").
+
+    ``_matcher_to_esql`` emits equality matchers (``field == ?var``) on these
+    params as regex matches instead, so the control's ".*" default actually
+    selects every series on first load rather than comparing the field against
+    the literal string ".*" (PR #133 review). Keyed by Grafana variable name,
+    which is exactly the ES|QL parameter name the matcher references.
+    """
+    names = set()
+    for var in variables:
+        if not isinstance(var, dict):
+            continue
+        name = var.get("name")
+        if name and _variable_default_selection(var) == _MATCH_ALL_SELECTION:
+            names.add(name)
+    return names
+
+
 def _build_esql_param_control(variable_name, label, field_name, data_view, default=None):
     """Build an ES|QL parameter-binding control (issue #107).
 
@@ -4888,6 +4944,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
 
     variables = dashboard.get("templating", {}).get("list", [])
     control_variable_names = _pre_scan_control_variables(variables)
+    # Record which ``?var`` params default to the regex match-all so both the
+    # ES|QL and native PROMQL matcher emitters loosen equality matchers on
+    # All/multi variables into regex matches and render data on first load
+    # (PR #133 review). Stored on the shared rule pack so it is reachable from
+    # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
+    # explicitly into the native path. Set before any panel translation runs.
+    rule_pack._regex_default_param_names = _collect_regex_default_param_names(variables)
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)

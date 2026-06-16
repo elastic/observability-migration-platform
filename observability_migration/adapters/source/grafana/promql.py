@@ -967,6 +967,23 @@ def _target_binds_label_matcher_params(resolver):
     )
 
 
+def _param_binds_regex_default(resolver, param_name):
+    """Whether *param_name*'s binding control defaults to the regex match-all.
+
+    Grafana ``All``/multi template variables with no single ``current`` value
+    bind their ES|QL control to the regex match-all (".*"). Equality matchers
+    on such a param must be emitted as regex matches so the default selects
+    every series instead of comparing the field against the literal string
+    ".*" (PR #133 review). The set is populated per dashboard on the shared
+    rule pack in ``translate_dashboard``; absent it (single-expression
+    translation, no dashboard context) equality matchers keep exact-match
+    semantics.
+    """
+    rule_pack = getattr(resolver, "_rule_pack", None)
+    names = getattr(rule_pack, "_regex_default_param_names", None)
+    return bool(names) and param_name in names
+
+
 def _matcher_to_esql(matcher, resolver):
     label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
     op = matcher["op"]
@@ -990,8 +1007,22 @@ def _matcher_to_esql(matcher, resolver):
         # dropping it (issues #64 / #131). The matching control is guaranteed
         # by ``_ensure_param_controls`` during dashboard assembly.
         if op == "=":
+            if _param_binds_regex_default(resolver, param_name):
+                # The binding control defaults this param to the regex
+                # match-all (".*") because the Grafana variable is All/multi
+                # with no single ``current`` value. ES|QL ``==`` would compare
+                # the field against the literal string ".*" and match nothing
+                # on first load (PR #133 review), so emit a regex match: the
+                # match-all default then selects every series, mirroring
+                # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
+                # for All/multi variables. (allValue-as-regex equality is a
+                # narrower residual not covered here.)
+                return f"{label} RLIKE ?{param_name}"
             return f"{label} == ?{param_name}"
         if op == "!=":
+            # Left as ``!=``: with the match-all default the param resolves to
+            # ".*" and ``field != ".*"`` still matches every series (a safe,
+            # non-empty default), unlike the ``==`` case which would be empty.
             return f"{label} != ?{param_name}"
         if op == "=~":
             return f"{label} RLIKE ?{param_name}"
