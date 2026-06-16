@@ -847,8 +847,10 @@ def _extract_metrics(query: str) -> dict[str, str]:
     # ``setdefault`` keeps any stronger classification an aggregation already gave
     # the field in this query; explicit label evidence later flips genuine
     # dimensions back via ``_apply_dimension_evidence``.
+    derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
     for field_name in _extract_is_not_null_fields(query):
-        metrics.setdefault(field_name, "gauge")
+        if field_name not in derived_aliases:
+            metrics.setdefault(field_name, "gauge")
 
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
     # computed/legend alias (e.g. ``EVAL CPU = node_pressure_cpu_..._A``), not a
@@ -901,6 +903,63 @@ def _eval_assigned_names(query: str) -> set[str]:
             if name:
                 names.add(name)
     return names
+
+
+def _stats_derived_assigned_names(query: str) -> set[str]:
+    """Names introduced by ``STATS <alias> = ...`` assignments.
+
+    A ``STATS`` left-hand side is often a source metric reused as the output
+    column name (``m = AVG(m)``), so do not blanket-drop every alias. Only treat
+    it as derived when the alias is absent from the right-hand side's source
+    field candidates, which covers formula aliases such as ``q1 = AVG(redis...)``.
+    """
+    names: set[str] = set()
+    for stage in re.findall(r"(?:^|\|)\s*STATS\s+(.+?)(?=\n\s*\||\|(?!\|)|$)", query, re.IGNORECASE | re.DOTALL):
+        assignment_clause = _before_top_level_by(stage)
+        for assignment in _split_top_level(assignment_clause):
+            lhs, sep, rhs = assignment.partition("=")
+            if not sep:
+                continue
+            name = _normalize_field(lhs.strip())
+            if not name or _should_skip_field(name):
+                continue
+            rhs_fields = set(_extract_query_field_candidates(rhs))
+            if name not in rhs_fields:
+                names.add(name)
+    return names
+
+
+def _before_top_level_by(stage: str) -> str:
+    """Return the part of a ``STATS`` stage before its top-level ``BY`` clause."""
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(stage):
+        char = stage[i]
+        if quote:
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in {'"', "'", "`"}:
+            quote = char
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            i += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0 and stage[i : i + 2].upper() == "BY":
+            before = stage[i - 1] if i > 0 else " "
+            after = stage[i + 2] if i + 2 < len(stage) else " "
+            if before.isspace() and after.isspace():
+                return stage[:i].rstrip()
+        i += 1
+    return stage
 
 
 _RATIO_RE = re.compile(
@@ -958,6 +1017,7 @@ def _extract_dimensions(query: str) -> set[str]:
             dimensions.add(field_name)
         return dimensions
     metrics = set(_extract_metrics(query))
+    derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
     where_pattern = re.compile(
         rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+LIKE|LIKE|NOT\s+RLIKE|RLIKE)\s*(?:\"|\(|-?\d|TRUE\b|FALSE\b)",
         re.IGNORECASE | re.DOTALL,
@@ -967,7 +1027,9 @@ def _extract_dimensions(query: str) -> set[str]:
         _add_dimension(dimensions, field_name, metrics)
 
     for match in where_pattern.finditer(query):
-        _add_dimension(dimensions, match.group(1), metrics)
+        field_name = _normalize_field(match.group(1))
+        if field_name not in derived_aliases:
+            _add_dimension(dimensions, field_name, metrics)
 
     # COUNT_DISTINCT arguments are dimension fields being counted, not numeric metrics.
     for match in re.finditer(rf"\bCOUNT_DISTINCT\(\s*({_IDENT_RE})\s*\)", query, re.IGNORECASE):

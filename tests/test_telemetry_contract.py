@@ -767,6 +767,51 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("pod", fields)
         self.assertEqual(fields["pod"]["role"], "dimension")
 
+    def test_contract_does_not_seed_post_stats_null_guard_aliases(self):
+        # Datadog formula queries null-guard aggregation aliases after ``STATS``.
+        # Those aliases are derived columns, not source telemetry fields; seeding
+        # them would pollute the synthetic stream with phantom metric columns.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS q1 = AVG(redis.mem.used), "
+                                                "q2 = AVG(redis.mem.maxmemory) BY host.name\n"
+                                                "| WHERE q1 IS NOT NULL AND q2 IS NOT NULL\n"
+                                                "| EVAL value = CASE(q2 == 0, NULL, ((100 * q1) / q2))\n"
+                                                "| WHERE value IS NOT NULL\n"
+                                                "| WHERE value > 90.0"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("redis.mem.used", fields)
+        self.assertIn("redis.mem.maxmemory", fields)
+        self.assertNotIn("q1", fields)
+        self.assertNotIn("q2", fields)
+        self.assertNotIn("value", fields)
+        self.assertEqual(fields["host.name"]["role"], "dimension")
+
     def test_contract_captures_rlike_filter_pattern(self):
         # ``WHERE <dimension> RLIKE "app_.*"`` must yield a required pattern so
         # the seeder synthesizes a matching dimension value; otherwise the
