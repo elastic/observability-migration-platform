@@ -108,6 +108,60 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     return template
 
 
+def _seed_metric_fields(
+    doc: dict[str, Any],
+    metric_fields: dict[str, dict[str, Any]],
+    dimensions: dict[str, str],
+    le_order: list[str],
+    *,
+    concrete_name: str,
+    state_combo: tuple[int, int],
+    combo_idx: int,
+    effective_interval: int,
+    hour: float,
+    now_epoch: float,
+    rng: random.Random,
+    counter_state: dict[tuple[str, str, int], float],
+) -> None:
+    """Fill ``doc`` with a synthetic value for each metric field.
+
+    Shared by the metrics and logs/traces paths: logs/traces streams can still
+    carry numeric columns referenced by ``FROM`` aggregations or presence
+    filters, and those must be seeded so queries do not hit empty or unknown
+    columns. The Prometheus cumulative-histogram scaling is naturally a no-op off
+    the metrics path because non-metric families carry no ``le`` dimension.
+    """
+    gauge_values: dict[str, float] = {}
+    for field_name in _coherence_order(metric_fields):
+        info = metric_fields[field_name]
+        if info.get("metric_kind") == "counter":
+            key = (concrete_name, field_name, state_combo)
+            counter_state[key] = counter_state.get(key, float(10 + combo_idx))
+            counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
+            value = counter_state[key]
+            if field_name.endswith("_bucket") and "le" in dimensions:
+                # Prometheus cumulative histogram: bucket(le=v) counts all
+                # observations <= v, so it must be non-decreasing as le grows.
+                # Scale the per-series counter by the le rank (1-based) so higher
+                # buckets always dominate lower ones while each series stays
+                # monotonic in time.
+                rank, total = _le_rank(dimensions["le"], le_order)
+                if total:
+                    value *= rank / total
+        else:
+            denominator = (
+                _ratio_denominator(info)
+                or _static_invariant_denominator(field_name, metric_fields)
+            )
+            ceiling = gauge_values.get(denominator) if denominator else None
+            value = _gauge_value(
+                field_name, hour, combo_idx, rng,
+                ceiling=ceiling, now_epoch=now_epoch,
+            )
+            gauge_values[field_name] = value
+        doc[field_name] = round(value, 4)
+
+
 def generate_documents(
     contract: dict[str, Any],
     *,
@@ -164,62 +218,21 @@ def generate_documents(
                         "data_stream.namespace": namespace,
                         **dimensions,
                     }
-                    if is_metrics:
-                        gauge_values: dict[str, float] = {}
-                        for field_name in _coherence_order(metric_fields):
-                            info = metric_fields[field_name]
-                            if info.get("metric_kind") == "counter":
-                                key = (concrete_name, field_name, state_combo)
-                                counter_state[key] = counter_state.get(key, float(10 + combo_idx))
-                                counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
-                                value = counter_state[key]
-                                if field_name.endswith("_bucket") and "le" in dimensions:
-                                    # Prometheus cumulative histogram: bucket(le=v) counts
-                                    # all observations <= v, so it must be non-decreasing as
-                                    # le grows. Scale the per-series counter by the le rank
-                                    # (1-based) so higher buckets always dominate lower ones
-                                    # while each series stays monotonic in time.
-                                    rank, total = _le_rank(dimensions["le"], le_order)
-                                    if total:
-                                        value *= rank / total
-                                doc[field_name] = round(value, 4)
-                            else:
-                                denominator = (
-                                    _ratio_denominator(info)
-                                    or _static_invariant_denominator(field_name, metric_fields)
-                                )
-                                ceiling = gauge_values.get(denominator) if denominator else None
-                                value = _gauge_value(
-                                    field_name, hour, combo_idx, rng,
-                                    ceiling=ceiling, now_epoch=ts.timestamp(),
-                                )
-                                gauge_values[field_name] = value
-                                doc[field_name] = round(value, 4)
-                    else:
-                        # Logs/traces can still carry numeric columns referenced
-                        # by FROM aggregations or presence filters. If the
-                        # contract mapped them, seed them so queries do not hit
-                        # empty or unknown columns.
-                        gauge_values: dict[str, float] = {}
-                        for field_name in _coherence_order(metric_fields):
-                            info = metric_fields[field_name]
-                            if info.get("metric_kind") == "counter":
-                                key = (concrete_name, field_name, state_combo)
-                                counter_state[key] = counter_state.get(key, float(10 + combo_idx))
-                                counter_state[key] += _counter_increment(field_name, effective_interval, hour, rng)
-                                value = counter_state[key]
-                            else:
-                                denominator = (
-                                    _ratio_denominator(info)
-                                    or _static_invariant_denominator(field_name, metric_fields)
-                                )
-                                ceiling = gauge_values.get(denominator) if denominator else None
-                                value = _gauge_value(
-                                    field_name, hour, combo_idx, rng,
-                                    ceiling=ceiling, now_epoch=ts.timestamp(),
-                                )
-                                gauge_values[field_name] = value
-                            doc[field_name] = round(value, 4)
+                    _seed_metric_fields(
+                        doc,
+                        metric_fields,
+                        dimensions,
+                        le_order,
+                        concrete_name=concrete_name,
+                        state_combo=state_combo,
+                        combo_idx=combo_idx,
+                        effective_interval=effective_interval,
+                        hour=hour,
+                        now_epoch=ts.timestamp(),
+                        rng=rng,
+                        counter_state=counter_state,
+                    )
+                    if not is_metrics:
                         doc.setdefault("message", _log_message(doc, combo_idx))
                     yield concrete_name, doc
             previous_ts = ts
