@@ -841,13 +841,13 @@ def _extract_metrics(query: str) -> dict[str, str]:
             metrics[field_name] = "gauge"
 
     # Presence-only fields: a metric referenced solely via ``WHERE <field> IS
-    # [NOT] NULL`` (common for "presence" panels) is never aggregated, so the
+    # NOT NULL`` (common for "presence" panels) is never aggregated, so the
     # passes above miss it and the seeder omits the column — the live panel then
     # fails with ``Unknown column [<field>]``. Seed it as a gauge metric.
     # ``setdefault`` keeps any stronger classification an aggregation already gave
     # the field in this query; explicit label evidence later flips genuine
     # dimensions back via ``_apply_dimension_evidence``.
-    for field_name in _extract_is_null_fields(query):
+    for field_name in _extract_is_not_null_fields(query):
         metrics.setdefault(field_name, "gauge")
 
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
@@ -860,18 +860,24 @@ def _extract_metrics(query: str) -> dict[str, str]:
     return metrics
 
 
-_IS_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+(?:NOT\s+)?NULL\b", re.IGNORECASE)
+_IS_NOT_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+NOT\s+NULL\b", re.IGNORECASE)
 _NEGATION_PAREN_TOKENS_RE = re.compile(r"\bNOT\b|\(|\)", re.IGNORECASE)
 
 
-def _extract_is_null_fields(query: str) -> set[str]:
-    """Fields referenced by a ``<field> IS [NOT] NULL`` presence predicate.
+def _extract_is_not_null_fields(query: str) -> set[str]:
+    """Fields referenced by a ``<field> IS NOT NULL`` presence predicate.
 
     These exist in the source index — the panel filters on their presence — so
-    they must be seeded even when no aggregation reads them.
+    they must be seeded even when no aggregation reads them. Only ``IS NOT
+    NULL`` (presence) is captured: a pure ``IS NULL`` (absence) filter wants the
+    rows where the field is *missing*, and seeding it as an always-present gauge
+    would make that panel match zero rows — a fresh false-negative. Quoted spans
+    are blanked first so an ``IS NOT NULL`` substring inside a string literal
+    does not seed a phantom field.
     """
     fields: set[str] = set()
-    for match in _IS_NULL_RE.finditer(query):
+    scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query)
+    for match in _IS_NOT_NULL_RE.finditer(scan):
         field_name = _normalize_field(match.group(1))
         if field_name and not _should_skip_field(field_name):
             fields.add(field_name)
@@ -1072,9 +1078,14 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
         value = match.group(3) or match.group(6) or ""
         if not field_name or _should_skip_field(field_name):
             continue
-        if operator in {"LIKE", "RLIKE"} and _is_parenthesized_negated_filter(query, match.start()):
-            continue
         if operator in {"!=", "NOT LIKE", "NOT RLIKE"}:
+            continue
+        # A logically negated matcher (``NOT (field == "x")`` / ``NOT (field
+        # RLIKE "y")``) excludes its value, so seeding it would synthesize only
+        # rows the panel filters out. The Datadog ``LogNot`` path emits exactly
+        # this shape for ``==`` too, so the guard must cover equality, not only
+        # the regex/wildcard operators.
+        if _is_negated_filter(query, match.start()):
             continue
         if operator == "RLIKE":
             # RLIKE values are regexes; keep them verbatim so the seeder's
@@ -1095,15 +1106,23 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
     return values, patterns
 
 
-def _is_parenthesized_negated_filter(query: str, field_start: int) -> bool:
-    """Return whether the current filter token sits inside ``NOT (...)``.
+def _is_negated_filter(query: str, field_start: int) -> bool:
+    """Return whether the filter matcher at ``field_start`` is logically negated.
 
-    This must stay true for every matcher in a negated group, not only the
-    first one (e.g. ``NOT (a RLIKE "x" OR a RLIKE "y")``).
+    Covers both the ``NOT (<field> ...)`` grouping that PromQL ``!~`` and Datadog
+    ``NOT (...)`` emit, and a bare ``NOT <field> ...`` prefix. Negation must hold
+    for *every* matcher inside a negated group, not only the first one
+    (e.g. ``NOT (a RLIKE "x" OR a RLIKE "y")``).
+
+    Quoted spans are blanked first (same convention as the metric-name scan
+    elsewhere in this module) so a string literal containing ``NOT``/``(``/``)``
+    can neither spoof a negation nor leave a frame open that suppresses a real,
+    non-negated matcher later in the query.
     """
+    scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query[:field_start])
     stack: list[bool] = []
     pending_not_end = -1
-    for match in _NEGATION_PAREN_TOKENS_RE.finditer(query[:field_start]):
+    for match in _NEGATION_PAREN_TOKENS_RE.finditer(scan):
         token = match.group(0).upper()
         if token == "NOT":
             pending_not_end = match.end()
@@ -1111,7 +1130,7 @@ def _is_parenthesized_negated_filter(query: str, field_start: int) -> bool:
         if token == "(":
             is_negated = (
                 pending_not_end != -1
-                and not query[pending_not_end:match.start()].strip()
+                and not scan[pending_not_end:match.start()].strip()
             )
             stack.append(is_negated)
             pending_not_end = -1
@@ -1120,7 +1139,11 @@ def _is_parenthesized_negated_filter(query: str, field_start: int) -> bool:
         if stack:
             stack.pop()
         pending_not_end = -1
-    return any(stack)
+    if any(stack):
+        return True
+    # Bare ``NOT <field>``: a NOT with nothing but whitespace between it and the
+    # matcher (no intervening paren or other predicate).
+    return pending_not_end != -1 and not scan[pending_not_end:].strip()
 
 
 def _add_dimension(dimensions: set[str], field_name: str, metrics: set[str]) -> None:

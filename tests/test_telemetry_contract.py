@@ -882,6 +882,267 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertNotIn("device", stream["required_patterns"])
         self.assertEqual(stream["fields"]["device"]["role"], "dimension")
 
+    def test_contract_keeps_rlike_pattern_after_string_literal_with_not_paren(self):
+        # A prior comparison value containing ``NOT (`` must not open a negation
+        # frame that suppresses a genuinely non-negated RLIKE later in the query.
+        # The negation scan blanks quoted spans, so the ``device`` pattern is
+        # kept; without that guard it would be silently dropped — reintroducing
+        # the very false-negative this fix targets.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE msg == "reject NOT (allowed" '
+                                                'AND device RLIKE "eth.*"\n'
+                                                "| STATS v = COUNT(*) BY device"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertEqual(stream["required_patterns"]["device"], ["eth.*"])
+        self.assertEqual(stream["required_values"]["msg"], ["reject NOT (allowed"])
+
+    def test_contract_ignores_is_not_null_inside_string_literal(self):
+        # ``IS NOT NULL`` appearing inside a quoted value is not a presence
+        # predicate; the identifier before it must not be seeded as a phantom
+        # gauge field.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE host == "x phantom IS NOT NULL y"\n'
+                                                "| STATS v = COUNT(*) BY host"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertNotIn("phantom", stream["fields"])
+
+    def test_contract_does_not_seed_pure_is_null_absence_field(self):
+        # A pure ``IS NULL`` (absence) filter wants rows where the field is
+        # missing. Seeding it as an always-present gauge would make the panel
+        # match zero rows — a fresh false-negative — so only ``IS NOT NULL``
+        # (presence) is captured.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| WHERE kube_pod_info IS NULL\n"
+                                                "| STATS c = COUNT(*) BY namespace"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertNotIn("kube_pod_info", stream["fields"])
+
+    def test_contract_skips_parenthesized_negated_equality_filter(self):
+        # Datadog ``LogNot`` emits ``NOT (<field> == "x")`` for ordinary queries.
+        # The excluded value must not be seeded, exactly as for negated RLIKE.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE NOT (status == "active")\n'
+                                                "| STATS v = COUNT(*) BY status"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertNotIn("status", stream["required_values"])
+        self.assertEqual(stream["fields"]["status"]["role"], "dimension")
+
+    def test_contract_skips_bare_not_prefixed_rlike_filter(self):
+        # A bare ``NOT <field> RLIKE "x"`` (no grouping parens) is still a
+        # negation; its regex must not become a required pattern.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE NOT host RLIKE "db.*"\n'
+                                                "| STATS v = COUNT(*) BY host"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertNotIn("host", stream["required_patterns"])
+
+    def test_contract_keeps_positive_rlike_alongside_negated_group(self):
+        # When a positive matcher and a separate negated group coexist, only the
+        # negated one is dropped; the positive RLIKE is still seeded. Pins the
+        # paren-stack ``pop`` logic that a regression would otherwise mask.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE NOT (device RLIKE "rootfs") '
+                                                'AND service_name RLIKE "app_.*"\n'
+                                                "| STATS v = COUNT(*) BY device, service_name"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertNotIn("device", stream["required_patterns"])
+        self.assertEqual(stream["required_patterns"]["service_name"], ["app_.*"])
+
+    def test_contract_extracts_like_and_equality_but_not_negated_variants(self):
+        # The rewritten comparison regex must still honor ``==`` and ``LIKE`` and
+        # still skip ``!=`` and ``NOT LIKE`` for non-negated matchers.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                '| WHERE env == "prod" AND region != "eu" '
+                                                'AND service LIKE "web*" AND team NOT LIKE "ops*"\n'
+                                                "| STATS v = COUNT(*) BY env, region, service, team"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["logs-*"]
+        self.assertEqual(stream["required_values"]["env"], ["prod"])
+        self.assertEqual(stream["required_patterns"]["service"], ["web"])
+        self.assertNotIn("region", stream["required_values"])
+        self.assertNotIn("team", stream["required_patterns"])
+
     def test_contract_does_not_extract_duration_unit_as_metric(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
