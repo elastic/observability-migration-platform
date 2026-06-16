@@ -726,6 +726,87 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("node_pressure_cpu_waiting_seconds_total", fields)
         self.assertNotIn("CPU", fields)
 
+    def test_contract_seeds_presence_only_is_not_null_field_as_metric(self):
+        # A "presence" panel references a metric solely via ``WHERE <field> IS
+        # NOT NULL`` (no aggregation on it). Without capturing it the synthetic
+        # stream lacks the column and the live seed fails with
+        # ``Unknown column [<field>]``. It must be seeded as a gauge metric.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| WHERE kube_pod_info IS NOT NULL\n"
+                                                "| STATS c = COUNT_DISTINCT(pod)"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("kube_pod_info", fields)
+        self.assertEqual(fields["kube_pod_info"]["role"], "metric")
+        self.assertEqual(fields["kube_pod_info"]["metric_kind"], "gauge")
+        self.assertIn("pod", fields)
+        self.assertEqual(fields["pod"]["role"], "dimension")
+
+    def test_contract_captures_rlike_filter_pattern(self):
+        # ``WHERE <dimension> RLIKE "app_.*"`` must yield a required pattern so
+        # the seeder synthesizes a matching dimension value; otherwise the
+        # seeded values never match the regex and the panel returns zero rows.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                '| WHERE service_name RLIKE "app_.*"\n'
+                                                "| WHERE node_load1 IS NOT NULL\n"
+                                                "| STATS v = AVG(node_load1) BY "
+                                                "time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), "
+                                                "service_name"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertEqual(stream["required_patterns"]["service_name"], ["app_.*"])
+        self.assertEqual(stream["fields"]["service_name"]["role"], "dimension")
+
     def test_contract_does_not_extract_duration_unit_as_metric(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

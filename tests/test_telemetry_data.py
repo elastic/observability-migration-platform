@@ -960,6 +960,17 @@ class ExpandPatternsTests(unittest.TestCase):
             self.assertNotRegex(v, r"[\[\]()|+^$\\*.]", f"regex metachars leaked into value {v!r}")
             self.assertNotIn("sample", v)
 
+    def test_wildcard_flanked_literal_seeds_matching_substring_value(self):
+        # ``WHERE <dim> RLIKE ".*Foo.*"`` is a substring filter. A clean default
+        # (e.g. "checkout") does not contain "Foo", so the panel returns zero
+        # rows. The literal core must be seeded so a fullmatch succeeds.
+        for pattern in (".*Foo.*", "app_.+"):
+            values = _expand_patterns("service_name", [pattern])
+            self.assertTrue(values, f"no values for {pattern!r}")
+            compiled = re.compile(pattern)
+            for v in values:
+                self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
+
     def test_relabeled_template_var_value_is_not_seeded_literally(self):
         # ``instance="$node:$port"`` is relabeled to ``label_node:label_port`` by the
         # migrator. That is not a real label value; seeding it produces series no

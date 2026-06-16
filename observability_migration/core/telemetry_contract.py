@@ -840,6 +840,16 @@ def _extract_metrics(query: str) -> dict[str, str]:
         if not _should_skip_field(field_name):
             metrics[field_name] = "gauge"
 
+    # Presence-only fields: a metric referenced solely via ``WHERE <field> IS
+    # [NOT] NULL`` (common for "presence" panels) is never aggregated, so the
+    # passes above miss it and the seeder omits the column — the live panel then
+    # fails with ``Unknown column [<field>]``. Seed it as a gauge metric.
+    # ``setdefault`` keeps any stronger classification an aggregation already gave
+    # the field in this query; explicit label evidence later flips genuine
+    # dimensions back via ``_apply_dimension_evidence``.
+    for field_name in _extract_is_null_fields(query):
+        metrics.setdefault(field_name, "gauge")
+
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
     # computed/legend alias (e.g. ``EVAL CPU = node_pressure_cpu_..._A``), not a
     # source index field, even when a later ``STATS CPU = MAX(CPU)`` re-aggregates
@@ -848,6 +858,23 @@ def _extract_metrics(query: str) -> dict[str, str]:
         metrics.pop(alias, None)
 
     return metrics
+
+
+_IS_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+(?:NOT\s+)?NULL\b", re.IGNORECASE)
+
+
+def _extract_is_null_fields(query: str) -> set[str]:
+    """Fields referenced by a ``<field> IS [NOT] NULL`` presence predicate.
+
+    These exist in the source index — the panel filters on their presence — so
+    they must be seeded even when no aggregation reads them.
+    """
+    fields: set[str] = set()
+    for match in _IS_NULL_RE.finditer(query):
+        field_name = _normalize_field(match.group(1))
+        if field_name and not _should_skip_field(field_name):
+            fields.add(field_name)
+    return fields
 
 
 def _eval_assigned_names(query: str) -> set[str]:
@@ -1034,18 +1061,25 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
             _append_required(target, _normalize_field(field_name), value)
         return values, patterns
     comparison_re = re.compile(
-        rf"({_IDENT_RE})\s*(==|!=)\s*\"([^\"]*)\"|({_IDENT_RE})\s*(LIKE|NOT LIKE)\s*\"([^\"]*)\"",
+        rf"({_IDENT_RE})\s*(==|!=)\s*\"([^\"]*)\""
+        rf"|({_IDENT_RE})\s*(NOT\s+RLIKE|RLIKE|NOT\s+LIKE|LIKE)\s*\"([^\"]*)\"",
         re.IGNORECASE,
     )
     for match in comparison_re.finditer(query):
         field_name = _normalize_field(match.group(1) or match.group(4) or "")
-        operator = (match.group(2) or match.group(5) or "").upper()
+        operator = re.sub(r"\s+", " ", (match.group(2) or match.group(5) or "").upper())
         value = match.group(3) or match.group(6) or ""
         if not field_name or _should_skip_field(field_name):
             continue
-        if operator in {"!=", "NOT LIKE"}:
+        if operator in {"!=", "NOT LIKE", "NOT RLIKE"}:
             continue
-        if "LIKE" in operator:
+        if operator == "RLIKE":
+            # RLIKE values are regexes; keep them verbatim so the seeder's
+            # regex instantiator (``_expand_single_pattern``) can synthesize a
+            # fullmatching dimension value, exactly as it does for PromQL ``=~``.
+            _append_required(patterns, field_name, value)
+        elif operator == "LIKE":
+            # LIKE uses ``*`` wildcards; strip them to the literal stem.
             _append_required(patterns, field_name, value.strip("*"))
         else:
             _append_required(values, field_name, value)
