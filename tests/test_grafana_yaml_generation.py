@@ -334,6 +334,70 @@ for _dp in DASHBOARD_FILES:
 
 
 # ---------------------------------------------------------------------------
+# Test class 2b: instant / single-value panel regression (issue #127)
+# ---------------------------------------------------------------------------
+
+def _instant_panel(panel_type: str, expr: str = "time() - process_start_time_seconds") -> dict:
+    return {
+        "id": 1,
+        "type": panel_type,
+        "title": f"{panel_type} instant",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [{"refId": "A", "expr": expr, "instant": True}],
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
+    }
+
+
+class TestInstantSingleValuePanels(unittest.TestCase):
+    """Regression for issue #127.
+
+    A panel whose translated ES|QL collapses to a single row (no time
+    dimension, no group columns) must never be emitted as an XY chart whose
+    ``dimension`` (x-axis / xAccessor) references a ``time_bucket`` column the
+    query does not output. Such queries must degrade to a single-value
+    visualization. Exercised on the legacy ES|QL path (the default for
+    ``translate_panel``), which is where the phantom dimension was injected.
+    """
+
+    def _assert_no_phantom_dimension(self, panel: dict) -> None:
+        yp, result = translate_panel(panel)
+        self.assertIn(result.status, ("migrated", "migrated_with_warnings"))
+        esql = yp.get("esql", {})
+        ct = esql.get("type")
+        self.assertTrue(ct, f"panel produced no esql block: {result.status}")
+        query = esql.get("query", "")
+        output_cols = _final_output_columns(query)
+        # Legacy ES|QL (not native PROMQL): output columns are statically known.
+        self.assertTrue(output_cols, "expected legacy ES|QL with static columns")
+        spec_flds = _spec_fields(esql)
+        missing = spec_flds - output_cols
+        self.assertFalse(
+            missing,
+            f"{panel.get('title')!r} ({ct}): spec field(s) {sorted(missing)} "
+            f"absent from query output {sorted(output_cols)}; query={query!r}",
+        )
+        self.assertNotIn(
+            "time_bucket",
+            spec_flds,
+            f"{panel.get('title')!r} ({ct}): phantom time_bucket dimension emitted",
+        )
+
+    def test_stat_instant_uptime_maps_to_single_value(self):
+        self._assert_no_phantom_dimension(_instant_panel("stat"))
+
+    def test_gauge_instant_uptime_maps_to_single_value(self):
+        self._assert_no_phantom_dimension(_instant_panel("gauge"))
+
+    def test_timeseries_with_instant_query_degrades_to_metric(self):
+        panel = _instant_panel("timeseries")
+        self._assert_no_phantom_dimension(panel)
+        yp, _ = translate_panel(panel)
+        # A line chart cannot plot a single value with no x-axis; it must
+        # degrade to a metric visualization rather than invent a time axis.
+        self.assertEqual(yp["esql"]["type"], "metric")
+
+
+# ---------------------------------------------------------------------------
 # Test class 3: YAML shape snapshots for diverse-panels-test.json
 # ---------------------------------------------------------------------------
 

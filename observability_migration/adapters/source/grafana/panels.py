@@ -880,7 +880,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
-                              legend_format=None, runtime_features=None):
+                              legend_format=None, runtime_features=None,
+                              instant=False):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -905,14 +906,26 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
     cleaned = _clean_promql_for_native(promql_expr, runtime_features=runtime_features)
+
+    if kibana_type in ("metric", "gauge"):
+        if instant:
+            # A single-value panel is an instant query: evaluate the expression
+            # at a single point (the end of the dashboard time range) rather
+            # than over a range of steps. ``?_tend`` is the Kibana time-picker
+            # variable for that end timestamp, so ``time=?_tend`` returns one
+            # row = the current value, matching Grafana's instant/"last value"
+            # stat semantics. A ``step=`` range query here would return a series
+            # the metric viz then has to collapse, which is semantically fuzzy.
+            # Opt-in only: callers that post-process the ``step`` column (e.g.
+            # the alert ``LAST(value, step)`` reduction) must keep ``step=``.
+            return f'PROMQL index={index} time=?_tend value=({cleaned})'
+        return f'PROMQL index={index} step={_DEFAULT_NATIVE_PROMQL_STEP} value=({cleaned})'
+
     step = _DEFAULT_NATIVE_PROMQL_STEP
     base = (
         f'PROMQL index={index} step={step} '
         f'value=({cleaned})'
     )
-
-    if kibana_type in ("metric", "gauge"):
-        return base
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
@@ -1191,7 +1204,8 @@ def _translate_panel_native_promql(
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
                                              legend_format=legend_format,
-                                             runtime_features=runtime_features)
+                                             runtime_features=runtime_features,
+                                             instant=kibana_type in ("metric", "gauge"))
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1725,12 +1739,14 @@ def fallback_line_panel_rule(context):
         legend_labels=legend_labels if composite_template else None,
         warnings=primary.warnings,
     )
-    _append_unique(
-        primary.warnings,
-        f"Approximated as line chart (no direct {context.kibana_type} mapping)",
-    )
+    emitted_type = context.yaml_panel["esql"].get("type", "line")
+    if emitted_type == "line":
+        _append_unique(
+            primary.warnings,
+            f"Approximated as line chart (no direct {context.kibana_type} mapping)",
+        )
     context.handled = True
-    return "fell back to line panel"
+    return f"fell back to {emitted_type} panel"
 
 
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
@@ -3133,6 +3149,16 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
     if time_fields is None:
         time_fields = shape.time_fields
     dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    if dimension_field is None:
+        # The query collapses to a single row (no time dimension, no group
+        # columns), so it cannot be an XY chart — emitting one would bind the
+        # x-axis to a phantom ``time_bucket`` column the query never outputs
+        # (issue #127). Degrade gracefully to a single-value metric.
+        _append_unique(
+            warnings if warnings is not None else [],
+            "Rendered instant/single-value query as a metric (no time dimension to plot)",
+        )
+        return _build_esql_metric_panel(esql, metric_col=metric_col)
     _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
@@ -3166,6 +3192,15 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
     if time_fields is None:
         time_fields = shape.time_fields
     dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    if dimension_field is None:
+        # No time/group dimension to plot (issue #127). Multiple metric series
+        # can't collapse to a single metric tile, so present them as a
+        # single-row summary table instead of an XY chart with a phantom axis.
+        _append_unique(
+            warnings if warnings is not None else [],
+            "Rendered instant/single-value query as a summary table (no time dimension to plot)",
+        )
+        return _build_esql_datatable_panel(esql, metric_fields=metric_fields)
     _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,

@@ -1357,6 +1357,51 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         _, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
+    def test_stat_panel_emits_native_instant_query(self):
+        """Issue #127 / instant-query semantics: a single-value (stat) panel
+        must emit a native PROMQL *instant* query bound to ``time=?_tend`` (the
+        time-picker end), not a ``step=`` range query that the metric viz then
+        has to collapse."""
+        panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="stat")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "metric")
+        self.assertIn("time=?_tend", esql["query"])
+        self.assertNotIn("step=", esql["query"])
+
+    def test_gauge_panel_emits_native_instant_query(self):
+        panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="gauge")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "gauge")
+        self.assertIn("time=?_tend", esql["query"])
+
+    def test_timeseries_panel_keeps_range_step_query(self):
+        """A real time-series (line) panel must still use a ``step=`` range
+        query so it plots over time."""
+        panel = _make_panel(1, "rate(http_requests_total[5m])", panel_type="timeseries")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("step=", query)
+        self.assertNotIn("time=?_tend", query)
+
+    def test_build_native_promql_query_instant_opt_in_only(self):
+        """The instant form is opt-in: callers that post-process the ``step``
+        column (e.g. the alert ``LAST(value, step)`` reduction) keep ``step=``
+        by leaving ``instant`` at its default."""
+        expr = "max(process_start_time_seconds)"
+        ranged = panels.build_native_promql_query(expr, index="metrics-*", kibana_type="metric")
+        self.assertIn("step=1m", ranged)
+        self.assertNotIn("time=?_tend", ranged)
+        instant = panels.build_native_promql_query(
+            expr, index="metrics-*", kibana_type="metric", instant=True
+        )
+        self.assertIn("time=?_tend", instant)
+        self.assertNotIn("step=", instant)
+
 
 # =========================================================================
 # Display Enrichment

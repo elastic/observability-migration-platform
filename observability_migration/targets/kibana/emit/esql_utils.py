@@ -178,6 +178,15 @@ def is_time_bucket_expression(expr):
 
 
 def select_xy_dimension_fields(by_cols, time_fields=None):
+    """Pick the x-axis (and optional breakdown) dimension for an XY chart.
+
+    Returns ``(None, None)`` when neither a time field nor any group column is
+    available: an XY chart needs a real x-axis column, and inventing a
+    ``time_bucket`` dimension the query never outputs makes Lens fail at render
+    time with "Provided column name or index is invalid" (issue #127). Callers
+    must treat a ``None`` dimension as "this query has no time series" and
+    degrade to a single-value/metric visualization instead.
+    """
     by_cols = list(by_cols or [])
     time_fields = [f for f in (time_fields or []) if f in by_cols]
     dimension = None
@@ -186,7 +195,7 @@ def select_xy_dimension_fields(by_cols, time_fields=None):
     elif by_cols:
         dimension = by_cols[0]
     else:
-        dimension = "time_bucket"
+        return None, None
     breakdown = next((f for f in by_cols if f != dimension), None)
     return dimension, breakdown
 
