@@ -84,7 +84,11 @@ from .promql import (
     substitute_grafana_range_macros,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
-from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
+from .runtime_features import (
+    PROMQL_LABEL_MATCHER_PARAMS,
+    binds_esql_named_params,
+    is_feature_supported,
+)
 from .schema import SchemaResolver
 from .series_labels import (
     _metrics_in_expr,
@@ -3719,11 +3723,14 @@ def query_variable_rule(context):
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
             return f"skipped non-aggregatable control field {field_name}"
-    if is_feature_supported(context.rule_pack, PROMQL_LABEL_MATCHER_PARAMS):
+    if binds_esql_named_params(context.rule_pack):
         # The target binds Grafana template variables as native ES|QL
         # parameters (``?<name>``), so the control must DEFINE that ES|QL
         # variable rather than emit a generic data-view filter; otherwise the
         # panel queries fail with "Unknown query parameter [name]" (issue #107).
+        # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
+        # ``--no-native-promql`` run that preserves ``?var`` also emits the
+        # binding control rather than a duplicate generic one (issue #132).
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,

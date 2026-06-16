@@ -355,6 +355,31 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
+    def test_binds_esql_named_params_accepts_either_capability(self):
+        """Issue #132: ES|QL ``?var`` binding is enabled by EITHER the broad
+        ``esql_named_param_binding`` capability OR the narrower native PROMQL
+        ``promql_label_matcher_params`` capability."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            binds_esql_named_params,
+            set_runtime_feature,
+        )
+
+        self.assertFalse(binds_esql_named_params(self.rule_pack))
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        self.assertTrue(binds_esql_named_params(self.rule_pack))
+
+        other = migrate.RulePackConfig()
+        self.assertFalse(binds_esql_named_params(other))
+        set_runtime_feature(
+            other, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        self.assertTrue(binds_esql_named_params(other))
+
     def test_native_promql_rejects_exact_template_label_matcher(self):
         self.assertFalse(panels.can_use_native_promql('cpu{host="$host"}'))
         with self.assertRaises(ValueError):
@@ -4433,6 +4458,35 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
 
+    def test_esql_path_preserves_template_matcher_with_only_esql_named_param_binding(self):
+        """Issue #132: the ES|QL ``?var`` path only needs ES|QL named-parameter
+        binding, not the native PROMQL command. A ``--no-native-promql`` run
+        against a target advertising ``esql_named_param_binding`` (and NOT
+        ``promql_label_matcher_params``) must still preserve the matcher."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            is_feature_supported,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        # The native PROMQL label-matcher capability is explicitly NOT set, to
+        # prove the ES|QL path no longer depends on it.
+        self.assertFalse(
+            is_feature_supported(self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS)
+        )
+        result = self.translate('sum(cpu{host=~"$host"}) by (host)')
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("?host", result.esql_query)
+        self.assertNotIn(
+            "Dropped variable-driven label filters during migration",
+            result.warnings,
+        )
+
     def test_equality_matcher_on_match_all_var_emits_regex_not_literal(self):
         """PR #133 review: an includeAll variable defaults its binding control
         to the regex match-all (".*"). An equality matcher (``field == ?var``)
@@ -4522,6 +4576,65 @@ class TranslatorRegressionTests(unittest.TestCase):
         controls = doc["dashboards"][0].get("controls", [])
         binding = next(c for c in controls if c.get("variable_name") == "host")
         self.assertEqual(binding["default"], ".*")
+
+    def test_dashboard_esql_named_param_binding_preserves_var_with_single_control(self):
+        """Issue #132 end-to-end: a ``--no-native-promql`` target that only
+        advertises ``esql_named_param_binding`` must preserve ``?var`` AND emit
+        exactly one ES|QL binding control for it (not a generic data-view
+        control plus a synthesized duplicate)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig()
+        set_runtime_feature(
+            rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "ESQL Named Param",
+            "uid": "esql-named-param",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": False,
+                        "current": {"text": "host-01", "value": "host-01"},
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host=~"$host"}) by (host)'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        self.assertIn("?host", yaml.dump(doc))
+        controls = doc["dashboards"][0].get("controls", [])
+        host_controls = [c for c in controls if c.get("variable_name") == "host"]
+        self.assertEqual(len(host_controls), 1)
+        self.assertEqual(host_controls[0]["type"], "esql")
+        # No generic data-view control should leak alongside the ES|QL binding.
+        self.assertTrue(all(c.get("type") == "esql" for c in controls if c.get("label") == "Host"))
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end native PROMQL: a ``{label="$var"}`` equality matcher whose
@@ -5006,6 +5119,38 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "probe")
         self.assertIn("rejects", profile[PROMQL_LABEL_MATCHER_PARAMS]["reason"])
 
+    def test_detect_esql_named_param_binding_supported_and_rejected(self):
+        """Issue #132: a 200 means the target binds ES|QL named params; a parser
+        rejection (or transport failure) leaves it unsupported so the engine
+        keeps the safe fallback of dropping ``?var`` filters."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_esql_named_param_binding,
+        )
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+            return_value=SimpleNamespace(status_code=200, json=lambda: {"columns": [{"name": "probe"}]}, text=""),
+        ):
+            state = _detect_esql_named_param_binding("https://es.example", "apikey")
+        self.assertTrue(state["supported"])
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+            return_value=SimpleNamespace(status_code=400, json=lambda: {}, text="unknown token '?p'"),
+        ):
+            state = _detect_esql_named_param_binding("https://es.example", "apikey")
+        self.assertFalse(state["supported"])
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+            side_effect=ConnectionError("network"),
+        ):
+            state = _detect_esql_named_param_binding("https://es.example", "apikey")
+        self.assertFalse(state["supported"])
+        self.assertEqual(state["confidence"], "inconclusive")
+
+        self.assertEqual(_detect_esql_named_param_binding(""), {})
+
     def test_parse_args_defaults_native_promql_to_auto(self):
         from observability_migration.adapters.source.grafana.cli import parse_args
 
@@ -5030,6 +5175,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             _apply_native_promql_to_rule_pack,
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
             PROMQL_COMMAND_V0,
             PROMQL_LABEL_MATCHER_PARAMS,
             is_feature_supported,
@@ -5046,14 +5192,21 @@ class TranslatorRegressionTests(unittest.TestCase):
             PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
             PROMQL_LABEL_MATCHER_PARAMS: {"supported": False, "source": "probe", "confidence": "verified"},
         }
+        esql_state = {"supported": True, "source": "probe", "confidence": "verified"}
         with mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
-            return_value=profile,
+            return_value=dict(profile),
+        ), mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+            return_value=esql_state,
         ):
             _apply_native_promql_to_rule_pack(rule_pack, args)
 
         self.assertTrue(rule_pack.native_promql)
-        self.assertEqual(rule_pack.runtime_features, profile)
+        self.assertEqual(
+            rule_pack.runtime_features,
+            {**profile, ESQL_NAMED_PARAM_BINDING: esql_state},
+        )
         self.assertFalse(is_feature_supported(rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
 
     def test_apply_native_promql_auto_default_clears_default_dataset_filter(self):
@@ -5126,6 +5279,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             _apply_native_promql_to_rule_pack,
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
             PROMQL_COMMAND_V0,
             PROMQL_LABEL_MATCHER_PARAMS,
         )
@@ -5141,14 +5295,86 @@ class TranslatorRegressionTests(unittest.TestCase):
             PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
             PROMQL_LABEL_MATCHER_PARAMS: {"supported": True, "source": "capabilities", "confidence": "verified"},
         }
+        esql_state = {"supported": True, "source": "probe", "confidence": "verified"}
         with mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
-            return_value=profile,
+            return_value=dict(profile),
+        ), mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+            return_value=esql_state,
         ):
             _apply_native_promql_to_rule_pack(rule_pack, args)
 
         self.assertTrue(rule_pack.native_promql)
-        self.assertEqual(rule_pack.runtime_features, profile)
+        self.assertEqual(
+            rule_pack.runtime_features,
+            {**profile, ESQL_NAMED_PARAM_BINDING: esql_state},
+        )
+
+    def test_apply_native_promql_force_off_probes_esql_named_param_binding(self):
+        """Issue #132: a deliberate --no-native-promql run must still probe the
+        target for ES|QL named-parameter binding (it does not need the PROMQL
+        command) so the pure-ES|QL path can preserve ``?var`` filters, without
+        running the native PROMQL probe."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            is_feature_supported,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+            native_promql_flag="force_off",
+        )
+        rule_pack = rules.RulePackConfig()
+        esql_state = {"supported": True, "source": "probe", "confidence": "verified"}
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+        ) as detect_native, mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+            return_value=esql_state,
+        ) as detect_esql:
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        detect_native.assert_not_called()
+        detect_esql.assert_called_once()
+        self.assertFalse(rule_pack.native_promql)
+        self.assertTrue(is_feature_supported(rule_pack, ESQL_NAMED_PARAM_BINDING))
+
+    def test_apply_native_promql_offline_assumes_esql_named_param_binding(self):
+        """Issue #132: an offline run cannot probe, but ES|QL named-parameter
+        binding is a stable core feature so it is assumed (like native PROMQL),
+        keeping ``?var`` label filters on offline --no-native-promql runs."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            is_feature_supported,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="",
+            es_api_key="",
+            native_promql_flag="force_off",
+        )
+        rule_pack = rules.RulePackConfig()
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+        ) as detect_esql:
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+            detect_esql.assert_not_called()
+
+        self.assertFalse(rule_pack.native_promql)
+        self.assertTrue(is_feature_supported(rule_pack, ESQL_NAMED_PARAM_BINDING))
+        self.assertEqual(
+            rule_pack.runtime_features[ESQL_NAMED_PARAM_BINDING]["source"], "default"
+        )
 
     def test_run_validation_jobs_parallel_preserves_report_order(self):
         from observability_migration.adapters.source.grafana.cli import (

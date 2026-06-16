@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import Any
 
 from .rules import RulePackConfig
-from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
+from .runtime_features import binds_esql_named_params
 
 
 def _is_counter_fallback(metric_name, rule_pack):
@@ -958,13 +958,14 @@ _FLOAT_LABEL_NAMES = frozenset({"le"})
 def _target_binds_label_matcher_params(resolver):
     """Whether the target can bind Grafana ``$var`` matchers as ES|QL params.
 
-    Mirrors the gate used on the native PROMQL path: only targets advertising
-    ``promql_label_matcher_params`` get ``?var`` ES|QL parameters preserved in
-    the WHERE clause; others fall back to dropping the matcher (issue #100).
+    The ES|QL ``WHERE field == ?var`` / ``RLIKE ?var`` path needs ES|QL
+    named-parameter binding, which the target advertises either via the broader
+    ``esql_named_param_binding`` capability or via ``promql_label_matcher_params``
+    (a subset). Gating on both means a deliberate ``--no-native-promql`` run can
+    still preserve ``?var`` label filters instead of dropping them (issue #132).
+    Targets that advertise neither fall back to dropping the matcher (issue #100).
     """
-    return is_feature_supported(
-        getattr(resolver, "_rule_pack", None), PROMQL_LABEL_MATCHER_PARAMS
-    )
+    return binds_esql_named_params(getattr(resolver, "_rule_pack", None))
 
 
 def _param_binds_regex_default(resolver, param_name):
