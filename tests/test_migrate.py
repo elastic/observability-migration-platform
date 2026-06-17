@@ -2874,6 +2874,51 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_multiseries_implicit_match_ratio_stays_native_on_gauge(self):
+        """An implicit-match ratio between two distinct metrics
+        (``node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes``) has
+        two metrics, so the single-value gate keeps it native. When multiple
+        instances are scraped this matches per-instance and fans out to one
+        series each rather than collapsing to a single scalar — so the gauge
+        surfaces a multi-row instant result. This is intended (#146): the
+        instant query preserves the original arithmetic and Kibana
+        reduces/repeats the multi-row result the same way Grafana does,
+        mirroring #138's accepted line-chart behavior. The gate's
+        distinct-metric count is a deliberate proxy for "derived value", not a
+        guarantee of a single row, so these are NOT degraded to same-bucket
+        ES|QL math. (Explicit ``/ on(instance)`` vector matching is a separate
+        case the native builder rejects, so those degrade regardless.)
+        """
+        expr = (
+            "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes"
+        )
+        panel = {
+            "title": "Memory available ratio",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_memory_MemAvailable_bytes", query)
+        self.assertIn("node_memory_MemTotal_bytes", query)
+        # Stays on the native instant path — not the aggregating ES|QL fallback.
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
         ``"Pages out ops"``) is a fixed series label. The translator

@@ -1123,6 +1123,9 @@ def _translate_panel_native_promql(
         regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
+    # Parse the macro-resolved form once; reused by the metric/gauge gate below
+    # and the QueryIR fields further down (avoids parsing the same expr twice).
+    native_fragment = _parse_fragment(cleaned_expr or expr)
     if kibana_type in ("metric", "gauge"):
         # A real multi-series breakdown (``by (instance)`` → ``['instance']``)
         # can't be rendered as one value, so keep degrading those to ES|QL.
@@ -1143,8 +1146,20 @@ def _translate_panel_native_promql(
         # the regex backend, which collects zero metrics — wrongly dropping a
         # genuine distinct-metric ratio. ``cleaned_expr`` is the macro-resolved
         # form the native command is actually built from below (#146).
+        #
+        # NOTE: distinct-metric count is a proxy for "collapses to one value",
+        # not a guarantee. An implicit-match ratio (``node_memory_MemAvailable
+        # _bytes / node_memory_MemTotal_bytes``) has 2 metrics and stays native,
+        # yet when multiple instances are scraped it matches per-instance and
+        # fans out to one series each — so single-value tiles can surface a
+        # multi-row instant result. Kibana reduces/repeats it the same way
+        # Grafana does for gauges; this is the intended outcome and mirrors
+        # #138's accepted line-chart behavior — kept native by design rather
+        # than degraded (#146). (Explicit vector matching like ``/ on(instance)``
+        # is a separate case: ``build_native_promql_query`` rejects it, so those
+        # degrade to ES|QL regardless of this gate.)
         if "_timeseries" in group_cols and (
-            len(_collect_source_metrics(_parse_fragment(cleaned_expr or expr))) < 2
+            len(_collect_source_metrics(native_fragment)) < 2
         ):
             return None
     # Emit an instant (``time=?_tend``) query when the source target is one:
@@ -1211,7 +1226,6 @@ def _translate_panel_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
-    native_fragment = _parse_fragment(cleaned_expr or expr)
     query_ir.metric = str(getattr(native_fragment, "metric", "") or "")
     query_ir.range_function = str(getattr(native_fragment, "range_func", "") or "")
     query_ir.range_window = str(getattr(native_fragment, "range_window", "") or "")
