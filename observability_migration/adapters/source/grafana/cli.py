@@ -101,8 +101,10 @@ from .preflight import (
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
 from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
 from .runtime_features import (
+    ESQL_NAMED_PARAM_BINDING,
     PROMQL_COMMAND_V0,
     PROMQL_LABEL_MATCHER_PARAMS,
+    get_runtime_features,
     is_feature_supported,
     set_runtime_feature,
 )
@@ -783,6 +785,15 @@ _PROMQL_LABEL_MATCHER_PARAM_PROBE = (
     "value=(up{job=?_job})"
 )
 
+# Self-contained probe for plain ES|QL named-parameter binding. It needs no
+# real index or data — ``ROW`` synthesizes a row and the ``WHERE … == ?p`` /
+# ``RLIKE ?p`` clause exercises exactly the named-parameter substitution the
+# migrated ``WHERE field == ?var`` / ``RLIKE ?var`` filters rely on. A target
+# that supports ES|QL named params returns HTTP 200; one that does not rejects
+# the ``?p`` token at parse time (issue #132).
+_ESQL_NAMED_PARAM_BINDING_PROBE = 'ROW probe = ?p | WHERE probe RLIKE ?p'
+_ESQL_NAMED_PARAM_PROBE_VALUE = "__obs_migration_probe__"
+
 
 def _es_headers(api_key: str | None = None) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
@@ -919,6 +930,69 @@ def _detect_promql_label_matcher_params(
             "confidence": "verified",
             "level": "syntax",
             "reason": "target parser rejects PromQL label matcher params",
+        }
+    return {
+        "supported": False,
+        "source": "probe",
+        "confidence": "inconclusive",
+        "level": "syntax",
+        "reason": f"target probe returned HTTP {status}",
+    }
+
+
+def _detect_esql_named_param_binding(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+    verify: bool | str = True,
+) -> dict[str, Any]:
+    """Probe whether the target binds plain ES|QL named parameters.
+
+    Independent of the PROMQL command, so it is meaningful even on a
+    ``--no-native-promql`` run. Returns a feature-state dict; an inconclusive
+    or rejected probe leaves the feature unsupported so the engine keeps the
+    safe fallback of dropping ``?var`` filters (issue #132).
+    """
+    if not es_url:
+        return {}
+    url = es_url.rstrip("/") + "/_query"
+    payload = {
+        "query": _ESQL_NAMED_PARAM_BINDING_PROBE,
+        "params": [{"p": _ESQL_NAMED_PARAM_PROBE_VALUE}],
+    }
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=_es_headers(api_key),
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception as exc:
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": f"target probe failed ({exc.__class__.__name__})",
+        }
+
+    status = getattr(response, "status_code", 0)
+    if status == 200:
+        return {
+            "supported": True,
+            "source": "probe",
+            "confidence": "verified",
+            "level": "syntax",
+            "reason": "target accepted ES|QL named parameter binding",
+        }
+    if status in (401, 403):
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": "target probe skipped due to auth error",
         }
     return {
         "supported": False,
@@ -1094,19 +1168,32 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
     ``--dataset-filter`` help text.
     """
     mode = getattr(args, "native_promql_flag", "auto")
+    es_url = getattr(args, "es_url", "") or ""
+    es_api_key = getattr(args, "es_api_key", "") or None
+    verify = _resolve_tls_from_args(args)
     runtime_profile = None
-    if mode != "force_off" and getattr(args, "es_url", ""):
-        runtime_profile = _detect_target_runtime_features(
-            getattr(args, "es_url", "") or "",
-            getattr(args, "es_api_key", "") or None,
-            verify=_resolve_tls_from_args(args),
-        )
+    if mode != "force_off" and es_url:
+        runtime_profile = _detect_target_runtime_features(es_url, es_api_key, verify=verify)
         rule_pack.runtime_features.update(runtime_profile)
         _print_promql_runtime_profile(runtime_profile)
+
+    # ES|QL named-parameter binding (``WHERE field == ?var`` / ``RLIKE ?var``)
+    # is a core ES|QL feature, independent of the PROMQL command, so it is
+    # probed even on a deliberate --no-native-promql run. Without this the
+    # pure-ES|QL path never learns the target can bind ``?var`` and silently
+    # drops $var-driven label filters (issue #132).
+    if es_url and ESQL_NAMED_PARAM_BINDING not in get_runtime_features(rule_pack):
+        esql_state = _detect_esql_named_param_binding(es_url, es_api_key, verify=verify)
+        get_runtime_features(rule_pack)[ESQL_NAMED_PARAM_BINDING] = esql_state
+        print(
+            "  Target ES|QL named-parameter binding: "
+            f"{_runtime_feature_status_label(esql_state)}"
+        )
+
     native = _resolve_native_promql(args, runtime_profile)
     if native:
         rule_pack.native_promql = True
-        if not runtime_profile and not getattr(args, "es_url", ""):
+        if not runtime_profile and not es_url:
             set_runtime_feature(
                 rule_pack,
                 PROMQL_COMMAND_V0,
@@ -1117,6 +1204,19 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
             )
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""
+
+    # Offline runs have no cluster to probe; ES|QL named-parameter binding is a
+    # stable core feature, so assume it (mirroring the native-PROMQL offline
+    # default above) rather than dropping $var label filters (issue #132).
+    if not es_url and ESQL_NAMED_PARAM_BINDING not in get_runtime_features(rule_pack):
+        set_runtime_feature(
+            rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=True,
+            source="default",
+            confidence="unverified",
+            reason="no --es-url configured; ES|QL named-parameter binding assumed for offline migration",
+        )
 
 
 def _build_dashboard_run_summary(
