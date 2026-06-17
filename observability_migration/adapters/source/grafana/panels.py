@@ -1147,11 +1147,21 @@ def _translate_panel_native_promql(
         # genuine distinct-metric ratio. ``cleaned_expr`` is the macro-resolved
         # form the native command is actually built from below (#146).
         #
-        # NOTE: distinct-metric count is a proxy for "collapses to one value",
-        # not a guarantee. An implicit-match ratio (``node_memory_MemAvailable
-        # _bytes / node_memory_MemTotal_bytes``) has 2 metrics and stays native,
-        # yet when multiple instances are scraped it matches per-instance and
-        # fans out to one series each — so single-value tiles can surface a
+        # Count metric *occurrences* (``dedup=False``), not distinct names: the
+        # canonical Prometheus error-rate ratio divides the *same* metric under
+        # two selectors (``rate(http_requests_total{code=~"5.."}[5m]) /
+        # rate(http_requests_total[5m])``). Counting distinct names collapses
+        # that to one and wrongly degrades genuine derived arithmetic to the
+        # same-bucket ES|QL approximation; counting occurrences sees the two
+        # vector operands and keeps it native. A scalar-scaled single metric
+        # (``node_cpu_seconds_total * 100``) still has one occurrence, so it
+        # correctly stays degraded — the scalar literal contributes no metric.
+        #
+        # NOTE: occurrence count is a proxy for "derived value", not a guarantee
+        # of a single row. An implicit-match ratio (``node_memory_MemAvailable
+        # _bytes / node_memory_MemTotal_bytes``) has two operands and stays
+        # native, yet when multiple instances are scraped it matches per-instance
+        # and fans out to one series each — so single-value tiles can surface a
         # multi-row instant result. Kibana reduces/repeats it the same way
         # Grafana does for gauges; this is the intended outcome and mirrors
         # #138's accepted line-chart behavior — kept native by design rather
@@ -1159,7 +1169,7 @@ def _translate_panel_native_promql(
         # is a separate case: ``build_native_promql_query`` rejects it, so those
         # degrade to ES|QL regardless of this gate.)
         if "_timeseries" in group_cols and (
-            len(_collect_source_metrics(native_fragment)) < 2
+            len(_collect_source_metrics(native_fragment, dedup=False)) < 2
         ):
             return None
     # Emit an instant (``time=?_tend``) query when the source target is one:

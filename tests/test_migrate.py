@@ -2919,6 +2919,80 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_same_metric_error_rate_ratio_stays_native_on_gauge(self):
+        """The canonical Prometheus error-rate ratio divides the *same* metric
+        under two different label selectors (``rate(http_requests_total
+        {code=~"5.."}[5m]) / rate(http_requests_total[5m])``). With no outer
+        aggregation the shape is ``['_timeseries']`` (per-series instant
+        result), so it reaches the single-value gate. This is genuine derived
+        arithmetic that the instant query preserves and collapses to a latest
+        value — exactly like the distinct-metric ratio #146 keeps native. The
+        gate counts metric *occurrences*, not distinct names, so a same-metric
+        ratio (two occurrences of one name) is NOT mistaken for a bare
+        single-metric expression and must stay on the native PROMQL path rather
+        than degrade to the same-bucket ES|QL ``computed_value`` approximation.
+        """
+        expr = (
+            "rate(http_requests_total{code=~\"5..\"}[5m]) "
+            "/ rate(http_requests_total[5m])"
+        )
+        panel = {
+            "title": "Error rate",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("http_requests_total", query)
+        # The native command preserves the ratio; the ES|QL approximation would
+        # collapse it into one STATS pipeline instead.
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_scalar_scaled_single_metric_still_degrades_on_gauge(self):
+        """Counterpart guard for the occurrence-count gate: scaling a *single*
+        metric by a scalar (``node_cpu_seconds_total * 100``) is one metric
+        occurrence, not a collapsing ratio — it still fans out to one series per
+        scrape target with no derived single value, so the single-value gate
+        must keep degrading it to the ES|QL aggregating summary. Counting
+        occurrences must not flip this to the native path.
+        """
+        expr = "node_cpu_seconds_total * 100"
+        panel = {
+            "title": "Scaled CPU",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, _ = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        # A single scaled metric fans out: it takes the ES|QL aggregating
+        # summary (STATS), not the native instant PROMQL command.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("STATS", query)
+
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
         ``"Pages out ops"``) is a fixed series label. The translator
