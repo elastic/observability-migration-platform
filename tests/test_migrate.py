@@ -2750,6 +2750,88 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_distinct_metric_arithmetic_stays_native_on_gauge(self):
+        """A single-value tile (gauge/stat/singlestat) whose expression is a
+        distinct-metric ratio/difference (e.g. the Node Exporter ``RAM Used``
+        gauge ``(1 - MemAvailable / MemTotal) * 100``) must migrate to a
+        native PROMQL lens — an instant query for the latest value — with the
+        original arithmetic preserved. ``_native_promql_result_shape`` returns
+        ``group_cols == ['_timeseries']`` (the time dimension only, not a real
+        breakdown), so the single-value gate must NOT reject it: that is the
+        same-bucket ES|QL approximation #138 already removed for line charts
+        (issue #146).
+        """
+        expr = (
+            "(1 - (node_memory_MemAvailable_bytes{job=\"node\"} "
+            "/ node_memory_MemTotal_bytes{job=\"node\"})) * 100"
+        )
+        panel = {
+            "title": "RAM Used",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        # Both distinct metrics survive into the native command; the ES|QL
+        # approximation would collapse them into one STATS pipeline.
+        self.assertIn("node_memory_MemAvailable_bytes", query)
+        self.assertIn("node_memory_MemTotal_bytes", query)
+        self.assertNotIn("STATS", query)
+        # No approximation: the same-bucket ES|QL fallback warning must not
+        # be attached.
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_distinct_metric_difference_stays_native_on_stat(self):
+        """The ``stat`` grafana_type maps to the ``metric`` kibana type — a
+        different single-value branch than ``gauge`` — so cover it too: the
+        Node Exporter ``Uptime`` stat (``node_time_seconds - node_boot_time_seconds``,
+        a difference of two distinct metrics) must also stay on the native
+        PROMQL path rather than the same-bucket ES|QL approximation (#146).
+        """
+        expr = (
+            "node_time_seconds{job=\"node\"} "
+            "- node_boot_time_seconds{job=\"node\"}"
+        )
+        panel = {
+            "title": "Uptime",
+            "type": "stat",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_time_seconds", query)
+        self.assertIn("node_boot_time_seconds", query)
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
         ``"Pages out ops"``) is a fixed series label. The translator

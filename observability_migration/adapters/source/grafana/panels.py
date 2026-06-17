@@ -95,7 +95,12 @@ from .series_labels import (
     build_metric_series_labels,
     expr_has_explicit_grouping,
 )
-from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
+from .translate import (
+    TranslationContext,
+    _build_metric_contract_artifacts,
+    _collect_source_metrics,
+    translate_promql_to_esql,
+)
 
 PANEL_TYPE_MAP = {
     "timeseries": "line",
@@ -1118,8 +1123,23 @@ def _translate_panel_native_promql(
         regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
-    if kibana_type in ("metric", "gauge") and group_cols:
-        return None
+    if kibana_type in ("metric", "gauge"):
+        # A real multi-series breakdown (``by (instance)`` → ``['instance']``)
+        # can't be rendered as one value, so keep degrading those to ES|QL.
+        real_group_cols = [col for col in group_cols if col != "_timeseries"]
+        if real_group_cols:
+            return None
+        # ``_timeseries`` is the time dimension only, not a breakdown. For a
+        # distinct-metric ratio/difference (``1 - avail / size``, two metrics)
+        # the instant query preserves the original arithmetic and collapses to
+        # the latest value — the same outcome #138 gave line charts (#146).
+        # A bare/single-metric expression (``up``, ``rate(foo[5m])``) instead
+        # fans out to multiple series with no derived value, where ES|QL's
+        # aggregating summary is the cleaner single tile — keep rejecting it.
+        if "_timeseries" in group_cols and (
+            len(_collect_source_metrics(_parse_fragment(expr))) < 2
+        ):
+            return None
     # Emit an instant (``time=?_tend``) query when the source target is one:
     # single-value tiles, or a ``instant: true`` table-format target (issue
     # #102). ``_target_summary_mode`` already encodes that policy for the ES|QL
