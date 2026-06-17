@@ -13,6 +13,7 @@ from datetime import timedelta
 from typing import Any
 
 from .rules import RulePackConfig
+from .runtime_features import PROMQL_LABEL_MATCHER_PARAMS, is_feature_supported
 
 
 def _is_counter_fallback(metric_name, rule_pack):
@@ -954,6 +955,35 @@ def _le_float_alt(value: str) -> str | None:
 _FLOAT_LABEL_NAMES = frozenset({"le"})
 
 
+def _target_binds_label_matcher_params(resolver):
+    """Whether the target can bind Grafana ``$var`` matchers as ES|QL params.
+
+    Mirrors the gate used on the native PROMQL path: only targets advertising
+    ``promql_label_matcher_params`` get ``?var`` ES|QL parameters preserved in
+    the WHERE clause; others fall back to dropping the matcher (issue #100).
+    """
+    return is_feature_supported(
+        getattr(resolver, "_rule_pack", None), PROMQL_LABEL_MATCHER_PARAMS
+    )
+
+
+def _param_binds_regex_default(resolver, param_name):
+    """Whether *param_name*'s binding control defaults to the regex match-all.
+
+    Grafana ``All``/multi template variables with no single ``current`` value
+    bind their ES|QL control to the regex match-all (".*"). Equality matchers
+    on such a param must be emitted as regex matches so the default selects
+    every series instead of comparing the field against the literal string
+    ".*" (PR #133 review). The set is populated per dashboard on the shared
+    rule pack in ``translate_dashboard``; absent it (single-expression
+    translation, no dashboard context) equality matchers keep exact-match
+    semantics.
+    """
+    rule_pack = getattr(resolver, "_rule_pack", None)
+    names = getattr(rule_pack, "_regex_default_param_names", None)
+    return bool(names) and param_name in names
+
+
 def _matcher_to_esql(matcher, resolver):
     label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
     op = matcher["op"]
@@ -966,11 +996,38 @@ def _matcher_to_esql(matcher, resolver):
         value = _strip_promql_regex_anchors(value)
     param_name = _grafana_param_name(value)
     if param_name:
-        # Grafana query variables are emitted as ordinary dashboard filter
-        # controls, not ES|QL variable controls. Keeping ``?var`` here makes
-        # uploaded dashboards fail with "Unknown query parameter [var]".
-        # Drop the matcher and let the dashboard-level control apply the
-        # filter when the user selects a value.
+        if not _target_binds_label_matcher_params(resolver):
+            # Capability-off targets cannot bind ``?var`` ES|QL parameters, so
+            # keeping ``?var`` here would make uploaded dashboards fail with
+            # "Unknown query parameter [var]". Drop the matcher and let a
+            # generic dashboard filter control apply it instead (issue #100).
+            return None
+        # Capability-on: preserve the variable-driven label filter as a native
+        # ES|QL named parameter bound by an esqlControl, instead of silently
+        # dropping it (issues #64 / #131). The matching control is guaranteed
+        # by ``_ensure_param_controls`` during dashboard assembly.
+        if op == "=":
+            if _param_binds_regex_default(resolver, param_name):
+                # The binding control defaults this param to the regex
+                # match-all (".*") because the Grafana variable is All/multi
+                # with no single ``current`` value. ES|QL ``==`` would compare
+                # the field against the literal string ".*" and match nothing
+                # on first load (PR #133 review), so emit a regex match: the
+                # match-all default then selects every series, mirroring
+                # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
+                # for All/multi variables. (allValue-as-regex equality is a
+                # narrower residual not covered here.)
+                return f"{label} RLIKE ?{param_name}"
+            return f"{label} == ?{param_name}"
+        if op == "!=":
+            # Left as ``!=``: with the match-all default the param resolves to
+            # ".*" and ``field != ".*"`` still matches every series (a safe,
+            # non-empty default), unlike the ``==`` case which would be empty.
+            return f"{label} != ?{param_name}"
+        if op == "=~":
+            return f"{label} RLIKE ?{param_name}"
+        if op == "!~":
+            return f"NOT ({label} RLIKE ?{param_name})"
         return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
@@ -2053,9 +2110,21 @@ def _build_esql(context):
 
 
 def _frag_filters(frag, resolver):
-    """Build ES|QL WHERE clauses from fragment matchers using the resolver."""
-    filters = _selector_filters(frag.matchers, resolver)
-    had_vars = any(_matcher_has_dropped_variable(m) for m in frag.matchers)
+    """Build ES|QL WHERE clauses from fragment matchers using the resolver.
+
+    ``had_vars`` reports variable-driven label filters that were actually
+    dropped, so the "Dropped variable-driven label filters" warning is only
+    emitted when a matcher produced no WHERE clause. When the target binds
+    ``?var`` parameters the filter is preserved (issue #64) and not counted.
+    """
+    filters = []
+    had_vars = False
+    for matcher in frag.matchers:
+        filter_expr = _matcher_to_esql(matcher, resolver)
+        if filter_expr:
+            filters.append(filter_expr)
+        elif _matcher_has_dropped_variable(matcher):
+            had_vars = True
     return filters, had_vars
 
 

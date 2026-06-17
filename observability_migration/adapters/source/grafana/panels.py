@@ -643,14 +643,25 @@ def _promql_label_matcher_has_template_variable(expr):
 
 
 _NATIVE_PROMQL_LABEL_MATCHER_RE = re.compile(
-    r"(?P<prefix>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*)"
+    r"(?P<label>\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*)"
+    r"(?P<op>=~|!~|=|!=)(?P<ws>\s*)"
     r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)(?P<suffix>\s*)$",
     re.DOTALL,
 )
 
 
-def _promql_label_matcher_vars_to_params(expr):
-    """Rewrite full-value Grafana label matcher variables to native params."""
+def _promql_label_matcher_vars_to_params(expr, regex_default_params=None):
+    """Rewrite full-value Grafana label matcher variables to native params.
+
+    ``regex_default_params`` names the variables whose binding control defaults
+    to the regex match-all (".*"). Exact-equality matchers (``label="$var"``)
+    on those variables are loosened to a regex match (``label=~?var``) so the
+    ".*" default matches every series on first load instead of comparing the
+    label against the literal string ".*" (PR #133 review). This mirrors
+    Grafana auto-rewriting ``label="$var"`` to ``label=~"..."`` for All/multi
+    variables and matches the ES|QL path's ``_matcher_to_esql`` handling.
+    """
+    regex_default_params = regex_default_params or frozenset()
 
     def rewrite_selector(selector_text):
         parts = []
@@ -664,7 +675,13 @@ def _promql_label_matcher_vars_to_params(expr):
             if not var_name or var_name.startswith("__"):
                 parts.append(part)
                 continue
-            parts.append(f"{matcher.group('prefix')}?{var_name}{matcher.group('suffix')}")
+            op = matcher.group("op")
+            if op == "=" and var_name in regex_default_params:
+                op = "=~"
+            parts.append(
+                f"{matcher.group('label')}{op}{matcher.group('ws')}"
+                f"?{var_name}{matcher.group('suffix')}"
+            )
             changed = True
         return ", ".join(parts) if changed else selector_text
 
@@ -780,7 +797,9 @@ def _promql_has_known_server_bug(expr):
     return False
 
 
-def _clean_promql_for_native_with_state(expr, runtime_features=None):
+def _clean_promql_for_native_with_state(
+    expr, runtime_features=None, regex_default_params=None
+):
     """Strip Grafana template variables from a PromQL expression so it can be
     sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
     had_bare_variable = False
@@ -800,7 +819,7 @@ def _clean_promql_for_native_with_state(expr, runtime_features=None):
     expr = re.sub(r"=~'([^']*)'", r'=~"\1"', expr)
 
     if is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS):
-        expr = _promql_label_matcher_vars_to_params(expr)
+        expr = _promql_label_matcher_vars_to_params(expr, regex_default_params)
 
     # Replace $variable references inside label selectors with wildcards.
     expr = re.sub(rf'=~"\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*"', '=~".*"', expr)
@@ -835,8 +854,12 @@ def _clean_promql_for_native_with_state(expr, runtime_features=None):
     return expr, had_bare_variable
 
 
-def _clean_promql_for_native(expr, runtime_features=None):
-    cleaned, _ = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
+def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=None):
+    cleaned, _ = _clean_promql_for_native_with_state(
+        expr,
+        runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
+    )
     return cleaned
 
 
@@ -881,7 +904,7 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False):
+                              instant=False, regex_default_params=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -905,7 +928,11 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     """
     if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
-    cleaned = _clean_promql_for_native(promql_expr, runtime_features=runtime_features)
+    cleaned = _clean_promql_for_native(
+        promql_expr,
+        runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
+    )
 
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
@@ -1193,9 +1220,11 @@ def _translate_panel_native_promql(
     legend_labels = _extract_legend_labels(legend_format)
 
     index = datasource_index or "metrics-prometheus-*"
+    regex_default_params = getattr(rule_pack, "_regex_default_param_names", frozenset())
     cleaned_expr, had_bare_variable = _clean_promql_for_native_with_state(
         expr,
         runtime_features=runtime_features,
+        regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
     if kibana_type in ("metric", "gauge") and group_cols:
@@ -1220,7 +1249,8 @@ def _translate_panel_native_promql(
                                              kibana_type=kibana_type,
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
-                                             instant=instant)
+                                             instant=instant,
+                                             regex_default_params=regex_default_params)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1343,7 +1373,13 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        cleaned, bare = _clean_promql_for_native_with_state(expr, runtime_features=runtime_features)
+        cleaned, bare = _clean_promql_for_native_with_state(
+            expr,
+            runtime_features=runtime_features,
+            regex_default_params=getattr(
+                rule_pack, "_regex_default_param_names", frozenset()
+            ),
+        )
         had_bare_variable = had_bare_variable or bare
         target_fragments.append(_parse_fragment(cleaned or expr))
 
@@ -3498,7 +3534,62 @@ def _esql_values_control_query(field_name, data_view):
     )
 
 
-def _build_esql_param_control(variable_name, label, field_name, data_view):
+# Grafana's "All" selection (and any unknown default) maps to a regex
+# match-all so the rewritten ``label=~?var`` matcher binds to every series,
+# mirroring the source dashboard's default view instead of erroring.
+_MATCH_ALL_SELECTION = ".*"
+
+
+def _variable_default_selection(variable):
+    """Pick a default selection for a template variable's binding control.
+
+    Without a default the emitted control starts empty (``selectedOptions:
+    []``) and the bound ES|QL parameter stays unset, so Kibana renders
+    "Parameter [?var] value not found" on first load (issue #131). We mirror
+    the Grafana variable's ``current`` selection / ``All`` so the migrated
+    panel renders immediately, falling back to a regex match-all ("All") when
+    no concrete default is available.
+    """
+    if not isinstance(variable, dict):
+        return _MATCH_ALL_SELECTION
+    current = variable.get("current")
+    value = current.get("value") if isinstance(current, dict) else None
+    if isinstance(value, (list, tuple)):
+        # A scalar ES|QL parameter can hold only one value; a multi-value
+        # current selection has no faithful single binding, so fall back to
+        # "All" rather than arbitrarily picking one of the selected values.
+        value = value[0] if len(value) == 1 else None
+    # A concrete saved selection wins over "All" so the dashboard opens on the
+    # same value the source did.
+    if value not in (None, "", "$__all"):
+        return str(value)
+    if variable.get("includeAll"):
+        all_value = variable.get("allValue")
+        return str(all_value) if all_value else _MATCH_ALL_SELECTION
+    return _MATCH_ALL_SELECTION
+
+
+def _collect_regex_default_param_names(variables):
+    """Names of template variables whose binding control defaults to the regex
+    match-all (".*").
+
+    ``_matcher_to_esql`` emits equality matchers (``field == ?var``) on these
+    params as regex matches instead, so the control's ".*" default actually
+    selects every series on first load rather than comparing the field against
+    the literal string ".*" (PR #133 review). Keyed by Grafana variable name,
+    which is exactly the ES|QL parameter name the matcher references.
+    """
+    names = set()
+    for var in variables:
+        if not isinstance(var, dict):
+            continue
+        name = var.get("name")
+        if name and _variable_default_selection(var) == _MATCH_ALL_SELECTION:
+            names.add(name)
+    return names
+
+
+def _build_esql_param_control(variable_name, label, field_name, data_view, default=None):
     """Build an ES|QL parameter-binding control (issue #107).
 
     When the target supports the ``promql_label_matcher_params`` capability the
@@ -3514,8 +3605,11 @@ def _build_esql_param_control(variable_name, label, field_name, data_view):
     references). Single-select is used because the rewritten matchers reference
     the parameter in scalar positions (``== ?var`` / ``RLIKE ?var``); a
     multi-value binding would be invalid ES|QL there.
+
+    A ``default`` selection is emitted so the parameter is bound on first load
+    instead of leaving the control empty (issue #131).
     """
-    return {
+    control = {
         "type": "esql",
         "label": label,
         "variable_name": variable_name,
@@ -3523,6 +3617,9 @@ def _build_esql_param_control(variable_name, label, field_name, data_view):
         "query": _esql_values_control_query(field_name, data_view),
         "multiple": False,
     }
+    if default not in (None, ""):
+        control["default"] = default
+    return control
 
 
 MIN_DATATABLE_HEIGHT = 5
@@ -3647,6 +3744,7 @@ def query_variable_rule(context):
             label=label or name,
             field_name=field_name,
             data_view=context.data_view,
+            default=_variable_default_selection(context.variable),
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
             context.trace.append(
@@ -3726,6 +3824,102 @@ def translate_variables(
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
         if context.control:
             controls.append(context.control)
+    return controls
+
+
+# An ES|QL named parameter token (``?var``), excluding engine-internal params
+# such as ``?_tstart`` / ``?_tend`` / ``?_job`` which are materialized at
+# query time and never bound by a dashboard control.
+_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+# Quoted string literals, stripped before scanning so a ``?`` inside a value
+# (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
+_ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+
+
+def _query_param_names(query):
+    """Return the ES|QL named parameters referenced by a query string."""
+    if not isinstance(query, str):
+        return set()
+    unquoted = _ESQL_QUOTED_RE.sub('""', query)
+    return {match.group("name") for match in _ESQL_PARAM_RE.finditer(unquoted)}
+
+
+def _collect_emitted_param_names(panels):
+    """Return every ES|QL named parameter (``?var``) referenced by panels.
+
+    Both the native PROMQL path (``...{label=~?var}``) and the ES|QL path
+    (``WHERE field == ?var``) emit Grafana template variables as ES|QL named
+    parameters into ``esql.query``. Each one must have a binding control or the
+    panel fails with "Parameter [?var] value not found" (issue #131).
+    """
+    names: set[str] = set()
+    for panel in panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_cfg = panel.get("esql")
+        query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
+        names |= _query_param_names(query)
+    return names
+
+
+def _ensure_param_controls(
+    controls,
+    emitted_params,
+    variables,
+    data_view,
+    resolver=None,
+    rule_pack=None,
+):
+    """Guarantee a binding control exists for every emitted ``?var`` (issue #131).
+
+    Control generation is otherwise driven only by ``templating.list`` via the
+    registered variable translators, which miss two cases that still emit a
+    ``?var`` into panel queries:
+
+    * ``custom`` template variables (e.g. ArgoCD ``health_status`` /
+      ``sync_status``), which are routed to the time-picker rule and skipped.
+    * ``query`` variables skipped because their control field could not be
+      resolved or did not exist in the target.
+
+    For each referenced parameter without a control we synthesise an ES|QL
+    values control bound to the parameter, with a default selection so the
+    panel renders on first load.
+    """
+    bound = {
+        control.get("variable_name")
+        for control in controls
+        if isinstance(control, dict)
+        and control.get("type") == "esql"
+        and control.get("variable_name")
+    }
+    missing = sorted(name for name in emitted_params if name not in bound)
+    if not missing:
+        return controls
+    variables_by_name = {
+        var.get("name"): var
+        for var in variables
+        if isinstance(var, dict) and var.get("name")
+    }
+    for name in missing:
+        variable = variables_by_name.get(name, {})
+        label = variable.get("label") or name
+        source_field = (
+            _extract_variable_source_field(_variable_query_text(variable)) or name
+        )
+        field_name = source_field
+        if resolver:
+            resolved = resolver.resolve_control_field(source_field)
+            if resolved:
+                field_name = resolved
+        controls.append(
+            _build_esql_param_control(
+                variable_name=name,
+                label=label,
+                field_name=field_name,
+                data_view=data_view,
+                default=_variable_default_selection(variable),
+            )
+        )
     return controls
 
 
@@ -4765,6 +4959,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
 
     variables = dashboard.get("templating", {}).get("list", [])
     control_variable_names = _pre_scan_control_variables(variables)
+    # Record which ``?var`` params default to the regex match-all so both the
+    # ES|QL and native PROMQL matcher emitters loosen equality matchers on
+    # All/multi variables into regex matches and render data on first load
+    # (PR #133 review). Stored on the shared rule pack so it is reachable from
+    # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
+    # explicitly into the native path. Set before any panel translation runs.
+    rule_pack._regex_default_param_names = _collect_regex_default_param_names(variables)
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)
@@ -4869,7 +5070,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         else:
             flat_panels.append(panel)
 
-    _rewrite_variable_warnings(result.panel_results, control_variable_names)
+    # Parameters (``?var``) actually emitted by panel queries drive control
+    # completeness: every one needs a binding control, and any variable that
+    # became a control should no longer be reported as a dropped filter.
+    emitted_params = _collect_emitted_param_names(flat_panels)
+    _rewrite_variable_warnings(
+        result.panel_results, control_variable_names | emitted_params
+    )
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -4879,6 +5086,14 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+    )
+    controls = _ensure_param_controls(
+        controls,
+        emitted_params,
+        variables,
+        controls_data_view,
+        resolver=controls_resolver,
+        rule_pack=rule_pack,
     )
 
     yaml_doc = {
