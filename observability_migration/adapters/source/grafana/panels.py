@@ -1019,67 +1019,6 @@ _COUNTER_RANGE_FUNC_PATTERN = re.compile(
 )
 
 
-_METRIC_REF_PATTERN = re.compile(
-    r"\b(?P<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\s*(?:\{|\[|\(|$|\s|/|\*|\+|-)",
-)
-
-# PromQL function / aggregator / keyword tokens that look like metric
-# selectors but aren't.
-_PROMQL_KEYWORDS = frozenset({
-    "by", "without", "on", "ignoring", "group_left", "group_right",
-    "and", "or", "unless", "bool", "offset", "atan2",
-    # Aggregators
-    "sum", "avg", "min", "max", "count", "stddev", "stdvar",
-    "topk", "bottomk", "quantile", "group", "count_values",
-    # Range/instant functions
-    "rate", "irate", "increase", "delta", "deriv", "predict_linear",
-    "changes", "resets", "idelta",
-    "avg_over_time", "sum_over_time", "min_over_time", "max_over_time",
-    "stddev_over_time", "stdvar_over_time", "count_over_time",
-    "last_over_time", "quantile_over_time", "present_over_time",
-    "histogram_quantile", "histogram_count", "histogram_sum",
-    "histogram_avg", "histogram_fraction", "histogram_stddev",
-    "histogram_stdvar",
-    # Math / time functions
-    "abs", "absent", "absent_over_time", "ceil", "exp", "floor",
-    "ln", "log2", "log10", "round", "scalar", "sgn", "sort", "sort_desc",
-    "sqrt", "time", "year", "month", "day_of_month", "day_of_week",
-    "day_of_year", "days_in_month", "hour", "minute", "timestamp",
-    "vector", "pi", "label_replace", "label_join", "clamp", "clamp_max",
-    "clamp_min", "acos", "acosh", "asin", "asinh", "atan", "atanh",
-    "cos", "cosh", "sin", "sinh", "tan", "tanh", "deg", "rad",
-    "nan", "inf",
-})
-
-
-def _extract_promql_metric_names(promql_expr):
-    """Return the distinct metric names referenced by *promql_expr*.
-
-    Strips string literals and label-set bodies first, then walks the
-    remaining text picking up tokens that look like metric identifiers.
-    PromQL keywords and function names are filtered against a curated
-    list so they don't show up as fake metric references.
-    """
-    if not promql_expr:
-        return []
-    sanitized = _strip_promql_string_literals(promql_expr)
-    # Replace ``{...}`` label-set bodies with empty braces so the inside
-    # doesn't leak label names as metric tokens.
-    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
-    seen: list[str] = []
-    for match in _METRIC_REF_PATTERN.finditer(sanitized):
-        name = match.group("metric")
-        if not name or name.lower() in _PROMQL_KEYWORDS:
-            continue
-        # Skip bare numbers picked up as identifiers (the pattern
-        # already filters them out, but be safe).
-        if name[0].isdigit():
-            continue
-        if name not in seen:
-            seen.append(name)
-    return seen
-
-
 def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
     """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
     to a metric that the resolver has *positively* identified as

@@ -9576,12 +9576,14 @@ class PrometheusDashboardIntegrationTests(unittest.TestCase):
         self.assertEqual(head_chunks["esql"]["metrics"][0]["label"], "Head chunk count")
         # ``Length of head block`` does ``A - B`` between two distinct
         # metric vectors (``prometheus_tsdb_head_max_time`` minus
-        # ``prometheus_tsdb_head_min_time``). Elastic's native PROMQL
-        # preview can't handle implicit-match arithmetic between
-        # distinct vectors, so this panel falls through to ES|QL
-        # translation, which performs the subtraction at bucket level
-        # and stores the result in a ``computed_value`` field. The
-        # native-PROMQL value-relabelling path therefore doesn't apply.
+        # ``prometheus_tsdb_head_min_time``). The distinct-metric
+        # subtraction itself stays native now (#138), but this panel's
+        # label matchers use a Grafana template variable
+        # (``{instance="$instance"}``), which ``can_use_native_promql``
+        # rejects, so it falls through to ES|QL translation — which
+        # performs the subtraction at bucket level and stores the result
+        # in a ``computed_value`` field. The native-PROMQL value-
+        # relabelling path therefore doesn't apply.
         head_block = panels_by_title["Length of head block"]
         head_block_query = head_block["esql"].get("query", "")
         self.assertNotIn("PROMQL index=", head_block_query)

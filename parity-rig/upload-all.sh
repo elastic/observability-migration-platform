@@ -25,10 +25,12 @@ if [[ -f "$CREDS_FILE" ]]; then
   set +a
 fi
 
-if [[ -z "${KIBANA_ENDPOINT:-}" ]]; then
-  echo "ERROR: KIBANA_ENDPOINT not set in serverless_creds.env" >&2
-  exit 2
-fi
+for var in ELASTICSEARCH_ENDPOINT KIBANA_ENDPOINT KEY; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: $var not set (export it, or provide it via \$CREDS_FILE)" >&2
+    exit 2
+  fi
+done
 
 declare -a DASHBOARDS=(
   "diverse-panels-test:Diverse Panel Types Test:/tmp/mig-to-kbn-e2e/input-all/diverse-panels-test.json"
