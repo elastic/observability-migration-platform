@@ -1136,8 +1136,15 @@ def _translate_panel_native_promql(
         # A bare/single-metric expression (``up``, ``rate(foo[5m])``) instead
         # fans out to multiple series with no derived value, where ES|QL's
         # aggregating summary is the cleaner single tile — keep rejecting it.
+        #
+        # Count metrics from ``cleaned_expr``, not the raw ``expr``: a macro
+        # range (``rate(foo_total[$__rate_interval])``) makes the AST parser
+        # reject the raw form (``$`` is illegal inside ``[...]``) and fall to
+        # the regex backend, which collects zero metrics — wrongly dropping a
+        # genuine distinct-metric ratio. ``cleaned_expr`` is the macro-resolved
+        # form the native command is actually built from below (#146).
         if "_timeseries" in group_cols and (
-            len(_collect_source_metrics(_parse_fragment(expr))) < 2
+            len(_collect_source_metrics(_parse_fragment(cleaned_expr or expr))) < 2
         ):
             return None
     # Emit an instant (``time=?_tend``) query when the source target is one:

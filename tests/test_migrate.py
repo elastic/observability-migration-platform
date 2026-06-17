@@ -2832,6 +2832,48 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_distinct_metric_ratio_with_macro_stays_native_on_gauge(self):
+        """The single-value distinct-metric gate must count metrics from the
+        *cleaned* expression, not the raw one. A common Grafana ratio uses a
+        macro range — ``rate(foo_total[$__rate_interval]) /
+        rate(bar_total[$__rate_interval])``. The raw expression fails the AST
+        parser (``$`` is illegal inside ``[...]``) and falls to the regex
+        backend, which collects zero metrics; counting those would wrongly drop
+        a genuine two-metric ratio back to the same-bucket ES|QL approximation.
+        Macro substitution (``$__rate_interval`` → a literal window) happens in
+        ``_clean_promql_for_native_with_state`` and the native command itself is
+        built from that cleaned expression, so the gate must parse it too (#146).
+        """
+        expr = (
+            "rate(node_network_receive_bytes_total{job=\"node\"}[$__rate_interval]) "
+            "/ rate(node_network_transmit_bytes_total{job=\"node\"}[$__rate_interval])"
+        )
+        panel = {
+            "title": "RX/TX ratio",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_network_receive_bytes_total", query)
+        self.assertIn("node_network_transmit_bytes_total", query)
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
         ``"Pages out ops"``) is a fixed series label. The translator
