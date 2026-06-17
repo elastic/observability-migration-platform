@@ -4,8 +4,11 @@
 import datetime
 import json
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
+from observability_migration.core.telemetry_contract import build_telemetry_contract
 from observability_migration.core.telemetry_data import (
     _contract_index_patterns,
     _expand_patterns,
@@ -220,6 +223,45 @@ class DimensionlessMetricSeedingTests(unittest.TestCase):
 
 
 class TelemetryDataTests(unittest.TestCase):
+    def test_generate_documents_satisfies_logs_is_not_null_presence_field(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Logs",
+                                "panel": "Errors present",
+                                "translated_query": (
+                                    "FROM logs-*\n"
+                                    "| WHERE error.message IS NOT NULL\n"
+                                    "| STATS count = COUNT(*)"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            contract = build_telemetry_contract(artifact_dir)
+
+        docs = [
+            doc
+            for _index, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        ]
+
+        self.assertTrue(docs)
+        self.assertTrue(
+            any("error.message" in doc for doc in docs),
+            "log presence field was mapped but never seeded",
+        )
+
     def test_concrete_stream_name_preserves_dataset_when_known(self):
         self.assertEqual(concrete_stream_name("metrics-prometheus-*"), "metrics-prometheus-default")
         self.assertEqual(concrete_stream_name("metrics-*"), "metrics-generic-default")
@@ -959,6 +1001,27 @@ class ExpandPatternsTests(unittest.TestCase):
         for v in values:
             self.assertNotRegex(v, r"[\[\]()|+^$\\*.]", f"regex metachars leaked into value {v!r}")
             self.assertNotIn("sample", v)
+
+    def test_wildcard_flanked_literal_seeds_matching_substring_value(self):
+        # ``WHERE <dim> RLIKE ".*Foo.*"`` is a substring filter. A clean default
+        # (e.g. "checkout") does not contain "Foo", so the panel returns zero
+        # rows. The literal core must be seeded so a fullmatch succeeds.
+        for pattern in (".*Foo.*", "app_.+"):
+            values = _expand_patterns("service_name", [pattern])
+            self.assertTrue(values, f"no values for {pattern!r}")
+            compiled = re.compile(pattern)
+            for v in values:
+                self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
+
+    def test_one_or_more_flanked_literal_seeds_matching_value(self):
+        # ``.+`` requires at least one character, unlike ``.*``. Keep enough
+        # padding around the literal core that the seeded value still fullmatches.
+        pattern = ".+Foo.+"
+        values = _expand_patterns("service_name", [pattern])
+        self.assertTrue(values)
+        compiled = re.compile(pattern)
+        for v in values:
+            self.assertTrue(compiled.fullmatch(v), f"{v!r} must fullmatch {pattern!r}")
 
     def test_relabeled_template_var_value_is_not_seeded_literally(self):
         # ``instance="$node:$port"`` is relabeled to ``label_node:label_port`` by the

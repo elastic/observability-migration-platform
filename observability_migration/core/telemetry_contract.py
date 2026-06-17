@@ -840,6 +840,18 @@ def _extract_metrics(query: str) -> dict[str, str]:
         if not _should_skip_field(field_name):
             metrics[field_name] = "gauge"
 
+    # Presence-only fields: a metric referenced solely via ``WHERE <field> IS
+    # NOT NULL`` (common for "presence" panels) is never aggregated, so the
+    # passes above miss it and the seeder omits the column — the live panel then
+    # fails with ``Unknown column [<field>]``. Seed it as a gauge metric.
+    # ``setdefault`` keeps any stronger classification an aggregation already gave
+    # the field in this query; explicit label evidence later flips genuine
+    # dimensions back via ``_apply_dimension_evidence``.
+    derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
+    for field_name in _extract_is_not_null_fields(query):
+        if field_name not in derived_aliases:
+            metrics.setdefault(field_name, "gauge")
+
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
     # computed/legend alias (e.g. ``EVAL CPU = node_pressure_cpu_..._A``), not a
     # source index field, even when a later ``STATS CPU = MAX(CPU)`` re-aggregates
@@ -848,6 +860,30 @@ def _extract_metrics(query: str) -> dict[str, str]:
         metrics.pop(alias, None)
 
     return metrics
+
+
+_IS_NOT_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+NOT\s+NULL\b", re.IGNORECASE)
+_NEGATION_PAREN_TOKENS_RE = re.compile(r"\bNOT\b|\(|\)", re.IGNORECASE)
+
+
+def _extract_is_not_null_fields(query: str) -> set[str]:
+    """Fields referenced by a ``<field> IS NOT NULL`` presence predicate.
+
+    These exist in the source index — the panel filters on their presence — so
+    they must be seeded even when no aggregation reads them. Only ``IS NOT
+    NULL`` (presence) is captured: a pure ``IS NULL`` (absence) filter wants the
+    rows where the field is *missing*, and seeding it as an always-present gauge
+    would make that panel match zero rows — a fresh false-negative. Quoted spans
+    are blanked first so an ``IS NOT NULL`` substring inside a string literal
+    does not seed a phantom field.
+    """
+    fields: set[str] = set()
+    scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query)
+    for match in _IS_NOT_NULL_RE.finditer(scan):
+        field_name = _normalize_field(match.group(1))
+        if field_name and not _should_skip_field(field_name):
+            fields.add(field_name)
+    return fields
 
 
 def _eval_assigned_names(query: str) -> set[str]:
@@ -867,6 +903,63 @@ def _eval_assigned_names(query: str) -> set[str]:
             if name:
                 names.add(name)
     return names
+
+
+def _stats_derived_assigned_names(query: str) -> set[str]:
+    """Names introduced by ``STATS <alias> = ...`` assignments.
+
+    A ``STATS`` left-hand side is often a source metric reused as the output
+    column name (``m = AVG(m)``), so do not blanket-drop every alias. Only treat
+    it as derived when the alias is absent from the right-hand side's source
+    field candidates, which covers formula aliases such as ``q1 = AVG(redis...)``.
+    """
+    names: set[str] = set()
+    for stage in re.findall(r"(?:^|\|)\s*STATS\s+(.+?)(?=\n\s*\||\|(?!\|)|$)", query, re.IGNORECASE | re.DOTALL):
+        assignment_clause = _before_top_level_by(stage)
+        for assignment in _split_top_level(assignment_clause):
+            lhs, sep, rhs = assignment.partition("=")
+            if not sep:
+                continue
+            name = _normalize_field(lhs.strip())
+            if not name or _should_skip_field(name):
+                continue
+            rhs_fields = set(_extract_query_field_candidates(rhs))
+            if name not in rhs_fields:
+                names.add(name)
+    return names
+
+
+def _before_top_level_by(stage: str) -> str:
+    """Return the part of a ``STATS`` stage before its top-level ``BY`` clause."""
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(stage):
+        char = stage[i]
+        if quote:
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in {'"', "'", "`"}:
+            quote = char
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            i += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0 and stage[i : i + 2].upper() == "BY":
+            before = stage[i - 1] if i > 0 else " "
+            after = stage[i + 2] if i + 2 < len(stage) else " "
+            if before.isspace() and after.isspace():
+                return stage[:i].rstrip()
+        i += 1
+    return stage
 
 
 _RATIO_RE = re.compile(
@@ -924,6 +1017,7 @@ def _extract_dimensions(query: str) -> set[str]:
             dimensions.add(field_name)
         return dimensions
     metrics = set(_extract_metrics(query))
+    derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
     where_pattern = re.compile(
         rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+LIKE|LIKE|NOT\s+RLIKE|RLIKE)\s*(?:\"|\(|-?\d|TRUE\b|FALSE\b)",
         re.IGNORECASE | re.DOTALL,
@@ -933,7 +1027,9 @@ def _extract_dimensions(query: str) -> set[str]:
         _add_dimension(dimensions, field_name, metrics)
 
     for match in where_pattern.finditer(query):
-        _add_dimension(dimensions, match.group(1), metrics)
+        field_name = _normalize_field(match.group(1))
+        if field_name not in derived_aliases:
+            _add_dimension(dimensions, field_name, metrics)
 
     # COUNT_DISTINCT arguments are dimension fields being counted, not numeric metrics.
     for match in re.finditer(rf"\bCOUNT_DISTINCT\(\s*({_IDENT_RE})\s*\)", query, re.IGNORECASE):
@@ -1034,18 +1130,32 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
             _append_required(target, _normalize_field(field_name), value)
         return values, patterns
     comparison_re = re.compile(
-        rf"({_IDENT_RE})\s*(==|!=)\s*\"([^\"]*)\"|({_IDENT_RE})\s*(LIKE|NOT LIKE)\s*\"([^\"]*)\"",
+        rf"({_IDENT_RE})\s*(==|!=)\s*\"([^\"]*)\""
+        rf"|({_IDENT_RE})\s*(NOT\s+RLIKE|RLIKE|NOT\s+LIKE|LIKE)\s*\"([^\"]*)\"",
         re.IGNORECASE,
     )
     for match in comparison_re.finditer(query):
         field_name = _normalize_field(match.group(1) or match.group(4) or "")
-        operator = (match.group(2) or match.group(5) or "").upper()
+        operator = re.sub(r"\s+", " ", (match.group(2) or match.group(5) or "").upper())
         value = match.group(3) or match.group(6) or ""
         if not field_name or _should_skip_field(field_name):
             continue
-        if operator in {"!=", "NOT LIKE"}:
+        if operator in {"!=", "NOT LIKE", "NOT RLIKE"}:
             continue
-        if "LIKE" in operator:
+        # A logically negated matcher (``NOT (field == "x")`` / ``NOT (field
+        # RLIKE "y")``) excludes its value, so seeding it would synthesize only
+        # rows the panel filters out. The Datadog ``LogNot`` path emits exactly
+        # this shape for ``==`` too, so the guard must cover equality, not only
+        # the regex/wildcard operators.
+        if _is_negated_filter(query, match.start()):
+            continue
+        if operator == "RLIKE":
+            # RLIKE values are regexes; keep them verbatim so the seeder's
+            # regex instantiator (``_expand_single_pattern``) can synthesize a
+            # fullmatching dimension value, exactly as it does for PromQL ``=~``.
+            _append_required(patterns, field_name, value)
+        elif operator == "LIKE":
+            # LIKE uses ``*`` wildcards; strip them to the literal stem.
             _append_required(patterns, field_name, value.strip("*"))
         else:
             _append_required(values, field_name, value)
@@ -1056,6 +1166,46 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
                 continue
             _append_required(values, normalized, value)
     return values, patterns
+
+
+def _is_negated_filter(query: str, field_start: int) -> bool:
+    """Return whether the filter matcher at ``field_start`` is logically negated.
+
+    Covers both the ``NOT (<field> ...)`` grouping that PromQL ``!~`` and Datadog
+    ``NOT (...)`` emit, and a bare ``NOT <field> ...`` prefix. Negation must hold
+    for *every* matcher inside a negated group, not only the first one
+    (e.g. ``NOT (a RLIKE "x" OR a RLIKE "y")``).
+
+    Quoted spans are blanked first (same convention as the metric-name scan
+    elsewhere in this module) so a string literal containing ``NOT``/``(``/``)``
+    can neither spoof a negation nor leave a frame open that suppresses a real,
+    non-negated matcher later in the query.
+    """
+    scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query[:field_start])
+    stack: list[bool] = []
+    pending_not_end = -1
+    for match in _NEGATION_PAREN_TOKENS_RE.finditer(scan):
+        token = match.group(0).upper()
+        if token == "NOT":
+            pending_not_end = match.end()
+            continue
+        if token == "(":
+            is_negated = (
+                pending_not_end != -1
+                and not scan[pending_not_end:match.start()].strip()
+            )
+            stack.append(is_negated)
+            pending_not_end = -1
+            continue
+        # Closing parenthesis.
+        if stack:
+            stack.pop()
+        pending_not_end = -1
+    if any(stack):
+        return True
+    # Bare ``NOT <field>``: a NOT with nothing but whitespace between it and the
+    # matcher (no intervening paren or other predicate).
+    return pending_not_end != -1 and not scan[pending_not_end:].strip()
 
 
 def _add_dimension(dimensions: set[str], field_name: str, metrics: set[str]) -> None:
