@@ -934,29 +934,28 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         regex_default_params=regex_default_params,
     )
 
-    if kibana_type in ("metric", "gauge"):
-        if instant:
-            # A single-value panel is an instant query: evaluate the expression
-            # at a single point (the end of the dashboard time range) rather
-            # than over a range of steps. ``?_tend`` is the Kibana time-picker
-            # variable for that end timestamp, so ``time=?_tend`` returns one
-            # row = the current value, matching Grafana's instant/"last value"
-            # stat semantics. A ``step=`` range query here would return a series
-            # the metric viz then has to collapse, which is semantically fuzzy.
-            # Opt-in only: callers that post-process the ``step`` column (e.g.
-            # the alert ``LAST(value, step)`` reduction) must keep ``step=``.
-            return f'PROMQL index={index} time=?_tend value=({cleaned})'
-        return f'PROMQL index={index} step={_DEFAULT_NATIVE_PROMQL_STEP} value=({cleaned})'
+    # An instant query evaluates the expression at a single point (the Kibana
+    # time-picker end, ``?_tend``) and returns one row per series = the current
+    # value, with NO ``step`` time column. A range query walks ``step=`` buckets
+    # and emits a ``step`` column to plot against. Single-value tiles
+    # (metric/gauge) and table-format ``instant: true`` targets are instant
+    # (issues #127, #102); everything else is a range plot. ``time=?_tend`` is
+    # opt-in: callers that post-process the ``step`` column (e.g. the alert
+    # ``LAST(value, step)`` reduction) leave ``instant`` False to keep ``step=``.
+    selector = "time=?_tend" if instant else f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
 
-    step = _DEFAULT_NATIVE_PROMQL_STEP
-    base = (
-        f'PROMQL index={index} step={step} '
-        f'value=({cleaned})'
-    )
+    if kibana_type in ("metric", "gauge"):
+        return f'PROMQL index={index} {selector} value=({cleaned})'
+
+    base = f'PROMQL index={index} {selector} value=({cleaned})'
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
         return base
+
+    # The ``step`` column only exists on range queries; an instant query must
+    # not KEEP it (referencing a column the command never emits is a 400).
+    value_cols = ["value"] if instant else ["step", "value"]
 
     if legend_labels:
         # Extract each series label from the native ``_timeseries`` JSON with a
@@ -967,7 +966,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         # which degraded super-linearly on wide label sets. A label absent from a
         # given series yields NULL (correct: that series has no such dimension).
         evals = [_grok_label_extraction(lbl) for lbl in legend_labels]
-        keep = ["step", "value"] + [_esql_identifier(lbl) for lbl in legend_labels]
+        keep = value_cols + [_esql_identifier(lbl) for lbl in legend_labels]
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
     static_label = (legend_format or "").strip()
@@ -977,10 +976,11 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         # Skip Grafana's "__auto" sentinel — it means "derive automatically"
         # and must not appear as a literal string in the ES|QL output.
         escaped = _escape_esql_double_quoted_literal(static_label)
+        keep = value_cols + ["label"]
         return (
             base
             + f'\n| EVAL label = "{escaped}"'
-            + "\n| KEEP step, value, label"
+            + f'\n| KEEP {", ".join(keep)}'
         )
 
     # Neither placeholders nor static legend text — drop the synthetic
@@ -1229,12 +1229,27 @@ def _translate_panel_native_promql(
     _, group_cols = _native_promql_result_shape(expr)
     if kibana_type in ("metric", "gauge") and group_cols:
         return None
+    # Emit an instant (``time=?_tend``) query when the source target is one:
+    # single-value tiles, or a ``instant: true`` table-format target (issue
+    # #102). ``_target_summary_mode`` already encodes that policy for the ES|QL
+    # path, so reuse it for parity; ``kibana_type in (metric, gauge)`` keeps the
+    # existing single-value behavior even when the panel type doesn't map there.
+    #
+    # But never let an instant query reach an XY (line/bar/area) spec: those bind
+    # the x-axis to the ``step`` time column, which an instant query does NOT emit
+    # (phantom axis / 400 — the #127 failure mode). ``_target_summary_mode``
+    # returns True unconditionally for ``bargauge`` (→ ``bar``), so without this
+    # guard a Prometheus ``bargauge`` panel would regress to a broken bar chart.
+    instant = kibana_type in ("metric", "gauge") or (
+        _target_summary_mode(panel_type, target)
+        and kibana_type not in ("line", "bar", "area")
+    )
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
-                                             instant=kibana_type in ("metric", "gauge"),
+                                             instant=instant,
                                              regex_default_params=regex_default_params)
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
