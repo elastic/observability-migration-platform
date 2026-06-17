@@ -2706,36 +2706,49 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn('EVAL label = CASE', query)
         self.assertNotIn('REPLACE(REPLACE(_ts', query)
 
-    def test_native_promql_gate_skips_binary_op_between_distinct_vectors(self):
-        """Elastic's PROMQL preview rejects ``A / B`` between two
-        instant vectors of **different** metric names — it can't infer
-        a label-set match without an explicit ``on()`` clause and falls
-        over. Reviewing the uploaded Node Exporter Full dashboard
-        showed ``Disk Space Used Basic`` (PromQL
-        ``100 - ((node_filesystem_avail_bytes * 100) / node_filesystem_size_bytes)``)
-        rendering as ``No results found`` because the native PROMQL
-        command returned an error. The translator's native-PROMQL gate
-        must detect this pattern and fall through to ES|QL translation,
-        where bucket-aligned arithmetic works.
+    def test_native_promql_ratio_between_distinct_metrics_stays_native(self):
+        """A panel computing a ratio/difference between two distinct
+        metrics (e.g. the Disk Usage panel
+        ``1 - es_fs_path_available_bytes / es_fs_path_total_bytes``)
+        must migrate to a native PROMQL lens with the original
+        expression preserved — Kibana's PROMQL preview evaluates the
+        implicit label-set match natively, so there is no need to fall
+        through to a same-bucket ES|QL approximation (issue #138).
         """
-        from observability_migration.adapters.source.grafana.panels import (
-            _native_promql_has_distinct_metric_arithmetic,
+        expr = (
+            "1 - node_filesystem_avail_bytes{fstype=\"ext4\"} "
+            "/ node_filesystem_size_bytes{fstype=\"ext4\"}"
         )
-        self.assertTrue(_native_promql_has_distinct_metric_arithmetic(
-            "100 - ((node_filesystem_avail_bytes{job=\"x\"} * 100) "
-            "/ node_filesystem_size_bytes{job=\"x\"})"
-        ))
-        # Plain arithmetic with literals is fine.
-        self.assertFalse(_native_promql_has_distinct_metric_arithmetic(
-            "node_filesystem_avail_bytes * 100 / 1024 / 1024"
-        ))
-        # Same-metric arithmetic (would be a label-set conflict, but
-        # Elastic handles it because the metric resolves once); leave it
-        # alone for the native path to attempt.
-        self.assertFalse(_native_promql_has_distinct_metric_arithmetic(
-            "(node_cpu_seconds_total{mode=\"idle\"}) "
-            "/ ignoring(mode) (node_cpu_seconds_total)"
-        ))
+        panel = {
+            "title": "Disk Usage",
+            "type": "timeseries",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        # The native command reuses both metric names from the original
+        # expression; the ES|QL approximation would collapse them into a
+        # single computed_value STATS pipeline instead.
+        self.assertIn("node_filesystem_avail_bytes", query)
+        self.assertIn("node_filesystem_size_bytes", query)
+        self.assertNotIn("STATS", query)
+        # No approximation: the same-bucket ES|QL fallback warning must
+        # not be attached.
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
 
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
@@ -9789,12 +9802,14 @@ class PrometheusDashboardIntegrationTests(unittest.TestCase):
         self.assertEqual(head_chunks["esql"]["metrics"][0]["label"], "Head chunk count")
         # ``Length of head block`` does ``A - B`` between two distinct
         # metric vectors (``prometheus_tsdb_head_max_time`` minus
-        # ``prometheus_tsdb_head_min_time``). Elastic's native PROMQL
-        # preview can't handle implicit-match arithmetic between
-        # distinct vectors, so this panel falls through to ES|QL
-        # translation, which performs the subtraction at bucket level
-        # and stores the result in a ``computed_value`` field. The
-        # native-PROMQL value-relabelling path therefore doesn't apply.
+        # ``prometheus_tsdb_head_min_time``). The distinct-metric
+        # subtraction itself stays native now (#138), but this panel's
+        # label matchers use a Grafana template variable
+        # (``{instance="$instance"}``), which ``can_use_native_promql``
+        # rejects, so it falls through to ES|QL translation — which
+        # performs the subtraction at bucket level and stores the result
+        # in a ``computed_value`` field. The native-PROMQL value-
+        # relabelling path therefore doesn't apply.
         head_block = panels_by_title["Length of head block"]
         head_block_query = head_block["esql"].get("query", "")
         self.assertNotIn("PROMQL index=", head_block_query)

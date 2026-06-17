@@ -243,14 +243,16 @@ def _classify_rules(
             category=CATEGORY_TRANSLATOR_BUG,
             confidence=0.9,
             rationale=(
-                f"T5 _query rejected with `{which}` — the native PROMQL gate "
-                "should have refused this expression but didn't, so we "
-                "emitted ES|QL the engine cannot evaluate."
+                f"T5 _query rejected with `{which}` — Elastic's PROMQL "
+                "command could not evaluate this specific expression shape. "
+                "The common implicit-match ratio between two distinct metrics "
+                "is evaluated natively (see #138), so this is a narrower "
+                "unsupported shape that the native gate currently lets through."
             ),
             suggested_action=(
-                "extend `_native_promql_has_distinct_metric_arithmetic` to "
-                "cover this PROMQL shape and degrade to a NOT_FEASIBLE "
-                "verdict instead of emitting the query."
+                "narrow `can_use_native_promql` to reject this specific PROMQL "
+                "shape so the panel degrades to ES|QL translation instead of "
+                "emitting a PROMQL command the cluster rejects."
             ),
             evidence=[f"t5_response_error contains `{which}`"],
         )

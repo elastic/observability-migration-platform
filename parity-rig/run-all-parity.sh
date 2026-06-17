@@ -8,19 +8,32 @@
 #
 # Requires:
 # - parity-rig containers running (docker compose up -d)
-# - serverless_creds.env at /Users/subhamsarkar/mig-to-kbn/serverless_creds.env
-# - mig-to-kbn checkout at WORKTREE below
+# - Credentials exporting ELASTICSEARCH_ENDPOINT, KEY — either already in
+#   the environment, or in a creds file at $CREDS_FILE (defaults to
+#   serverless_creds.env in the repo root).
+# - A .venv in the repo root (override the interpreter with $PYTHON).
 set -euo pipefail
 
-WORKTREE=/Users/subhamsarkar/.config/superpowers/worktrees/mig-to-kbn/semantic-first-grafana-contract
-RIG=$WORKTREE/parity-rig
+# Derive paths from this script's location: it lives in <repo>/parity-rig.
+RIG=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WORKTREE=$(cd "$RIG/.." && pwd)
 REPORTS=$RIG/reports/parity-all
 mkdir -p "$REPORTS"
 
-PYTHON=$WORKTREE/.venv/bin/python
-set -a
-source /Users/subhamsarkar/mig-to-kbn/serverless_creds.env
-set +a
+PYTHON="${PYTHON:-$WORKTREE/.venv/bin/python}"
+CREDS_FILE="${CREDS_FILE:-$WORKTREE/serverless_creds.env}"
+if [[ -f "$CREDS_FILE" ]]; then
+  set -a
+  source "$CREDS_FILE"
+  set +a
+fi
+
+for var in ELASTICSEARCH_ENDPOINT KEY; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: $var not set (export it, or provide it via \$CREDS_FILE)" >&2
+    exit 2
+  fi
+done
 
 # Map each fixture / dashboard JSON to a short slug.
 declare -a DASHBOARDS=(

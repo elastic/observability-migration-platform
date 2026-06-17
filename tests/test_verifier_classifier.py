@@ -90,7 +90,7 @@ class TestTranslatorBugRules:
         )
         cl = classifier.classify(record)
         assert cl.category == classifier.CATEGORY_TRANSLATOR_BUG
-        assert "_native_promql_has_distinct_metric_arithmetic" in cl.suggested_action
+        assert "can_use_native_promql" in cl.suggested_action
         assert cl.evidence  # non-empty
 
     def test_binary_operator_error_classifies_as_translator_bug(self):
@@ -99,7 +99,7 @@ class TestTranslatorBugRules:
         )
         cl = classifier.classify(record)
         assert cl.category == classifier.CATEGORY_TRANSLATOR_BUG
-        assert "_native_promql_has_distinct_metric_arithmetic" in cl.suggested_action
+        assert "can_use_native_promql" in cl.suggested_action
 
     def test_requires_counter_metric_classifies_as_translator_bug(self):
         record = _make_record(

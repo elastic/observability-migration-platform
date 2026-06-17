@@ -1023,110 +1023,6 @@ _COUNTER_RANGE_FUNC_PATTERN = re.compile(
 )
 
 
-_METRIC_REF_PATTERN = re.compile(
-    r"\b(?P<metric>[a-zA-Z_:][a-zA-Z0-9_:]*)\s*(?:\{|\[|\(|$|\s|/|\*|\+|-)",
-)
-
-# PromQL function / aggregator / keyword tokens that look like metric
-# selectors but aren't.
-_PROMQL_KEYWORDS = frozenset({
-    "by", "without", "on", "ignoring", "group_left", "group_right",
-    "and", "or", "unless", "bool", "offset", "atan2",
-    # Aggregators
-    "sum", "avg", "min", "max", "count", "stddev", "stdvar",
-    "topk", "bottomk", "quantile", "group", "count_values",
-    # Range/instant functions
-    "rate", "irate", "increase", "delta", "deriv", "predict_linear",
-    "changes", "resets", "idelta",
-    "avg_over_time", "sum_over_time", "min_over_time", "max_over_time",
-    "stddev_over_time", "stdvar_over_time", "count_over_time",
-    "last_over_time", "quantile_over_time", "present_over_time",
-    "histogram_quantile", "histogram_count", "histogram_sum",
-    "histogram_avg", "histogram_fraction", "histogram_stddev",
-    "histogram_stdvar",
-    # Math / time functions
-    "abs", "absent", "absent_over_time", "ceil", "exp", "floor",
-    "ln", "log2", "log10", "round", "scalar", "sgn", "sort", "sort_desc",
-    "sqrt", "time", "year", "month", "day_of_month", "day_of_week",
-    "day_of_year", "days_in_month", "hour", "minute", "timestamp",
-    "vector", "pi", "label_replace", "label_join", "clamp", "clamp_max",
-    "clamp_min", "acos", "acosh", "asin", "asinh", "atan", "atanh",
-    "cos", "cosh", "sin", "sinh", "tan", "tanh", "deg", "rad",
-    "nan", "inf",
-})
-
-
-def _extract_promql_metric_names(promql_expr):
-    """Return the distinct metric names referenced by *promql_expr*.
-
-    Strips string literals and label-set bodies first, then walks the
-    remaining text picking up tokens that look like metric identifiers.
-    PromQL keywords and function names are filtered against a curated
-    list so they don't show up as fake metric references.
-    """
-    if not promql_expr:
-        return []
-    sanitized = _strip_promql_string_literals(promql_expr)
-    # Replace ``{...}`` label-set bodies with empty braces so the inside
-    # doesn't leak label names as metric tokens.
-    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
-    seen: list[str] = []
-    for match in _METRIC_REF_PATTERN.finditer(sanitized):
-        name = match.group("metric")
-        if not name or name.lower() in _PROMQL_KEYWORDS:
-            continue
-        # Skip bare numbers picked up as identifiers (the pattern
-        # already filters them out, but be safe).
-        if name[0].isdigit():
-            continue
-        if name not in seen:
-            seen.append(name)
-    return seen
-
-
-def _native_promql_has_distinct_metric_arithmetic(promql_expr):
-    """Return True if *promql_expr* contains an arithmetic binary op
-    (``+``/``-``/``*``/``/``/``%``/``^``) between two operands that
-    reference different metric names.
-
-    Elastic's PROMQL preview can't infer the implicit 1:1 label-set
-    match Prometheus uses for such expressions and returns an empty
-    result or 400. The translator should detect this and fall through
-    to ES|QL translation, which performs the arithmetic at the bucket
-    level with explicit groupings.
-
-    Explicit ``ignoring(...)`` / ``on(...)`` modifiers are already
-    rejected by ``can_use_native_promql``; here we catch the
-    implicit-match case where the user just wrote ``A / B``. Grafana
-    template variables (``$var`` / ``${var}`` / ``[[var]]``) are
-    excluded from the metric-name extraction so panels like
-    ``up * $scale`` still route through native PROMQL.
-    """
-    if not promql_expr:
-        return False
-    sanitized = _strip_promql_string_literals(promql_expr)
-    # Replace label-set bodies so their contents don't leak operators.
-    sanitized = re.sub(r"\{[^{}]*\}", "{}", sanitized)
-    # Remove Grafana template variable tokens so they don't get
-    # mistaken for metric references.
-    sanitized_no_vars = sanitized
-    for pattern in (
-        _GRAFANA_VAR_BRACED_RE,
-        _GRAFANA_VAR_BRACKET_RE,
-        _GRAFANA_VAR_PLAIN_RE,
-    ):
-        sanitized_no_vars = pattern.sub(" ", sanitized_no_vars)
-    metrics = _extract_promql_metric_names(sanitized_no_vars)
-    if len(metrics) < 2:
-        return False
-    # If the expression contains any arithmetic operator AND references
-    # two or more distinct metric names, treat it as distinct-metric
-    # arithmetic that Elastic's PROMQL preview can't safely evaluate.
-    if re.search(r"[+\-*/%^]", sanitized_no_vars):
-        return True
-    return False
-
-
 def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
     """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
     to a metric that the resolver has *positively* identified as
@@ -1210,15 +1106,6 @@ def _translate_panel_native_promql(
     # counters that don't end in ``_total`` (Elastic's auto-mapping
     # treats them as gauges).
     if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
-        return None
-    # Gate: Elastic's PROMQL preview can't perform implicit label-set
-    # match for arithmetic between two distinct instant vectors (e.g.
-    # ``A / B`` without ``on()``). Fall through to ES|QL translation,
-    # which does the math at the bucket level. Surfaced by reviewing
-    # uploaded NEF panels like ``Disk Space Used Basic`` that rendered
-    # "No results found" because the native PROMQL command rejected
-    # the query.
-    if _native_promql_has_distinct_metric_arithmetic(expr):
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)

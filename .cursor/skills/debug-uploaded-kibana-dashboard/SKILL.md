@@ -112,7 +112,7 @@ Kibana shows a red toast like `[parent] Data too large, ...` or `Found 1 problem
    - `Unknown column [X]` where X *is* in the query → data gap. If X is a synthetic metric, add it to the producer; if it's a real metric the user has, the index they're pointing the data view at is wrong.
    - `Unknown column [Y]` where Y is *not* in the query → translator emitted an alias-mismatched filter (the canonical symptom of the SchemaResolver bug class).
    - `function [rate] requires a counter metric` → ingest typed the field as gauge. Translator fix in commit `bd68f61` handles this for ES|QL emission; if it's hitting from a native-PROMQL panel, the gate in `_translate_panel_native_promql` is missing the case.
-   - `verification_exception` with `cannot infer label set` / `binary operator` → Elastic PROMQL preview limit. Should have routed through ES|QL fallback; gate in `_native_promql_has_distinct_metric_arithmetic` may have missed.
+   - `verification_exception` with `cannot infer label set` / `binary operator` → Elastic PROMQL preview can't evaluate this expression shape. `can_use_native_promql` let it through; narrow that gate to reject the shape so the panel degrades to ES|QL translation instead of emitting a PROMQL command the cluster rejects.
 
 ## Workflow E — per-panel walker via `agent-browser`
 
