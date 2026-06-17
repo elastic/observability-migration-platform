@@ -65,12 +65,17 @@ class ResolveTlsTests(unittest.TestCase):
 
 
 class SubprocessTlsEnvTests(unittest.TestCase):
-    """The external Node `kb-dashboard-cli` honors NODE_* TLS env vars."""
+    """The kb-dashboard-cli subprocess honors both Node and Python TLS env vars."""
 
     def _clean_env(self):
         return mock.patch.dict(
             "os.environ",
-            {"NODE_TLS_REJECT_UNAUTHORIZED": "", "NODE_EXTRA_CA_CERTS": ""},
+            {
+                "NODE_TLS_REJECT_UNAUTHORIZED": "",
+                "NODE_EXTRA_CA_CERTS": "",
+                "SSL_CERT_FILE": "",
+                "REQUESTS_CA_BUNDLE": "",
+            },
             clear=False,
         )
 
@@ -98,6 +103,17 @@ class SubprocessTlsEnvTests(unittest.TestCase):
             obs_http.apply_subprocess_tls_env("/etc/ca.pem")
             self.assertEqual(os.environ.get("NODE_EXTRA_CA_CERTS"), "/etc/ca.pem")
             self.assertNotEqual(os.environ.get("NODE_TLS_REJECT_UNAUTHORIZED"), "0")
+
+    def test_ca_path_sets_python_ssl_env_for_aiohttp_uploader(self):
+        # The resolved kb-dashboard-cli is a Python/aiohttp tool whose default
+        # SSL context honors SSL_CERT_FILE / REQUESTS_CA_BUNDLE, so the CA path
+        # must be exported under those names too (not just the Node var).
+        import os
+
+        with self._clean_env():
+            obs_http.apply_subprocess_tls_env("/etc/ca.pem")
+            self.assertEqual(os.environ.get("SSL_CERT_FILE"), "/etc/ca.pem")
+            self.assertEqual(os.environ.get("REQUESTS_CA_BUNDLE"), "/etc/ca.pem")
 
     def test_accepts_explicit_env_mapping(self):
         target: dict[str, str] = {}

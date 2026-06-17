@@ -81,6 +81,36 @@ class TestSharedCompileBehavior(unittest.TestCase):
         self.assertEqual(env["NODE_EXTRA_CA_CERTS"], "/tmp/ca.pem")
         self.assertEqual(os.environ.get("NODE_EXTRA_CA_CERTS", ""), "")
 
+    def test_upload_yaml_passes_no_ssl_verify_flag_when_insecure(self):
+        # verify=False (--insecure) must reach the Python/aiohttp uploader as its
+        # own --kibana-no-ssl-verify flag; the Node env var alone is a no-op.
+        with mock.patch.object(shared_compile, "_run_command", return_value=(True, "ok")) as run_command:
+            shared_compile.upload_yaml(
+                "dash.yaml",
+                "compiled-out",
+                "https://kibana.example",
+                verify=False,
+            )
+
+        cmd = run_command.call_args.args[0]
+        self.assertIn("--kibana-no-ssl-verify", cmd)
+
+    def test_upload_yaml_omits_no_ssl_verify_flag_when_verifying(self):
+        for verify in (True, "/tmp/ca.pem"):
+            with self.subTest(verify=verify):
+                with mock.patch.object(
+                    shared_compile, "_run_command", return_value=(True, "ok")
+                ) as run_command:
+                    shared_compile.upload_yaml(
+                        "dash.yaml",
+                        "compiled-out",
+                        "https://kibana.example",
+                        verify=verify,
+                    )
+
+                cmd = run_command.call_args.args[0]
+                self.assertNotIn("--kibana-no-ssl-verify", cmd)
+
     def test_detect_space_id_from_url_without_space_returns_empty(self):
         self.assertEqual(shared_compile.detect_space_id_from_kibana_url("http://localhost:5601"), "")
 
