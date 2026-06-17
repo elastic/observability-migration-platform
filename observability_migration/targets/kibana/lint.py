@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,13 @@ import yaml
 from observability_migration.targets.kibana._kbtool import tool_argv
 
 VALIDATION_TIMEOUT_SECONDS = 120
+
+# An ES|QL named parameter (``?var``), excluding engine-internal params
+# (``?_tstart`` / ``?_tend`` / ``?_job``) which are materialized at query time.
+_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+# Quoted string literals, stripped before scanning so a ``?`` inside a value
+# (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
+_ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
 
 DEFAULT_WARNING_ALLOWLIST = frozenset(
     {
@@ -69,6 +77,58 @@ def _is_native_promql_entry(entry: dict, promql_keys: set[tuple[str, str]]) -> b
     return key in promql_keys
 
 
+def _unbound_param_findings(yaml_file) -> list[dict]:
+    """Flag panel queries that reference an ES|QL ``?param`` with no control.
+
+    Regression gate for issue #131: every ``?var`` a panel emits (native PROMQL
+    ``{label=~?var}`` or ES|QL ``WHERE field == ?var``) must be bound by an
+    ``esqlControl`` (a control of type ``esql`` whose ``variable_name`` matches),
+    otherwise the panel fails to load with "Parameter [?var] value not found".
+    Applies to both native PROMQL and ES|QL panels.
+    """
+    try:
+        payload = yaml.safe_load(Path(yaml_file).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    findings: list[dict] = []
+    for dashboard in payload.get("dashboards") or []:
+        if not isinstance(dashboard, dict):
+            continue
+        dashboard_name = str(dashboard.get("name") or "")
+        bound = {
+            str(control.get("variable_name"))
+            for control in (dashboard.get("controls") or [])
+            if isinstance(control, dict)
+            and control.get("type") == "esql"
+            and control.get("variable_name")
+        }
+        for panel in _iter_leaf_panels(dashboard.get("panels") or []):
+            esql_config = panel.get("esql")
+            query = esql_config.get("query") if isinstance(esql_config, dict) else None
+            if not isinstance(query, str):
+                continue
+            unquoted = _ESQL_QUOTED_RE.sub('""', query)
+            for name in sorted(
+                {m.group("name") for m in _ESQL_PARAM_RE.finditer(unquoted)} - bound
+            ):
+                findings.append(
+                    {
+                        "dashboard_name": dashboard_name,
+                        "panel_title": str(panel.get("title") or ""),
+                        "rule_id": "unbound-esql-param",
+                        "severity": "error",
+                        "message": (
+                            f"panel query references ES|QL parameter ?{name} but no "
+                            f"control binds it; the panel will fail with "
+                            f'"Parameter [?{name}] value not found" (issue #131)'
+                        ),
+                    }
+                )
+    return findings
+
+
 def _run_lint_tool(yaml_file: Path) -> tuple[list[dict], str]:
     """Invoke kb-dashboard-lint on one file. Returns (findings, raw_stderr)."""
     cmd = tool_argv("kb-dashboard-lint") + [
@@ -115,6 +175,9 @@ def lint_dashboard_yaml(yaml_dir, allowlist: frozenset[str] = DEFAULT_WARNING_AL
                 ignored += 1
                 continue
             entries.append(entry)
+        # In-process gate (issue #131): unbound ``?param`` references must fail
+        # regardless of path, so this is not subject to the native-PROMQL ignore.
+        entries.extend(_unbound_param_findings(yaml_file))
 
     if ignored:
         plural = "y" if ignored == 1 else "ies"
