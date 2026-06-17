@@ -1192,6 +1192,30 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             query = yaml_panel["esql"]["query"]
             self.assertIn("http_requests_total", query)
 
+    def test_native_promql_bare_counter_on_stat_panel(self):
+        """Issue #139: a bare counter reference (no rate()) on a single-value
+        panel must migrate to a native PROMQL lens, not the ES|QL
+        ``MAX(LAST_OVER_TIME(...))`` fallback with its misleading warning."""
+        for panel_type in ("stat", "gauge"):
+            with self.subTest(panel_type=panel_type):
+                panel = _make_panel(
+                    1, "node_network_receive_bytes_total", panel_type=panel_type
+                )
+                yaml_panel, result = _translate_panel(
+                    panel, rule_pack=self.rp, resolver=self.resolver
+                )
+                query = yaml_panel["esql"]["query"]
+                self.assertTrue(
+                    query.startswith("PROMQL"),
+                    f"bare counter should stay native PROMQL on {panel_type}: {query[:120]}",
+                )
+                self.assertIn("node_network_receive_bytes_total", query)
+                self.assertNotIn("LAST_OVER_TIME", query)
+                self.assertFalse(
+                    any("LAST_OVER_TIME" in r for r in (result.reasons or [])),
+                    f"native PROMQL must not emit the LAST_OVER_TIME warning: {result.reasons}",
+                )
+
     def test_native_promql_ratio_uses_repeated_group_labels_without_timeseries_extraction(self):
         expr = (
             "(sum by (service.name) (rate(http_request_duration_seconds_sum[5m]))) / "
