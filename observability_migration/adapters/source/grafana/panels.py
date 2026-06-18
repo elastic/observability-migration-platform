@@ -96,7 +96,12 @@ from .series_labels import (
     build_metric_series_labels,
     expr_has_explicit_grouping,
 )
-from .translate import TranslationContext, _build_metric_contract_artifacts, translate_promql_to_esql
+from .translate import (
+    TranslationContext,
+    _build_metric_contract_artifacts,
+    _collect_source_metrics,
+    translate_promql_to_esql,
+)
 
 PANEL_TYPE_MAP = {
     "timeseries": "line",
@@ -1150,13 +1155,63 @@ def _translate_panel_native_promql(
         regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
-    if kibana_type in ("metric", "gauge") and group_cols:
-        # A ``_timeseries``-shaped result normally can't render on a single-value
-        # tile, so we fall through to ES|QL (which collapses to one value). The
-        # exception is a bare counter reference: Kibana's PROMQL preview serves
-        # the raw cumulative value natively, so keep the original expression
-        # instead of the ES|QL ``LAST_OVER_TIME`` fallback (issue #139).
-        if not _is_bare_counter_reference(expr, resolver, rule_pack):
+    # Parse the macro-resolved form once; reused by the metric/gauge gate below
+    # and the QueryIR fields further down (avoids parsing the same expr twice).
+    native_fragment = _parse_fragment(cleaned_expr or expr)
+    if kibana_type in ("metric", "gauge"):
+        # A real multi-series breakdown (``by (instance)`` → ``['instance']``)
+        # can't be rendered as one value, so keep degrading those to ES|QL.
+        real_group_cols = [col for col in group_cols if col != "_timeseries"]
+        if real_group_cols:
+            return None
+        # ``_timeseries`` is the time dimension only, not a breakdown. For a
+        # distinct-metric ratio/difference (``1 - avail / size``, two metrics)
+        # the instant query preserves the original arithmetic and collapses to
+        # the latest value — the same outcome #138 gave line charts (#146).
+        # A bare/single-metric expression (``up``, ``rate(foo[5m])``) instead
+        # fans out to multiple series with no derived value, where ES|QL's
+        # aggregating summary is the cleaner single tile — keep rejecting it.
+        #
+        # Count metrics from ``cleaned_expr``, not the raw ``expr``: a macro
+        # range (``rate(foo_total[$__rate_interval])``) makes the AST parser
+        # reject the raw form (``$`` is illegal inside ``[...]``) and fall to
+        # the regex backend, which collects zero metrics — wrongly dropping a
+        # genuine distinct-metric ratio. ``cleaned_expr`` is the macro-resolved
+        # form the native command is actually built from below (#146).
+        #
+        # Count metric *occurrences* (``dedup=False``), not distinct names: the
+        # canonical Prometheus error-rate ratio divides the *same* metric under
+        # two selectors (``rate(http_requests_total{code=~"5.."}[5m]) /
+        # rate(http_requests_total[5m])``). Counting distinct names collapses
+        # that to one and wrongly degrades genuine derived arithmetic to the
+        # same-bucket ES|QL approximation; counting occurrences sees the two
+        # vector operands and keeps it native. A scalar-scaled single metric
+        # (``node_cpu_seconds_total * 100``) still has one occurrence, so it
+        # correctly stays degraded — the scalar literal contributes no metric.
+        #
+        # NOTE: occurrence count is a proxy for "derived value", not a guarantee
+        # of a single row. An implicit-match ratio (``node_memory_MemAvailable
+        # _bytes / node_memory_MemTotal_bytes``) has two operands and stays
+        # native, yet when multiple instances are scraped it matches per-instance
+        # and fans out to one series each — so single-value tiles can surface a
+        # multi-row instant result. Kibana reduces/repeats it the same way
+        # Grafana does for gauges; this is the intended outcome and mirrors
+        # #138's accepted line-chart behavior — kept native by design rather
+        # than degraded (#146). (Explicit vector matching like ``/ on(instance)``
+        # is a separate case: ``build_native_promql_query`` rejects it, so those
+        # degrade to ES|QL regardless of this gate.)
+        #
+        # A bare counter reference (``http_requests_total{job="api"}`` with no
+        # rate()) is likewise kept native even though it is a single metric:
+        # Kibana's PROMQL preview serves the raw cumulative value directly, so
+        # preserve the original expression instead of the ES|QL
+        # ``LAST_OVER_TIME`` fallback and its misleading "Counter referenced
+        # without rate()" warning (issue #139). Bare gauges and rate()/range
+        # functions are not bare counters and still degrade here.
+        if "_timeseries" in group_cols and (
+            len(_collect_source_metrics(native_fragment, dedup=False)) < 2
+            and not _is_bare_counter_reference(expr, resolver, rule_pack)
+        ):
             return None
     # Emit an instant (``time=?_tend``) query when the source target is one:
     # single-value tiles, or a ``instant: true`` table-format target (issue
@@ -1222,7 +1277,6 @@ def _translate_panel_native_promql(
     query_ir.datasource_uid = datasource.get("uid", "")
     query_ir.datasource_name = datasource.get("name", "")
     query_ir.family = "native_promql"
-    native_fragment = _parse_fragment(cleaned_expr or expr)
     query_ir.metric = str(getattr(native_fragment, "metric", "") or "")
     query_ir.range_function = str(getattr(native_fragment, "range_func", "") or "")
     query_ir.range_window = str(getattr(native_fragment, "range_window", "") or "")

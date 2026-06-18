@@ -2750,6 +2750,249 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_distinct_metric_arithmetic_stays_native_on_gauge(self):
+        """A single-value tile (gauge/stat/singlestat) whose expression is a
+        distinct-metric ratio/difference (e.g. the Node Exporter ``RAM Used``
+        gauge ``(1 - MemAvailable / MemTotal) * 100``) must migrate to a
+        native PROMQL lens — an instant query for the latest value — with the
+        original arithmetic preserved. ``_native_promql_result_shape`` returns
+        ``group_cols == ['_timeseries']`` (the time dimension only, not a real
+        breakdown), so the single-value gate must NOT reject it: that is the
+        same-bucket ES|QL approximation #138 already removed for line charts
+        (issue #146).
+        """
+        expr = (
+            "(1 - (node_memory_MemAvailable_bytes{job=\"node\"} "
+            "/ node_memory_MemTotal_bytes{job=\"node\"})) * 100"
+        )
+        panel = {
+            "title": "RAM Used",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        # Both distinct metrics survive into the native command; the ES|QL
+        # approximation would collapse them into one STATS pipeline.
+        self.assertIn("node_memory_MemAvailable_bytes", query)
+        self.assertIn("node_memory_MemTotal_bytes", query)
+        self.assertNotIn("STATS", query)
+        # No approximation: the same-bucket ES|QL fallback warning must not
+        # be attached.
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_distinct_metric_difference_stays_native_on_stat(self):
+        """The ``stat`` grafana_type maps to the ``metric`` kibana type — a
+        different single-value branch than ``gauge`` — so cover it too: the
+        Node Exporter ``Uptime`` stat (``node_time_seconds - node_boot_time_seconds``,
+        a difference of two distinct metrics) must also stay on the native
+        PROMQL path rather than the same-bucket ES|QL approximation (#146).
+        """
+        expr = (
+            "node_time_seconds{job=\"node\"} "
+            "- node_boot_time_seconds{job=\"node\"}"
+        )
+        panel = {
+            "title": "Uptime",
+            "type": "stat",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_time_seconds", query)
+        self.assertIn("node_boot_time_seconds", query)
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_distinct_metric_ratio_with_macro_stays_native_on_gauge(self):
+        """The single-value distinct-metric gate must count metrics from the
+        *cleaned* expression, not the raw one. A common Grafana ratio uses a
+        macro range — ``rate(foo_total[$__rate_interval]) /
+        rate(bar_total[$__rate_interval])``. The raw expression fails the AST
+        parser (``$`` is illegal inside ``[...]``) and falls to the regex
+        backend, which collects zero metrics; counting those would wrongly drop
+        a genuine two-metric ratio back to the same-bucket ES|QL approximation.
+        Macro substitution (``$__rate_interval`` → a literal window) happens in
+        ``_clean_promql_for_native_with_state`` and the native command itself is
+        built from that cleaned expression, so the gate must parse it too (#146).
+        """
+        expr = (
+            "rate(node_network_receive_bytes_total{job=\"node\"}[$__rate_interval]) "
+            "/ rate(node_network_transmit_bytes_total{job=\"node\"}[$__rate_interval])"
+        )
+        panel = {
+            "title": "RX/TX ratio",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_network_receive_bytes_total", query)
+        self.assertIn("node_network_transmit_bytes_total", query)
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_multiseries_implicit_match_ratio_stays_native_on_gauge(self):
+        """An implicit-match ratio between two distinct metrics
+        (``node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes``) has
+        two metrics, so the single-value gate keeps it native. When multiple
+        instances are scraped this matches per-instance and fans out to one
+        series each rather than collapsing to a single scalar — so the gauge
+        surfaces a multi-row instant result. This is intended (#146): the
+        instant query preserves the original arithmetic and Kibana
+        reduces/repeats the multi-row result the same way Grafana does,
+        mirroring #138's accepted line-chart behavior. The gate's
+        distinct-metric count is a deliberate proxy for "derived value", not a
+        guarantee of a single row, so these are NOT degraded to same-bucket
+        ES|QL math. (Explicit ``/ on(instance)`` vector matching is a separate
+        case the native builder rejects, so those degrade regardless.)
+        """
+        expr = (
+            "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes"
+        )
+        panel = {
+            "title": "Memory available ratio",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("node_memory_MemAvailable_bytes", query)
+        self.assertIn("node_memory_MemTotal_bytes", query)
+        # Stays on the native instant path — not the aggregating ES|QL fallback.
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_same_metric_error_rate_ratio_stays_native_on_gauge(self):
+        """The canonical Prometheus error-rate ratio divides the *same* metric
+        under two different label selectors (``rate(http_requests_total
+        {code=~"5.."}[5m]) / rate(http_requests_total[5m])``). With no outer
+        aggregation the shape is ``['_timeseries']`` (per-series instant
+        result), so it reaches the single-value gate. This is genuine derived
+        arithmetic that the instant query preserves and collapses to a latest
+        value — exactly like the distinct-metric ratio #146 keeps native. The
+        gate counts metric *occurrences*, not distinct names, so a same-metric
+        ratio (two occurrences of one name) is NOT mistaken for a bare
+        single-metric expression and must stay on the native PROMQL path rather
+        than degrade to the same-bucket ES|QL ``computed_value`` approximation.
+        """
+        expr = (
+            "rate(http_requests_total{code=~\"5..\"}[5m]) "
+            "/ rate(http_requests_total[5m])"
+        )
+        panel = {
+            "title": "Error rate",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("http_requests_total", query)
+        # The native command preserves the ratio; the ES|QL approximation would
+        # collapse it into one STATS pipeline instead.
+        self.assertNotIn("STATS", query)
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertNotIn(
+            "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            joined,
+        )
+
+    def test_native_promql_scalar_scaled_single_metric_still_degrades_on_gauge(self):
+        """Counterpart guard for the occurrence-count gate: scaling a *single*
+        metric by a scalar (``node_cpu_seconds_total * 100``) is one metric
+        occurrence, not a collapsing ratio — it still fans out to one series per
+        scrape target with no derived single value, so the single-value gate
+        must keep degrading it to the ES|QL aggregating summary. Counting
+        occurrences must not flip this to the native path.
+        """
+        expr = "node_cpu_seconds_total * 100"
+        panel = {
+            "title": "Scaled CPU",
+            "type": "gauge",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, _ = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        # A single scaled metric fans out: it takes the ES|QL aggregating
+        # summary (STATS), not the native instant PROMQL command.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("STATS", query)
+
     def test_native_promql_static_legendformat_uses_literal_label(self):
         """A non-empty legendFormat with no placeholders (e.g.
         ``"Pages out ops"``) is a fixed series label. The translator
