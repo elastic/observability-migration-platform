@@ -2427,8 +2427,18 @@ def rendered_query_required_rule(context):
     return "missing ES|QL output"
 
 
-def _collect_source_metrics(frag, seen=None):
-    seen = seen or set()
+def _collect_source_metrics(frag, seen=None, dedup=True):
+    """Walk a parsed fragment and collect the source metric names it reads.
+
+    ``dedup=True`` (default) returns distinct names — what the live-schema rule
+    wants so a metric missing from the target is reported once. ``dedup=False``
+    returns one entry per *occurrence*, which the single-value gate needs to
+    tell a same-metric ratio (two occurrences of one name, e.g.
+    ``rate(http_requests_total{code=~"5.."}[5m]) / rate(http_requests_total
+    [5m])`` — genuine derived arithmetic) apart from a bare single-metric
+    expression that merely fans out.
+    """
+    seen = seen if seen is not None else set()
     metrics = []
     if not frag or id(frag) in seen:
         return metrics
@@ -2439,11 +2449,11 @@ def _collect_source_metrics(frag, seen=None):
     for key in ("left_frag", "right_frag"):
         child = frag.extra.get(key) if getattr(frag, "extra", None) else None
         if child:
-            metrics.extend(_collect_source_metrics(child, seen))
+            metrics.extend(_collect_source_metrics(child, seen, dedup))
     rhs = getattr(frag, "binary_rhs", None)
     if rhs:
-        metrics.extend(_collect_source_metrics(rhs, seen))
-    return list(dict.fromkeys(metrics))
+        metrics.extend(_collect_source_metrics(rhs, seen, dedup))
+    return list(dict.fromkeys(metrics)) if dedup else metrics
 
 
 def _metric_exists_in_live_schema(metric, resolver):
