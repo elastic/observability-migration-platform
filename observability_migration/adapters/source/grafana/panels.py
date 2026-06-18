@@ -3424,6 +3424,52 @@ def _extract_variable_source_field(query_text):
     return parts[-1].strip()
 
 
+def _extract_variable_source_metric(query_text):
+    """Metric a ``label_values(metric, label)`` control is scoped to (issue #152).
+
+    Grafana's two-argument ``label_values(metric, label)`` lists only label
+    values that occur on ``metric``, so the migrated control must preserve that
+    scope. The single-argument form ``label_values(label)`` and selector-only
+    forms without a leading metric name (``label_values({job="api"}, label)``)
+    have no scoping metric and return "".
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return ""
+    metric_match = re.match(r"\s*([a-zA-Z_:][a-zA-Z0-9_:]*)", parts[0])
+    return metric_match.group(1) if metric_match else ""
+
+
+def _resolve_control_scope_metric(metric_name, resolver, rule_pack):
+    """Resolve a control's scoping metric to its physical target field.
+
+    Returns "" when there is no scoping metric, or when the resolver positively
+    knows the resolved field is absent from the target (scoping the control on a
+    missing field would empty it). Stays scoped when the target is silent
+    (offline migrate, or live caps unavailable) so the control mirrors the
+    source-faithful ``label_values(metric, label)`` scope.
+    """
+    if not metric_name:
+        return ""
+    field = metric_name
+    if resolver is not None:
+        resolve = getattr(resolver, "resolve_metric_field", None)
+        if resolve is not None:
+            resolved = resolve(metric_name)
+            if resolved:
+                field = resolved
+        field_exists = getattr(resolver, "field_exists", None)
+        if field_exists is not None and field_exists(field) is False:
+            return ""
+    elif rule_pack is not None:
+        field = rule_pack.control_field_overrides.get(metric_name, metric_name)
+    return field
+
+
 def _infer_controls_data_view(yaml_panels, datasource_index, rule_pack):
     indexes = {_panel_query_index(panel) for panel in yaml_panels if _panel_query_index(panel)}
     if indexes == {rule_pack.logs_index}:
@@ -3501,17 +3547,28 @@ def _field_has_ts_metadata_conflict(field_name, resolver):
     return has_dimension and has_metric
 
 
-def _esql_values_control_query(field_name, data_view):
+def _esql_values_control_query(field_name, data_view, metric_field=None):
     """Build an ES|QL query that enumerates a control's selectable values.
 
     Mirrors Grafana's ``label_values()`` query variable: return the field's
     distinct values, sorted, so the Kibana control can populate its dropdown
     at render time.
+
+    When the variable was defined as ``label_values(metric, label)`` the control
+    is scoped to ``metric`` in Grafana, so ``metric_field`` (the resolved
+    presence field) is added as ``WHERE <metric_field> IS NOT NULL`` to list only
+    values coming from that metric instead of every value of the field in the
+    index (issue #152).
     """
     field = _esql_identifier(field_name)
     index = data_view or "metrics-*"
+    if metric_field:
+        metric = _esql_identifier(metric_field)
+        where = f"WHERE {metric} IS NOT NULL AND {field} IS NOT NULL"
+    else:
+        where = f"WHERE {field} IS NOT NULL"
     return (
-        f"FROM {index} | WHERE {field} IS NOT NULL"
+        f"FROM {index} | {where}"
         f" | STATS count = COUNT(*) BY {field}"
         f" | SORT {field} ASC | KEEP {field} | LIMIT 1000"
     )
@@ -3572,7 +3629,7 @@ def _collect_regex_default_param_names(variables):
     return names
 
 
-def _build_esql_param_control(variable_name, label, field_name, data_view, default=None):
+def _build_esql_param_control(variable_name, label, field_name, data_view, default=None, metric_field=None):
     """Build an ES|QL parameter-binding control (issue #107).
 
     When the target supports the ``promql_label_matcher_params`` capability the
@@ -3597,7 +3654,7 @@ def _build_esql_param_control(variable_name, label, field_name, data_view, defau
         "label": label,
         "variable_name": variable_name,
         "variable_type": "values",
-        "query": _esql_values_control_query(field_name, data_view),
+        "query": _esql_values_control_query(field_name, data_view, metric_field=metric_field),
         "multiple": False,
     }
     if default not in (None, ""):
@@ -3725,12 +3782,15 @@ def query_variable_rule(context):
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
         # ``--no-native-promql`` run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
+        source_metric = _extract_variable_source_metric(query_text)
+        metric_field = _resolve_control_scope_metric(source_metric, resolver, context.rule_pack)
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
             field_name=field_name,
             data_view=context.data_view,
             default=_variable_default_selection(context.variable),
+            metric_field=metric_field,
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
             context.trace.append(
@@ -3889,14 +3949,15 @@ def _ensure_param_controls(
     for name in missing:
         variable = variables_by_name.get(name, {})
         label = variable.get("label") or name
-        source_field = (
-            _extract_variable_source_field(_variable_query_text(variable)) or name
-        )
+        query_text = _variable_query_text(variable)
+        source_field = _extract_variable_source_field(query_text) or name
         field_name = source_field
         if resolver:
             resolved = resolver.resolve_control_field(source_field)
             if resolved:
                 field_name = resolved
+        source_metric = _extract_variable_source_metric(query_text)
+        metric_field = _resolve_control_scope_metric(source_metric, resolver, rule_pack)
         controls.append(
             _build_esql_param_control(
                 variable_name=name,
@@ -3904,6 +3965,7 @@ def _ensure_param_controls(
                 field_name=field_name,
                 data_view=data_view,
                 default=_variable_default_selection(variable),
+                metric_field=metric_field,
             )
         )
     return controls
