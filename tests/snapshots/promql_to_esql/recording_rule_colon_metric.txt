@@ -1,5 +1,6 @@
 source: sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{namespace='default'})
 feasibility: feasible
+warning: Target field capabilities were unavailable, so the metric type of 'node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate' could not be verified. If it is stored as counter_long/counter_double in Elasticsearch, this panel will fail with a verification_exception (ES|QL forbids standard aggregations such as SUM/MAX/MIN/AVG on counter fields). Pin 'metric_kinds: node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate: counter' (or gauge) in the rule pack, or re-run with target field capabilities reachable, to resolve this.
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
