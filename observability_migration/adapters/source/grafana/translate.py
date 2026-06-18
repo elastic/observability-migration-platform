@@ -1593,6 +1593,21 @@ def histogram_quantile_family_rule(context):
     if phi is None:
         return None
 
+    # PromQL defines histogram_quantile for phi outside [0, 1] (it returns
+    # +Inf/-Inf), but ES|QL PERCENTILE's second argument must be a 0-100
+    # percentile, so phi*100 outside that range is an invalid query. Degrade
+    # rather than emit e.g. PERCENTILE(field, 150).
+    if not 0.0 <= phi <= 1.0:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"histogram_quantile quantile {phi} is outside [0, 1]; ES|QL PERCENTILE() "
+            "cannot represent an out-of-range quantile, so this requires manual redesign",
+        )
+        context.translation_complete = True
+        return "histogram_quantile quantile out of range"
+
     # Only ``sum by (le)`` (or a bare bucket series with no outer aggregation)
     # maps faithfully to a PERCENTILE() over the histogram field: summing the
     # bucket counts across series is exactly what the histogram field encodes.
@@ -1624,7 +1639,11 @@ def histogram_quantile_family_rule(context):
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
 
-    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    # A histogram metric is neither a counter nor a gauge scalar, so resolve
+    # with no counter/gauge preference. (For the Fleet remote_write layout, a
+    # histogram stored under a suffixed field other than the bare name may not
+    # resolve here; that degrades to not_feasible below rather than mis-typing.)
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=None)
     field_type = ((resolver.field_type(physical_metric) if resolver else None) or "").strip().lower()
     if field_type == "exponential_histogram":
         value_expr = physical_metric

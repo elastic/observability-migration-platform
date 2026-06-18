@@ -1376,6 +1376,16 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertTrue(query.startswith("PROMQL"))
         self.assertIn("histogram_quantile", query)
 
+    def test_dashboard_min_version_ignores_histogram_quantile_substring(self):
+        # A metric whose name merely contains the token must not trip the floor.
+        substring = {
+            "esql": {"query": "PROMQL index=metrics-* step=60s value=(rate(histogram_quantile_seconds_total[5m]))"}
+        }
+        self.assertEqual(
+            panels._dashboard_minimum_kibana_version([substring]),
+            panels.MINIMUM_KIBANA_VERSION,
+        )
+
     def test_dashboard_min_version_bumps_for_native_histogram_quantile(self):
         native = {"esql": {"query": "PROMQL index=metrics-* step=60s value=(histogram_quantile(0.95, foo))"}}
         plain = {"esql": {"query": "PROMQL index=metrics-* step=60s value=(rate(foo_total[5m]))"}}

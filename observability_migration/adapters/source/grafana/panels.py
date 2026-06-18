@@ -155,7 +155,9 @@ def _dashboard_minimum_kibana_version(flat_panels):
     minimum = MINIMUM_KIBANA_VERSION
     for panel in flat_panels or []:
         query = (panel.get("esql") or {}).get("query", "") if isinstance(panel, dict) else ""
-        if "histogram_quantile" in query and _parse_kibana_version(
+        # Match the call form (``histogram_quantile(``), not a bare token, so a
+        # metric/label whose name merely contains it does not trip the floor.
+        if _PROMQL_HISTOGRAM_QUANTILE_RE.search(query) and _parse_kibana_version(
             NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION
         ) > _parse_kibana_version(minimum):
             minimum = NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION

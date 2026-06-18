@@ -116,6 +116,42 @@ class HistogramQuantileBucketAggregationTests(unittest.TestCase):
         self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)
 
 
+class HistogramQuantilePhiRangeTests(unittest.TestCase):
+    def test_phi_above_one_is_not_feasible(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(1.5, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(any("1.5" in w for w in result.warnings), result.warnings)
+
+    def test_phi_below_zero_is_not_feasible(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(-0.1, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+
+    def test_phi_at_bounds_translates(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(1.0, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("PERCENTILE(http_request_duration_seconds, 100)", result.esql_query)
+
+
 class HistogramQuantileUnknownFieldTests(unittest.TestCase):
     def test_offline_unknown_field_type_is_not_feasible(self):
         resolver = SchemaResolver(RulePackConfig())  # no field cache -> field type unknown
