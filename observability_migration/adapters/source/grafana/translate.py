@@ -1627,6 +1627,45 @@ def histogram_quantile_family_rule(context):
         context.translation_complete = True
         return "histogram_quantile non-sum bucket aggregation"
 
+    # Classic Prometheus ``_bucket`` operands carry their distribution in the
+    # ``le`` label. PERCENTILE() runs over the target's native histogram field,
+    # which encodes the distribution per document, so it can only reproduce the
+    # source when the bucket boundaries are used in the standard way:
+    #   * the aggregation must keep ``le`` (e.g. ``sum by (le)``) — a bare series
+    #     or a non-``le`` grouping collapses/destroys the buckets, and the
+    #     implicit non-``le`` series can't be enumerated here;
+    #   * there must be no ``le`` matcher — a filtered bucket set (``le!="+Inf"``)
+    #     has no PERCENTILE() equivalent.
+    # Anything else degrades rather than emitting a query with different meaning.
+    bucket_metric = frag.extra.get("bucket_metric") or ""
+    if bucket_metric.endswith("_bucket"):
+        has_le_matcher = any(
+            isinstance(m, dict) and m.get("label") == "le" for m in (frag.matchers or [])
+        )
+        if has_le_matcher:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                "histogram_quantile bucket series has an le label matcher; an ES|QL "
+                "PERCENTILE() over the histogram field cannot reproduce a filtered "
+                "bucket set, so this requires manual redesign",
+            )
+            context.translation_complete = True
+            return "histogram_quantile le matcher"
+        if not frag.extra.get("had_le_grouping"):
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                "histogram_quantile over a classic _bucket series requires the le "
+                "label in the aggregation (e.g. sum by (le)); without it the bucket "
+                "boundaries are lost or per-series breakdown cannot be preserved, so "
+                "this requires manual redesign",
+            )
+            context.translation_complete = True
+            return "histogram_quantile missing le grouping"
+
     resolver = context.resolver
     rp = context.rule_pack
     filters, had_vars = _frag_filters(frag, resolver)

@@ -104,13 +104,49 @@ class HistogramQuantileBucketAggregationTests(unittest.TestCase):
             any("max" in w and "sum" in w for w in result.warnings), result.warnings
         )
 
-    def test_bare_bucket_series_without_outer_agg_still_translates(self):
+    def test_bare_classic_bucket_series_is_not_feasible(self):
+        # A bare classic _bucket operand keeps one series per (all labels except
+        # le) in Prometheus; PERCENTILE BY time_bucket alone would collapse them
+        # into one global percentile, and the non-le labels can't be enumerated.
         resolver = _resolver_with_field_type(
             "http_request_duration_seconds", "exponential_histogram"
         )
         result = _translate(
             "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
             resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+
+
+class HistogramQuantileClassicBucketLeTests(unittest.TestCase):
+    def setUp(self):
+        self.resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+
+    def test_aggregation_without_le_is_not_feasible(self):
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (job))",
+            self.resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(any("le" in w for w in result.warnings), result.warnings)
+
+    def test_le_label_matcher_is_not_feasible(self):
+        result = _translate(
+            'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{le!="+Inf"}[5m])) by (le))',
+            self.resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(any("le" in w for w in result.warnings), result.warnings)
+
+    def test_sum_by_le_translates(self):
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            self.resolver,
         )
         self.assertEqual(result.feasibility, "feasible")
         self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)

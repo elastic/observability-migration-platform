@@ -1,4 +1,4 @@
 source: histogram_quantile(0.9, rate(foo_bucket[5m]))
 status: not_feasible
 chart_type: none
-warning: histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+warning: histogram_quantile over a classic _bucket series requires the le label in the aggregation (e.g. sum by (le)); without it the bucket boundaries are lost or per-series breakdown cannot be preserved, so this requires manual redesign

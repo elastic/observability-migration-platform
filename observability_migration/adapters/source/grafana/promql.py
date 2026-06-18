@@ -1522,6 +1522,11 @@ def _ast_call_fragment(node, expr):
             # translator can degrade a non-sum aggregation instead of silently
             # discarding it.
             frag.extra["bucket_agg"] = value_frag.outer_agg
+            # Whether the source aggregation kept the ``le`` bucket-boundary
+            # label. A classic ``_bucket`` series needs it (e.g. ``sum by (le)``)
+            # for the percentile to be meaningful; the translator degrades when
+            # it's missing.
+            frag.extra["had_le_grouping"] = "le" in value_frag.group_labels
             frag.metric = _strip_le_bucket_suffix(value_frag.metric)
             frag.group_labels = [g for g in value_frag.group_labels if g != "le"]
             frag.range_func = ""
