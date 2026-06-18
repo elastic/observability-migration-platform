@@ -298,7 +298,6 @@ HARD_UNSUPPORTED_CALL_REASONS = {
         "ES|QL has no equivalent and aggregating the metric value instead would "
         "change the result, so it requires manual redesign"
     ),
-    "histogram_quantile": "histogram_quantile over Prometheus bucket series requires manual redesign",
     "label_join": "label_join requires manual redesign",
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "stdvar": (
@@ -1179,6 +1178,17 @@ def _new_fragment(expr, family="unknown", backend="ast"):
     return PromQLFragment(raw_expr=expr, family=family, extra={"parser_backend": backend})
 
 
+def _strip_le_bucket_suffix(metric):
+    """Return the base histogram metric name for a Prometheus ``_bucket`` series.
+
+    ``http_request_duration_seconds_bucket`` -> ``http_request_duration_seconds``.
+    Metrics without the suffix are returned unchanged.
+    """
+    if metric and metric.endswith("_bucket"):
+        return metric[: -len("_bucket")]
+    return metric
+
+
 def _append_not_feasible_reason(frag, reason):
     if not reason:
         return
@@ -1488,6 +1498,31 @@ def _ast_call_fragment(node, expr):
             result.extra["lr_regex"] = regex
             result.extra["lr_inner_frag"] = value_frag
             return result
+
+    # histogram_quantile(phi, <bucket series>) — translate to an ES|QL
+    # PERCENTILE() over the base histogram metric. The bucket-series operand is
+    # the Prometheus idiom for reconstructing a distribution (rate()/sum by
+    # (le)); an Elasticsearch histogram-typed field already encodes it, so the
+    # le dimension and any rate()/sum wrapper are consumed by PERCENTILE.
+    if func_name == "histogram_quantile" and len(child_frags) == 2:
+        phi_frag, value_frag = child_frags
+        if (
+            phi_frag.is_scalar
+            and phi_frag.scalar_value is not None
+            and value_frag.metric
+            and not value_frag.extra.get("not_feasible_reasons")
+        ):
+            frag = _copy_fragment_summary(
+                _new_fragment(expr, family="histogram_quantile"), value_frag
+            )
+            frag.family = "histogram_quantile"
+            frag.extra["bucket_metric"] = value_frag.metric
+            frag.metric = _strip_le_bucket_suffix(value_frag.metric)
+            frag.group_labels = [g for g in value_frag.group_labels if g != "le"]
+            frag.range_func = ""
+            frag.outer_agg = ""
+            frag.extra["quantile_phi"] = float(phi_frag.scalar_value)
+            return frag
 
     frag = _new_fragment(expr)
     for child in child_frags:

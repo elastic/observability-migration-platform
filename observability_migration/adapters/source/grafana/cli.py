@@ -103,6 +103,7 @@ from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
 from .runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
     PROMQL_COMMAND_V0,
+    PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     get_runtime_features,
     is_feature_supported,
@@ -1003,6 +1004,44 @@ def _detect_esql_named_param_binding(
     }
 
 
+#: Minimum Elasticsearch (major, minor) that evaluates histogram_quantile
+#: natively (elastic/elasticsearch#150578, shipped in 9.5).
+_HISTOGRAM_QUANTILE_MIN_ES = (9, 5)
+
+
+def _detect_es_version(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+    verify: bool | str = True,
+) -> tuple[int, int] | None:
+    """Return the target Elasticsearch ``(major, minor)`` version, or None.
+
+    Reads ``version.number`` from the cluster root endpoint. Any transport
+    error, non-200 status, or unparseable version yields None so callers treat
+    the version as unknown (and keep the safe ES|QL fallback).
+    """
+    if not es_url:
+        return None
+    try:
+        response = requests.get(
+            es_url.rstrip("/") + "/",
+            headers=_es_headers(api_key),
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception:
+        return None
+    if getattr(response, "status_code", 0) != 200:
+        return None
+    try:
+        number = str(response.json().get("version", {}).get("number", "")).strip()
+        parts = number.split(".")
+        return (int(parts[0]), int(parts[1]))
+    except (AttributeError, IndexError, ValueError):
+        return None
+
+
 def _detect_target_runtime_features(
     es_url: str,
     api_key: str | None = None,
@@ -1037,6 +1076,30 @@ def _detect_target_runtime_features(
             reason="PromQL command support is unavailable on the target",
         )
         return profile
+
+    es_version = _detect_es_version(es_url, api_key, timeout=timeout, verify=verify)
+    histogram_quantile_supported = (
+        es_version is not None and es_version >= _HISTOGRAM_QUANTILE_MIN_ES
+    )
+    set_runtime_feature(
+        profile,
+        PROMQL_HISTOGRAM_QUANTILE,
+        supported=histogram_quantile_supported,
+        source="probe",
+        confidence="verified" if es_version is not None else "inconclusive",
+        level="syntax",
+        reason=(
+            f"target Elasticsearch {es_version[0]}.{es_version[1]} evaluates "
+            "histogram_quantile natively"
+            if histogram_quantile_supported
+            else (
+                f"target Elasticsearch {es_version[0]}.{es_version[1]} predates 9.5; "
+                "histogram_quantile uses the ES|QL PERCENTILE() path"
+                if es_version is not None
+                else "target Elasticsearch version could not be determined"
+            )
+        ),
+    )
 
     headers = _es_headers(api_key)
     capabilities_url = es_url.rstrip("/") + "/_nodes/capabilities"

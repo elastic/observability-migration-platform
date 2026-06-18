@@ -85,6 +85,7 @@ from .promql import (
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
+    PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     binds_esql_named_params,
     is_feature_supported,
@@ -126,7 +127,39 @@ KIBANA_GRID_COLS = 48
 GRAFANA_ROW_HEIGHT_PX = 30
 KIBANA_ROW_HEIGHT_PX = 20
 MINIMUM_KIBANA_VERSION = "9.1.0"
+# Floor required by panels that pass histogram_quantile through the native
+# PROMQL path (Elasticsearch >= 9.5; elastic/elasticsearch#150578). Only the
+# native path keeps the literal ``histogram_quantile(`` in the emitted ES|QL —
+# the ES|QL fallback rewrites it to ``PERCENTILE(...)`` — so its presence in a
+# panel query uniquely marks a 9.5-requiring panel.
+NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION = "9.5.0"
 MIN_PANEL_WIDTH = 4
+
+
+def _parse_kibana_version(version):
+    parts = str(version or "").strip().split(".")
+    try:
+        return tuple(int(p) for p in parts[:3])
+    except (ValueError, TypeError):
+        return (0,)
+
+
+def _dashboard_minimum_kibana_version(flat_panels):
+    """Return the dashboard ``minimum_kibana_version`` floor for *flat_panels*.
+
+    Defaults to :data:`MINIMUM_KIBANA_VERSION`, raised to
+    :data:`NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION` when any panel emits a native
+    ``histogram_quantile`` PROMQL query (ES >= 9.5). The dashboard schema only
+    carries this field per-dashboard, so the floor is the max across panels.
+    """
+    minimum = MINIMUM_KIBANA_VERSION
+    for panel in flat_panels or []:
+        query = (panel.get("esql") or {}).get("query", "") if isinstance(panel, dict) else ""
+        if "histogram_quantile" in query and _parse_kibana_version(
+            NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION
+        ) > _parse_kibana_version(minimum):
+            minimum = NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION
+    return minimum
 
 KIBANA_TYPE_HEIGHT = {
     "metric": 6,    # aligned to _TYPE_SIZE_CONSTRAINTS min_h=6
@@ -596,7 +629,6 @@ _PROMQL_UNSUPPORTED_RE = re.compile(
     | \btopk\s*\(                                 # topk not supported by ES PROMQL bridge
     | \bbottomk\s*\(                              # bottomk not supported
     | \bchanges\s*\(                              # changes() not supported
-    | \bhistogram_quantile\s*\(                   # histogram_quantile not supported
     | \bpredict_linear\s*\(                       # predict_linear not supported
     | \blabel_replace\s*\(                        # label_replace not supported
     | \blabel_join\s*\(                           # label_join not supported
@@ -606,6 +638,12 @@ _PROMQL_UNSUPPORTED_RE = re.compile(
     """,
     re.VERBOSE | re.IGNORECASE,
 )
+
+# histogram_quantile is native only on Elasticsearch >= 9.5
+# (elastic/elasticsearch#150578). It is gated separately from the unconditional
+# blockers above so it can pass through when the target advertises the
+# PROMQL_HISTOGRAM_QUANTILE runtime feature.
+_PROMQL_HISTOGRAM_QUANTILE_RE = re.compile(r"\bhistogram_quantile\s*\(", re.IGNORECASE)
 
 
 _GRAFANA_VAR_TOKEN_PATTERN = (
@@ -1014,6 +1052,10 @@ def can_use_native_promql(promql_expr, runtime_features=None):
         return False
     sanitized = _strip_promql_string_literals(promql_expr)
     if _PROMQL_UNSUPPORTED_RE.search(sanitized):
+        return False
+    if _PROMQL_HISTOGRAM_QUANTILE_RE.search(sanitized) and not is_feature_supported(
+        runtime_features, PROMQL_HISTOGRAM_QUANTILE
+    ):
         return False
     if _promql_has_unsupported_comparison(promql_expr):
         return False
@@ -5046,7 +5088,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             {
                 "name": title,
                 "description": description,
-                "minimum_kibana_version": MINIMUM_KIBANA_VERSION,
+                "minimum_kibana_version": _dashboard_minimum_kibana_version(flat_panels),
                 "settings": {"sync": {"cursor": True}},
                 "panels": top_level_panels,
             }

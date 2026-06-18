@@ -1570,6 +1570,90 @@ def nested_agg_family_rule(context):
     return f"translated nested {frag.outer_agg} expression"
 
 
+@QUERY_TRANSLATORS.register("histogram_quantile_family", priority=6)
+def histogram_quantile_family_rule(context):
+    """Translate ``histogram_quantile(phi, <bucket series>)`` to ES|QL PERCENTILE().
+
+    The ES|QL form depends on the target field type of the base histogram metric
+    (issue #55):
+
+    - ``exponential_histogram`` / tdigest -> ``PERCENTILE(field, phi*100)``
+    - ``histogram``                       -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
+    - unknown / schema unavailable        -> degrade to not_feasible (the encoding
+      cannot be verified, so we fail closed rather than emit a query that may 400
+      or return wrong-shaped values).
+    """
+    frag = context.fragment
+    if not frag or frag.family != "histogram_quantile" or not frag.metric:
+        return None
+    phi = frag.extra.get("quantile_phi")
+    if phi is None:
+        return None
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
+
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+    field_type = ((resolver.field_type(physical_metric) if resolver else None) or "").strip().lower()
+    if field_type in {"exponential_histogram", "tdigest", "aggregate_metric_double"}:
+        value_expr = physical_metric
+    elif field_type == "histogram":
+        value_expr = f"TO_TDIGEST({physical_metric})"
+    else:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            "histogram_quantile target field type could not be determined; cannot "
+            "safely translate to ES|QL PERCENTILE() (verify the base metric is a "
+            "histogram or exponential_histogram field on the target index)",
+        )
+        context.translation_complete = True
+        return "histogram_quantile field type unknown"
+
+    percentile_value = _format_scalar_value(round(phi * 100, 10))
+    stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields)
+
+    parts = [
+        f"TS {context.index}",
+        f"| WHERE {rp.ts_time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {physical_metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {stats_expr}"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if "time_bucket" in output_group:
+        parts.append("| SORT time_bucket ASC")
+
+    context.esql_query = "\n".join(parts)
+    context.parser_backend = "fragment"
+    context.source_type = "TS"
+    context.metric_name = frag.metric
+    context.output_metric_field = alias
+    context.output_group_fields = output_group
+    _append_unique(
+        context.warnings,
+        "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; results "
+        "may differ slightly from Prometheus native percentile computation depending "
+        "on the histogram encoding in use",
+    )
+    context.translation_complete = True
+    return "translated histogram_quantile to PERCENTILE"
+
+
 @QUERY_TRANSLATORS.register("range_agg_family", priority=8)
 def range_agg_family_rule(context):
     frag = context.fragment
