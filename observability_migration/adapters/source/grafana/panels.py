@@ -75,6 +75,7 @@ from .promql import (
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
     _format_scalar_value,
+    _is_counter_fallback,
     _matcher_to_esql,
     _parse_fragment,
     _split_top_level_csv,
@@ -1028,6 +1029,37 @@ _COUNTER_RANGE_FUNC_PATTERN = re.compile(
 )
 
 
+def _is_bare_counter_reference(promql_expr, resolver, rule_pack=None):
+    """Return True if *promql_expr* is a bare counter instant-vector selector.
+
+    A bare counter reference (e.g. ``http_requests_total{job="api"}``) with no
+    ``rate()``/``irate()``/``increase()`` and no aggregation is a perfectly valid
+    native PROMQL query: Kibana's PROMQL preview serves the raw cumulative value
+    directly. The single-value-tile guard (metric/gauge) otherwise routes these
+    to an ES|QL ``MAX(LAST_OVER_TIME(...))`` fallback with a misleading
+    "Counter referenced without rate()" warning (issue #139). Detecting the case
+    here lets the native path keep the original expression instead.
+
+    Only the ``simple_metric`` family qualifies, which excludes rate/range
+    functions (``range_agg``), explicit aggregations (``simple_agg``), and
+    arithmetic (``binary_expr``) — those keep their existing behavior.
+    """
+    if not promql_expr:
+        return False
+    try:
+        frag = _parse_fragment(promql_expr)
+    except Exception:
+        return False
+    if not frag or getattr(frag, "family", None) != "simple_metric":
+        return False
+    metric = getattr(frag, "metric", "") or ""
+    if not metric:
+        return False
+    if resolver is not None:
+        return bool(resolver.is_counter(metric))
+    return _is_counter_fallback(metric, rule_pack)
+
+
 def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
     """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
     to a metric that the resolver has *positively* identified as
@@ -1168,8 +1200,17 @@ def _translate_panel_native_promql(
         # than degraded (#146). (Explicit vector matching like ``/ on(instance)``
         # is a separate case: ``build_native_promql_query`` rejects it, so those
         # degrade to ES|QL regardless of this gate.)
+        #
+        # A bare counter reference (``http_requests_total{job="api"}`` with no
+        # rate()) is likewise kept native even though it is a single metric:
+        # Kibana's PROMQL preview serves the raw cumulative value directly, so
+        # preserve the original expression instead of the ES|QL
+        # ``LAST_OVER_TIME`` fallback and its misleading "Counter referenced
+        # without rate()" warning (issue #139). Bare gauges and rate()/range
+        # functions are not bare counters and still degrade here.
         if "_timeseries" in group_cols and (
             len(_collect_source_metrics(native_fragment, dedup=False)) < 2
+            and not _is_bare_counter_reference(expr, resolver, rule_pack)
         ):
             return None
     # Emit an instant (``time=?_tend``) query when the source target is one:
