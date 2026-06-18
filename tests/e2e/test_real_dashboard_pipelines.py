@@ -278,7 +278,15 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         _, results, _, yaml_doc = _translate_datadog_raw(ISSUE_144_PERCENTILE_DASHBOARD)
 
         panels = _panels_by_title(yaml_doc)
-        self.assertEqual(_status_counts(results).get("blocked", 0), 0)
+        # Every percentile/max/avg widget must translate cleanly into a
+        # renderable panel. ("blocked" is a plan backend, not a status: the
+        # translator only ever emits ok/warning/skipped/requires_manual/
+        # not_feasible, mapping a blocked backend to not_feasible.) Guard the
+        # statuses that actually signal a failed/degraded translation.
+        counts = _status_counts(results)
+        self.assertEqual(counts.get("not_feasible", 0), 0, counts)
+        self.assertEqual(counts.get("requires_manual", 0), 0, counts)
+        self.assertEqual(counts.get("skipped", 0), 0, counts)
 
         expected_percentiles = {
             "p50 duration": 50,
