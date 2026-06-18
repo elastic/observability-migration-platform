@@ -4215,6 +4215,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("NOW() - 1 hour", captured["query"])
         self.assertIn("NOW()", captured["query"])
 
+    def test_run_esql_query_binds_date_params_for_native_promql_instant(self):
+        """Issue #151: single-value (stat/gauge) tiles emit a native PROMQL
+        *instant* query whose ``time=?_tend`` selector requires a date-typed
+        value. The validator must bind ``?_tend`` to a concrete ISO date the way
+        Kibana does at render time -- substituting the ES|QL ``NOW()`` function
+        (as the generic time materialization does) makes the PROMQL command fail
+        with ``Invalid date format [NOW]`` and the panel gets placeholdered."""
+        captured = {}
+
+        def fake_post(url, json, params, headers, timeout, **kwargs):
+            captured["query"] = json["query"]
+            captured["params"] = json.get("params")
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"values": [], "columns": []},
+                headers={"content-type": "application/json"},
+            )
+
+        query = "PROMQL index=metrics-* time=?_tend value=(redis_uptime_in_seconds)"
+
+        with mock.patch.object(esql_validate.requests, "post", side_effect=fake_post):
+            probe = esql_validate._run_esql_query(query, "http://localhost:9200")
+
+        self.assertTrue(probe["ok"])
+        # The PROMQL command must never receive the bare ``NOW()`` function.
+        self.assertNotIn("NOW()", captured["query"])
+        self.assertIn("time=?_tend", captured["query"])
+        # ?_tend must be bound to a concrete ISO-8601 date value.
+        params = captured["params"] or []
+        tend = next((p["_tend"] for p in params if "_tend" in p), None)
+        self.assertIsNotNone(tend)
+        self.assertRegex(tend, r"^\d{4}-\d{2}-\d{2}T")
+
     def test_sync_result_queries_to_yaml_persists_validation_fixes(self):
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -18,7 +19,13 @@ from .rules import _append_unique, _merge_mapping_lists
 
 DEFAULT_TSTART_EXPR = "NOW() - 1 hour"
 DEFAULT_TEND_EXPR = "NOW()"
+_VALIDATION_WINDOW = timedelta(hours=1)
 _QUERY_PARAM_RE = re.compile(r"\?([A-Za-z_][A-Za-z0-9_]*)")
+# Native PROMQL source command (``PROMQL index=... time=?_tend value=(...)``).
+# Its ``time=`` / ``start=`` / ``end=`` selectors require a date-typed value,
+# so ``?_tstart`` / ``?_tend`` there must be bound as date params rather than
+# textually replaced with the ES|QL ``NOW()`` function (issue #151).
+_NATIVE_PROMQL_RE = re.compile(r"(?i)^\s*PROMQL\b")
 KNOWN_FIELD_ALIASES = {
     "node_interrupts_total": "node_intr_total",
 }
@@ -30,12 +37,26 @@ def validate_esql(query, es_url, index_pattern="metrics-*", es_api_key=None, ver
     return probe["ok"], probe["error"]
 
 
+def _is_native_promql_query(query):
+    """True when the query is a native PROMQL source command."""
+    return bool(query) and bool(_NATIVE_PROMQL_RE.match(query))
+
+
 def materialize_dashboard_time_query(
     query,
     time_from=DEFAULT_TSTART_EXPR,
     time_to=DEFAULT_TEND_EXPR,
 ):
     if not query:
+        return query
+    # The native PROMQL command resolves its own time window through the
+    # ``time=`` / ``start=`` / ``end=`` selectors, which only accept a
+    # date-typed value -- not the ES|QL ``NOW()`` function. Substituting
+    # ``?_tend`` -> ``NOW()`` here yields ``time=NOW()``, which the PROMQL
+    # parser rejects with ``Invalid date format [NOW]`` (issue #151). Leave the
+    # placeholders intact so the validator binds them as date params instead,
+    # exactly as Kibana does when it renders the panel.
+    if _is_native_promql_query(query):
         return query
     rendered = query
     rendered = re.sub(
@@ -65,7 +86,25 @@ def _validation_params_for_query(query):
     return [{name: _validation_param_value(rendered, name)} for name in names]
 
 
+def _validation_time_bounds(now=None):
+    """Return (tstart, tend) datetimes spanning the default validation window."""
+    end = now or datetime.now(UTC)
+    return end - _VALIDATION_WINDOW, end
+
+
+def _iso_z(moment):
+    """Format a datetime as a millisecond-precision ISO-8601 ``Z`` string."""
+    text = moment.astimezone(UTC).isoformat(timespec="milliseconds")
+    return text.replace("+00:00", "Z")
+
+
 def _validation_param_value(query, name):
+    # Dashboard time placeholders left intact by ``materialize_dashboard_time_query``
+    # (native PROMQL ``time=``/``start=``/``end=`` selectors) must be bound to a
+    # concrete date value rather than a string/number wildcard (issue #151).
+    if name in ("_tstart", "_tend"):
+        tstart, tend = _validation_time_bounds()
+        return _iso_z(tstart if name == "_tstart" else tend)
     param = re.escape(name)
     if re.search(rf"\bRLIKE\s+\?{param}\b", query or "", re.IGNORECASE):
         return ".*"
