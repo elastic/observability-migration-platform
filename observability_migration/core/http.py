@@ -100,16 +100,22 @@ def apply_subprocess_tls_env(
     verify: bool | str = True,
     env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Translate a resolved ``verify`` value into Node.js TLS env vars.
+    """Translate a resolved ``verify`` value into subprocess TLS env vars.
 
-    The dashboard compile/upload step shells out to the external Node
-    ``kb-dashboard-cli``, which is not driven by ``requests`` and therefore
-    cannot read our ``verify`` setting directly. Node honors two standard
-    environment variables, so we map onto them for the subprocess it inherits:
+    The dashboard compile/upload step shells out to ``kb-dashboard-cli``. That
+    tool is a Python/aiohttp uploader (it is *not* driven by our ``requests``
+    session and cannot read our ``verify`` setting directly), but historically
+    a Node implementation was assumed. To stay correct regardless of which
+    runtime backs the resolved tool, we set both families of standard env vars:
 
-    - ``verify is False`` -> ``NODE_TLS_REJECT_UNAUTHORIZED=0`` (disable checks)
-    - ``verify`` is a path -> ``NODE_EXTRA_CA_CERTS=<path>`` (trust extra CA)
-    - ``verify is True``  -> leave the environment untouched (default behavior)
+    - ``verify`` is a path -> ``NODE_EXTRA_CA_CERTS=<path>`` (Node) and
+      ``SSL_CERT_FILE=<path>`` / ``REQUESTS_CA_BUNDLE=<path>`` (Python). The
+      Python uploader builds its aiohttp connector with ``ssl=True``, whose
+      default ``ssl.create_default_context()`` honors ``SSL_CERT_FILE``.
+    - ``verify is False`` -> ``NODE_TLS_REJECT_UNAUTHORIZED=0`` (Node). Python
+      has no env var that disables verification globally; the upload path passes
+      the uploader's explicit ``--kibana-no-ssl-verify`` flag instead.
+    - ``verify is True``  -> leave the environment untouched (default behavior).
 
     Mutates ``env`` (defaults to ``os.environ``) in place and returns it.
     """
@@ -117,5 +123,8 @@ def apply_subprocess_tls_env(
     if verify is False:
         target["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     elif isinstance(verify, str) and verify.strip():
-        target["NODE_EXTRA_CA_CERTS"] = verify.strip()
+        ca_path = verify.strip()
+        target["NODE_EXTRA_CA_CERTS"] = ca_path
+        target["SSL_CERT_FILE"] = ca_path
+        target["REQUESTS_CA_BUNDLE"] = ca_path
     return target  # type: ignore[return-value]

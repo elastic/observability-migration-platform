@@ -113,6 +113,10 @@ def upload_yaml(
     ]
     if kibana_api_key:
         cmd.extend(["--kibana-api-key", str(kibana_api_key)])
+    # The uploader is a Python/aiohttp tool: --insecure (verify is False) only
+    # takes effect via its own flag, not the Node TLS env vars.
+    if verify is False:
+        cmd.append("--kibana-no-ssl-verify")
     env = apply_subprocess_tls_env(verify, env=os.environ.copy())
     return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS, env=env)
 
