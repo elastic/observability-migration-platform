@@ -1590,6 +1590,25 @@ def histogram_quantile_family_rule(context):
     if phi is None:
         return None
 
+    # Only ``sum by (le)`` (or a bare bucket series with no outer aggregation)
+    # maps faithfully to a PERCENTILE() over the histogram field: summing the
+    # bucket counts across series is exactly what the histogram field encodes.
+    # A non-sum aggregation (max/min/avg/...) is a different computation that
+    # PERCENTILE cannot reproduce, so degrade rather than silently emit the same
+    # query (the "degrade gracefully" contract).
+    bucket_agg = frag.extra.get("bucket_agg") or ""
+    if bucket_agg and bucket_agg != "sum":
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"histogram_quantile bucket series uses a non-sum aggregation ({bucket_agg}); "
+            "only sum by (le) maps to an ES|QL PERCENTILE() over the histogram field, "
+            "so this requires manual redesign",
+        )
+        context.translation_complete = True
+        return "histogram_quantile non-sum bucket aggregation"
+
     resolver = context.resolver
     rp = context.rule_pack
     filters, had_vars = _frag_filters(frag, resolver)

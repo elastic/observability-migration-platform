@@ -1517,6 +1517,11 @@ def _ast_call_fragment(node, expr):
             )
             frag.family = "histogram_quantile"
             frag.extra["bucket_metric"] = value_frag.metric
+            # The bucket-series aggregation must be ``sum`` (or absent) for the
+            # PERCENTILE-over-histogram mapping to be faithful; record it so the
+            # translator can degrade a non-sum aggregation instead of silently
+            # discarding it.
+            frag.extra["bucket_agg"] = value_frag.outer_agg
             frag.metric = _strip_le_bucket_suffix(value_frag.metric)
             frag.group_labels = [g for g in value_frag.group_labels if g != "le"]
             frag.range_func = ""

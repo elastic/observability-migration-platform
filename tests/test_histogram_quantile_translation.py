@@ -89,6 +89,33 @@ class HistogramQuantileHistogramFieldTests(unittest.TestCase):
         )
 
 
+class HistogramQuantileBucketAggregationTests(unittest.TestCase):
+    def test_non_sum_bucket_aggregation_is_not_feasible(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(0.95, max(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(
+            any("max" in w and "sum" in w for w in result.warnings), result.warnings
+        )
+
+    def test_bare_bucket_series_without_outer_agg_still_translates(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)
+
+
 class HistogramQuantileUnknownFieldTests(unittest.TestCase):
     def test_offline_unknown_field_type_is_not_feasible(self):
         resolver = SchemaResolver(RulePackConfig())  # no field cache -> field type unknown
