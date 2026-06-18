@@ -130,6 +130,22 @@ class HistogramQuantileUnknownFieldTests(unittest.TestCase):
             result.warnings,
         )
 
+    def test_aggregate_metric_double_is_not_feasible(self):
+        # aggregate_metric_double stores only min/max/sum/value_count, not the
+        # distribution, so an arbitrary percentile cannot be computed from it.
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "aggregate_metric_double"
+        )
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(
+            any("aggregate_metric_double" in w for w in result.warnings), result.warnings
+        )
+
 
 class HistogramQuantileGroupingTests(unittest.TestCase):
     def test_le_dropped_but_other_labels_preserved(self):

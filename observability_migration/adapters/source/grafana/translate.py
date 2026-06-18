@@ -1575,13 +1575,16 @@ def histogram_quantile_family_rule(context):
     """Translate ``histogram_quantile(phi, <bucket series>)`` to ES|QL PERCENTILE().
 
     The ES|QL form depends on the target field type of the base histogram metric
-    (issue #55):
+    (issue #55). Only the two Elasticsearch histogram field types can produce an
+    arbitrary percentile:
 
-    - ``exponential_histogram`` / tdigest -> ``PERCENTILE(field, phi*100)``
-    - ``histogram``                       -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
-    - unknown / schema unavailable        -> degrade to not_feasible (the encoding
-      cannot be verified, so we fail closed rather than emit a query that may 400
-      or return wrong-shaped values).
+    - ``exponential_histogram`` -> ``PERCENTILE(field, phi*100)``
+    - ``histogram``             -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
+
+    Any other type (including ``aggregate_metric_double``, which stores only
+    min/max/sum/value_count and not the distribution) or an unknown/unavailable
+    schema degrades to not_feasible — we fail closed rather than emit a query
+    that may 400 or return wrong-shaped values.
     """
     frag = context.fragment
     if not frag or frag.family != "histogram_quantile" or not frag.metric:
@@ -1623,21 +1626,28 @@ def histogram_quantile_family_rule(context):
 
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
     field_type = ((resolver.field_type(physical_metric) if resolver else None) or "").strip().lower()
-    if field_type in {"exponential_histogram", "tdigest", "aggregate_metric_double"}:
+    if field_type == "exponential_histogram":
         value_expr = physical_metric
     elif field_type == "histogram":
         value_expr = f"TO_TDIGEST({physical_metric})"
     else:
         context.feasibility = "not_feasible"
         context.confidence = 0.0
-        _append_unique(
-            context.warnings,
-            "histogram_quantile target field type could not be determined; cannot "
-            "safely translate to ES|QL PERCENTILE() (verify the base metric is a "
-            "histogram or exponential_histogram field on the target index)",
-        )
+        if field_type:
+            reason = (
+                f"histogram_quantile target field '{physical_metric}' is typed "
+                f"'{field_type}', not a histogram or exponential_histogram field, so it "
+                "cannot be translated to an ES|QL PERCENTILE() (requires manual redesign)"
+            )
+        else:
+            reason = (
+                "histogram_quantile target field type could not be determined; cannot "
+                "safely translate to ES|QL PERCENTILE() (verify the base metric is a "
+                "histogram or exponential_histogram field on the target index)"
+            )
+        _append_unique(context.warnings, reason)
         context.translation_complete = True
-        return "histogram_quantile field type unknown"
+        return "histogram_quantile field type unsupported"
 
     percentile_value = _format_scalar_value(round(phi * 100, 10))
     stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
