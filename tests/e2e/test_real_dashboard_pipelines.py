@@ -31,6 +31,37 @@ GRAFANA_DASHBOARD_DIR = REPO_ROOT / "infra" / "grafana" / "dashboards"
 DATADOG_DASHBOARD_DIR = REPO_ROOT / "infra" / "datadog" / "dashboards"
 
 
+def _percentile_widget(title: str, query: str, x: int, y: int) -> dict[str, Any]:
+    return {
+        "definition": {
+            "type": "timeseries",
+            "title": title,
+            "requests": [{"q": query, "display_type": "line"}],
+        },
+        "layout": {"x": x, "y": y, "width": 6, "height": 4},
+    }
+
+
+# Regression fixture for issue #144: Datadog percentile/max timeseries queries
+# used to compile into XYLensFormulaMetric blocks that failed kb-dashboard-cli
+# schema validation (formula required; aggregation/field rejected). This mirrors
+# the "Latency p95" dashboard from the issue, covering every affected
+# aggregation: p50/p75/p95/p99 (percentile), max (other-aggregated), and avg.
+ISSUE_144_PERCENTILE_DASHBOARD: dict[str, Any] = {
+    "title": "Latency percentiles (issue 144)",
+    "description": "Percentile/max timeseries regression coverage",
+    "widgets": [
+        _percentile_widget("p50 duration", "p50:trace.http.request.duration{*} by {service}", 0, 0),
+        _percentile_widget("p75 duration", "p75:trace.http.request.duration{*} by {service}", 6, 0),
+        _percentile_widget("p95 by resource", "p95:trace.http.request.duration{*} by {resource_name}", 0, 4),
+        _percentile_widget("p99 by service", "p99:trace.http.request.duration{*} by {service}", 6, 4),
+        _percentile_widget("Max duration", "max:trace.http.request.duration{*} by {resource_name}", 0, 8),
+        _percentile_widget("Avg duration", "avg:trace.http.request.duration{*} by {service}", 6, 8),
+    ],
+    "template_variables": [{"name": "env", "default": "*", "prefix": "env"}],
+}
+
+
 def _leaf_panels(panels: list[dict]) -> list[dict]:
     leaves: list[dict] = []
     stack = list(panels)
@@ -83,6 +114,33 @@ def _translate_grafana_dashboard(
     )
     yaml_doc = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
     return result, Path(yaml_path), yaml_doc
+
+
+def _translate_datadog_raw(
+    raw: dict[str, Any],
+    output_dir: Path | None = None,
+    *,
+    yaml_stem: str = "datadog_dashboard",
+) -> tuple[NormalizedDashboard, list[TranslationResult], Path | None, dict[str, Any]]:
+    """Translate an in-memory Datadog dashboard dict (no infra file needed)."""
+    normalized = normalize_dashboard(raw)
+    widgets = _iter_datadog_widgets(normalized.widgets)
+    results = [translate_widget(widget, plan_widget(widget), OTEL_PROFILE) for widget in widgets]
+    yaml_str = generate_dashboard_yaml(
+        normalized,
+        results,
+        data_view=OTEL_PROFILE.metric_index,
+        metrics_dataset_filter=OTEL_PROFILE.metrics_dataset_filter,
+        logs_dataset_filter=OTEL_PROFILE.logs_dataset_filter,
+        logs_index=OTEL_PROFILE.logs_index,
+        field_map=OTEL_PROFILE,
+    )
+    yaml_path = None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        yaml_path = output_dir / f"{yaml_stem}.yaml"
+        yaml_path.write_text(yaml_str, encoding="utf-8")
+    return normalized, results, yaml_path, yaml.safe_load(yaml_str)
 
 
 def _translate_datadog_dashboard(
@@ -213,6 +271,44 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         total_panels = len(yaml_doc["dashboards"][0].get("panels") or [])
         self.assertGreater(total_panels, 20)
 
+    def test_issue_144_percentile_and_max_emit_aggregated_lens_metrics(self):
+        """Issue #144: percentile/max timeseries must emit schema-valid
+        aggregated Lens metrics (never an aggregation+field XYLensFormulaMetric).
+        """
+        _, results, _, yaml_doc = _translate_datadog_raw(ISSUE_144_PERCENTILE_DASHBOARD)
+
+        panels = _panels_by_title(yaml_doc)
+        # Every percentile/max/avg widget must translate cleanly into a
+        # renderable panel. ("blocked" is a plan backend, not a status: the
+        # translator only ever emits ok/warning/skipped/requires_manual/
+        # not_feasible, mapping a blocked backend to not_feasible.) Guard the
+        # statuses that actually signal a failed/degraded translation.
+        counts = _status_counts(results)
+        self.assertEqual(counts.get("not_feasible", 0), 0, counts)
+        self.assertEqual(counts.get("requires_manual", 0), 0, counts)
+        self.assertEqual(counts.get("skipped", 0), 0, counts)
+
+        expected_percentiles = {
+            "p50 duration": 50,
+            "p75 duration": 75,
+            "p95 by resource": 95,
+            "p99 by service": 99,
+        }
+        for title, pct in expected_percentiles.items():
+            metric = panels[title]["lens"]["metrics"][0]
+            self.assertEqual(metric["aggregation"], "percentile", title)
+            self.assertEqual(metric["percentile"], pct, title)
+            self.assertIn("field", metric, title)
+            # The bug emitted a formula-typed metric; ensure we do not.
+            self.assertNotIn("formula", metric, title)
+
+        max_metric = panels["Max duration"]["lens"]["metrics"][0]
+        self.assertEqual(max_metric["aggregation"], "max")
+        self.assertNotIn("formula", max_metric)
+
+        avg_metric = panels["Avg duration"]["lens"]["metrics"][0]
+        self.assertEqual(avg_metric["aggregation"], "average")
+
 
 @unittest.skipUnless(shutil.which("uvx"), "uvx is required for compile smoke tests")
 class TestRealCompileSmoke(unittest.TestCase):
@@ -242,3 +338,18 @@ class TestRealCompileSmoke(unittest.TestCase):
             _, _, yaml_path, _ = _translate_datadog_dashboard("integrations/postgres.json", yaml_dir)
             assert yaml_path is not None
             self._assert_lint_compile_and_layout(yaml_dir, yaml_path, "Postgres - Metrics")
+
+    def test_issue_144_percentile_dashboard_lints_compiles_and_validates(self):
+        """Issue #144 regression: a p50/p75/p95/p99/max/avg dashboard must pass
+        the real kb-dashboard-cli schema compiler, not just produce the right
+        YAML dict shape. This is the schema-level guard the original bug evaded.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir) / "datadog_yaml"
+            _, _, yaml_path, _ = _translate_datadog_raw(
+                ISSUE_144_PERCENTILE_DASHBOARD, yaml_dir, yaml_stem="issue_144_percentiles"
+            )
+            assert yaml_path is not None
+            self._assert_lint_compile_and_layout(
+                yaml_dir, yaml_path, "Latency percentiles (issue 144)"
+            )
