@@ -1104,6 +1104,138 @@ class TestRuleEngine(unittest.TestCase):
         self.assertTrue(any("LAST_OVER_TIME" in warning for warning in ctx.warnings))
 
 
+class TestCounterLongAggregationWarning(unittest.TestCase):
+    """Issue #148: SUM/MAX/MIN on counter_long fields error with
+    verification_exception in ES|QL. When live target field capabilities are
+    available but the aggregated field is absent from them, its type cannot be
+    confirmed; keep the generated ES|QL but warn that it may be counter_long and
+    the panel may fail. Pure-offline migrations stay silent (every field would
+    warn, which is noise rather than signal).
+    """
+
+    @staticmethod
+    def _caps_present_field_absent_resolver():
+        # Live caps were fetched (an unrelated field is present) but the target
+        # metric is absent from them — the real online repro for issue #148.
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "some_other_field": {"double": {"type": "double", "time_series_metric": "gauge"}}
+        }
+        return resolver
+
+    def test_caps_present_bare_sum_on_absent_field_warns(self):
+        # Mode 1: bare sum() emits SUM(field); flag the counter_long risk.
+        resolver = self._caps_present_field_absent_resolver()
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertIn("SUM(trace_http_request_hits)", ctx.esql_query)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_caps_present_bare_max_on_absent_field_warns(self):
+        resolver = self._caps_present_field_absent_resolver()
+        ctx = _translate("max(system_net_bytes_sent)", resolver=resolver)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_caps_present_increase_degrade_on_absent_field_warns(self):
+        # Mode 2: increase() degrades to a gauge analogue; the degraded form also
+        # fails on a counter, so flag the counter_long risk instead of claiming
+        # the field "is typed as gauge in the target index".
+        resolver = self._caps_present_field_absent_resolver()
+        ctx = _translate("increase(system_net_bytes_sent[5m])", resolver=resolver)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_pure_offline_does_not_warn(self):
+        # No live caps at all: nothing is knowable, so a per-field counter
+        # warning would fire on every metric. Stay silent (noise suppression).
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {}
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertIn("SUM(trace_http_request_hits)", ctx.esql_query)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning in pure-offline mode: {ctx.warnings}",
+        )
+
+    def test_binary_expr_operand_aggregation_warns(self):
+        # Bare aggregations fused inside a binary expression go through the
+        # measure-spec path; each operand absent from caps must warn too.
+        resolver = self._caps_present_field_absent_resolver()
+        ctx = _translate("max(trace_http_request_errors) + max(trace_http_request_hits)", resolver=resolver)
+        warns = [w for w in ctx.warnings if "field capabilities" in w]
+        self.assertTrue(
+            any("trace_http_request_errors" in w for w in warns)
+            and any("trace_http_request_hits" in w for w in warns),
+            f"expected a counter warning for each operand, got {ctx.warnings}",
+        )
+
+    def test_proven_gauge_bare_max_does_not_warn_about_counter(self):
+        # No false positive: live caps prove the field is a gauge.
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}
+        }
+        ctx = _translate("max(node_load1)", resolver=resolver)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for proven gauge: {ctx.warnings}",
+        )
+
+    def test_count_aggregation_does_not_warn(self):
+        # COUNT is legal on counter fields, so it must not trigger the warning
+        # even when the field is absent from otherwise-available caps.
+        resolver = self._caps_present_field_absent_resolver()
+        ctx = _translate("count(trace_http_request_hits)", resolver=resolver)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for COUNT: {ctx.warnings}",
+        )
+
+    def test_metric_kind_counter_pin_suppresses_warning(self):
+        # Pinning metric_kinds: <field>: counter proves the type, so the engine
+        # emits the counter-safe form and does not warn about uncertainty.
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["trace_http_request_hits"] = "counter"
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {}
+        ctx = _translate("sum(trace_http_request_hits)", rule_pack=rp, resolver=resolver)
+        self.assertIn("LAST_OVER_TIME(trace_http_request_hits", ctx.esql_query)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for pinned counter: {ctx.warnings}",
+        )
+
+    def test_proven_counter_long_bare_sum_is_counter_safe(self):
+        # "Both paths" online regression guard: when live caps surface the field
+        # as counter_long, is_counter() already routes to the counter-safe form.
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "trace_http_request_hits": {"counter_long": {"type": "counter_long"}}
+        }
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertIn("SUM(LAST_OVER_TIME(trace_http_request_hits))", ctx.esql_query)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected uncertainty warning for proven counter: {ctx.warnings}",
+        )
+
+
 # =========================================================================
 # Happy Path PromQL Bucket
 # =========================================================================

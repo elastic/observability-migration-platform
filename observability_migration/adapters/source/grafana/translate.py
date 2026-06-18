@@ -32,6 +32,7 @@ from .preflight import (
     _metric_candidates,
 )
 from .promql import (
+    _COUNTER_UNSAFE_OUTER_AGGS,
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
     PromQLFragment,
@@ -44,6 +45,7 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
+    _counter_type_uncertainty_warning,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -1809,6 +1811,13 @@ def simple_agg_family_rule(context):
         _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
     else:
         inner_expr = physical_metric
+        # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
+        # counter_long in ES fails with verification_exception. When the target
+        # cannot prove the field is a gauge, keep the query but warn.
+        if frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS:
+            counter_warning = _counter_type_uncertainty_warning(frag.metric, resolver)
+            if counter_warning:
+                _append_unique(context.warnings, counter_warning)
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = _agg_stats_expr(outer, inner_expr, frag)
