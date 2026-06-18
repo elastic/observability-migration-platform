@@ -1239,6 +1239,49 @@ class TestCounterLongAggregationWarning(unittest.TestCase):
             f"unexpected uncertainty warning for proven counter: {ctx.warnings}",
         )
 
+    def test_live_counter_pre_agg_comparison_is_not_feasible(self):
+        # sum(counter > N): a pre-aggregation comparison filter combined with a
+        # counter aggregation referenced without rate() has no counter-safe
+        # ES|QL form, so it must be marked not_feasible rather than emitting a
+        # SUM that errors with verification_exception.
+        resolver = self._live_resolver(
+            {"trace_http_request_hits": {"counter_long": {"type": "counter_long"}}}
+        )
+        ctx = _translate("sum(trace_http_request_hits > 0)", resolver=resolver)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertNotIn("SUM(trace_http_request_hits)", ctx.esql_query or "")
+
+    def test_offline_pre_agg_comparison_warns(self):
+        # Offline, the counter cannot be proven, so keep the query and warn.
+        resolver = self._offline_resolver()
+        ctx = _translate("sum(system_net_bytes_sent > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_live_gauge_pre_agg_comparison_no_warning(self):
+        # A proven gauge with a comparison filter is fine: feasible, no warning.
+        resolver = self._live_resolver(
+            {"node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("sum(node_load1 > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for proven gauge: {ctx.warnings}",
+        )
+
+    def test_live_counter_pre_agg_count_stays_feasible(self):
+        # COUNT over a comparison is legal on counters (counts documents), so it
+        # must stay feasible even for a proven counter.
+        resolver = self._live_resolver(
+            {"trace_http_request_hits": {"counter_long": {"type": "counter_long"}}}
+        )
+        ctx = _translate("count(trace_http_request_hits > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+
     def test_live_absent_field_is_not_feasible_without_counter_warning(self):
         # Caps available but the field is absent: the existing live-schema rule
         # marks the panel not_feasible; we defer to it and do not add the
