@@ -168,6 +168,30 @@ def _operand_by_labels(frag, resolver):
     return list(seen)
 
 
+def _operand_retains_label(frag, raw_label, depth=0):
+    """Whether an operand still carries ``raw_label`` at the vector-match point.
+
+    PromQL matches ``on(k)`` on the labels each operand *actually* exposes. An
+    aggregation projects its series to its ``by(...)`` set, so it only carries
+    ``k`` when ``k`` is in that set; a bare selector / range function retains
+    every label. If an operand aggregated ``k`` away (e.g. ``sum(irate(b))`` on
+    the RHS of ``... / on(instance) ...``), the per-key match is impossible in
+    the source and the ES|QL would *invent* a per-key numerator/denominator
+    (review #164 follow-up). Conservatively recurse through nested arithmetic.
+    """
+    if not isinstance(frag, PromQLFragment) or depth > 6:
+        return True
+    if frag.outer_agg:
+        return raw_label in (frag.group_labels or [])
+    children = [
+        frag.extra.get(key) for key in ("left_frag", "right_frag", "inner_frag")
+    ]
+    children = [child for child in children if isinstance(child, PromQLFragment)]
+    if children:
+        return all(_operand_retains_label(child, raw_label, depth + 1) for child in children)
+    return True
+
+
 def _join_is_faithful(frag, resolver, output_group_fields):
     """Whether a label-aligned join migrates bit-for-bit (so it can be clean).
 
@@ -177,10 +201,14 @@ def _join_is_faithful(frag, resolver, output_group_fields):
     1. It must be an ``on(...)`` join (matcher ``type == "Include"``);
        ``ignoring(...)`` selects the complementary label set and is not the
        proven, parity-checked subset.
-    2. Every operand ``by(...)`` dimension must survive into the output grouping
+    2. Each operand must still carry every ``on(...)`` key at the match point —
+       i.e. an aggregating operand must include the key in its ``by(...)`` set.
+       Otherwise the source has no per-key match and the ES|QL invents one
+       (review #164 follow-up: ``... / on(instance) group_left sum(irate(b))``).
+    3. Every operand ``by(...)`` dimension must survive into the output grouping
        — otherwise series the source kept apart are summed together (review
        #164: a left ``by(instance,cpu)`` dropped to ``by(instance)``).
-    3. The join key must be represented in the output, either directly or via
+    4. The join key must be represented in the output, either directly or via
        the ``group_left`` enrichment label(s) that stand in for it (e.g.
        grouping by ``chip_name`` instead of its 1:1 ``chip`` key).
 
@@ -192,6 +220,12 @@ def _join_is_faithful(frag, resolver, output_group_fields):
     raw_on = matching.get("labels") or []
     if not raw_on:
         return False
+    for key in ("left_frag", "right_frag"):
+        operand = frag.extra.get(key)
+        if isinstance(operand, PromQLFragment) and not all(
+            _operand_retains_label(operand, label) for label in raw_on
+        ):
+            return False
     out = set(output_group_fields or [])
     for label in _operand_by_labels(frag, resolver):
         if label not in out:

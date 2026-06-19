@@ -178,6 +178,25 @@ class TestCleanStatusRequiresAllSourceLabels(unittest.TestCase):
             result.warnings,
         )
 
+    def test_ratio_operand_aggregating_away_on_key_is_not_clean(self):
+        """RHS ``sum(irate(b))`` has no ``instance`` to match on(instance) →
+        the per-key denominator is invented, so keep the caveat."""
+        result = self._translate(
+            "sum by(instance)(irate(a[1m]))"
+            " / on(instance) group_left sum(irate(b[1m]))"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(_APPROX_RATIO, result.warnings)
+
+    def test_ratio_lhs_aggregating_away_on_key_is_not_clean(self):
+        """Symmetric: LHS ``sum(irate(a))`` dropped the on(instance) key."""
+        result = self._translate(
+            "sum(irate(a[1m]))"
+            " / on(instance) group_left sum by(instance)(irate(b[1m]))"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(_APPROX_RATIO, result.warnings)
+
     def test_nested_join_does_not_attach_inner_include_to_outer(self):
         """Outer join must not borrow a nested group_left(...) include list."""
         result = self._translate(
