@@ -1,6 +1,6 @@
 source: stddev by (job) (http_request_duration_seconds)
 feasibility: feasible
-warning: Target field capabilities were unavailable, so the metric type of 'http_request_duration_seconds' could not be verified. If it is stored as counter_long/counter_double in Elasticsearch, this panel will fail with a verification_exception (ES|QL forbids standard aggregations such as SUM/MAX/MIN/AVG on counter fields). Pin 'metric_kinds: http_request_duration_seconds: counter' (or gauge) in the rule pack, or re-run with target field capabilities reachable, to resolve this.
+warning: Target field capabilities were unavailable, so the metric type of 'http_request_duration_seconds' could not be verified. If it is stored as counter_long/counter_double in Elasticsearch, this panel may fail with a verification_exception (ES|QL forbids standard aggregations such as SUM/MAX/MIN/AVG on counter fields); most gauge fields are unaffected. Pin 'metric_kinds: http_request_duration_seconds: counter' (or gauge) in the rule pack, or re-run with target field capabilities reachable, to resolve this.
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

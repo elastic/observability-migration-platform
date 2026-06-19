@@ -227,11 +227,12 @@ def _counter_type_uncertainty_warning(metric, resolver):
     return (
         f"Target field capabilities were unavailable, so the metric type of "
         f"'{metric}' could not be verified. If it is stored as "
-        f"counter_long/counter_double in Elasticsearch, this panel will fail "
+        f"counter_long/counter_double in Elasticsearch, this panel may fail "
         f"with a verification_exception (ES|QL forbids standard aggregations "
-        f"such as SUM/MAX/MIN/AVG on counter fields). Pin "
-        f"'metric_kinds: {metric}: counter' (or gauge) in the rule pack, or "
-        f"re-run with target field capabilities reachable, to resolve this."
+        f"such as SUM/MAX/MIN/AVG on counter fields); most gauge fields are "
+        f"unaffected. Pin 'metric_kinds: {metric}: counter' (or gauge) in the "
+        f"rule pack, or re-run with target field capabilities reachable, to "
+        f"resolve this."
     )
 
 
