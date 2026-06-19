@@ -57,6 +57,19 @@ class HistogramQuantileExponentialHistogramTests(unittest.TestCase):
         self.assertEqual(result.feasibility, "feasible")
         self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)
 
+    def test_percentile_path_emits_approximate_warning(self):
+        resolver = _resolver_with_field_type(
+            "http_request_duration_seconds", "exponential_histogram"
+        )
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertTrue(
+            any("approximate" in w and "t-digest" in w for w in result.warnings),
+            result.warnings,
+        )
+
     def test_full_query_shape_mirrors_percentile_path(self):
         resolver = _resolver_with_field_type(
             "http_request_duration_seconds", "exponential_histogram"

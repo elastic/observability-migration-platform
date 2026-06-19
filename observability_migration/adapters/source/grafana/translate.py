@@ -1733,9 +1733,12 @@ def histogram_quantile_family_rule(context):
     context.output_group_fields = output_group
     _append_unique(
         context.warnings,
-        "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; results "
-        "may differ slightly from Prometheus native percentile computation depending "
-        "on the histogram encoding in use",
+        "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is "
+        "approximate — PERCENTILE uses t-digest, which treats histogram buckets as point "
+        "masses rather than interpolating within them as Prometheus does, so results can "
+        "diverge noticeably when traffic concentrates in a few wide buckets (the common "
+        "latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for "
+        "exact results.",
     )
     context.translation_complete = True
     return "translated histogram_quantile to PERCENTILE"
