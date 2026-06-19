@@ -1008,7 +1008,7 @@ def _target_binds_label_matcher_params(resolver):
     The ES|QL ``WHERE field == ?var`` / ``RLIKE ?var`` path needs ES|QL
     named-parameter binding, which the target advertises either via the broader
     ``esql_named_param_binding`` capability or via ``promql_label_matcher_params``
-    (a subset). Gating on both means a deliberate ``--no-native-promql`` run can
+    (a subset). Gating on both means a cluster-wide ES|QL fallback run can
     still preserve ``?var`` label filters instead of dropping them (issue #132).
     Targets that advertise neither fall back to dropping the matcher (issue #100).
     """

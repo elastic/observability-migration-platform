@@ -317,32 +317,10 @@ def parse_args(argv: list[str] | None = None):
         default=os.getenv("LOKI_URL", ""),
         help="Loki URL for live source-side query execution during verification",
     )
-    native_promql_group = parser.add_mutually_exclusive_group()
-    native_promql_group.add_argument(
-        "--native-promql",
-        dest="native_promql_flag",
-        action="store_const",
-        const="force_on",
-        help=(
-            "Force native PROMQL emission regardless of cluster support detection "
-            "(for Elastic clusters with the ES|QL PROMQL command)."
-        ),
-    )
-    native_promql_group.add_argument(
-        "--no-native-promql",
-        dest="native_promql_flag",
-        action="store_const",
-        const="force_off",
-        help=(
-            "Force ES|QL translation even when the cluster supports the PROMQL command "
-            "(opt out of the auto-detected default)."
-        ),
-    )
-    parser.set_defaults(native_promql_flag="auto")
     parser.add_argument(
         "--dataset-filter", default="",
         help="Explicit data_stream.dataset value for metrics dashboard filter "
-             "(overrides the default 'prometheus'; cleared automatically when --native-promql is set)",
+             "(overrides the default 'prometheus'; cleared automatically when native PROMQL is used)",
     )
     parser.add_argument(
         "--logs-dataset-filter", default="",
@@ -949,10 +927,10 @@ def _detect_esql_named_param_binding(
 ) -> dict[str, Any]:
     """Probe whether the target binds plain ES|QL named parameters.
 
-    Independent of the PROMQL command, so it is meaningful even on a
-    ``--no-native-promql`` run. Returns a feature-state dict; an inconclusive
-    or rejected probe leaves the feature unsupported so the engine keeps the
-    safe fallback of dropping ``?var`` filters (issue #132).
+    Independent of the PROMQL command, so it is meaningful even when the
+    cluster-wide ES|QL fallback is in effect. Returns a feature-state dict; an
+    inconclusive or rejected probe leaves the feature unsupported so the engine
+    keeps the safe fallback of dropping ``?var`` filters (issue #132).
     """
     if not es_url:
         return {}
@@ -1162,48 +1140,47 @@ def _print_promql_runtime_profile(runtime_features: dict[str, Any]) -> None:
 
 
 def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str, Any] | None = None) -> bool:
-    """Resolve the effective ``native_promql`` setting for this run.
+    """Resolve whether this run emits native PROMQL.
 
-    Precedence:
-      ``--no-native-promql`` (force_off) → False
-      ``--native-promql``    (force_on)  → True
-      otherwise (auto)                   → cluster auto-detection
+    Migration always targets native PROMQL (the highest-fidelity path) and only
+    falls back to ES|QL when the target cluster is *confirmed* to lack the
+    ``PROMQL`` command. The user never declares intent (issue #158).
 
-    In ``auto`` mode native PROMQL is the default high-fidelity path. When an
-    ES URL is configured we probe the target and fall back to ES|QL translation
-    only if it reports the ``PROMQL`` command unsupported (or the probe is
-    inconclusive). When no ES URL is configured there is no cluster to probe, so
-    we optimistically default to native PROMQL; ``--no-native-promql`` is the
-    opt-out.
+    When an ES URL is configured we probe the target:
+      - command supported                → native PROMQL
+      - command confirmed absent          → cluster-wide ES|QL fallback
+      - probe inconclusive (transport/    → keep native PROMQL (optimistic
+        auth error)                         default) and warn, so a transient
+                                            failure doesn't route a capable
+                                            cluster down the fallback path
+    When no ES URL is configured there is no cluster to probe, so we
+    optimistically default to native PROMQL.
     """
-    mode = getattr(args, "native_promql_flag", "auto")
-    if mode == "force_off":
-        return False
-    if mode == "force_on":
-        return True
     es_url = getattr(args, "es_url", "") or ""
     if not es_url:
-        print(
-            "  No --es-url to probe; defaulting to native PROMQL "
-            "(use --no-native-promql to force ES|QL translation)"
-        )
+        print("  No --es-url to probe; defaulting to native PROMQL")
         return True
     es_api_key = getattr(args, "es_api_key", "") or None
     runtime_features = runtime_features or _detect_target_runtime_features(
         es_url, es_api_key, verify=_resolve_tls_from_args(args)
     )
     if is_feature_supported(runtime_features, PROMQL_COMMAND_V0):
-        print("  PROMQL ES|QL command detected on target; defaulting to --native-promql")
+        print("  PROMQL ES|QL command detected on target; using native PROMQL")
         return True
     command_state = runtime_features.get(PROMQL_COMMAND_V0, {})
-    if isinstance(command_state, dict) and command_state.get("confidence") == "inconclusive":
-        print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
-        return False
-    if isinstance(command_state, dict):
+    confirmed_absent = (
+        isinstance(command_state, dict)
+        and command_state.get("supported") is False
+        and command_state.get("confidence") == "verified"
+    )
+    if confirmed_absent:
         print("  PROMQL ES|QL command not supported on target; falling back to ES|QL translation")
         return False
-    print("  PROMQL ES|QL command detection inconclusive (transport error); falling back to ES|QL translation")
-    return False
+    print(
+        "  WARNING: PROMQL ES|QL command detection inconclusive (transport error); "
+        "keeping native PROMQL (optimistic default)"
+    )
+    return True
 
 
 def _load_configured_rule_pack(args: argparse.Namespace):
@@ -1219,10 +1196,12 @@ def _load_configured_rule_pack(args: argparse.Namespace):
 
 
 def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> None:
-    """Resolve --native-promql/--no-native-promql/auto and apply to the pack.
+    """Probe the target and apply the native-PROMQL decision to the pack.
 
-    Separated from ``_load_configured_rule_pack`` so the offline
-    ``--print-rule-catalog`` command doesn't trigger the cluster probe.
+    Migration always targets native PROMQL with automatic ES|QL fallback; the
+    user declares no intent (issue #158). Separated from
+    ``_load_configured_rule_pack`` so the offline ``--print-rule-catalog``
+    command doesn't trigger the cluster probe.
 
     When the user provided an explicit ``--dataset-filter`` it always wins,
     even if native PROMQL would otherwise clear the filter to ``""``. That
@@ -1230,21 +1209,20 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
     signal over the default-clearing behavior advertised in the
     ``--dataset-filter`` help text.
     """
-    mode = getattr(args, "native_promql_flag", "auto")
     es_url = getattr(args, "es_url", "") or ""
     es_api_key = getattr(args, "es_api_key", "") or None
     verify = _resolve_tls_from_args(args)
     runtime_profile = None
-    if mode != "force_off" and es_url:
+    if es_url:
         runtime_profile = _detect_target_runtime_features(es_url, es_api_key, verify=verify)
         rule_pack.runtime_features.update(runtime_profile)
         _print_promql_runtime_profile(runtime_profile)
 
     # ES|QL named-parameter binding (``WHERE field == ?var`` / ``RLIKE ?var``)
     # is a core ES|QL feature, independent of the PROMQL command, so it is
-    # probed even on a deliberate --no-native-promql run. Without this the
-    # pure-ES|QL path never learns the target can bind ``?var`` and silently
-    # drops $var-driven label filters (issue #132).
+    # probed even when the cluster-wide ES|QL fallback is in effect. Without
+    # this the pure-ES|QL path never learns the target can bind ``?var`` and
+    # silently drops $var-driven label filters (issue #132).
     if es_url and ESQL_NAMED_PARAM_BINDING not in get_runtime_features(rule_pack):
         esql_state = _detect_esql_named_param_binding(es_url, es_api_key, verify=verify)
         get_runtime_features(rule_pack)[ESQL_NAMED_PARAM_BINDING] = esql_state

@@ -17,7 +17,7 @@ PROMQL_HISTOGRAM_QUANTILE = "promql_histogram_quantile"
 # Plain ES|QL named-parameter binding (``FROM … | WHERE field == ?var`` /
 # ``RLIKE ?var``). Unlike ``promql_label_matcher_params`` this does NOT require
 # the ES|QL PROMQL command, so it is available on a broader set of targets and
-# is probed independently of ``--no-native-promql`` (issue #132).
+# is probed independently of the PROMQL command's cluster-wide fallback (issue #132).
 ESQL_NAMED_PARAM_BINDING = "esql_named_param_binding"
 
 POLICY_ALLOW = "allow"
@@ -75,9 +75,9 @@ def binds_esql_named_params(target: Any) -> bool:
     (``promql_label_matcher_params``) OR plain ES|QL named-parameter binding
     (``esql_named_param_binding``). The ES|QL path (``WHERE field == ?var`` /
     ``RLIKE ?var``) only needs the latter, which is a core ES|QL feature that
-    does not depend on the PROMQL command — so a deliberate
-    ``--no-native-promql`` run can still preserve ``?var`` label filters
-    instead of dropping them (issue #132).
+    does not depend on the PROMQL command — so a cluster-wide ES|QL fallback
+    run can still preserve ``?var`` label filters instead of dropping them
+    (issue #132).
     """
     return is_feature_supported(target, ESQL_NAMED_PARAM_BINDING) or is_feature_supported(
         target, PROMQL_LABEL_MATCHER_PARAMS

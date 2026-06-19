@@ -255,10 +255,11 @@ own `metric_index`).
 For Grafana native PromQL validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
 including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
-lab's `metrics-*` data view. Grafana migration emits native PROMQL by default;
-when `--es-url` is set it probes the target and downgrades to ES|QL translation
-if the `PROMQL` command is unsupported. Pass `--no-native-promql` to always
-force ES|QL translation. If you point `--data-view` at a different Prometheus
+lab's `metrics-*` data view. Grafana migration always emits native PROMQL with
+automatic ES|QL fallback; when `--es-url` is set it probes the target and
+downgrades to ES|QL translation only when the `PROMQL` command is confirmed
+unsupported (an inconclusive probe keeps native and warns). There are no
+override flags. If you point `--data-view` at a different Prometheus
 integration layout, verify the target schema first before treating empty panels
 as a migration bug.
 

@@ -3824,7 +3824,7 @@ def query_variable_rule(context):
         # variable rather than emit a generic data-view filter; otherwise the
         # panel queries fail with "Unknown query parameter [name]" (issue #107).
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
-        # ``--no-native-promql`` run that preserves ``?var`` also emits the
+        # cluster-wide ES|QL fallback run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
         source_metric = _extract_variable_source_metric(query_text)
         metric_field = _resolve_control_scope_metric(source_metric, resolver, context.rule_pack)

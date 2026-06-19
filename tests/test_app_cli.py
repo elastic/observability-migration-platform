@@ -170,7 +170,6 @@ class TestUnifiedCliRouting(unittest.TestCase):
             assets="dashboards",
             esql_index="metrics-*",
             logs_index="",
-            native_promql_flag="auto",
             fetch_alerts=False,
             create_alert_rules=False,
             grafana_token="",
@@ -200,7 +199,7 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
     @patch("observability_migration.adapters.source.grafana.cli.main")
     def test_run_grafana_migration_forwards_field_profile(self, mock_main):
-        args = self._make_grafana_args(native_promql_flag="force_on")
+        args = self._make_grafana_args()
         original_argv = list(sys.argv)
 
         try:
@@ -227,30 +226,10 @@ class TestUnifiedCliRouting(unittest.TestCase):
         mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.grafana.cli.main")
-    def test_run_grafana_migration_forwards_force_on_native_promql(self, mock_main):
-        args = self._make_grafana_args(native_promql_flag="force_on")
-        original_argv = list(sys.argv)
-        try:
-            app_cli._run_grafana_migration(args)
-            self.assertIn("--native-promql", sys.argv)
-            self.assertNotIn("--no-native-promql", sys.argv)
-        finally:
-            sys.argv = original_argv
-
-    @patch("observability_migration.adapters.source.grafana.cli.main")
-    def test_run_grafana_migration_forwards_force_off_native_promql(self, mock_main):
-        args = self._make_grafana_args(native_promql_flag="force_off")
-        original_argv = list(sys.argv)
-        try:
-            app_cli._run_grafana_migration(args)
-            self.assertIn("--no-native-promql", sys.argv)
-            self.assertNotIn("--native-promql", sys.argv)
-        finally:
-            sys.argv = original_argv
-
-    @patch("observability_migration.adapters.source.grafana.cli.main")
-    def test_run_grafana_migration_auto_does_not_forward_native_promql_flag(self, mock_main):
-        args = self._make_grafana_args(native_promql_flag="auto")
+    def test_run_grafana_migration_never_forwards_native_promql_flags(self, mock_main):
+        """Issue #158: the native-PROMQL override flags are gone; the unified
+        CLI never forwards them to the source adapter."""
+        args = self._make_grafana_args()
         original_argv = list(sys.argv)
         try:
             app_cli._run_grafana_migration(args)
@@ -826,7 +805,6 @@ class TestUnifiedCliRouting(unittest.TestCase):
             data_view="metrics-*",
             esql_index="metrics-*",
             logs_index="logs-*",
-            native_promql_flag="auto",
             validate=False,
             upload=False,
             es_url="https://example.es",
@@ -934,7 +912,6 @@ class TestUnifiedCliRouting(unittest.TestCase):
             data_view="metrics-*",
             esql_index="",
             logs_index="",
-            native_promql_flag="auto",
             validate=False,
             upload=False,
             es_url="",
@@ -1055,7 +1032,6 @@ class TestUnifiedCliRouting(unittest.TestCase):
             data_view="metrics-*",
             esql_index="metrics-*",
             logs_index="",
-            native_promql_flag="auto",
             validate=False,
             upload=False,
             es_url="",
@@ -1285,16 +1261,16 @@ class TestUnifiedCliLegacyFlagContract(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["migrate", "--source", "grafana", "--list-dashboards"])
 
-    def test_unified_cli_native_promql_mutex(self):
+    def test_unified_cli_rejects_removed_native_promql_flags(self):
+        """Issue #158: the native-PROMQL override flags are removed from the
+        unified ``migrate`` subcommand."""
         parser = app_cli._build_parser()
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                parser.parse_args(
-                    [
-                        "migrate", "--source", "grafana",
-                        "--native-promql", "--no-native-promql",
-                    ]
-                )
+                parser.parse_args(["migrate", "--source", "grafana", "--native-promql"])
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                parser.parse_args(["migrate", "--source", "grafana", "--no-native-promql"])
 
 
 class TestDoctorSubcommand(unittest.TestCase):
