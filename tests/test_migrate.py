@@ -5510,6 +5510,72 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(_detect_esql_named_param_binding(""), {})
 
+    def test_detect_es_version_parses_version_number(self):
+        from observability_migration.adapters.source.grafana.cli import _detect_es_version
+
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.get",
+            return_value=SimpleNamespace(
+                status_code=200, json=lambda: {"version": {"number": "9.5.0"}}, text=""
+            ),
+        ):
+            self.assertEqual(_detect_es_version("https://es.example", "apikey"), (9, 5))
+
+    def test_detect_runtime_features_sets_histogram_quantile_on_es_95(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+        )
+
+        with (
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                return_value=True,
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_es_version",
+                return_value=(9, 5),
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.get",
+                return_value=SimpleNamespace(status_code=200, json=lambda: {"nodes": {}}, text=""),
+            ),
+            mock.patch("observability_migration.adapters.source.grafana.cli.requests.post"),
+        ):
+            profile = _detect_target_runtime_features("https://es.example", "apikey")
+
+        self.assertTrue(profile[PROMQL_HISTOGRAM_QUANTILE]["supported"])
+
+    def test_detect_runtime_features_no_histogram_quantile_on_es_94(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_target_runtime_features,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+            is_feature_supported,
+        )
+
+        with (
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_promql_support",
+                return_value=True,
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli._detect_es_version",
+                return_value=(9, 4),
+            ),
+            mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.get",
+                return_value=SimpleNamespace(status_code=200, json=lambda: {"nodes": {}}, text=""),
+            ),
+            mock.patch("observability_migration.adapters.source.grafana.cli.requests.post"),
+        ):
+            profile = _detect_target_runtime_features("https://es.example", "apikey")
+
+        self.assertFalse(is_feature_supported(profile, PROMQL_HISTOGRAM_QUANTILE))
+
     def test_parse_args_defaults_native_promql_to_auto(self):
         from observability_migration.adapters.source.grafana.cli import parse_args
 

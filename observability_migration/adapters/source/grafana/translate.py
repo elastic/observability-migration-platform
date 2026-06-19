@@ -1570,6 +1570,180 @@ def nested_agg_family_rule(context):
     return f"translated nested {frag.outer_agg} expression"
 
 
+@QUERY_TRANSLATORS.register("histogram_quantile_family", priority=6)
+def histogram_quantile_family_rule(context):
+    """Translate ``histogram_quantile(phi, <bucket series>)`` to ES|QL PERCENTILE().
+
+    The ES|QL form depends on the target field type of the base histogram metric
+    (issue #55). Only the two Elasticsearch histogram field types can produce an
+    arbitrary percentile:
+
+    - ``exponential_histogram`` -> ``PERCENTILE(field, phi*100)``
+    - ``histogram``             -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
+
+    Any other type (including ``aggregate_metric_double``, which stores only
+    min/max/sum/value_count and not the distribution) or an unknown/unavailable
+    schema degrades to not_feasible — we fail closed rather than emit a query
+    that may 400 or return wrong-shaped values.
+    """
+    frag = context.fragment
+    if not frag or frag.family != "histogram_quantile" or not frag.metric:
+        return None
+    phi = frag.extra.get("quantile_phi")
+    if phi is None:
+        return None
+
+    # PromQL defines histogram_quantile for phi outside [0, 1] (it returns
+    # +Inf/-Inf), but ES|QL PERCENTILE's second argument must be a 0-100
+    # percentile, so phi*100 outside that range is an invalid query. Degrade
+    # rather than emit e.g. PERCENTILE(field, 150).
+    if not 0.0 <= phi <= 1.0:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"histogram_quantile quantile {phi} is outside [0, 1]; ES|QL PERCENTILE() "
+            "cannot represent an out-of-range quantile, so this requires manual redesign",
+        )
+        context.translation_complete = True
+        return "histogram_quantile quantile out of range"
+
+    # Only ``sum by (le)`` (or a bare bucket series with no outer aggregation)
+    # maps faithfully to a PERCENTILE() over the histogram field: summing the
+    # bucket counts across series is exactly what the histogram field encodes.
+    # A non-sum aggregation (max/min/avg/...) is a different computation that
+    # PERCENTILE cannot reproduce, so degrade rather than silently emit the same
+    # query (the "degrade gracefully" contract).
+    bucket_agg = frag.extra.get("bucket_agg") or ""
+    if bucket_agg and bucket_agg != "sum":
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"histogram_quantile bucket series uses a non-sum aggregation ({bucket_agg}); "
+            "only sum by (le) maps to an ES|QL PERCENTILE() over the histogram field, "
+            "so this requires manual redesign",
+        )
+        context.translation_complete = True
+        return "histogram_quantile non-sum bucket aggregation"
+
+    # Classic Prometheus ``_bucket`` operands carry their distribution in the
+    # ``le`` label. PERCENTILE() runs over the target's native histogram field,
+    # which encodes the distribution per document, so it can only reproduce the
+    # source when the bucket boundaries are used in the standard way:
+    #   * the aggregation must keep ``le`` (e.g. ``sum by (le)``) — a bare series
+    #     or a non-``le`` grouping collapses/destroys the buckets, and the
+    #     implicit non-``le`` series can't be enumerated here;
+    #   * there must be no ``le`` matcher — a filtered bucket set (``le!="+Inf"``)
+    #     has no PERCENTILE() equivalent.
+    # Anything else degrades rather than emitting a query with different meaning.
+    bucket_metric = frag.extra.get("bucket_metric") or ""
+    if bucket_metric.endswith("_bucket"):
+        has_le_matcher = any(
+            isinstance(m, dict) and m.get("label") == "le" for m in (frag.matchers or [])
+        )
+        if has_le_matcher:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                "histogram_quantile bucket series has an le label matcher; an ES|QL "
+                "PERCENTILE() over the histogram field cannot reproduce a filtered "
+                "bucket set, so this requires manual redesign",
+            )
+            context.translation_complete = True
+            return "histogram_quantile le matcher"
+        if not frag.extra.get("had_le_grouping"):
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                "histogram_quantile over a classic _bucket series requires the le "
+                "label in the aggregation (e.g. sum by (le)); without it the bucket "
+                "boundaries are lost or per-series breakdown cannot be preserved, so "
+                "this requires manual redesign",
+            )
+            context.translation_complete = True
+            return "histogram_quantile missing le grouping"
+
+    resolver = context.resolver
+    rp = context.rule_pack
+    filters, had_vars = _frag_filters(frag, resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+    group_fields = _frag_group_labels(
+        frag,
+        resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
+
+    # A histogram metric is neither a counter nor a gauge scalar, so resolve
+    # with no counter/gauge preference. (For the Fleet remote_write layout, a
+    # histogram stored under a suffixed field other than the bare name may not
+    # resolve here; that degrades to not_feasible below rather than mis-typing.)
+    physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=None)
+    field_type = ((resolver.field_type(physical_metric) if resolver else None) or "").strip().lower()
+    if field_type == "exponential_histogram":
+        value_expr = physical_metric
+    elif field_type == "histogram":
+        value_expr = f"TO_TDIGEST({physical_metric})"
+    else:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        if field_type:
+            reason = (
+                f"histogram_quantile target field '{physical_metric}' is typed "
+                f"'{field_type}', not a histogram or exponential_histogram field, so it "
+                "cannot be translated to an ES|QL PERCENTILE() (requires manual redesign)"
+            )
+        else:
+            reason = (
+                "histogram_quantile target field type could not be determined; cannot "
+                "safely translate to ES|QL PERCENTILE() (verify the base metric is a "
+                "histogram or exponential_histogram field on the target index)"
+            )
+        _append_unique(context.warnings, reason)
+        context.translation_complete = True
+        return "histogram_quantile field type unsupported"
+
+    percentile_value = _format_scalar_value(round(phi * 100, 10))
+    stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
+    alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
+    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields)
+
+    parts = [
+        f"TS {context.index}",
+        f"| WHERE {rp.ts_time_filter}",
+        *_build_where_lines(filters),
+        f"| WHERE {physical_metric} IS NOT NULL",
+    ]
+    stats_line = f"| STATS {alias} = {stats_expr}"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+    if "time_bucket" in output_group:
+        parts.append("| SORT time_bucket ASC")
+
+    context.esql_query = "\n".join(parts)
+    context.parser_backend = "fragment"
+    context.source_type = "TS"
+    context.metric_name = frag.metric
+    context.output_metric_field = alias
+    context.output_group_fields = output_group
+    _append_unique(
+        context.warnings,
+        "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is "
+        "approximate — PERCENTILE uses t-digest, which treats histogram buckets as point "
+        "masses rather than interpolating within them as Prometheus does, so results can "
+        "diverge noticeably when traffic concentrates in a few wide buckets (the common "
+        "latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for "
+        "exact results.",
+    )
+    context.translation_complete = True
+    return "translated histogram_quantile to PERCENTILE"
+
+
 @QUERY_TRANSLATORS.register("range_agg_family", priority=8)
 def range_agg_family_rule(context):
     frag = context.fragment

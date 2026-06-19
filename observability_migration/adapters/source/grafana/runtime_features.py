@@ -9,6 +9,11 @@ from typing import Any
 
 PROMQL_COMMAND_V0 = "promql_command_v0"
 PROMQL_LABEL_MATCHER_PARAMS = "promql_label_matcher_params"
+# Native ``histogram_quantile`` PromQL support. Landed in Elasticsearch 9.5
+# (elastic/elasticsearch#150578); on stacks reporting it, histogram_quantile
+# panels pass through the native PROMQL path instead of the ES|QL PERCENTILE()
+# translation. Gated behind this feature so older stacks keep the ES|QL path.
+PROMQL_HISTOGRAM_QUANTILE = "promql_histogram_quantile"
 # Plain ES|QL named-parameter binding (``FROM … | WHERE field == ?var`` /
 # ``RLIKE ?var``). Unlike ``promql_label_matcher_params`` this does NOT require
 # the ES|QL PROMQL command, so it is available on a broader set of targets and

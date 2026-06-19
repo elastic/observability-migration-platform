@@ -1672,6 +1672,33 @@ class TestBuildRuleParams(unittest.TestCase):
         self.assertEqual(params["timeWindowSize"], 2)
         self.assertEqual(params["timeWindowUnit"], "h")
 
+    def test_grafana_histogram_quantile_alert_degrades_without_native_feature(self):
+        # Regression guard: the Grafana alert path builds ES|QL via
+        # build_native_promql_query (the native gate), NOT translate_promql_to_esql.
+        # It does not pass the PROMQL_HISTOGRAM_QUANTILE runtime feature, so a
+        # histogram_quantile rule must degrade to no ES|QL params rather than
+        # emit a bogus query or crash. Pins behavior so wiring the ES|QL
+        # PERCENTILE() path (or the feature) into alerts is a deliberate change.
+        rule = {
+            "uid": "hq-rule", "title": "P95 latency", "ruleGroup": "g", "folderUID": "f",
+            "condition": "C", "for": "5m", "noDataState": "NoData", "execErrState": "Error",
+            "isPaused": False, "labels": {}, "annotations": {},
+            "data": [
+                {"refId": "A", "datasourceUid": "prometheus",
+                 "relativeTimeRange": {"from": 300, "to": 0},
+                 "model": {"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"}},
+                {"refId": "C", "datasourceUid": "__expr__",
+                 "relativeTimeRange": {"from": 0, "to": 0},
+                 "model": {"type": "threshold", "conditions": [{"evaluator": {"type": "gt", "params": [0.5]}}]}},
+            ],
+        }
+        ir = build_alerting_ir_from_grafana_unified(
+            rule, datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertNotIn("histogram_quantile", str(params))
+        self.assertFalse(params.get("esqlQuery", {}).get("esql", ""))
+
     def test_es_query_params_use_native_promql_for_supported_grafana_prometheus_rules(self):
         ir = build_alerting_ir_from_grafana_unified(
             _grafana_unified_prometheus_rule(),

@@ -25,7 +25,6 @@ from .extension_schema import validate_rule_pack_payload
 DEFAULT_NOT_FEASIBLE_PATTERNS = [
     (r"\bsubquery\b", "Contains unsupported pattern: subquery"),
     (r"\boffset\b", "Contains unsupported pattern: offset"),
-    (r"\bhistogram_quantile\s*\(", "histogram_quantile over Prometheus bucket series requires manual redesign"),
     (r"\b__name__\b", "PromQL metric-name introspection via __name__ requires manual redesign"),
 ]
 

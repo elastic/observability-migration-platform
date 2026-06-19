@@ -1362,6 +1362,89 @@ class TestNativePromQLIntegrity(unittest.TestCase):
 
         self.assertFalse(panels.can_use_native_promql(expr))
 
+    def test_translate_dashboard_floor_bumps_for_native_histogram_quantile(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(self.rp, PROMQL_HISTOGRAM_QUANTILE, supported=True, source="test")
+        dashboard = {
+            "title": "HQ Latency",
+            "uid": "hq-1",
+            "panels": [
+                _make_panel(
+                    1,
+                    "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+                ),
+            ],
+        }
+        _result, payload = _translate_dashboard(dashboard, rule_pack=self.rp, resolver=self.resolver)
+
+        dash = payload["dashboards"][0]
+        self.assertEqual(dash["minimum_kibana_version"], "9.5.0")
+        self.assertIn("histogram_quantile", dash["panels"][0]["esql"]["query"])
+
+    def test_build_native_promql_query_keeps_histogram_quantile_with_feature(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+        )
+
+        expr = "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
+        query = panels.build_native_promql_query(
+            expr,
+            index="metrics-*",
+            kibana_type="line",
+            runtime_features={PROMQL_HISTOGRAM_QUANTILE: True},
+        )
+        self.assertTrue(query.startswith("PROMQL"))
+        self.assertIn("histogram_quantile", query)
+
+    def test_dashboard_min_version_ignores_histogram_quantile_substring(self):
+        # A metric whose name merely contains the token must not trip the floor.
+        substring = {
+            "esql": {"query": "PROMQL index=metrics-* step=60s value=(rate(histogram_quantile_seconds_total[5m]))"}
+        }
+        self.assertEqual(
+            panels._dashboard_minimum_kibana_version([substring]),
+            panels.MINIMUM_KIBANA_VERSION,
+        )
+
+    def test_dashboard_min_version_bumps_for_native_histogram_quantile(self):
+        native = {"esql": {"query": "PROMQL index=metrics-* step=60s value=(histogram_quantile(0.95, foo))"}}
+        plain = {"esql": {"query": "PROMQL index=metrics-* step=60s value=(rate(foo_total[5m]))"}}
+
+        self.assertEqual(
+            panels._dashboard_minimum_kibana_version([native, plain]), "9.5.0"
+        )
+        self.assertEqual(
+            panels._dashboard_minimum_kibana_version([plain]),
+            panels.MINIMUM_KIBANA_VERSION,
+        )
+
+    def test_native_promql_allows_histogram_quantile_when_feature_supported(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+        )
+
+        expr = 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))'
+
+        self.assertTrue(
+            panels.can_use_native_promql(expr, runtime_features={PROMQL_HISTOGRAM_QUANTILE: True})
+        )
+
+    def test_native_promql_still_rejects_histogram_quantile_with_other_unsupported(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_HISTOGRAM_QUANTILE,
+        )
+
+        # histogram_quantile is allowed, but the topk() wrapper is still unsupported.
+        expr = 'topk(5, histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))))'
+
+        self.assertFalse(
+            panels.can_use_native_promql(expr, runtime_features={PROMQL_HISTOGRAM_QUANTILE: True})
+        )
+
     def test_native_promql_visual_ir_and_query_ir_match_emitted_yaml(self):
         panel = _make_panel(1, "rate(http_requests_total[5m])")
         yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
