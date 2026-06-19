@@ -154,7 +154,6 @@ for i in "${!SLUGS[@]}"; do
     --input-dir "$tmp_input"
     --output-dir "$out_dir"
     --assets dashboards
-    --native-promql
     --es-url "$ELASTICSEARCH_ENDPOINT"
     --es-api-key "$KEY"
     --kibana-url "$KIBANA_ENDPOINT"

@@ -4,7 +4,7 @@
 
 #
 # End-to-end migration pipeline:
-#   1. Migrate Grafana dashboards → Kibana YAML  (with --native-promql)
+#   1. Migrate Grafana dashboards → Kibana YAML  (native PROMQL by default)
 #   2. Extract required metrics from compiled YAML
 #   3. Generate & ingest synthetic data (with preflight validation)
 #   4. Upload compiled dashboards to Kibana
@@ -84,7 +84,6 @@ $VENV -m observability_migration.adapters.source.grafana.cli \
   --assets dashboards \
   --input-dir "$INPUT_DIR" \
   --output-dir "$OUTPUT_DIR" \
-  --native-promql \
   --data-view "$DATA_VIEW" \
   --esql-index "$ESQL_INDEX"
 

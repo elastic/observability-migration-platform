@@ -41,10 +41,9 @@ panel's query against both stores and diffs the results.
 ```
 
 Both stores receive **the same numeric source** (the producer's `/metrics`
-endpoint). Migration is run with `--native-promql` so the translated
-dashboard prefers the ES|QL `PROMQL` source command (byte-for-byte PromQL
-identity) and falls back to ES|QL native for constructs the PROMQL command
-doesn't yet support (`or`, `histogram_quantile`, etc.).
+endpoint). Migration always prefers the ES|QL `PROMQL` source command
+(byte-for-byte PromQL identity) and falls back to ES|QL native for constructs
+the PROMQL command doesn't yet support (`or`, `histogram_quantile`, etc.).
 
 ## Components
 
@@ -118,7 +117,6 @@ set -a; source serverless_creds.env; set +a
   --es-api-key "$KEY" \
   --data-view metrics-express.prometheus-parity \
   --esql-index metrics-express.prometheus-parity \
-  --native-promql \
   --upload --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" \
   --ensure-data-views
 ```

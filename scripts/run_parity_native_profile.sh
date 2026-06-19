@@ -4,11 +4,11 @@
 
 # Parity harness for the native /_prometheus endpoint schema profile.
 #
-# Migrates the express-prometheus dashboard with --no-native-promql so
-# every panel emits TS/FROM ES|QL (not the PROMQL source command).
-# The parity harness then runs those translated queries against the native
-# endpoint index (metrics-express.prometheus-parity) and diffs them against
-# the Prometheus side.
+# Migrates the express-prometheus dashboard with the default migration path
+# (native PROMQL with automatic ES|QL fallback — the --no-native-promql override
+# was removed in issue #158). The parity harness then runs the translated
+# queries against the native endpoint index (metrics-express.prometheus-parity)
+# and diffs them against the Prometheus side.
 #
 # This is the canonical way to validate the prometheus_native SchemaResolver
 # profile added in schema.py — it exercises the full path:
@@ -81,15 +81,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Migrate express-prometheus with --no-native-promql
-#         This forces TS/FROM ES|QL for all panels, exercising the
-#         prometheus_native SchemaResolver profile.
+# Step 1: Migrate express-prometheus with the default migration path.
+#         Constructs the PROMQL command doesn't support still fall back to
+#         TS/FROM ES|QL automatically, exercising the prometheus_native
+#         SchemaResolver profile.
 # ---------------------------------------------------------------------------
 SRC="$REPO/parity-rig/grafana/dashboards/express-prometheus-middleware.json"
 OUT_DIR="/tmp/mig-to-kbn-e2e/parity-native-profile"
 TMP_INPUT="$(mktemp -d "${TMPDIR:-/tmp}/parity-native-input.XXXXXX")"
 
-printf '=== Step 1: Migrating express-prometheus with --no-native-promql ===\n'
+printf '=== Step 1: Migrating express-prometheus (default native PROMQL path) ===\n'
 
 cp "$SRC" "$TMP_INPUT/"
 
@@ -99,7 +100,6 @@ cp "$SRC" "$TMP_INPUT/"
   --input-dir "$TMP_INPUT" \
   --output-dir "$OUT_DIR" \
   --assets dashboards \
-  --no-native-promql \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --es-api-key "$KEY")
 

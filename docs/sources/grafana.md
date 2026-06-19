@@ -8,13 +8,16 @@ reporting, optional upload, and post-upload smoke validation.
 
 Grafana query translation has four paths:
 
-1. **Native PROMQL** (the default high-fidelity path): wraps compatible PromQL
-   in `PROMQL index=... value=(expr)` for highest fidelity on Elastic
-   Serverless. When `--es-url` is set, the target is probed and the run falls
-   back to ES|QL translation only if the `PROMQL` command is unsupported (or the
-   probe is inconclusive). With no `--es-url` there is no cluster to probe, so
-   native PROMQL is used optimistically. Use `--no-native-promql` to force ES|QL
-   translation, or `--native-promql` to force native and skip the probe.
+1. **Native PROMQL** (the only path; the highest-fidelity target): wraps
+   compatible PromQL in `PROMQL index=... value=(expr)` for highest fidelity on
+   Elastic Serverless. When `--es-url` is set, the target is probed and the run
+   falls back to ES|QL translation only when the `PROMQL` command is *confirmed*
+   unsupported. An inconclusive probe (transport/auth error) keeps native PROMQL
+   — the optimistic default — and warns, rather than routing a possibly-capable
+   cluster down the fallback. With no `--es-url` there is no cluster to probe, so
+   native PROMQL is assumed. There are no override flags; the user declares no
+   intent. (Per-construct fallback to ES|QL still applies automatically when a
+   specific PromQL function/family is unsupported.)
 2. **Rule-engine ES|QL**: parses PromQL with `promql-parser`, classifies the
    expression, and translates it through the rule pipeline.
 3. **LLM fallback ES|QL**: optional local-AI fallback for panels the rule
@@ -251,10 +254,10 @@ Use that doc for:
   `--assets dashboards`, runtime normalization upgrades the run to `--assets all`.
 - Dashboard artifacts are written under `<output-dir>/dashboards`; alert
   artifacts are written under `<output-dir>/alerts`.
-- Native PromQL is the default high-fidelity path. When `--es-url` reaches a
-  target without ES|QL `PROMQL` support, the run downgrades to ES|QL
-  translation. Use `--no-native-promql` to force ES|QL translation, or
-  `--native-promql` to force native PromQL and skip target detection.
+- Native PromQL is the only path and the highest-fidelity target. When
+  `--es-url` reaches a target *confirmed* to lack ES|QL `PROMQL` support, the
+  run downgrades to ES|QL translation; an inconclusive probe keeps native PromQL
+  and warns. There are no override flags.
 - `--source api` (or unified `--input-mode api`) pulls dashboard documents over
   HTTP basic auth. Connection details are **flag-first with env fallback**:
   `--grafana-url` / `--grafana-user` / `--grafana-pass` default to `GRAFANA_URL`

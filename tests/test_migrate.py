@@ -1,11 +1,13 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import io
 import json
 import pathlib
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest import mock
 
@@ -5065,7 +5067,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_esql_path_preserves_template_matcher_with_only_esql_named_param_binding(self):
         """Issue #132: the ES|QL ``?var`` path only needs ES|QL named-parameter
-        binding, not the native PROMQL command. A ``--no-native-promql`` run
+        binding, not the native PROMQL command. A cluster-wide ES|QL fallback run
         against a target advertising ``esql_named_param_binding`` (and NOT
         ``promql_label_matcher_params``) must still preserve the matcher."""
         from observability_migration.adapters.source.grafana.runtime_features import (
@@ -5183,7 +5185,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(binding["default"], ".*")
 
     def test_dashboard_esql_named_param_binding_preserves_var_with_single_control(self):
-        """Issue #132 end-to-end: a ``--no-native-promql`` target that only
+        """Issue #132 end-to-end: an ES|QL-fallback target that only
         advertises ``esql_named_param_binding`` must preserve ``?var`` AND emit
         exactly one ES|QL binding control for it (not a generic data-view
         control plus a synthesized duplicate)."""
@@ -5611,6 +5613,74 @@ class TranslatorRegressionTests(unittest.TestCase):
         ):
             self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
 
+    def test_detect_promql_support_false_on_parser_rejection(self):
+        """A precise ES|QL parser rejection of the PROMQL command confirms the
+        command is absent (verified False)."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {},
+                text="line 1:1: mismatched input 'PROMQL' expecting {'FROM', 'ROW', 'SHOW'}",
+            )
+            self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_none_on_unrelated_400(self):
+        """Issue #158 hardening: a 400 that is NOT a PROMQL-command rejection
+        (e.g. an unrelated query error) is inconclusive, not confirmed absent —
+        forcing the ES|QL fallback on it would undercut the optimistic default."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {"error": {"type": "index_not_found_exception"}},
+                text='{"error":{"type":"index_not_found_exception"}}',
+            )
+            self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_none_on_transient_5xx(self):
+        """Issue #158 hardening: a transient server error (503/500) is never
+        proof the PROMQL command is absent."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        for status in (500, 503):
+            with mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.post",
+            ) as post:
+                post.return_value = SimpleNamespace(
+                    status_code=status,
+                    json=lambda: {},
+                    text="service unavailable",
+                )
+                self.assertIsNone(
+                    _detect_promql_support("https://es.example", "apikey"),
+                    msg=f"HTTP {status} should be inconclusive",
+                )
+
+    def test_detect_promql_support_none_on_rate_limit(self):
+        """Issue #158 hardening: HTTP 429 (rate limited) is inconclusive."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=429,
+                json=lambda: {},
+                text="too many requests",
+            )
+            self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
+
     def test_detect_target_runtime_features_uses_capability_names(self):
         from observability_migration.adapters.source.grafana.cli import (
             _detect_target_runtime_features,
@@ -5822,24 +5892,25 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertFalse(is_feature_supported(profile, PROMQL_HISTOGRAM_QUANTILE))
 
-    def test_parse_args_defaults_native_promql_to_auto(self):
+    def test_parse_args_has_no_native_promql_flag(self):
+        """Issue #158: the native-PROMQL override flags are gone; ``auto`` is the
+        only path and the run carries no ``native_promql_flag`` intent."""
         from observability_migration.adapters.source.grafana.cli import parse_args
 
         args = parse_args([])
 
-        self.assertEqual(args.native_promql_flag, "auto")
+        self.assertFalse(hasattr(args, "native_promql_flag"))
 
-    def test_parse_args_native_promql_flags_override_auto_default(self):
+    def test_parse_args_rejects_removed_native_promql_flags(self):
+        """Issue #158: ``--native-promql`` / ``--no-native-promql`` are removed."""
         from observability_migration.adapters.source.grafana.cli import parse_args
 
-        self.assertEqual(
-            parse_args(["--native-promql"]).native_promql_flag,
-            "force_on",
-        )
-        self.assertEqual(
-            parse_args(["--no-native-promql"]).native_promql_flag,
-            "force_off",
-        )
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                parse_args(["--native-promql"])
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(io.StringIO()):
+                parse_args(["--no-native-promql"])
 
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -5856,7 +5927,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="auto",
         )
         rule_pack = rules.RulePackConfig()
         profile = {
@@ -5892,7 +5962,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="auto",
         )
         rule_pack = rules.RulePackConfig()
         profile = {
@@ -5922,7 +5991,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="",
             es_api_key="",
-            native_promql_flag="auto",
         )
         rule_pack = rules.RulePackConfig()
         self.assertEqual(rule_pack.metrics_dataset_filter, "prometheus")
@@ -5945,7 +6013,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
-    def test_apply_native_promql_force_on_records_detected_subfeatures(self):
+    def test_apply_native_promql_records_detected_subfeatures(self):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
         )
@@ -5959,7 +6027,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="force_on",
         )
         rule_pack = rules.RulePackConfig()
         profile = {
@@ -5982,16 +6049,17 @@ class TranslatorRegressionTests(unittest.TestCase):
             {**profile, ESQL_NAMED_PARAM_BINDING: esql_state},
         )
 
-    def test_apply_native_promql_force_off_probes_esql_named_param_binding(self):
-        """Issue #132: a deliberate --no-native-promql run must still probe the
-        target for ES|QL named-parameter binding (it does not need the PROMQL
-        command) so the pure-ES|QL path can preserve ``?var`` filters, without
-        running the native PROMQL probe."""
+    def test_apply_native_promql_confirmed_absent_falls_back_but_probes_esql_binding(self):
+        """Issue #158 + #132: when the target is *confirmed* to lack the PROMQL
+        command, the run falls back to ES|QL (``native_promql`` stays False) but
+        must still probe the target for ES|QL named-parameter binding so the
+        pure-ES|QL path can preserve ``?var`` filters."""
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
             ESQL_NAMED_PARAM_BINDING,
+            PROMQL_COMMAND_V0,
             is_feature_supported,
         )
 
@@ -5999,27 +6067,60 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="force_off",
         )
         rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": False, "source": "probe", "confidence": "verified"},
+        }
         esql_state = {"supported": True, "source": "probe", "confidence": "verified"}
         with mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
-        ) as detect_native, mock.patch(
+            return_value=dict(profile),
+        ), mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
             return_value=esql_state,
         ) as detect_esql:
             _apply_native_promql_to_rule_pack(rule_pack, args)
 
-        detect_native.assert_not_called()
         detect_esql.assert_called_once()
         self.assertFalse(rule_pack.native_promql)
         self.assertTrue(is_feature_supported(rule_pack, ESQL_NAMED_PARAM_BINDING))
 
+    def test_apply_native_promql_inconclusive_probe_keeps_native(self):
+        """Issue #158: an inconclusive (transport-error) probe keeps native
+        PROMQL rather than routing a possibly-capable cluster to ES|QL."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_native_promql_to_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+
+        args = SimpleNamespace(
+            dataset_filter="",
+            es_url="https://es.example",
+            es_api_key="apikey",
+        )
+        rule_pack = rules.RulePackConfig()
+        profile = {
+            PROMQL_COMMAND_V0: {"supported": False, "source": "probe", "confidence": "inconclusive"},
+        }
+        esql_state = {"supported": True, "source": "probe", "confidence": "verified"}
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value=dict(profile),
+        ), mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+            return_value=esql_state,
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
+
+        self.assertTrue(rule_pack.native_promql)
+
     def test_apply_native_promql_offline_assumes_esql_named_param_binding(self):
         """Issue #132: an offline run cannot probe, but ES|QL named-parameter
         binding is a stable core feature so it is assumed (like native PROMQL),
-        keeping ``?var`` label filters on offline --no-native-promql runs."""
+        keeping ``?var`` label filters on offline runs."""
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
         )
@@ -6032,7 +6133,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             dataset_filter="",
             es_url="",
             es_api_key="",
-            native_promql_flag="force_off",
         )
         rule_pack = rules.RulePackConfig()
         with mock.patch(
@@ -6041,7 +6141,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             _apply_native_promql_to_rule_pack(rule_pack, args)
             detect_esql.assert_not_called()
 
-        self.assertFalse(rule_pack.native_promql)
+        self.assertTrue(rule_pack.native_promql)
         self.assertTrue(is_feature_supported(rule_pack, ESQL_NAMED_PARAM_BINDING))
         self.assertEqual(
             rule_pack.runtime_features[ESQL_NAMED_PARAM_BINDING]["source"], "default"
@@ -6151,63 +6251,73 @@ class TranslatorRegressionTests(unittest.TestCase):
             _resolve_native_promql,
         )
         args = SimpleNamespace(
-            native_promql_flag="auto",
             es_url="https://es.example",
             es_api_key="apikey",
         )
         with mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
-            return_value={"promql_command_v0": {"supported": True}},
+            return_value={"promql_command_v0": {"supported": True, "confidence": "verified"}},
         ):
             self.assertTrue(_resolve_native_promql(args))
         with mock.patch(
             "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
-            return_value={"promql_command_v0": {"supported": False}},
+            return_value={"promql_command_v0": {"supported": False, "confidence": "verified"}},
         ):
             self.assertFalse(_resolve_native_promql(args))
-
-    def test_resolve_native_promql_force_off_overrides_detection(self):
-        from observability_migration.adapters.source.grafana.cli import (
-            _resolve_native_promql,
-        )
-        args = SimpleNamespace(
-            native_promql_flag="force_off",
-            es_url="https://es.example",
-            es_api_key="apikey",
-        )
-        with mock.patch(
-            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
-        ) as det:
-            self.assertFalse(_resolve_native_promql(args))
-            det.assert_not_called()
-
-    def test_resolve_native_promql_force_on_overrides_detection(self):
-        from observability_migration.adapters.source.grafana.cli import (
-            _resolve_native_promql,
-        )
-        args = SimpleNamespace(
-            native_promql_flag="force_on",
-            es_url="",
-            es_api_key="",
-        )
-        with mock.patch(
-            "observability_migration.adapters.source.grafana.cli._detect_promql_support",
-        ) as det:
-            self.assertTrue(_resolve_native_promql(args))
-            det.assert_not_called()
 
     def test_resolve_native_promql_auto_without_es_url_defaults_to_native(self):
-        """With no cluster to probe, ``auto`` optimistically defaults to native
-        PROMQL (highest-fidelity path). ``--no-native-promql`` is the opt-out."""
+        """With no cluster to probe, the run optimistically defaults to native
+        PROMQL (the highest-fidelity path)."""
         from observability_migration.adapters.source.grafana.cli import (
             _resolve_native_promql,
         )
         args = SimpleNamespace(
-            native_promql_flag="auto",
             es_url="",
             es_api_key="",
         )
         self.assertTrue(_resolve_native_promql(args))
+
+    def test_resolve_native_promql_inconclusive_probe_keeps_native(self):
+        """Issue #158: an inconclusive (transport/auth error) probe must keep
+        native PROMQL — the optimistic default — rather than routing a possibly
+        PromQL-capable cluster down the ES|QL fallback on a flaky probe."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+        args = SimpleNamespace(es_url="https://es.example", es_api_key="apikey")
+        runtime_features = {
+            PROMQL_COMMAND_V0: {
+                "supported": False,
+                "source": "probe",
+                "confidence": "inconclusive",
+                "reason": "transport error",
+            }
+        }
+        self.assertTrue(_resolve_native_promql(args, runtime_features))
+
+    def test_resolve_native_promql_confirmed_absent_falls_back_to_esql(self):
+        """Issue #158: only a confirmed ``PROMQL command absent`` verdict
+        (supported=False, confidence=verified) triggers the cluster-wide ES|QL
+        fallback."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _resolve_native_promql,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
+        )
+        args = SimpleNamespace(es_url="https://es.example", es_api_key="apikey")
+        runtime_features = {
+            PROMQL_COMMAND_V0: {
+                "supported": False,
+                "source": "probe",
+                "confidence": "verified",
+                "reason": "target rejected the ES|QL PROMQL command",
+            }
+        }
+        self.assertFalse(_resolve_native_promql(args, runtime_features))
 
     def test_print_rule_catalog_skips_promql_probe(self):
         """`--print-rule-catalog` is an offline introspection command and
@@ -6223,22 +6333,23 @@ class TranslatorRegressionTests(unittest.TestCase):
             logs_dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="auto",
         )
         with mock.patch("observability_migration.adapters.source.grafana.cli._detect_promql_support") as det:
             _load_configured_rule_pack(args)
             det.assert_not_called()
 
     def test_apply_native_promql_preserves_explicit_dataset_filter(self):
-        """When the user passes both ``--native-promql`` and
-        ``--dataset-filter foo``, the explicit filter wins. Native-promql
-        only clears the default ``"prometheus"`` filter when no explicit
-        ``--dataset-filter`` was provided. Pre-refactor behavior is
+        """When the user passes ``--dataset-filter foo``, the explicit filter
+        wins. Native PromQL only clears the default ``"prometheus"`` filter when
+        no explicit ``--dataset-filter`` was provided. Pre-refactor behavior is
         preserved.
         """
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
             _load_configured_rule_pack,
+        )
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_COMMAND_V0,
         )
         args = SimpleNamespace(
             rules_file=[],
@@ -6248,11 +6359,19 @@ class TranslatorRegressionTests(unittest.TestCase):
             logs_dataset_filter="",
             es_url="https://es.example",
             es_api_key="apikey",
-            native_promql_flag="force_on",
         )
         rule_pack = _load_configured_rule_pack(args)
         self.assertEqual(rule_pack.metrics_dataset_filter, "custom-dataset")
-        _apply_native_promql_to_rule_pack(rule_pack, args)
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_target_runtime_features",
+            return_value={
+                PROMQL_COMMAND_V0: {"supported": True, "source": "probe", "confidence": "verified"},
+            },
+        ), mock.patch(
+            "observability_migration.adapters.source.grafana.cli._detect_esql_named_param_binding",
+            return_value={"supported": True, "source": "probe", "confidence": "verified"},
+        ):
+            _apply_native_promql_to_rule_pack(rule_pack, args)
         self.assertTrue(rule_pack.native_promql)
         self.assertEqual(rule_pack.metrics_dataset_filter, "custom-dataset")
 
@@ -6273,7 +6392,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             logs_dataset_filter="",
             es_url="",
             es_api_key="",
-            native_promql_flag="force_on",
         )
         rule_pack = _load_configured_rule_pack(args)
         self.assertEqual(rule_pack.metrics_dataset_filter, "prometheus")

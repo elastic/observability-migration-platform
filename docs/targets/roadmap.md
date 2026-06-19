@@ -40,8 +40,9 @@ and `labels.*` fields in the field capabilities response:
 bash scripts/run_parity_native_profile.sh --window-minutes 15
 ```
 
-`run_parity_native_profile.sh` migrates the express-prometheus dashboard with
-`--no-native-promql` (forcing `TS`/`FROM` ES|QL), then runs the parity harness which
+`run_parity_native_profile.sh` migrates the express-prometheus dashboard with the
+default native PROMQL path (constructs the PROMQL command doesn't support still
+fall back to `TS`/`FROM` ES|QL automatically), then runs the parity harness which
 executes translated queries against the native endpoint and diffs against Prometheus.
 Expected: all counter panels (`RATE`) and gauge panels (`AVG`) return `STRICT_PASS` (≤1% error).
 

@@ -77,7 +77,7 @@ package installed. Outputs land under `/tmp/mig-to-kbn-e2e/` (Grafana) and
 - `validate_esql_function_semantics.py` — pin down the numeric semantics of
   individual ES|QL idioms with synthetic ROW data.
 - `run_parity_native_profile.sh` — parity harness for the native
-  `/_prometheus` endpoint schema profile (`--no-native-promql` path).
+  `/_prometheus` endpoint schema profile (default native PROMQL path).
 - `run_datadog_parity.py`, `run_datadog_parity.sh` — Datadog↔Elasticsearch
   parity orchestrator (see `parity-rig/datadog/README.md`).
 

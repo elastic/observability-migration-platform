@@ -141,13 +141,9 @@ def run_fetch(corpus_dir: Path, slice_name: str, manifest: str | None) -> None:
     _run(cmd)
 
 
-def run_migrate(corpus_dir: Path, out_dir: Path, native_promql: str) -> Path:
+def run_migrate(corpus_dir: Path, out_dir: Path) -> Path:
     cmd = [_venv_bin("obs-migrate"), "migrate", "--source", "grafana",
            "--input-dir", str(corpus_dir), "--output-dir", str(out_dir), "--compile"]
-    if native_promql == "off":
-        cmd.append("--no-native-promql")
-    elif native_promql == "on":
-        cmd.append("--native-promql")
     _run(cmd, check=False)  # migrate exits non-zero on partial failures; we score from artifacts
     packets = out_dir / "dashboards" / "verification_packets.json"
     if not packets.exists():
@@ -263,8 +259,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fetch", action="store_true", help="Fetch the pinned corpus into --corpus-dir first.")
     p.add_argument("--slice", default="", help="Corpus slice for --fetch (default: manifest default).")
     p.add_argument("--manifest", default="", help="Corpus manifest path for --fetch.")
-    p.add_argument("--native-promql", choices=["auto", "on", "off"], default="auto",
-                   help="Forwarded to migrate. 'off' forces ES|QL translation (exercises the translator).")
     p.add_argument("--es-url", default="", help="Elasticsearch endpoint for the oracle (enables compare).")
     p.add_argument("--api-key", default="", help="Elasticsearch API key for the oracle.")
     p.add_argument("--seed", action="store_true", help="Seed synthetic data before compare (recommended).")
@@ -286,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.fetch:
         run_fetch(corpus_dir, args.slice, args.manifest or None)
 
-    packets = run_migrate(corpus_dir, out_dir, args.native_promql)
+    packets = run_migrate(corpus_dir, out_dir)
     card: dict[str, Any] = {
         "label": args.label,
         "generated": datetime.now(UTC).isoformat(),
