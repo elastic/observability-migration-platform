@@ -32,6 +32,7 @@ from .preflight import (
     _metric_candidates,
 )
 from .promql import (
+    _COUNTER_UNSAFE_OUTER_AGGS,
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
     PromQLFragment,
@@ -44,6 +45,7 @@ from .promql import (
     _build_where_lines,
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
+    _counter_type_uncertainty_warning,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -1881,8 +1883,34 @@ def simple_agg_family_rule(context):
     )
 
     if pre_agg_filter:
+        # Issue #148: a pre-aggregation comparison filter combined with a
+        # counter aggregation referenced without rate() has no counter-safe
+        # ES|QL form — the comparison must run on the raw value while the outer
+        # SUM/MAX/MIN cannot be applied to a counter type. When the counter is
+        # proven (live caps or a rule-pack pin), mark not_feasible instead of
+        # emitting a query that errors with verification_exception. COUNT is
+        # exempt (it counts documents, legal on counters).
+        if is_counter and frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS:
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            _append_unique(
+                context.warnings,
+                f"{frag.outer_agg}() over a comparison filter on counter metric "
+                f"'{frag.metric}' has no counter-safe ES|QL translation "
+                f"(ES|QL forbids SUM/MAX/MIN/AVG on counter fields and the "
+                f"comparison must run on the raw value); marked not_feasible",
+            )
+            frag.extra.pop("post_filter", None)
+            return "counter pre-aggregation comparison not feasible"
         alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
         metric_like = _summary_mode_from_metadata(context.metadata) or context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
+        # The field is not a proven counter here; if caps were unavailable it may
+        # still be counter_long in ES, so flag the same risk as the bare-agg path.
+        if frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS:
+            counter_warning = _counter_type_uncertainty_warning(frag.metric, resolver)
+            if counter_warning:
+                _append_unique(context.warnings, counter_warning)
         filter_value = _format_scalar_value(pre_agg_filter["value"])
         # Issue #8: when the filtered metric is a TSDS gauge, the pre-agg filter must
         # run under TS so that the outer SUM/AVG/MAX aggregates one value per (series,
@@ -1983,6 +2011,13 @@ def simple_agg_family_rule(context):
         _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
     else:
         inner_expr = physical_metric
+        # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
+        # counter_long in ES fails with verification_exception. When the target
+        # cannot prove the field is a gauge, keep the query but warn.
+        if frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS:
+            counter_warning = _counter_type_uncertainty_warning(frag.metric, resolver)
+            if counter_warning:
+                _append_unique(context.warnings, counter_warning)
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = _agg_stats_expr(outer, inner_expr, frag)

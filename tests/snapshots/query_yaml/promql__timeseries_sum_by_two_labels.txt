@@ -4,4 +4,5 @@ chart_type: line
 dimension: time_bucket
 breakdown: k8s.namespace.name
 metrics: ['kube_pod_info']
+warning: Target field capabilities were unavailable, so the metric type of 'kube_pod_info' could not be verified. If it is stored as counter_long/counter_double in Elasticsearch, this panel may fail with a verification_exception (ES|QL forbids standard aggregations such as SUM/MAX/MIN/AVG on counter fields); most gauge fields are unaffected. Pin 'metric_kinds: kube_pod_info: counter' (or gauge) in the rule pack, or re-run with target field capabilities reachable, to resolve this.
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['k8s.pod.name'] are in the query but not on the chart, so series differing only by those are visually merged

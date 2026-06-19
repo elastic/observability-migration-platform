@@ -194,6 +194,15 @@ class SchemaResolver:
         self._discover_fields()
         return self._current_schema_profile()
 
+    def has_field_capabilities(self):
+        """True when live target field capabilities were successfully fetched
+        (non-empty). False when offline, on a discovery error, or when the
+        target returned no fields. Callers use this to distinguish "the field
+        is genuinely absent from a known target" from "we know nothing about
+        the target" — the latter cannot single out any one field."""
+        self._discover_fields()
+        return bool(self._field_cache)
+
     def discovery_status(self):
         """Return field-capability discovery status for reporting."""
         self._discover_fields()

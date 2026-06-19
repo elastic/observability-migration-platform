@@ -1104,6 +1104,199 @@ class TestRuleEngine(unittest.TestCase):
         self.assertTrue(any("LAST_OVER_TIME" in warning for warning in ctx.warnings))
 
 
+class TestCounterLongAggregationWarning(unittest.TestCase):
+    """Issue #148: SUM/MAX/MIN on counter_long fields error with
+    verification_exception in ES|QL.
+
+    The failure only arises when live target field capabilities were NOT
+    available: counter detection falls back to the ``_total`` naming heuristic
+    (which OTel counter names do not match) and a bare aggregation is emitted as
+    feasible against a field that is actually counter-typed in ES. When caps ARE
+    available the field is either correctly typed (counter-safe form) or absent
+    (marked not_feasible upstream), so there is no broken query to warn about.
+
+    The fix keeps the generated ES|QL and surfaces a warning whenever caps were
+    unavailable and the field is not refuted as a gauge.
+    """
+
+    @staticmethod
+    def _offline_resolver(rule_pack=None):
+        # Live field capabilities could not be fetched (no target reachable):
+        # the real conditions under which issue #148 produces a broken panel.
+        resolver = schema.SchemaResolver(rule_pack or rules.RulePackConfig())
+        resolver._discovery_attempted = True
+        resolver._field_cache = {}
+        resolver._discovery_status = "offline"
+        return resolver
+
+    @staticmethod
+    def _live_resolver(field_cache):
+        # Caps were fetched successfully ("ok" requires a non-empty cache).
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = dict(field_cache)
+        resolver._discovery_status = "ok"
+        return resolver
+
+    def test_offline_bare_sum_warns_and_stays_feasible(self):
+        # Mode 1: bare sum() emits SUM(field) and stays feasible; flag the risk.
+        resolver = self._offline_resolver()
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertIn("SUM(trace_http_request_hits)", ctx.esql_query)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_offline_bare_max_warns(self):
+        resolver = self._offline_resolver()
+        ctx = _translate("max(system_net_bytes_sent)", resolver=resolver)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_offline_increase_degrade_warns_about_counter(self):
+        # Mode 2: increase() degrades to a gauge analogue; the degraded form also
+        # fails on a counter, so flag the counter_long risk instead of claiming
+        # the field "is typed as gauge in the target index".
+        resolver = self._offline_resolver()
+        ctx = _translate("increase(system_net_bytes_sent[5m])", resolver=resolver)
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_offline_binary_expr_operand_aggregation_warns(self):
+        # Bare aggregations fused inside a binary expression go through the
+        # measure-spec path; each operand must warn when caps are unavailable.
+        resolver = self._offline_resolver()
+        ctx = _translate("max(trace_http_request_errors) + max(trace_http_request_hits)", resolver=resolver)
+        warns = [w for w in ctx.warnings if "field capabilities" in w]
+        self.assertTrue(
+            any("trace_http_request_errors" in w for w in warns)
+            and any("trace_http_request_hits" in w for w in warns),
+            f"expected a counter warning for each operand, got {ctx.warnings}",
+        )
+
+    def test_offline_count_does_not_warn(self):
+        # COUNT is legal on counter fields, so it must not trigger the warning.
+        resolver = self._offline_resolver()
+        ctx = _translate("count(trace_http_request_hits)", resolver=resolver)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for COUNT: {ctx.warnings}",
+        )
+
+    def test_offline_metric_kind_counter_pin_suppresses_warning(self):
+        # Pinning metric_kinds: <field>: counter proves the type, so the engine
+        # emits the counter-safe form and does not warn — even offline.
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["trace_http_request_hits"] = "counter"
+        resolver = self._offline_resolver(rp)
+        ctx = _translate("sum(trace_http_request_hits)", rule_pack=rp, resolver=resolver)
+        self.assertIn("LAST_OVER_TIME(trace_http_request_hits", ctx.esql_query)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for pinned counter: {ctx.warnings}",
+        )
+
+    def test_offline_metric_kind_gauge_pin_suppresses_warning(self):
+        # A gauge pin refutes counter typing, so no warning even offline.
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["system_net_bytes_sent"] = "gauge"
+        resolver = self._offline_resolver(rp)
+        ctx = _translate("max(system_net_bytes_sent)", rule_pack=rp, resolver=resolver)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for pinned gauge: {ctx.warnings}",
+        )
+
+    def test_live_proven_gauge_does_not_warn(self):
+        # Caps available and the field is a gauge: no warning, query is feasible.
+        resolver = self._live_resolver(
+            {"node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("max(node_load1)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for proven gauge: {ctx.warnings}",
+        )
+
+    def test_live_proven_counter_long_is_counter_safe(self):
+        # "Both paths" online guard: live caps surface counter_long, so
+        # is_counter() routes to the counter-safe form and does not warn.
+        resolver = self._live_resolver(
+            {"trace_http_request_hits": {"counter_long": {"type": "counter_long"}}}
+        )
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertIn("SUM(LAST_OVER_TIME(trace_http_request_hits))", ctx.esql_query)
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected uncertainty warning for proven counter: {ctx.warnings}",
+        )
+
+    def test_live_counter_pre_agg_comparison_is_not_feasible(self):
+        # sum(counter > N): a pre-aggregation comparison filter combined with a
+        # counter aggregation referenced without rate() has no counter-safe
+        # ES|QL form, so it must be marked not_feasible rather than emitting a
+        # SUM that errors with verification_exception.
+        resolver = self._live_resolver(
+            {"trace_http_request_hits": {"counter_long": {"type": "counter_long"}}}
+        )
+        ctx = _translate("sum(trace_http_request_hits > 0)", resolver=resolver)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertNotIn("SUM(trace_http_request_hits)", ctx.esql_query or "")
+
+    def test_offline_pre_agg_comparison_warns(self):
+        # Offline, the counter cannot be proven, so keep the query and warn.
+        resolver = self._offline_resolver()
+        ctx = _translate("sum(system_net_bytes_sent > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertTrue(
+            any("counter_long" in w for w in ctx.warnings),
+            f"expected counter_long uncertainty warning, got {ctx.warnings}",
+        )
+
+    def test_live_gauge_pre_agg_comparison_no_warning(self):
+        # A proven gauge with a comparison filter is fine: feasible, no warning.
+        resolver = self._live_resolver(
+            {"node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("sum(node_load1 > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"unexpected counter warning for proven gauge: {ctx.warnings}",
+        )
+
+    def test_live_counter_pre_agg_count_stays_feasible(self):
+        # COUNT over a comparison is legal on counters (counts documents), so it
+        # must stay feasible even for a proven counter.
+        resolver = self._live_resolver(
+            {"trace_http_request_hits": {"counter_long": {"type": "counter_long"}}}
+        )
+        ctx = _translate("count(trace_http_request_hits > 0)", resolver=resolver)
+        self.assertNotEqual(ctx.feasibility, "not_feasible")
+
+    def test_live_absent_field_is_not_feasible_without_counter_warning(self):
+        # Caps available but the field is absent: the existing live-schema rule
+        # marks the panel not_feasible; we defer to it and do not add the
+        # (now moot) counter uncertainty warning.
+        resolver = self._live_resolver(
+            {"some_other_field": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertFalse(
+            any("counter_long" in w for w in ctx.warnings),
+            f"did not expect the counter uncertainty warning when not_feasible: {ctx.warnings}",
+        )
+
+
 # =========================================================================
 # Happy Path PromQL Bucket
 # =========================================================================

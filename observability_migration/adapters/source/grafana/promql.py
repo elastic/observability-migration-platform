@@ -193,6 +193,49 @@ def _gauge_fallback_for_counter_range_func(range_func):
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
 
 
+# Outer aggregations ES|QL rejects directly on counter_long/counter_double
+# fields (verification_exception). ``count`` is intentionally absent — it counts
+# documents, not values, so it is legal on counter types.
+_COUNTER_UNSAFE_OUTER_AGGS = frozenset({"sum", "avg", "max", "min", "stddev", "quantile"})
+
+
+def _counter_type_uncertainty_warning(metric, resolver):
+    """Warning for emitting a counter-unsafe aggregation when the field's
+    metric type could not be verified against live target capabilities (#148).
+
+    The ``verification_exception`` this guards against only arises when live
+    field capabilities were NOT available: counter detection then falls back to
+    the ``_total`` naming heuristic, which OTel counter names
+    (``trace_http_request_hits``, ``system_net_bytes_sent``, ...) do not match,
+    so a bare ``SUM``/``MAX``/``MIN``/``AVG`` is emitted as feasible even though
+    the field is stored as ``counter_long``/``counter_double`` in Elasticsearch.
+    We keep the generated query (degrade gracefully) and surface the risk so the
+    user can pin the metric kind.
+
+    Returns ``None`` when: there is no resolver; live caps WERE fetched (the
+    field is then either correctly typed — handled by ``is_counter`` — or absent
+    and marked ``not_feasible`` upstream, so a warning would be dead or
+    contradictory); or the target positively refutes counter typing (an explicit
+    rule-pack ``gauge`` pin)."""
+    if resolver is None:
+        return None
+    has_caps = getattr(resolver, "has_field_capabilities", None)
+    if callable(has_caps) and has_caps():
+        return None
+    if resolver.refutes_counter(metric):
+        return None
+    return (
+        f"Target field capabilities were unavailable, so the metric type of "
+        f"'{metric}' could not be verified. If it is stored as "
+        f"counter_long/counter_double in Elasticsearch, this panel may fail "
+        f"with a verification_exception (ES|QL forbids standard aggregations "
+        f"such as SUM/MAX/MIN/AVG on counter fields); most gauge fields are "
+        f"unaffected. Pin 'metric_kinds: {metric}: counter' (or gauge) in the "
+        f"rule pack, or re-run with target field capabilities reachable, to "
+        f"resolve this."
+    )
+
+
 def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver):
     """Whether a counter-style range function must degrade to a gauge analogue.
 
@@ -243,7 +286,12 @@ def resolve_counter_range_translation(range_func, metric, is_counter, resolver, 
     a counter-only source function overrides the gauge heuristic)."""
     if _should_degrade_counter_range_func(range_func, metric, is_counter, resolver):
         fallback_func, template = _gauge_fallback_for_counter_range_func(range_func)
-        return fallback_func, template.format(metric=metric), is_counter
+        # The degraded form is also counter-unsafe, so when the target cannot
+        # prove the field is a gauge (offline / field absent from caps) flag the
+        # counter_long risk instead of asserting it "is typed as gauge".
+        uncertainty = _counter_type_uncertainty_warning(metric, resolver)
+        warning = uncertainty if uncertainty else template.format(metric=metric)
+        return fallback_func, warning, is_counter
     warning = None
     if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
         # Source rate()/irate() is counter-only; trust it over the gauge
@@ -2654,6 +2702,13 @@ def _build_measure_spec(
         else:
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             inner_expr = metric_field
+            # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
+            # counter_long in ES fails with verification_exception. When the
+            # target cannot prove the field is a gauge, keep the query but warn.
+            if frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS:
+                counter_warning = _counter_type_uncertainty_warning(frag.metric, resolver)
+                if counter_warning:
+                    warnings.append(counter_warning)
         outer = OUTER_AGG_MAP.get(frag.outer_agg, rule_pack.default_gauge_agg.upper())
         stats_expr = f"{outer}({inner_expr})"
     elif frag.family == "range_agg":
