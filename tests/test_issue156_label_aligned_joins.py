@@ -1,0 +1,142 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+"""Tests for issue #156 — label-aligned vector-matching joins.
+
+A PromQL panel that joins two metrics on a shared key with explicit vector
+matching (``on``/``group_left``/``group_right``) and aggregates per key can be
+translated to a per-key ES|QL aggregation that is numerically identical to the
+source. Two requirements follow:
+
+1. **Clean status.** A faithfully-translated, label-aligned per-key join is
+   bit-for-bit identical to the source PromQL, so it must be reported as
+   *migrated (clean)* — never "migrated with warnings". The "same-bucket
+   approximation" caveat is wrong for this subset and erodes trust.
+
+2. **Enrichment carried, not dropped.** ``A * on(k) group_left(l) B`` is a
+   label-enrichment join: ``l`` lives on the same data stream as ``A`` (the
+   metrics are co-scraped), so it belongs in the ``STATS ... BY`` clause rather
+   than being dropped.
+
+Genuinely lossy shapes (per-element ``avg(A/B)``) stay ``not_feasible`` and
+plain non-join arithmetic keeps its same-bucket caveat — those are unchanged.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from observability_migration.adapters.source.grafana.rules import RulePackConfig
+from observability_migration.adapters.source.grafana.schema import SchemaResolver
+from observability_migration.adapters.source.grafana.translate import translate_promql_to_esql
+
+INDEX = "metrics-*"
+
+_APPROX_ARITH = "Approximated PromQL arithmetic using same-bucket ES|QL math"
+_APPROX_RATIO = "Approximated PromQL join ratio as same-bucket ES|QL ratio"
+_DROPPED_ENRICH = "Dropped group_left label enrichment"
+
+
+class TestLabelAlignedJoinsCleanStatus(unittest.TestCase):
+    def setUp(self):
+        self.rule_pack = RulePackConfig()
+        self.resolver = SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr, panel_type="timeseries"):
+        return translate_promql_to_esql(
+            expr,
+            datasource_index=INDEX,
+            panel_type=panel_type,
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+    def _resolved(self, label):
+        return self.resolver.resolve_labels([label])[0]
+
+    def test_ratio_on_key_is_clean(self):
+        """sum(a) by(k) / on(k) sum(b) by(k): exact per-key ratio, no caveat."""
+        result = self._translate("sum(a) by (instance) / on(instance) sum(b) by (instance)")
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn(_APPROX_ARITH, result.warnings)
+        # The matching key must survive into the grouping for the parity to hold.
+        self.assertIn(self._resolved("instance"), result.esql_query)
+
+    def test_ratio_mirrors_source_aggregator(self):
+        """sum→SUM, not a forced AVG (the per-key parity depends on it)."""
+        result = self._translate(
+            "sum(ceph_pool_stored) by (pool_id) / on(pool_id) sum(ceph_pool_max_avail) by (pool_id)"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("SUM(ceph_pool_stored)", result.esql_query)
+        self.assertIn("SUM(ceph_pool_max_avail)", result.esql_query)
+        self.assertNotIn(_APPROX_ARITH, result.warnings)
+
+    def test_rate_ratio_group_left_denominator_is_clean(self):
+        """rate(A)/on(k) group_left rate(B): exact per-key ratio of aggregates."""
+        result = self._translate(
+            'sum by(instance) (irate(node_cpu_guest_seconds_total{mode="user"}[1m]))'
+            " / on(instance) group_left sum by(instance)(irate(node_cpu_seconds_total[1m]))"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn(_APPROX_RATIO, result.warnings)
+        self.assertIn(self._resolved("instance"), result.esql_query)
+
+    def test_plain_non_join_arithmetic_keeps_caveat(self):
+        """No vector matcher → still a same-bucket approximation; unchanged."""
+        result = self._translate("1 - sum(a)/sum(b)")
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(_APPROX_ARITH, result.warnings)
+
+    def test_ignoring_matcher_keeps_caveat(self):
+        """`ignoring(k)` is not the proven on()-aligned subset; stay cautious."""
+        result = self._translate(
+            "sum(a) by (instance) / ignoring(instance) sum(b) by (instance)"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(_APPROX_ARITH, result.warnings)
+
+    def test_per_element_ratio_still_not_feasible(self):
+        """avg(A/B) ≠ ratio-of-aggregates: must not be silently substituted."""
+        result = self._translate(
+            "avg(node_filesystem_avail_bytes / node_filesystem_size_bytes)"
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+
+
+class TestGroupLeftEnrichmentCarried(unittest.TestCase):
+    def setUp(self):
+        self.rule_pack = RulePackConfig()
+        self.resolver = SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr, panel_type="timeseries"):
+        return translate_promql_to_esql(
+            expr,
+            datasource_index=INDEX,
+            panel_type=panel_type,
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+    def _resolved(self, label):
+        return self.resolver.resolve_labels([label])[0]
+
+    def test_group_left_enrichment_label_in_by(self):
+        """A * on(chip) group_left(chip_name) info → BY carries chip + chip_name."""
+        result = self._translate(
+            "node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(self._resolved("chip"), result.esql_query)
+        self.assertIn(self._resolved("chip_name"), result.esql_query)
+        # Enrichment is carried, not dropped, so the degrade warning is gone.
+        self.assertFalse(
+            any(_DROPPED_ENRICH in w for w in result.warnings),
+            result.warnings,
+        )
+        # The enrichment metric itself contributes no value (info metric == 1).
+        self.assertNotIn("node_hwmon_chip_names", result.esql_query)
+
+
+if __name__ == "__main__":
+    unittest.main()

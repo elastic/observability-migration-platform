@@ -140,6 +140,34 @@ def _format_vector_matching_clause(matching: dict) -> str:
     return clause
 
 
+def _faithful_join_match_labels(matching, resolver, output_group_fields):
+    """Return the resolved ``on(...)`` keys when a join is faithfully per-key.
+
+    A label-aligned join (``A op on(k) B``, the two sides aggregated per ``k``)
+    is bit-for-bit identical to its ES|QL per-key aggregation **iff** every
+    matching key survives into the output grouping — otherwise the ES|QL would
+    silently collapse series that the source kept apart. We only certify the
+    ``on(...)`` form (matcher ``type == "Include"``); ``ignoring(...)`` selects
+    the complementary label set, which is not the proven, parity-checked subset,
+    so it keeps its same-bucket caveat. Returns ``[]`` when the join is not
+    faithfully label-aligned.
+    """
+    if not matching:
+        return []
+    if matching.get("type") == "Exclude":
+        return []
+    raw_labels = matching.get("labels") or []
+    if not raw_labels:
+        return []
+    resolved = resolver.resolve_labels(raw_labels) if resolver else list(raw_labels)
+    if not resolved:
+        return []
+    group_fields = set(output_group_fields or [])
+    if all(label in group_fields for label in resolved):
+        return resolved
+    return []
+
+
 _GRAFANA_TEMPLATE_VAR_RE = re.compile(
     r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
@@ -870,7 +898,17 @@ def join_family_rule(context):
                 ]
             )
             context.translation_complete = True
-            _append_unique(context.warnings, "Approximated PromQL join ratio as same-bucket ES|QL ratio")
+            # A label-aligned per-key ratio of aggregates (``sum(rate(A)) /
+            # on(k) group_left sum(rate(B))``) is exact when the matching key is
+            # retained in the grouping, so report it clean (issue #156). Without
+            # an ``on(...)`` key it collapses to bucket level and stays caveated.
+            if not _faithful_join_match_labels(
+                frag.extra.get("vector_matching"), resolver, output_group
+            ):
+                _append_unique(
+                    context.warnings,
+                    "Approximated PromQL join ratio as same-bucket ES|QL ratio",
+                )
             return "translated join ratio expression"
 
     if frag.binary_op == "*":
@@ -921,6 +959,23 @@ def join_family_rule(context):
             else list(context.metadata.get("preferred_group_labels", []))
         )
         group_fields = list(preferred_group_labels or join_labels)
+        # ``A * on(k) group_left(l) B`` enriches A with label ``l`` from the
+        # co-scraped info metric B (value 1). The label lands as a field on the
+        # same data stream, so carry it into the grouping rather than dropping
+        # it — no join needed (issue #156). Scoped to group_left (ManyToOne):
+        # group_right flips the primary side and is left on the legacy path.
+        matching = frag.extra.get("vector_matching") or {}
+        enrichment_raw = (
+            frag.extra.get("enrichment_labels", [])
+            if matching.get("cardinality") == "ManyToOne"
+            else []
+        )
+        enrichment_labels = (
+            resolver.resolve_labels(enrichment_raw) if resolver else list(enrichment_raw)
+        )
+        for label in enrichment_labels:
+            if label and label not in group_fields:
+                group_fields.append(label)
         output_group = ["time_bucket"] + group_fields if group_fields else ["time_bucket"]
         default_agg = rp.default_gauge_agg.upper()
         is_counter = resolver.is_counter(metric_name) if resolver else _is_counter_fallback(metric_name, rp)
@@ -948,7 +1003,13 @@ def join_family_rule(context):
             ]
         )
         context.translation_complete = True
-        _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
+        if not enrichment_labels:
+            # Nothing to carry (bare ``group_left`` or ``group_right``): the
+            # join RHS is still dropped, so keep the honest degrade warning.
+            _append_unique(
+                context.warnings,
+                "Dropped group_left label enrichment; kept primary metric series only",
+            )
         return "translated label enrichment join"
 
     matching = frag.extra.get("vector_matching") or {}
@@ -1115,7 +1176,20 @@ def binary_expr_family_rule(context):
             else:
                 output_group_fields = collapsed
         context.output_group_fields = output_group_fields
-        _append_unique(context.warnings, "Approximated PromQL arithmetic using same-bucket ES|QL math")
+        # A label-aligned ``A op on(k) B`` whose matching keys survive into the
+        # grouping is numerically identical to the source PromQL (the per-key
+        # ratio-of-aggregates is exact), so it must migrate clean — flagging it
+        # as an approximation would wrongly signal degradation (issue #156).
+        # Plain arithmetic (no vector matcher) and ``ignoring(...)`` joins keep
+        # the same-bucket caveat.
+        faithful = _faithful_join_match_labels(
+            frag.extra.get("vector_matching"), resolver, output_group_fields
+        )
+        if not faithful:
+            _append_unique(
+                context.warnings,
+                "Approximated PromQL arithmetic using same-bucket ES|QL math",
+            )
     else:
         result_alias = "computed_value"
         parts = [f"ROW {result_alias} = {plan.expr}"]
