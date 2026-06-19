@@ -5367,6 +5367,74 @@ class TranslatorRegressionTests(unittest.TestCase):
         ):
             self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
 
+    def test_detect_promql_support_false_on_parser_rejection(self):
+        """A precise ES|QL parser rejection of the PROMQL command confirms the
+        command is absent (verified False)."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {},
+                text="line 1:1: mismatched input 'PROMQL' expecting {'FROM', 'ROW', 'SHOW'}",
+            )
+            self.assertFalse(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_none_on_unrelated_400(self):
+        """Issue #158 hardening: a 400 that is NOT a PROMQL-command rejection
+        (e.g. an unrelated query error) is inconclusive, not confirmed absent —
+        forcing the ES|QL fallback on it would undercut the optimistic default."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=400,
+                json=lambda: {"error": {"type": "index_not_found_exception"}},
+                text='{"error":{"type":"index_not_found_exception"}}',
+            )
+            self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
+
+    def test_detect_promql_support_none_on_transient_5xx(self):
+        """Issue #158 hardening: a transient server error (503/500) is never
+        proof the PROMQL command is absent."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        for status in (500, 503):
+            with mock.patch(
+                "observability_migration.adapters.source.grafana.cli.requests.post",
+            ) as post:
+                post.return_value = SimpleNamespace(
+                    status_code=status,
+                    json=lambda: {},
+                    text="service unavailable",
+                )
+                self.assertIsNone(
+                    _detect_promql_support("https://es.example", "apikey"),
+                    msg=f"HTTP {status} should be inconclusive",
+                )
+
+    def test_detect_promql_support_none_on_rate_limit(self):
+        """Issue #158 hardening: HTTP 429 (rate limited) is inconclusive."""
+        from observability_migration.adapters.source.grafana.cli import (
+            _detect_promql_support,
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.requests.post",
+        ) as post:
+            post.return_value = SimpleNamespace(
+                status_code=429,
+                json=lambda: {},
+                text="too many requests",
+            )
+            self.assertIsNone(_detect_promql_support("https://es.example", "apikey"))
+
     def test_detect_target_runtime_features_uses_capability_names(self):
         from observability_migration.adapters.source.grafana.cli import (
             _detect_target_runtime_features,

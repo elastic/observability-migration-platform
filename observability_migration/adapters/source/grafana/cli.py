@@ -831,13 +831,22 @@ def _detect_promql_support(
         print("  WARNING: PROMQL command detection skipped (auth error from cluster)")
         return None
 
-    if status == 400:
-        signals = ("no handler", "unknown command", "promql")
-        if any(signal in body_text for signal in signals):
-            return False
+    # Only a precise parser/router rejection of the PROMQL command confirms it
+    # is absent (verified False). Every other non-success response — a 400 that
+    # is unrelated to the command, a transient 429/5xx, an endpoint quirk — is
+    # inconclusive (None), so the optimistic native-PROMQL default is preserved
+    # rather than forcing the lower-fidelity ES|QL fallback on a flaky probe
+    # (issue #158).
+    command_absent_signals = (
+        "no handler",
+        "unknown command",
+        "mismatched input 'promql'",
+    )
+    if status in (400, 404) and any(signal in body_text for signal in command_absent_signals):
         return False
 
-    return False
+    print(f"  WARNING: PROMQL command detection inconclusive (HTTP {status})")
+    return None
 
 
 def _capability_payload_contains(payload: Any, capability: str) -> bool:
