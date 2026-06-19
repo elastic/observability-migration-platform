@@ -88,6 +88,48 @@ class TestMetricAwareLabelResolution(unittest.TestCase):
         )
         self.assertEqual(resolver.resolve_label("instance"), "instance")
 
+    def test_remote_write_profile_prefers_namespaced_label_over_otel(self):
+        # Dual-shipping prometheus_remote_write index: both the source-faithful
+        # `prometheus.labels.instance` and an OTel `service.instance.id` co-occur
+        # with the metric. The profile's namespaced form must win — metric-aware
+        # resolution must not regress source-faithful Prometheus behaviour.
+        resolver = _live_resolver(
+            field_cache={
+                "prometheus.labels.instance": {},
+                "prometheus.redis_up.value": {},
+                "service.instance.id": {},
+            },
+            cooccurrence={
+                ("prometheus.redis_up.value", "prometheus.labels.instance"): True,
+                ("prometheus.redis_up.value", "service.instance.id"): True,
+            },
+        )
+        self.assertEqual(resolver.schema_profile(), "prometheus_remote_write")
+        self.assertEqual(
+            resolver.resolve_label("instance", metric_field="prometheus.redis_up.value"),
+            "prometheus.labels.instance",
+        )
+
+    def test_native_profile_prefers_namespaced_label_over_otel(self):
+        # Same guard for the native `/_prometheus` layout: `labels.instance`
+        # is the source-faithful field and must be preferred over `service.instance.id`.
+        resolver = _live_resolver(
+            field_cache={
+                "labels.instance": {},
+                "metrics.redis_up": {},
+                "service.instance.id": {},
+            },
+            cooccurrence={
+                ("metrics.redis_up", "labels.instance"): True,
+                ("metrics.redis_up", "service.instance.id"): True,
+            },
+        )
+        self.assertEqual(resolver.schema_profile(), "prometheus_native")
+        self.assertEqual(
+            resolver.resolve_label("instance", metric_field="metrics.redis_up"),
+            "labels.instance",
+        )
+
 
 class TestMetricAwareForwarding(unittest.TestCase):
     """resolve_control_field / resolve_labels forward the scoped metric so all
@@ -220,6 +262,49 @@ class TestPanelPathsAreMetricAware(unittest.TestCase):
         ctx = self._translate('redis_up{instance=~"redis.*"}', rp, resolver)
         self.assertIn("service.instance.id", ctx.esql_query)
         self.assertNotIn("WHERE instance ", ctx.esql_query)
+
+    def _resolver_with_numeric_bare_label(self):
+        # Global `instance` is numeric (a string matcher on it would be flagged
+        # incompatible), but the metric-scoped instance lands on the keyword
+        # `service.instance.id` that co-occurs with the metric.
+        rp = RulePackConfig()
+        resolver = SchemaResolver(rp, es_url="https://es", index_pattern="metrics-*")
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "instance": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
+            "service.instance.id": {
+                "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+            },
+            "redis_up": {"double": {"type": "double", "aggregatable": True}},
+        }
+        resolver._cooccurs = lambda metric, candidate: {
+            ("redis_up", "instance"): False,
+            ("redis_up", "service.instance.id"): True,
+        }.get((metric, candidate))
+        return rp, resolver
+
+    def test_no_false_incompatible_filter_warning_when_metric_aware_field_is_compatible(self):
+        # The incompatibility check must resolve with the same scoped metric the
+        # generator uses; otherwise it inspects numeric `instance` and falsely
+        # claims an incompatible-field drop while the query correctly uses the
+        # keyword `service.instance.id` (#163 review).
+        rp, resolver = self._resolver_with_numeric_bare_label()
+        ctx = self._translate('redis_up{instance=~"redis.*"}', rp, resolver)
+        self.assertIn("service.instance.id", ctx.esql_query)
+        self.assertFalse(
+            any("incompatible target field" in w for w in ctx.warnings),
+            f"unexpected incompatible-field drop warning: {ctx.warnings}",
+        )
+
+    def test_no_false_incompatible_group_warning_when_metric_aware_field_is_compatible(self):
+        rp, resolver = self._resolver_with_numeric_bare_label()
+        ctx = self._translate("sum(redis_up) by (instance)", rp, resolver)
+        self.assertIn("service.instance.id", ctx.esql_query)
+        self.assertFalse(
+            any("incompatible target field" in w for w in ctx.warnings),
+            f"unexpected incompatible-field drop warning: {ctx.warnings}",
+        )
 
 
 class TestCooccurrenceProbe(unittest.TestCase):

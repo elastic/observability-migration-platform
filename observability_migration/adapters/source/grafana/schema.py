@@ -316,7 +316,18 @@ class SchemaResolver:
         """
         if not metric_field or not self.has_field_capabilities():
             return None
+        # Candidate priority mirrors the index-global ``resolve_label`` order so
+        # metric-aware resolution stays source-faithful: bare label first, then
+        # the active profile's namespaced label form (so a dual-shipping
+        # Prometheus index keeps `prometheus.labels.<x>` / `labels.<x>` over an
+        # OTel alias), then the OTel/Prometheus normalization candidates, then
+        # the remaining namespaced forms.
         candidates = [label]
+        profile = self._current_schema_profile()
+        if profile == "prometheus_remote_write":
+            candidates.append(f"prometheus.labels.{label}")
+        elif profile == "prometheus_native":
+            candidates.append(f"labels.{label}")
         candidates.extend(self._candidate_fields(label))
         candidates.append(f"labels.{label}")
         candidates.append(f"prometheus.labels.{label}")
