@@ -3893,6 +3893,51 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("NOW() - 1 hour", result["analysis"]["materialized_query"])
         self.assertEqual(result["analysis"]["sample_window"]["time_from"], esql_validate.DEFAULT_TSTART_EXPR)
 
+    def test_fail_after_fix_ships_original_query_and_self_heals_on_missing_field(self):
+        # Regression guard (PR #161 review): when the first error is a missing
+        # field, a fix is applied, and the fixed query then fails with a syntax
+        # error, validate_query_with_fixes must ship the ORIGINAL (well-formed)
+        # query with the ORIGINAL missing-field analysis — not the discarded
+        # fixed query's syntax error. The disposition is evaluated against the
+        # query actually shipped, so this correctly self-heals.
+        original = "TS metrics-*\n| STATS x = RATE(foo_total, 5m)"
+        calls = []
+
+        def fake_run(candidate_query, _es_url, **kwargs):
+            calls.append(candidate_query)
+            if len(calls) == 1:
+                return {
+                    "ok": False,
+                    "error": "line 2:20: Unknown column [foo_total], did you mean any of [bar_total]?",
+                    "rows": 0,
+                    "columns": [],
+                }
+            return {"ok": False, "error": "line 2:5: mismatched input 'STATZ'", "rows": 0, "columns": []}
+
+        def fake_fix(candidate_query, _err, _resolver):
+            return candidate_query.replace("foo_total", "bar_total") if "foo_total" in candidate_query else None
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return []
+
+            def _candidate_fields(self, _col):
+                return ["bar_total"]
+
+            def field_exists(self, _field):
+                return True
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run), \
+             mock.patch.object(esql_validate, "_try_fix_esql_field_error", side_effect=fake_fix):
+            result = migrate.validate_query_with_fixes(original, "http://localhost:9200", StubResolver())
+
+        self.assertEqual(result["status"], "fail")
+        # Ships the original well-formed query, not the fixed query that 500'd.
+        self.assertEqual(result["query"], original)
+        self.assertTrue(disposition.validation_failure_self_heals(result))
+
     def test_validate_query_with_fixes_marks_empty_narrowed_query(self):
         class StubResolver:
             _index_pattern = "metrics-*"
