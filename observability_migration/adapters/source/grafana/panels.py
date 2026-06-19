@@ -3804,8 +3804,13 @@ def query_variable_rule(context):
     source_field = _extract_variable_source_field(query_text) or name
     context.source_field = source_field
 
+    # Resolve the control's scoping metric up front so the label field is picked
+    # by co-occurrence with that metric, not by index-global existence (#163).
+    source_metric = _extract_variable_source_metric(query_text)
+    metric_field = _resolve_control_scope_metric(source_metric, resolver, context.rule_pack)
+
     if resolver:
-        field_name = resolver.resolve_control_field(source_field)
+        field_name = resolver.resolve_control_field(source_field, metric_field=metric_field or None)
     else:
         rule_pack = context.rule_pack or RulePackConfig()
         field_name = rule_pack.control_field_overrides.get(source_field, source_field)
@@ -3826,8 +3831,6 @@ def query_variable_rule(context):
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
         # ``--no-native-promql`` run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
-        source_metric = _extract_variable_source_metric(query_text)
-        metric_field = _resolve_control_scope_metric(source_metric, resolver, context.rule_pack)
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
@@ -3996,12 +3999,12 @@ def _ensure_param_controls(
         query_text = _variable_query_text(variable)
         source_field = _extract_variable_source_field(query_text) or name
         field_name = source_field
-        if resolver:
-            resolved = resolver.resolve_control_field(source_field)
-            if resolved:
-                field_name = resolved
         source_metric = _extract_variable_source_metric(query_text)
         metric_field = _resolve_control_scope_metric(source_metric, resolver, rule_pack)
+        if resolver:
+            resolved = resolver.resolve_control_field(source_field, metric_field=metric_field or None)
+            if resolved:
+                field_name = resolved
         controls.append(
             _build_esql_param_control(
                 variable_name=name,

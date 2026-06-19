@@ -109,6 +109,27 @@ def _resolve_metric_field(resolver, metric_name, *, prefer=None):
         return _esql_field(metric_name)
     return _esql_field(resolve(metric_name, prefer=prefer))
 
+
+def _frag_metric_field_raw(frag, resolver):
+    """Unescaped physical field for the fragment's metric, for metric-aware
+    label resolution (issue #163).
+
+    Unlike ``_resolve_metric_field`` this returns the field *without* ES|QL
+    backticks, because the co-occurrence probe in ``resolve_label`` adds its
+    own. Returns ``None`` when there is no metric or the resolver cannot resolve
+    one, so the label paths fall back to index-global resolution.
+    """
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name or resolver is None:
+        return None
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if resolve is None:
+        return metric_name
+    try:
+        return resolve(metric_name) or metric_name
+    except Exception:
+        return metric_name
+
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -1032,8 +1053,13 @@ def _param_binds_regex_default(resolver, param_name):
     return bool(names) and param_name in names
 
 
-def _matcher_to_esql(matcher, resolver):
-    label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
+def _matcher_to_esql(matcher, resolver, metric_field=None):
+    if not resolver:
+        label = matcher["label"]
+    elif metric_field:
+        label = resolver.resolve_label(matcher["label"], metric_field=metric_field)
+    else:
+        label = resolver.resolve_label(matcher["label"])
     op = matcher["op"]
     value = matcher["value"]
     if not label:
@@ -2211,10 +2237,11 @@ def _frag_filters(frag, resolver):
     emitted when a matcher produced no WHERE clause. When the target binds
     ``?var`` parameters the filter is preserved (issue #64) and not counted.
     """
+    metric_field = _frag_metric_field_raw(frag, resolver)
     filters = []
     had_vars = False
     for matcher in frag.matchers:
-        filter_expr = _matcher_to_esql(matcher, resolver)
+        filter_expr = _matcher_to_esql(matcher, resolver, metric_field=metric_field)
         if filter_expr:
             filters.append(filter_expr)
         elif _matcher_has_dropped_variable(matcher):
@@ -2304,9 +2331,14 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     variables (``$Var`` → ``label_Var``) and are silently dropped; keeping
     them would emit non-existent field names in the BY clause.
     """
+    metric_field = _frag_metric_field_raw(frag, resolver)
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
-    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
-    preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    explicit = resolver.resolve_labels(raw, metric_field=metric_field) if resolver else list(raw)
+    preferred = (
+        resolver.resolve_labels(preferred_labels or [], metric_field=metric_field)
+        if resolver
+        else list(preferred_labels or [])
+    )
     explicit = _filter_usable_group_fields(explicit, resolver)
     preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
