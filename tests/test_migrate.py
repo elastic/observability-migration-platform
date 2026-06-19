@@ -25,6 +25,7 @@ from observability_migration.adapters.source.grafana import (
     verification,
 )
 from observability_migration.core.reporting import report as report
+from observability_migration.core.verification import disposition as disposition
 from observability_migration.targets.kibana import compile as compile_module
 
 migrate = SimpleNamespace(
@@ -43,6 +44,8 @@ migrate = SimpleNamespace(
     sync_result_queries_to_yaml=compile_module.sync_result_queries_to_yaml,
     mark_panel_requires_manual_after_validation=report.mark_panel_requires_manual_after_validation,
     mark_panel_requires_manual_after_failed_validation=report.mark_panel_requires_manual_after_failed_validation,
+    mark_panel_migrated_with_missing_target_fields=report.mark_panel_migrated_with_missing_target_fields,
+    validation_failure_self_heals=disposition.validation_failure_self_heals,
     translate_variables=panels.translate_variables,
     _infer_controls_data_view=panels._infer_controls_data_view,
     _infer_dashboard_filters=panels._infer_dashboard_filters,
@@ -3741,6 +3744,79 @@ class TranslatorRegressionTests(unittest.TestCase):
         suggestions = {entry["name"]: entry["suggested_fields"] for entry in analysis["unknown_columns"]}
         self.assertEqual(suggestions["status"], ["state", "tags"])
 
+    def test_validation_failure_self_heals_for_missing_field(self):
+        # An Unknown column failure means the target field has not been ingested
+        # yet; the ES|QL is structurally valid and will render once data arrives.
+        self.assertTrue(
+            disposition.validation_failure_self_heals(
+                {
+                    "status": "fail",
+                    "analysis": {"unknown_columns": [{"name": "foo_total", "role": "metric"}]},
+                }
+            )
+        )
+
+    def test_validation_failure_self_heals_for_missing_index(self):
+        # A missing target index is also a timing issue: telemetry has not been
+        # ingested into that data stream yet.
+        self.assertTrue(
+            disposition.validation_failure_self_heals(
+                {
+                    "status": "fail",
+                    "analysis": {"unknown_indexes": ["metrics-prometheus.foo-default"]},
+                }
+            )
+        )
+
+    def test_validation_failure_does_not_self_heal_for_syntax_error(self):
+        # A malformed query has no unknown columns/indexes; it is broken
+        # regardless of whether data exists, so it keeps the placeholder.
+        self.assertFalse(
+            disposition.validation_failure_self_heals(
+                {
+                    "status": "fail",
+                    "analysis": {
+                        "unknown_columns": [],
+                        "unknown_indexes": [],
+                        "raw_error": "line 1:5: mismatched input '|' expecting {'from', 'ts'}",
+                    },
+                }
+            )
+        )
+
+    def test_validation_failure_does_not_self_heal_for_counter_mismatch(self):
+        # A counter type mismatch means the field exists but is the wrong type;
+        # data is present, so waiting will not fix it.
+        self.assertFalse(
+            disposition.validation_failure_self_heals(
+                {
+                    "status": "fail",
+                    "analysis": {
+                        "unknown_columns": [{"name": "foo", "role": "metric"}],
+                        "counter_mismatch_metrics": ["foo"],
+                    },
+                }
+            )
+        )
+
+    def test_missing_target_field_warning_names_fields_and_indexes(self):
+        message = disposition.missing_target_field_warning(
+            {
+                "analysis": {
+                    "unknown_columns": [{"name": "foo_total", "role": "metric"}],
+                    "unknown_indexes": ["metrics-prometheus.bar-default"],
+                }
+            }
+        )
+        self.assertIn("foo_total", message)
+        self.assertIn("metrics-prometheus.bar-default", message)
+        self.assertIn("ingested", message)
+
+    def test_missing_target_field_warning_without_names_is_generic(self):
+        message = disposition.missing_target_field_warning({"analysis": {}})
+        self.assertIn("ingested", message)
+        self.assertNotIn("``", message)
+
     def test_generated_rule_pack_filters_empty_candidates(self):
         generated = migrate.build_suggested_rule_pack({
             "suggested_label_candidates": {
@@ -3816,6 +3892,51 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("metrics-prometheus-synthetic", result["query"])
         self.assertIn("NOW() - 1 hour", result["analysis"]["materialized_query"])
         self.assertEqual(result["analysis"]["sample_window"]["time_from"], esql_validate.DEFAULT_TSTART_EXPR)
+
+    def test_fail_after_fix_ships_original_query_and_self_heals_on_missing_field(self):
+        # Regression guard (PR #161 review): when the first error is a missing
+        # field, a fix is applied, and the fixed query then fails with a syntax
+        # error, validate_query_with_fixes must ship the ORIGINAL (well-formed)
+        # query with the ORIGINAL missing-field analysis — not the discarded
+        # fixed query's syntax error. The disposition is evaluated against the
+        # query actually shipped, so this correctly self-heals.
+        original = "TS metrics-*\n| STATS x = RATE(foo_total, 5m)"
+        calls = []
+
+        def fake_run(candidate_query, _es_url, **kwargs):
+            calls.append(candidate_query)
+            if len(calls) == 1:
+                return {
+                    "ok": False,
+                    "error": "line 2:20: Unknown column [foo_total], did you mean any of [bar_total]?",
+                    "rows": 0,
+                    "columns": [],
+                }
+            return {"ok": False, "error": "line 2:5: mismatched input 'STATZ'", "rows": 0, "columns": []}
+
+        def fake_fix(candidate_query, _err, _resolver):
+            return candidate_query.replace("foo_total", "bar_total") if "foo_total" in candidate_query else None
+
+        class StubResolver:
+            _index_pattern = "metrics-*"
+
+            def concrete_index_candidates(self):
+                return []
+
+            def _candidate_fields(self, _col):
+                return ["bar_total"]
+
+            def field_exists(self, _field):
+                return True
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run), \
+             mock.patch.object(esql_validate, "_try_fix_esql_field_error", side_effect=fake_fix):
+            result = migrate.validate_query_with_fixes(original, "http://localhost:9200", StubResolver())
+
+        self.assertEqual(result["status"], "fail")
+        # Ships the original well-formed query, not the fixed query that 500'd.
+        self.assertEqual(result["query"], original)
+        self.assertTrue(disposition.validation_failure_self_heals(result))
 
     def test_validate_query_with_fixes_marks_empty_narrowed_query(self):
         class StubResolver:
@@ -4412,6 +4533,131 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("Manual review required", panel_payload["markdown"]["content"])
         self.assertEqual(panel.visual_ir.presentation.kind, "markdown")
         self.assertIn("Manual review required", panel.visual_ir.presentation.config["content"])
+
+    def test_mark_panel_migrated_with_missing_target_fields_keeps_visualization(self):
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.promql_expr = "irate(foo_total[5m])"
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        report.mark_panel_migrated_with_missing_target_fields(
+            panel,
+            {
+                "error": "line 2:20: Unknown column [foo_total]",
+                "analysis": {"unknown_columns": [{"name": "foo_total", "role": "metric"}]},
+            },
+        )
+        # The real visualization is preserved, not swapped for a placeholder.
+        self.assertEqual(panel.kibana_type, "line")
+        self.assertTrue(panel.esql_query)
+        self.assertEqual(panel.status, "migrated_with_warnings")
+        self.assertFalse(panel.post_validation_action.startswith("placeholder_"))
+        # A self-healing warning names the missing field and says it recovers.
+        joined = " ".join(panel.reasons + panel.notes)
+        self.assertIn("foo_total", joined)
+        self.assertIn("ingested", joined)
+
+    def test_apply_failed_validation_outcome_self_heals_missing_field(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_failed_validation_outcome,
+        )
+
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        outcome = _apply_failed_validation_outcome(
+            panel,
+            {
+                "error": "line 2:20: Unknown column [foo_total]",
+                "analysis": {"unknown_columns": [{"name": "foo_total", "role": "metric"}]},
+            },
+        )
+        self.assertEqual(outcome, "self_heal")
+        self.assertEqual(panel.status, "migrated_with_warnings")
+        self.assertEqual(panel.kibana_type, "line")
+        self.assertFalse(panel.post_validation_action.startswith("placeholder_"))
+
+    def test_apply_failed_validation_outcome_placeholders_malformed_query(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_failed_validation_outcome,
+        )
+
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.esql_query = "TS metrics-*\n| STATZ foo"
+        outcome = _apply_failed_validation_outcome(
+            panel,
+            {
+                "error": "line 2:3: mismatched input 'STATZ'",
+                "analysis": {
+                    "unknown_columns": [],
+                    "unknown_indexes": [],
+                    "raw_error": "line 2:3: mismatched input 'STATZ'",
+                },
+            },
+        )
+        self.assertEqual(outcome, "placeholder")
+        self.assertEqual(panel.status, "requires_manual")
+        self.assertEqual(panel.kibana_type, "markdown")
+        self.assertTrue(panel.post_validation_action.startswith("placeholder_"))
+
+    def test_mark_panel_migrated_with_missing_target_fields_records_semantic_loss(self):
+        # Parity with the placeholder path: the self-heal disposition is recorded
+        # as a structured semantic loss so coverage reports surface it (#154).
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.esql_query = "TS metrics-*\n| STATS v = AVG(foo)"
+        report.mark_panel_migrated_with_missing_target_fields(
+            panel,
+            {"analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]}},
+        )
+        losses = panel.query_ir.get("semantic_losses", [])
+        self.assertTrue(
+            any("telemetry" in str(x).lower() or "ingest" in str(x).lower() for x in losses),
+            f"expected a self-heal semantic-loss marker, got {losses}",
+        )
+
+    def test_sync_result_queries_to_yaml_keeps_missing_field_panel_as_visualization(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
+            "| STATS foo = IRATE(foo_total, 5m)"
+        )
+        report.mark_panel_migrated_with_missing_target_fields(
+            panel,
+            {
+                "error": "line 3:20: Unknown column [foo_total]",
+                "analysis": {"unknown_columns": [{"name": "foo_total", "role": "metric"}]},
+            },
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "line",
+                            "query": (
+                                "TS metrics-*\n"
+                                "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
+                                "| STATS foo = IRATE(foo_total, 5m)"
+                            ),
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        panel_payload = rewritten["dashboards"][0]["panels"][0]
+        self.assertIn("esql", panel_payload)
+        self.assertNotIn("markdown", panel_payload)
 
     def test_sync_result_queries_to_yaml_rewrites_failed_validation_to_markdown(self):
         result = migrate.MigrationResult("Dashboard", "uid")
@@ -7028,6 +7274,71 @@ class TranslatorRegressionTests(unittest.TestCase):
         packet = result.panel_results[0].verification_packet
         self.assertEqual(packet["semantic_gate"], "Yellow")
         self.assertTrue(any(candidate["target"] == "manual_redesign" for candidate in packet["candidate_targets"]))
+
+    def test_self_healed_missing_field_panel_gates_yellow_not_red(self):
+        # A panel dispositioned as self-healing (missing target field) keeps its
+        # real visualization and must NOT be red-flagged by the verification
+        # gate, even though the raw validation record is a "fail" (issue #154).
+        result = migrate.MigrationResult("Awaiting Data", "await-1")
+        panel = migrate.PanelResult("Errors", "graph", "line", "migrated", 0.9)
+        panel.source_panel_id = "1"
+        panel.query_language = "promql"
+        panel.promql_expr = "sum(rate(foo_total[5m]))"
+        panel.esql_query = "TS metrics-*\n| STATS v = RATE(foo_total, 5m)"
+        panel.query_ir = {"output_shape": "time_series"}
+        validation_result = {
+            "error": "Unknown column [foo_total]",
+            "analysis": {"unknown_columns": [{"name": "foo_total", "role": "metric", "suggested_fields": []}]},
+        }
+        report.mark_panel_migrated_with_missing_target_fields(panel, validation_result)
+        result.panel_results = [panel]
+
+        validation_records = [
+            {
+                "dashboard": "Awaiting Data",
+                "dashboard_uid": "await-1",
+                "panel": "Errors",
+                "source_panel_id": "1",
+                "status": "fail",
+                "query": panel.esql_query,
+                "error": "Unknown column [foo_total]",
+                "analysis": validation_result["analysis"],
+                "fix_attempts": [],
+            }
+        ]
+        migrate.annotate_results_with_verification([result], validation_records)
+        packet = panel.verification_packet
+        self.assertEqual(packet["status"], "migrated_with_warnings")
+        self.assertEqual(packet["semantic_gate"], "Yellow")
+        self.assertEqual(panel.operational_ir.review.semantic_gate, "Yellow")
+
+    def test_warning_panel_with_syntax_failure_gates_red_not_yellow(self):
+        # A panel carrying translation warnings (migrated_with_warnings) whose
+        # validation failed with a genuine syntax error — NOT a missing-field
+        # self-heal — must stay Red. Only the explicit self-heal disposition
+        # (SELF_HEAL_SEMANTIC_LOSS) downgrades a failed validation to Yellow.
+        result = migrate.MigrationResult("Broken", "broken-1")
+        panel = migrate.PanelResult("Broken", "graph", "line", "migrated_with_warnings", 0.6)
+        panel.source_panel_id = "1"
+        panel.query_language = "promql"
+        panel.esql_query = "TS metrics-*\n| STATZ x = RATE(foo)"
+        panel.query_ir = {"output_shape": "time_series"}
+        result.panel_results = [panel]
+        validation_records = [
+            {
+                "dashboard": "Broken",
+                "dashboard_uid": "broken-1",
+                "panel": "Broken",
+                "source_panel_id": "1",
+                "status": "fail",
+                "query": panel.esql_query,
+                "error": "line 2:5: mismatched input 'STATZ'",
+                "analysis": {"unknown_columns": [], "unknown_indexes": [], "raw_error": "line 2:5: mismatched input 'STATZ'"},
+                "fix_attempts": [],
+            }
+        ]
+        migrate.annotate_results_with_verification([result], validation_records)
+        self.assertEqual(panel.verification_packet["semantic_gate"], "Red")
 
     def test_verification_packet_marks_red_on_validation_failure(self):
         dashboard = {

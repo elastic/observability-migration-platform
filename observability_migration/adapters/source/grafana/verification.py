@@ -13,6 +13,7 @@ from observability_migration.core.verification.comparators import (
     build_sample_window,
     comparison_gate_override,
 )
+from observability_migration.core.verification.disposition import SELF_HEAL_SEMANTIC_LOSS
 
 from .execution.source import build_source_execution_summary
 from .execution.target import build_target_execution_summary
@@ -194,12 +195,20 @@ def _semantic_gate(
     status = str(getattr(panel_result, "status", "") or "").lower()
     if status in {"not_feasible", "requires_manual"}:
         return "Red"
+    # A panel dispositioned as self-healing kept its real visualization because
+    # its only validation failure was missing target data; it is empty-but-
+    # correct and recovers once telemetry arrives. The failed target validation
+    # must not red the gate (issue #154) — but genuine compile/upload/runtime
+    # errors below still do. Key off the explicit disposition marker so a
+    # genuinely broken query (e.g. a syntax error) is never downgraded just
+    # because the panel happens to carry other warnings.
+    self_healed = SELF_HEAL_SEMANTIC_LOSS in semantic_losses
     comparison_override = comparison_gate_override(comparison)
-    if comparison_override == "Red":
+    if comparison_override == "Red" and not self_healed:
         return "Red"
     if any(item in RUNTIME_ERROR_ROLLUPS for item in runtime_rollups):
         return "Red"
-    if validation_record and validation_record.get("status") in {"fail", "fixed_empty"}:
+    if not self_healed and validation_record and validation_record.get("status") in {"fail", "fixed_empty"}:
         return "Red"
     if validation_record and validation_record.get("status") == "fixed":
         return "Yellow"

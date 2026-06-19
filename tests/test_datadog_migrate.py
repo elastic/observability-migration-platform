@@ -2688,6 +2688,129 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         # Hint about the Elastic Synthetics equivalent.
         self.assertIn("Synthetics", content)
 
+    def test_mark_widget_migrated_with_missing_target_fields_keeps_visualization(self):
+        panel = TranslationResult(
+            widget_id="w1",
+            title="CPU",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS value = AVG(foo) BY @timestamp",
+        )
+        datadog_cli._mark_widget_migrated_with_missing_target_fields(
+            panel,
+            {
+                "error": "Unknown column [foo]",
+                "analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]},
+            },
+        )
+        # The real visualization is preserved, not swapped for a placeholder.
+        self.assertEqual(panel.status, "warning")
+        self.assertEqual(panel.backend, "esql")
+        self.assertFalse(panel.post_validation_action.startswith("placeholder_"))
+        self.assertTrue(
+            any("foo" in (w or "") for w in panel.warnings),
+            f"expected a warning naming the missing field, got {panel.warnings}",
+        )
+
+    def test_mark_widget_migrated_with_missing_target_fields_records_semantic_loss(self):
+        panel = TranslationResult(
+            widget_id="w1", title="CPU", status="ok", backend="esql",
+            esql_query="FROM metrics-* | STATS v = AVG(foo)",
+        )
+        datadog_cli._mark_widget_migrated_with_missing_target_fields(
+            panel, {"analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]}}
+        )
+        self.assertTrue(
+            any(
+                "telemetry" in str(x).lower() or "ingest" in str(x).lower()
+                for x in panel.semantic_losses
+            ),
+            f"expected a self-heal semantic-loss marker, got {panel.semantic_losses}",
+        )
+
+    def test_mark_widget_migrated_with_missing_target_fields_caps_confidence(self):
+        # Parity with the Grafana marker, which caps confidence on self-heal.
+        panel = TranslationResult(
+            widget_id="w1", title="CPU", status="ok", backend="esql", confidence=1.0,
+            esql_query="FROM metrics-* | STATS v = AVG(foo)",
+        )
+        datadog_cli._mark_widget_migrated_with_missing_target_fields(
+            panel, {"analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]}}
+        )
+        self.assertLessEqual(panel.confidence, 0.7)
+
+    def test_apply_failed_validation_outcome_self_heals_missing_field_datadog(self):
+        panel = TranslationResult(
+            widget_id="w1", title="CPU", status="ok", backend="esql",
+            esql_query="FROM metrics-* | STATS value = AVG(foo) BY @timestamp",
+        )
+        outcome = datadog_cli._apply_failed_validation_outcome(
+            panel,
+            {
+                "error": "Unknown column [foo]",
+                "analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]},
+            },
+        )
+        self.assertEqual(outcome, "self_heal")
+        self.assertEqual(panel.status, "warning")
+
+    def test_apply_failed_validation_outcome_placeholders_malformed_datadog(self):
+        panel = TranslationResult(
+            widget_id="w1", title="CPU", status="ok", backend="esql",
+            esql_query="FROM metrics-* | STATZ value",
+        )
+        outcome = datadog_cli._apply_failed_validation_outcome(
+            panel,
+            {
+                "error": "line 1:14: mismatched input 'STATZ'",
+                "analysis": {
+                    "unknown_columns": [],
+                    "unknown_indexes": [],
+                    "raw_error": "line 1:14: mismatched input 'STATZ'",
+                },
+            },
+        )
+        self.assertEqual(outcome, "placeholder")
+        self.assertEqual(panel.status, "requires_manual")
+        self.assertTrue(panel.post_validation_action.startswith("placeholder_"))
+
+    def test_missing_field_widget_renders_as_esql_panel_not_markdown(self):
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="timeseries",
+            title="CPU",
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        result = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query=(
+                "FROM metrics-* | STATS value = AVG(foo) "
+                "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+        )
+        datadog_cli._mark_widget_migrated_with_missing_target_fields(
+            result,
+            {
+                "error": "Unknown column [foo]",
+                "analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]},
+            },
+        )
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(
+                NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result]
+            )
+        )
+        panel = payload["dashboards"][0]["panels"][0]
+        self.assertIn("esql", panel)
+        self.assertNotIn("markdown", panel)
+
     def test_partition_widget_without_groupby_is_requires_manual(self):
         # Sunburst (partition) widgets need at least one group-by; when
         # the source has none, the translator surfaces requires_manual
@@ -3862,6 +3985,97 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(broken.verification_packet["semantic_gate"], "Red")
         self.assertTrue(clean.recommended_target)
         self.assertEqual(clean.operational_ir.review.semantic_gate, "Green")
+
+    def test_self_healed_missing_field_widget_gates_yellow_not_red(self):
+        # A widget dispositioned as self-healing (missing target field) keeps its
+        # real visualization and must NOT be red-flagged by the verification
+        # gate, even though the raw validation record is a "fail" (issue #154).
+        widget = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="Errors",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS value = AVG(foo) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            query_language="datadog_metric",
+            source_queries=["avg:foo{*}"],
+        )
+        validation_result = {
+            "error": "Unknown column [foo]",
+            "analysis": {"unknown_columns": [{"name": "foo", "role": "metric"}]},
+        }
+        datadog_cli._mark_widget_migrated_with_missing_target_fields(widget, validation_result)
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            compiled=True,
+            uploaded=True,
+            panel_results=[widget],
+        )
+        annotate_results_with_verification(
+            [dr],
+            validation_records=[
+                {
+                    "dashboard": "Dash",
+                    "dashboard_id": "d1",
+                    "widget": "Errors",
+                    "widget_id": "w1",
+                    "status": "fail",
+                    "query": widget.esql_query,
+                    "error": "Unknown column [foo]",
+                    "fix_attempts": [],
+                    "analysis": validation_result["analysis"],
+                }
+            ],
+        )
+        self.assertEqual(widget.status, "warning")
+        self.assertEqual(widget.verification_packet["semantic_gate"], "Yellow")
+
+    def test_warning_widget_with_syntax_failure_gates_red_not_yellow(self):
+        # A widget carrying warnings whose validation failed with a genuine
+        # syntax error — NOT a missing-field self-heal — must stay Red. Only the
+        # explicit self-heal disposition downgrades a failed validation.
+        widget = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="Broken",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="warning",
+            backend="esql",
+            esql_query="FROM metrics-* | STATZ value = AVG(foo)",
+            query_language="datadog_metric",
+            source_queries=["avg:foo{*}"],
+            warnings=["approximation used during translation"],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            compiled=True,
+            uploaded=True,
+            panel_results=[widget],
+        )
+        annotate_results_with_verification(
+            [dr],
+            validation_records=[
+                {
+                    "dashboard": "Dash",
+                    "dashboard_id": "d1",
+                    "widget": "Broken",
+                    "widget_id": "w1",
+                    "status": "fail",
+                    "query": widget.esql_query,
+                    "error": "line 1:14: mismatched input 'STATZ'",
+                    "fix_attempts": [],
+                    "analysis": {"unknown_columns": [], "unknown_indexes": [], "raw_error": "line 1:14: mismatched input 'STATZ'"},
+                }
+            ],
+        )
+        self.assertEqual(widget.verification_packet["semantic_gate"], "Red")
 
     @patch("observability_migration.adapters.source.datadog.execution.requests.get")
     def test_datadog_metric_source_execution_normalizes_scalar_widget(self, mock_get):
