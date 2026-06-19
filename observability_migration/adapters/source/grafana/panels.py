@@ -477,9 +477,24 @@ def _coalesce_panel_title(panel, panel_analysis=None):
 
 
 def _promql_top_level_group_cols(cleaned):
-    """Return top-level ``by (...)`` labels for a PromQL expression, if any."""
+    """Return top-level ``by (...)`` labels for a PromQL expression, if any.
+
+    Collects *all* ``by``/``without`` clauses at bracket depth 0 and returns
+    the label list only when every clause agrees.  A binary expression like
+    ``sum by (a)(...) + sum by (b)(...)`` has two conflicting depth-0 clauses
+    and therefore returns ``None``, letting the caller fall through to
+    ``_promql_repeated_inner_group_cols`` (which also returns ``None`` for
+    differing groups) and ultimately the ``_timeseries`` fallback.
+
+    Outer wrapping parens — ``(sum by (namespace)(...))`` — push the ``by``
+    clause to depth ≥ 1, hiding it from the scan, so we peel them first
+    (issue #162). ``_trim_wrapping_parens`` only strips parens enclosing the
+    whole expression, leaving ``(A) / (B)`` ratios untouched.
+    """
+    cleaned = _trim_wrapping_parens(cleaned)
     depth = 0
     i = 0
+    found = []
     while i < len(cleaned):
         ch = cleaned[i]
         if ch in "([{":
@@ -496,9 +511,15 @@ def _promql_top_level_group_cols(cleaned):
                         end = cleaned.find(")", j + 1)
                         if end != -1:
                             if keyword == "without":
-                                return ["_timeseries"]
-                            return [part.strip() for part in cleaned[j + 1:end].split(",") if part.strip()]
+                                found.append(["_timeseries"])
+                            else:
+                                found.append([part.strip() for part in cleaned[j + 1:end].split(",") if part.strip()])
         i += 1
+    if not found:
+        return None
+    first = found[0]
+    if all(group == first for group in found[1:]):
+        return first
     return None
 
 

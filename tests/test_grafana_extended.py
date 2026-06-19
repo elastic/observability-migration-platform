@@ -1420,6 +1420,68 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("_timeseries", query)
         self.assertEqual(panels._native_promql_result_shape(expr), ("value", ["service.name"]))
 
+    def test_native_promql_outer_parens_wrapped_aggregation_keeps_group_col(self):
+        """Issue #162: a single ``by (...)`` aggregation wrapped in outer
+        parentheses — ``(sum by (namespace)(...))`` — must still be recognised
+        as grouped by ``namespace``. The leading ``(`` pushes the ``by`` clause
+        to paren-depth ≥ 1, so the top-level scan missed it and fell through to
+        the default ``["_timeseries"]`` shape, wrongly appending a
+        ``GROK _timeseries`` stage that 400s at runtime (``Unknown column
+        [_timeseries]``) because the aggregation projects ``namespace`` as its
+        own column and no ``_timeseries`` column exists.
+        """
+        expr = '(sum by (namespace)(container_memory_usage_bytes{pod!="POD",namespace!=""}))'
+        self.assertEqual(
+            panels._native_promql_result_shape(expr), ("value", ["namespace"])
+        )
+        # Recognised as grouped → the bare PROMQL command (the aggregation
+        # projects ``namespace`` itself); no ``GROK _timeseries`` stage.
+        query = panels.build_native_promql_query(expr, index="metrics-*", kibana_type="line")
+        self.assertNotIn("_timeseries", query)
+        self.assertNotIn("GROK", query)
+        self.assertEqual(
+            query,
+            'PROMQL index=metrics-* step=1m '
+            'value=((sum by (namespace)(container_memory_usage_bytes{pod!="POD",namespace!=""})))',
+        )
+
+    def test_native_promql_wrapped_binary_op_different_groups_uses_timeseries(self):
+        """Regression: a binary op wrapped in outer parens with *different* ``by``
+        groups on each operand must return the ``_timeseries`` shape, not the
+        first operand's labels.
+
+        ``(sum by (a)(m1) + sum by (b)(m2))`` → after ``_trim_wrapping_parens``
+        yields ``sum by (a)(m1) + sum by (b)(m2)``; the old depth-0 scanner
+        returned ``["a"]`` immediately (first ``by`` found), bypassing the
+        repeated-inner check that would have detected the differing groups.
+        """
+        expr = "(sum by (a)(metric_a) + sum by (b)(metric_b))"
+        self.assertEqual(
+            panels._native_promql_result_shape(expr), ("value", ["_timeseries"])
+        )
+
+    def test_native_promql_double_wrapped_aggregation_keeps_group_col(self):
+        """Issue #162: nested wrapping parens — ``((sum by (namespace)(...)))`` —
+        must still be recognised as grouped by ``namespace``. ``_trim_wrapping_parens``
+        loops to peel every enclosing pair, so both layers are stripped before the
+        depth-0 scan.
+        """
+        expr = "((sum by (namespace)(container_memory_usage_bytes{namespace!=\"\"})))"
+        self.assertEqual(
+            panels._native_promql_result_shape(expr), ("value", ["namespace"])
+        )
+
+    def test_native_promql_wrapped_without_aggregation_uses_timeseries(self):
+        """Issue #162: a ``without (...)`` aggregation wrapped in outer parens —
+        ``(sum without (namespace)(...))`` — preserves every non-excluded label,
+        which ES|QL columns cannot represent, so it must return the
+        ``["_timeseries"]`` shape rather than a named group column.
+        """
+        expr = "(sum without (namespace)(container_memory_usage_bytes{namespace!=\"\"}))"
+        self.assertEqual(
+            panels._native_promql_result_shape(expr), ("value", ["_timeseries"])
+        )
+
     def test_native_promql_empty_legend_format_adds_no_label_pipe(self):
         """Issue #101: an empty ``legendFormat`` (``""``) must NOT cause any
         synthetic label/``_timeseries`` extraction to be appended. Grafana shows
