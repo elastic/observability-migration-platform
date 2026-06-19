@@ -4034,6 +4034,49 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(widget.status, "warning")
         self.assertEqual(widget.verification_packet["semantic_gate"], "Yellow")
 
+    def test_warning_widget_with_syntax_failure_gates_red_not_yellow(self):
+        # A widget carrying warnings whose validation failed with a genuine
+        # syntax error — NOT a missing-field self-heal — must stay Red. Only the
+        # explicit self-heal disposition downgrades a failed validation.
+        widget = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="Broken",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="warning",
+            backend="esql",
+            esql_query="FROM metrics-* | STATZ value = AVG(foo)",
+            query_language="datadog_metric",
+            source_queries=["avg:foo{*}"],
+            warnings=["approximation used during translation"],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            compiled=True,
+            uploaded=True,
+            panel_results=[widget],
+        )
+        annotate_results_with_verification(
+            [dr],
+            validation_records=[
+                {
+                    "dashboard": "Dash",
+                    "dashboard_id": "d1",
+                    "widget": "Broken",
+                    "widget_id": "w1",
+                    "status": "fail",
+                    "query": widget.esql_query,
+                    "error": "line 1:14: mismatched input 'STATZ'",
+                    "fix_attempts": [],
+                    "analysis": {"unknown_columns": [], "unknown_indexes": [], "raw_error": "line 1:14: mismatched input 'STATZ'"},
+                }
+            ],
+        )
+        self.assertEqual(widget.verification_packet["semantic_gate"], "Red")
+
     @patch("observability_migration.adapters.source.datadog.execution.requests.get")
     def test_datadog_metric_source_execution_normalizes_scalar_widget(self, mock_get):
         mock_get.return_value.status_code = 200

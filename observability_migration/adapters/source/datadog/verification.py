@@ -23,6 +23,7 @@ from observability_migration.core.verification.comparators import (
     build_sample_window,
     comparison_gate_override,
 )
+from observability_migration.core.verification.disposition import SELF_HEAL_SEMANTIC_LOSS
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 
 RUNTIME_ERROR_ROLLUPS = {
@@ -216,12 +217,10 @@ def _semantic_gate(
     # its only validation failure was missing target data; it is empty-but-
     # correct and recovers once telemetry arrives. The failed target validation
     # must not red the gate (issue #154) — but genuine compile/upload/runtime
-    # errors below still do.
-    self_healed = (
-        status == "warning"
-        and bool(validation_record)
-        and validation_record.get("status") == "fail"
-    )
+    # errors below still do. Key off the explicit disposition marker so a
+    # genuinely broken query (e.g. a syntax error) is never downgraded just
+    # because the widget happens to carry other warnings.
+    self_healed = SELF_HEAL_SEMANTIC_LOSS in semantic_losses
     comparison_override = comparison_gate_override(comparison)
     if comparison_override == "Red" and not self_healed:
         return "Red"

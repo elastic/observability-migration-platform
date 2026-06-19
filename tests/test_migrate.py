@@ -7312,6 +7312,34 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(packet["semantic_gate"], "Yellow")
         self.assertEqual(panel.operational_ir.review.semantic_gate, "Yellow")
 
+    def test_warning_panel_with_syntax_failure_gates_red_not_yellow(self):
+        # A panel carrying translation warnings (migrated_with_warnings) whose
+        # validation failed with a genuine syntax error — NOT a missing-field
+        # self-heal — must stay Red. Only the explicit self-heal disposition
+        # (SELF_HEAL_SEMANTIC_LOSS) downgrades a failed validation to Yellow.
+        result = migrate.MigrationResult("Broken", "broken-1")
+        panel = migrate.PanelResult("Broken", "graph", "line", "migrated_with_warnings", 0.6)
+        panel.source_panel_id = "1"
+        panel.query_language = "promql"
+        panel.esql_query = "TS metrics-*\n| STATZ x = RATE(foo)"
+        panel.query_ir = {"output_shape": "time_series"}
+        result.panel_results = [panel]
+        validation_records = [
+            {
+                "dashboard": "Broken",
+                "dashboard_uid": "broken-1",
+                "panel": "Broken",
+                "source_panel_id": "1",
+                "status": "fail",
+                "query": panel.esql_query,
+                "error": "line 2:5: mismatched input 'STATZ'",
+                "analysis": {"unknown_columns": [], "unknown_indexes": [], "raw_error": "line 2:5: mismatched input 'STATZ'"},
+                "fix_attempts": [],
+            }
+        ]
+        migrate.annotate_results_with_verification([result], validation_records)
+        self.assertEqual(panel.verification_packet["semantic_gate"], "Red")
+
     def test_verification_packet_marks_red_on_validation_failure(self):
         dashboard = {
             "title": "Failure",
