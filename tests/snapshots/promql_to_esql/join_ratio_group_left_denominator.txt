@@ -1,6 +1,5 @@
 source: sum by(instance) (irate(node_cpu_guest_seconds_total{mode="user"}[1m])) / on(instance) group_left sum by(instance)(irate(node_cpu_seconds_total[1m]))
 feasibility: feasible
-warning: Approximated PromQL join ratio as same-bucket ES|QL ratio
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

@@ -1830,6 +1830,42 @@ def _ast_aggregate_fragment(node, expr):
     return frag
 
 
+_GROUP_MODIFIER_LABELS_RE = re.compile(
+    r"\bgroup_(?:left|right)\s*\(\s*([^)]*?)\s*\)", re.IGNORECASE
+)
+_GROUP_MODIFIER_KEYWORD_RE = re.compile(r"\bgroup_(?:left|right)\b", re.IGNORECASE)
+
+
+def _extract_enrichment_labels(expr):
+    """Recover the ``group_left(...)``/``group_right(...)`` enrichment labels.
+
+    The ``promql-parser`` AST exposes the ``on``/``ignoring`` matching labels
+    but drops the include-list carried by ``group_left``/``group_right``. Those
+    labels are exactly what a label-enrichment join copies onto the result, so
+    pull them back out of the raw expression text.
+
+    Only the *current* binary node's modifier may be attributed here, but the
+    raw text spans nested sub-joins too. To avoid borrowing a nested join's
+    include list (e.g. attributing ``group_left(inner)`` to an outer
+    ``group_left(outer)``), bail out when more than one group modifier is
+    present — the caller is reached only for a node that itself carries a group
+    modifier, so a single occurrence is unambiguously this node's. Returns
+    ``[]`` for the ambiguous (nested) case and for a bare ``group_left`` with no
+    parenthesised label list.
+    """
+    if not expr:
+        return []
+    if len(_GROUP_MODIFIER_KEYWORD_RE.findall(expr)) != 1:
+        return []
+    match = _GROUP_MODIFIER_LABELS_RE.search(expr)
+    if not match:
+        return []
+    inner = match.group(1).strip()
+    if not inner:
+        return []
+    return [label.strip() for label in inner.split(",") if label.strip()]
+
+
 def _ast_binary_matching(modifier):
     matching = getattr(modifier, "matching", None)
     labels = list(getattr(matching, "labels", []) or []) if matching else []
@@ -1916,6 +1952,9 @@ def _ast_binary_fragment(node, expr):
             frag.extra["left_frag"] = left
             frag.extra["right_frag"] = right
             frag.extra["vector_matching"] = matching
+            enrichment = _extract_enrichment_labels(expr)
+            if enrichment:
+                frag.extra["enrichment_labels"] = enrichment
             _merge_not_feasible_reasons(frag, left, right)
             return frag
 
@@ -3357,7 +3396,21 @@ def _build_formula_plan(
     ):
         left_frag = frag.extra["left_frag"]
         join_labels = frag.extra.get("join_labels", []) or []
-        effective_preferred = preferred_group_labels or (join_labels if join_labels else None)
+        matching = frag.extra.get("vector_matching") or {}
+        # group_left enrichment label(s) (e.g. chip_name) live on the same data
+        # stream as the primary metric, so fold them into the grouping instead
+        # of dropping them (issue #156). group_right flips the primary side and
+        # keeps the legacy strip-and-warn behavior.
+        enrichment_labels = (
+            list(frag.extra.get("enrichment_labels", []))
+            if matching.get("cardinality") == "ManyToOne"
+            else []
+        )
+        base_preferred = list(preferred_group_labels) if preferred_group_labels else list(join_labels)
+        for label in enrichment_labels:
+            if label and label not in base_preferred:
+                base_preferred.append(label)
+        effective_preferred = base_preferred or None
         plan = _build_formula_plan(
             left_frag,
             resolver,
@@ -3369,7 +3422,11 @@ def _build_formula_plan(
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
         )
-        if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
+        if (
+            plan
+            and not enrichment_labels
+            and "Dropped group_left label enrichment" not in (plan.warnings or [])
+        ):
             plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
         return plan
 

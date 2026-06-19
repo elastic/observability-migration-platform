@@ -3554,7 +3554,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn('COALESCE(TO_STRING(chip_name), "")', query)
         self.assertIn('COALESCE(TO_STRING(sensor), "")', query)
         self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
-        self.assertTrue(any("Dropped group_left label enrichment" in reason for reason in result.reasons))
+        # The group_left enrichment label (chip_name) is carried into the
+        # grouping, so the join is no longer a lossy degrade (issue #156).
+        self.assertFalse(any("Dropped group_left label enrichment" in reason for reason in result.reasons))
 
     def test_supported_range_functions_stay_bare_with_time_bucket_only(self):
         cases = [
@@ -12767,7 +12769,9 @@ class TestBareJoinStrippingEnablesMultiTargetFusion(unittest.TestCase):
         query = yaml_panel.get("esql", {}).get("query", "")
         self.assertIn("node_hwmon_temp_celsius", query)
         self.assertNotIn("node_hwmon_chip_names", query)
-        self.assertIn("Dropped group_left label enrichment", str(result.reasons))
+        # group_left(chip_name) enrichment is carried into BY, not dropped (#156).
+        self.assertIn("chip_name", query)
+        self.assertNotIn("Dropped group_left label enrichment", str(result.reasons))
 
     def test_two_bare_join_targets_fuse_into_single_query(self):
         """Two bare-join targets with the same join structure must fuse."""
@@ -13072,12 +13076,13 @@ class TestBinaryExprJoinLHS(unittest.TestCase):
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
 
     def test_simple_join_lhs_still_works(self):
-        """A * ON(instance) GROUP_LEFT(nodename) B — simple single-metric LHS unchanged."""
+        """A * ON(chip) GROUP_LEFT(chip_name) B — enrichment label carried into BY (#156)."""
         r = self._translate(
             "node_hwmon_temp_celsius * ON(chip) GROUP_LEFT(chip_name) node_hwmon_chip_names"
         )
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
-        self.assertIn("Dropped group_left label enrichment", " ".join(r.warnings))
+        self.assertIn("chip_name", r.esql_query)
+        self.assertNotIn("Dropped group_left label enrichment", " ".join(r.warnings))
 
 
 class TestPhantomGrafanaVarStripping(unittest.TestCase):
