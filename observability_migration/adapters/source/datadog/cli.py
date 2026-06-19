@@ -47,6 +47,11 @@ from observability_migration.core.selection import (
     criteria_from_args,
 )
 from observability_migration.core.telemetry_contract import write_schema_report_artifacts
+from observability_migration.core.verification.disposition import (
+    SELF_HEAL_SEMANTIC_LOSS,
+    missing_target_field_warning,
+    validation_failure_self_heals,
+)
 from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
@@ -780,6 +785,47 @@ def _mark_widget_requires_manual_after_failed_validation(
         result.semantic_losses.append("validation failure placeholder")
 
 
+def _mark_widget_migrated_with_missing_target_fields(
+    result: TranslationResult,
+    validation_result: dict[str, Any],
+) -> None:
+    """Keep the real visualization for a widget whose live validation only failed
+    because a target field or index has not been ingested yet.
+
+    The translated ES|QL is structurally valid; Kibana renders an empty panel
+    today and self-heals once telemetry arrives. Replacing it with a markdown
+    placeholder would force a needless re-migration, so attach a warning and keep
+    the panel instead (issue #154).
+    """
+    result.status = "warning"
+    if result.confidence > 0.7:
+        result.confidence = 0.7
+    warning = missing_target_field_warning(validation_result)
+    _append_unique(result.reasons, warning)
+    _append_unique(result.warnings, warning)
+    if SELF_HEAL_SEMANTIC_LOSS not in result.semantic_losses:
+        result.semantic_losses.append(SELF_HEAL_SEMANTIC_LOSS)
+
+
+def _apply_failed_validation_outcome(
+    result: TranslationResult,
+    validation_result: dict[str, Any],
+) -> str:
+    """Decide what to do with a widget whose live ES|QL validation failed.
+
+    Missing target fields/indexes are a data-timing issue (the panel self-heals
+    once telemetry arrives), so keep the visualization with a warning. A
+    genuinely malformed query stays a markdown placeholder (issue #154).
+
+    Returns ``"self_heal"`` or ``"placeholder"``.
+    """
+    if validation_failure_self_heals(validation_result):
+        _mark_widget_migrated_with_missing_target_fields(result, validation_result)
+        return "self_heal"
+    _mark_widget_requires_manual_after_failed_validation(result, validation_result)
+    return "placeholder"
+
+
 def _rewrite_dashboard_yaml(
     dashboard: Any,
     result: DashboardResult,
@@ -815,6 +861,8 @@ def _validate_all_dashboards(
     fixed_empty = 0
     failed = 0
     skipped = 0
+    self_healing_failed = 0
+    manualized_failed = 0
     resolver_cache: dict[str, _DatadogValidationResolver] = {}
 
     for result, dashboard in dashboard_outputs:
@@ -858,7 +906,10 @@ def _validate_all_dashboards(
                 dashboard_changed = True
             elif status == "fail":
                 failed += 1
-                _mark_widget_requires_manual_after_failed_validation(panel_result, validation_result)
+                if _apply_failed_validation_outcome(panel_result, validation_result) == "self_heal":
+                    self_healing_failed += 1
+                else:
+                    manualized_failed += 1
                 dashboard_changed = True
             elif status == "skip":
                 skipped += 1
@@ -885,7 +936,8 @@ def _validate_all_dashboards(
     print(
         f"  Validated {total_queries} queries: "
         f"{passed} passed, {fixed} auto-fixed, {fixed_empty} manualized after empty fallback, "
-        f"{failed} failed, {skipped} skipped"
+        f"{failed} failed ({self_healing_failed} kept as empty panels awaiting data, "
+        f"{manualized_failed} replaced with upload-safe placeholders), {skipped} skipped"
     )
     if validation_summary.get("missing_labels"):
         top_labels = list(validation_summary["missing_labels"].items())[:5]

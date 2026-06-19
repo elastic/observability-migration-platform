@@ -22,6 +22,10 @@ from observability_migration.core.reporting.summary_md import (
     SummaryTotals,
     SummaryView,
 )
+from observability_migration.core.verification.disposition import (
+    SELF_HEAL_SEMANTIC_LOSS,
+    missing_target_field_warning,
+)
 
 
 def _ir_to_dict(obj: Any) -> dict:
@@ -207,6 +211,26 @@ def mark_panel_requires_manual_after_failed_validation(panel_result, validation_
         panel_result.query_ir.setdefault("semantic_losses", [])
         if "validation failure placeholder" not in panel_result.query_ir["semantic_losses"]:
             panel_result.query_ir["semantic_losses"].append("validation failure placeholder")
+
+
+def mark_panel_migrated_with_missing_target_fields(panel_result, validation_result):
+    """Keep the real visualization for a panel whose live validation only failed
+    because a target field or index has not been ingested yet.
+
+    The translated ES|QL is structurally valid; Kibana renders an empty "no
+    data" panel today and self-heals once telemetry arrives. Replacing it with a
+    markdown placeholder would force a needless re-migration, so we keep the
+    panel and attach a warning instead (issue #154).
+    """
+    panel_result.status = "migrated_with_warnings"
+    if panel_result.confidence > 0.7:
+        panel_result.confidence = 0.7
+    reason = missing_target_field_warning(validation_result)
+    _append_unique(panel_result.reasons, reason)
+    _append_unique(panel_result.notes, reason)
+    if isinstance(panel_result.query_ir, dict):
+        panel_result.query_ir.setdefault("semantic_losses", [])
+        _append_unique(panel_result.query_ir["semantic_losses"], SELF_HEAL_SEMANTIC_LOSS)
 
 
 def recompute_result_counts(result):

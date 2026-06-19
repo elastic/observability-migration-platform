@@ -212,12 +212,22 @@ def _semantic_gate(
     status = str(getattr(panel_result, "status", "") or "").lower()
     if status in {"not_feasible", "requires_manual", "blocked"}:
         return "Red"
+    # A widget dispositioned as self-healing kept its real visualization because
+    # its only validation failure was missing target data; it is empty-but-
+    # correct and recovers once telemetry arrives. The failed target validation
+    # must not red the gate (issue #154) — but genuine compile/upload/runtime
+    # errors below still do.
+    self_healed = (
+        status == "warning"
+        and bool(validation_record)
+        and validation_record.get("status") == "fail"
+    )
     comparison_override = comparison_gate_override(comparison)
-    if comparison_override == "Red":
+    if comparison_override == "Red" and not self_healed:
         return "Red"
     if any(item in RUNTIME_ERROR_ROLLUPS for item in runtime_rollups):
         return "Red"
-    if validation_record and validation_record.get("status") in {"fail", "fixed_empty"}:
+    if not self_healed and validation_record and validation_record.get("status") in {"fail", "fixed_empty"}:
         return "Red"
     if validation_record and validation_record.get("status") in {"fixed", "skip"}:
         return "Yellow"

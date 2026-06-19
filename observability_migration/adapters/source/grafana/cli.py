@@ -27,6 +27,7 @@ from observability_migration.core.http import resolve_tls
 from observability_migration.core.reporting.report import (
     MigrationResult,
     build_summary_view,
+    mark_panel_migrated_with_missing_target_fields,
     mark_panel_requires_manual_after_failed_validation,
     mark_panel_requires_manual_after_validation,
     print_report,
@@ -40,6 +41,7 @@ from observability_migration.core.selection import (
     criteria_from_args,
 )
 from observability_migration.core.telemetry_contract import write_schema_report_artifacts
+from observability_migration.core.verification.disposition import validation_failure_self_heals
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
 from observability_migration.targets.kibana.compile import (
     compile_all,
@@ -1463,6 +1465,23 @@ def _compile_linted_yaml_files(
     return compile_results
 
 
+def _apply_failed_validation_outcome(panel_result, validation_result):
+    """Decide what to do with a panel whose live ES|QL validation failed.
+
+    Missing target fields/indexes are a data-timing issue: the query is valid
+    and the panel self-heals once telemetry arrives, so keep the visualization
+    with a warning. A genuinely malformed query is broken regardless of data, so
+    keep replacing it with a markdown placeholder (issue #154).
+
+    Returns ``"self_heal"`` or ``"placeholder"``.
+    """
+    if validation_failure_self_heals(validation_result):
+        mark_panel_migrated_with_missing_target_fields(panel_result, validation_result)
+        return "self_heal"
+    mark_panel_requires_manual_after_failed_validation(panel_result, validation_result)
+    return "placeholder"
+
+
 def _validate_compiled_layout_after_compile(
     results: list[MigrationResult],
     compile_results: list[tuple[str, bool, str]],
@@ -1913,6 +1932,7 @@ def main(argv: list[str] | None = None):
         fixed_empty = 0
         failed = 0
         manualized_failed = 0
+        self_healing_failed = 0
         validation_jobs = [
             (r, pr)
             for r in results
@@ -1952,8 +1972,10 @@ def main(argv: list[str] | None = None):
                 mark_panel_requires_manual_after_validation(pr, validation_result)
             elif status == "fail":
                 failed += 1
-                manualized_failed += 1
-                mark_panel_requires_manual_after_failed_validation(pr, validation_result)
+                if _apply_failed_validation_outcome(pr, validation_result) == "self_heal":
+                    self_healing_failed += 1
+                else:
+                    manualized_failed += 1
 
             record = {
                 "dashboard": r.dashboard_title,
@@ -1974,7 +1996,8 @@ def main(argv: list[str] | None = None):
         print(
             f"  Validated {total_queries} queries: "
             f"{passed} passed, {fixed} auto-fixed, {fixed_empty} manualized after empty fallback, "
-            f"{failed} failed ({manualized_failed} replaced with upload-safe placeholders)"
+            f"{failed} failed ({self_healing_failed} kept as empty panels awaiting data, "
+            f"{manualized_failed} replaced with upload-safe placeholders)"
         )
         if validation_summary.get("missing_labels"):
             top_labels = list(validation_summary["missing_labels"].items())[:5]
