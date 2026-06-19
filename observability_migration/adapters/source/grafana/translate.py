@@ -140,32 +140,70 @@ def _format_vector_matching_clause(matching: dict) -> str:
     return clause
 
 
-def _faithful_join_match_labels(matching, resolver, output_group_fields):
-    """Return the resolved ``on(...)`` keys when a join is faithfully per-key.
+def _operand_by_labels(frag, resolver):
+    """Resolved ``by(...)`` dimensions the source operands key their series on.
 
-    A label-aligned join (``A op on(k) B``, the two sides aggregated per ``k``)
-    is bit-for-bit identical to its ES|QL per-key aggregation **iff** every
-    matching key survives into the output grouping — otherwise the ES|QL would
-    silently collapse series that the source kept apart. We only certify the
-    ``on(...)`` form (matcher ``type == "Include"``); ``ignoring(...)`` selects
-    the complementary label set, which is not the proven, parity-checked subset,
-    so it keeps its same-bucket caveat. Returns ``[]`` when the join is not
-    faithfully label-aligned.
+    These are the labels whose loss would *collapse* source series and change
+    values (e.g. a per-``cpu`` numerator summed away to per-``instance``). We
+    walk the operand subtree so nested arithmetic is covered too. The join's
+    own ``on(...)`` key and ``group_left(...)`` enrichment labels are handled
+    separately by :func:`_join_is_faithful`.
     """
-    if not matching:
-        return []
-    if matching.get("type") == "Exclude":
-        return []
-    raw_labels = matching.get("labels") or []
-    if not raw_labels:
-        return []
-    resolved = resolver.resolve_labels(raw_labels) if resolver else list(raw_labels)
-    if not resolved:
-        return []
-    group_fields = set(output_group_fields or [])
-    if all(label in group_fields for label in resolved):
-        return resolved
-    return []
+    raw: list[str] = []
+
+    def walk(node, depth):
+        if not isinstance(node, PromQLFragment) or depth > 6:
+            return
+        raw.extend(node.group_labels or [])
+        for key in ("left_frag", "right_frag", "inner_frag"):
+            walk(node.extra.get(key), depth + 1)
+
+    for key in ("left_frag", "right_frag"):
+        walk(frag.extra.get(key), 0)
+    resolved = resolver.resolve_labels(raw) if resolver else list(raw)
+    seen: dict[str, None] = {}
+    for label in resolved:
+        if label:
+            seen[label] = None
+    return list(seen)
+
+
+def _join_is_faithful(frag, resolver, output_group_fields):
+    """Whether a label-aligned join migrates bit-for-bit (so it can be clean).
+
+    A label-aligned ``A op on(k) B`` is numerically identical to its ES|QL
+    per-key aggregation **only when no source dimension is collapsed**:
+
+    1. It must be an ``on(...)`` join (matcher ``type == "Include"``);
+       ``ignoring(...)`` selects the complementary label set and is not the
+       proven, parity-checked subset.
+    2. Every operand ``by(...)`` dimension must survive into the output grouping
+       — otherwise series the source kept apart are summed together (review
+       #164: a left ``by(instance,cpu)`` dropped to ``by(instance)``).
+    3. The join key must be represented in the output, either directly or via
+       the ``group_left`` enrichment label(s) that stand in for it (e.g.
+       grouping by ``chip_name`` instead of its 1:1 ``chip`` key).
+
+    Returns ``False`` (keep the same-bucket caveat / drop warning) otherwise.
+    """
+    matching = frag.extra.get("vector_matching") or {}
+    if not matching or matching.get("type") == "Exclude":
+        return False
+    raw_on = matching.get("labels") or []
+    if not raw_on:
+        return False
+    out = set(output_group_fields or [])
+    for label in _operand_by_labels(frag, resolver):
+        if label not in out:
+            return False
+    resolved_on = resolver.resolve_labels(raw_on) if resolver else list(raw_on)
+    if all(label in out for label in resolved_on):
+        return True
+    raw_enrich = frag.extra.get("enrichment_labels") or []
+    resolved_enrich = (
+        resolver.resolve_labels(raw_enrich) if resolver else list(raw_enrich)
+    )
+    return bool(resolved_enrich) and all(label in out for label in resolved_enrich)
 
 
 _GRAFANA_TEMPLATE_VAR_RE = re.compile(
@@ -899,12 +937,11 @@ def join_family_rule(context):
             )
             context.translation_complete = True
             # A label-aligned per-key ratio of aggregates (``sum(rate(A)) /
-            # on(k) group_left sum(rate(B))``) is exact when the matching key is
-            # retained in the grouping, so report it clean (issue #156). Without
-            # an ``on(...)`` key it collapses to bucket level and stays caveated.
-            if not _faithful_join_match_labels(
-                frag.extra.get("vector_matching"), resolver, output_group
-            ):
+            # on(k) group_left sum(rate(B))``) is exact only when every source
+            # dimension survives the grouping, so report it clean then (issue
+            # #156). If an operand keyed by extra labels that were collapsed
+            # (review #164) — or there is no ``on(...)`` key — keep the caveat.
+            if not _join_is_faithful(frag, resolver, output_group):
                 _append_unique(
                     context.warnings,
                     "Approximated PromQL join ratio as same-bucket ES|QL ratio",
@@ -958,7 +995,7 @@ def join_family_rule(context):
             if resolver
             else list(context.metadata.get("preferred_group_labels", []))
         )
-        group_fields = list(preferred_group_labels or join_labels)
+        base_group_fields = list(preferred_group_labels or join_labels)
         # ``A * on(k) group_left(l) B`` enriches A with label ``l`` from the
         # co-scraped info metric B (value 1). The label lands as a field on the
         # same data stream, so carry it into the grouping rather than dropping
@@ -973,9 +1010,24 @@ def join_family_rule(context):
         enrichment_labels = (
             resolver.resolve_labels(enrichment_raw) if resolver else list(enrichment_raw)
         )
+        candidate_group_fields = list(base_group_fields)
         for label in enrichment_labels:
-            if label and label not in group_fields:
-                group_fields.append(label)
+            if label and label not in candidate_group_fields:
+                candidate_group_fields.append(label)
+        candidate_output = (
+            ["time_bucket"] + candidate_group_fields if candidate_group_fields else ["time_bucket"]
+        )
+        # Carry the enrichment and report clean only when no source dimension is
+        # collapsed (review #164). If the left operand keyed by extra labels that
+        # the grouping can't retain, fall back to the honest degrade: drop the
+        # join RHS and warn, without inventing enrichment-only columns.
+        carry_enrichment = bool(enrichment_labels) and _join_is_faithful(
+            frag, resolver, candidate_output
+        )
+        if carry_enrichment:
+            group_fields = candidate_group_fields
+        else:
+            group_fields = base_group_fields
         output_group = ["time_bucket"] + group_fields if group_fields else ["time_bucket"]
         default_agg = rp.default_gauge_agg.upper()
         is_counter = resolver.is_counter(metric_name) if resolver else _is_counter_fallback(metric_name, rp)
@@ -1003,9 +1055,10 @@ def join_family_rule(context):
             ]
         )
         context.translation_complete = True
-        if not enrichment_labels:
-            # Nothing to carry (bare ``group_left`` or ``group_right``): the
-            # join RHS is still dropped, so keep the honest degrade warning.
+        if not carry_enrichment:
+            # Nothing carried (bare/ambiguous group modifier, group_right, or a
+            # collapsed source dimension): the join RHS is dropped, so keep the
+            # honest degrade warning.
             _append_unique(
                 context.warnings,
                 "Dropped group_left label enrichment; kept primary metric series only",
@@ -1176,16 +1229,13 @@ def binary_expr_family_rule(context):
             else:
                 output_group_fields = collapsed
         context.output_group_fields = output_group_fields
-        # A label-aligned ``A op on(k) B`` whose matching keys survive into the
-        # grouping is numerically identical to the source PromQL (the per-key
-        # ratio-of-aggregates is exact), so it must migrate clean — flagging it
-        # as an approximation would wrongly signal degradation (issue #156).
-        # Plain arithmetic (no vector matcher) and ``ignoring(...)`` joins keep
+        # A label-aligned ``A op on(k) B`` is numerically identical to the
+        # source PromQL only when no source dimension is collapsed — then it
+        # must migrate clean, since flagging it would wrongly signal degradation
+        # (issue #156). Plain arithmetic (no matcher), ``ignoring(...)`` joins,
+        # and joins that dropped an operand ``by(...)`` label (review #164) keep
         # the same-bucket caveat.
-        faithful = _faithful_join_match_labels(
-            frag.extra.get("vector_matching"), resolver, output_group_fields
-        )
-        if not faithful:
+        if not _join_is_faithful(frag, resolver, output_group_fields):
             _append_unique(
                 context.warnings,
                 "Approximated PromQL arithmetic using same-bucket ES|QL math",

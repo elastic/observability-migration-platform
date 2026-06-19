@@ -138,5 +138,56 @@ class TestGroupLeftEnrichmentCarried(unittest.TestCase):
         self.assertNotIn("node_hwmon_chip_names", result.esql_query)
 
 
+class TestCleanStatusRequiresAllSourceLabels(unittest.TestCase):
+    """Review #164 — clean status must require *every* source dimension to
+    survive, not just the on(...) key. group_left preserves the left series'
+    labels; dropping a `by(...)` dimension (cpu, sensor) collapses series and
+    changes values, so it must stay flagged (degrade gracefully)."""
+
+    def setUp(self):
+        self.rule_pack = RulePackConfig()
+        self.resolver = SchemaResolver(self.rule_pack)
+
+    def _translate(self, expr, panel_type="timeseries"):
+        return translate_promql_to_esql(
+            expr,
+            datasource_index=INDEX,
+            panel_type=panel_type,
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+
+    def test_ratio_dropping_extra_by_label_is_not_clean(self):
+        """on(instance) but left also keys by cpu → cpu dropped → keep caveat."""
+        result = self._translate(
+            "sum by(instance,cpu) (irate(a[1m]))"
+            " / on(instance) group_left sum by(instance)(irate(b[1m]))"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn(_APPROX_RATIO, result.warnings)
+
+    def test_star_enrichment_dropping_extra_by_label_is_not_clean(self):
+        """on(chip) group_left(chip_name) but left keys by sensor → keep warning."""
+        result = self._translate(
+            "sum by(chip,sensor)(node_hwmon_temp_celsius)"
+            " * on(chip) group_left(chip_name) node_hwmon_chip_names"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertTrue(
+            any(_DROPPED_ENRICH in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_nested_join_does_not_attach_inner_include_to_outer(self):
+        """Outer join must not borrow a nested group_left(...) include list."""
+        result = self._translate(
+            "(a * on(k) group_left(inner_label) b)"
+            " * on(j) group_left(outer_label) c"
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        # The outer join's BY must not contain the inner join's enrichment label.
+        self.assertNotIn("inner_label", result.esql_query)
+
+
 if __name__ == "__main__":
     unittest.main()

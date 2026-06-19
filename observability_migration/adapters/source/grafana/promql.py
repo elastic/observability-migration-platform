@@ -1833,6 +1833,7 @@ def _ast_aggregate_fragment(node, expr):
 _GROUP_MODIFIER_LABELS_RE = re.compile(
     r"\bgroup_(?:left|right)\s*\(\s*([^)]*?)\s*\)", re.IGNORECASE
 )
+_GROUP_MODIFIER_KEYWORD_RE = re.compile(r"\bgroup_(?:left|right)\b", re.IGNORECASE)
 
 
 def _extract_enrichment_labels(expr):
@@ -1841,10 +1842,20 @@ def _extract_enrichment_labels(expr):
     The ``promql-parser`` AST exposes the ``on``/``ignoring`` matching labels
     but drops the include-list carried by ``group_left``/``group_right``. Those
     labels are exactly what a label-enrichment join copies onto the result, so
-    pull them back out of the raw expression text. Returns ``[]`` when the
-    modifier has no parenthesised label list (e.g. a bare ``group_left``).
+    pull them back out of the raw expression text.
+
+    Only the *current* binary node's modifier may be attributed here, but the
+    raw text spans nested sub-joins too. To avoid borrowing a nested join's
+    include list (e.g. attributing ``group_left(inner)`` to an outer
+    ``group_left(outer)``), bail out when more than one group modifier is
+    present — the caller is reached only for a node that itself carries a group
+    modifier, so a single occurrence is unambiguously this node's. Returns
+    ``[]`` for the ambiguous (nested) case and for a bare ``group_left`` with no
+    parenthesised label list.
     """
     if not expr:
+        return []
+    if len(_GROUP_MODIFIER_KEYWORD_RE.findall(expr)) != 1:
         return []
     match = _GROUP_MODIFIER_LABELS_RE.search(expr)
     if not match:
