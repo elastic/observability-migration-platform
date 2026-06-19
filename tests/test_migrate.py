@@ -4631,6 +4631,76 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("FROM metrics-*", control["query"])
         self.assertIn("service.instance.id", control["query"])
 
+    def test_query_variable_control_keeps_source_metric_scope(self):
+        """Issue #152: ``label_values(metric, label)`` is scoped to ``metric`` in
+        Grafana, so the migrated control must list only values that come from that
+        metric (``WHERE <metric> IS NOT NULL``) instead of every value of the
+        field in the index."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance",
+                "label": "Instance",
+                "multi": False,
+                "query": "label_values(redis_up, instance)",
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(len(controls), 1)
+        query = controls[0]["query"]
+        self.assertEqual(
+            query,
+            "FROM metrics-* | WHERE redis_up IS NOT NULL AND "
+            "`service.instance.id` IS NOT NULL"
+            " | STATS count = COUNT(*) BY `service.instance.id`"
+            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
+            " | LIMIT 1000",
+        )
+
+    def test_query_variable_control_unscoped_when_no_source_metric(self):
+        """A single-argument ``label_values(label)`` (or a selector with no
+        leading metric name) has no scoping metric, so the control query must
+        stay unscoped — only ``WHERE <field> IS NOT NULL``."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance",
+                "label": "Instance",
+                "multi": False,
+                "query": "label_values(instance)",
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        self.assertEqual(len(controls), 1)
+        query = controls[0]["query"]
+        self.assertEqual(
+            query,
+            "FROM metrics-* | WHERE `service.instance.id` IS NOT NULL"
+            " | STATS count = COUNT(*) BY `service.instance.id`"
+            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
+            " | LIMIT 1000",
+        )
+
     def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
         """A multi-select Grafana variable still binds a scalar ES|QL parameter
         (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
