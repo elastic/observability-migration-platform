@@ -46,6 +46,7 @@ from .promql import (
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
     _counter_type_uncertainty_warning,
+    _drop_legend_labels_if_redundant,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -1904,6 +1905,35 @@ def histogram_quantile_family_rule(context):
     return "translated histogram_quantile to PERCENTILE"
 
 
+def _drop_redundant_legend_grouping(context, frag, group_fields):
+    """Issue #99: drop legendFormat-origin BY labels that ES|QL TSID already splits.
+
+    When a PromQL expression has no explicit outer aggregation and runs on the TS
+    path, ``BY TBUCKET`` alone yields one row per TSID per bucket — series are
+    split natively. Adding a ``legendFormat``-derived label to BY is redundant and
+    forces a distorting outer ``AVG`` (issue #99). It is only safe to drop on the
+    TS path and only when the label did not come from an explicit PromQL ``by()``.
+
+    The TSID-driven split is a *time series chart* affordance: Kibana renders one
+    line per TSID row. Summary/categorical panels (bargauge, which still carries
+    legend-origin labels — see ``_target_translation_hints``) instead render a
+    breakdown from the explicit ``output_group_fields`` column, so dropping the
+    label there would collapse the per-series bars rather than relocate them.
+
+    The decision is shared with the formula/binary path via
+    :func:`_drop_legend_labels_if_redundant`; the direct family rules always allow
+    the bare direct-TS-gauge form, so ``allow_direct_ts_gauge`` defaults to True.
+    """
+    return _drop_legend_labels_if_redundant(
+        frag,
+        context.resolver,
+        context.rule_pack,
+        group_fields,
+        context.metadata.get("preferred_group_labels_origin"),
+        _summary_mode_from_metadata(context.metadata),
+    )
+
+
 @QUERY_TRANSLATORS.register("range_agg_family", priority=8)
 def range_agg_family_rule(context):
     frag = context.fragment
@@ -1924,6 +1954,7 @@ def range_agg_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
+    group_fields = _drop_redundant_legend_grouping(context, frag, group_fields)
     esql_inner_name = AGG_FUNCTION_MAP.get(frag.range_func)
     if not esql_inner_name:
         return None
@@ -2318,6 +2349,7 @@ def simple_metric_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
+    group_fields = _drop_redundant_legend_grouping(context, frag, group_fields)
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     can_use_direct_ts_gauge = _can_use_direct_ts_gauge(frag.metric, resolver, group_fields, frag, rp)
     # Issue #8: when the field is a TSDS gauge but ``_can_use_direct_ts_gauge`` rejects it

@@ -3673,6 +3673,69 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
         )
 
+    def test_legend_only_range_agg_uses_bare_ts_function_without_outer_avg(self):
+        # Issue #99: when legendFormat is the only source of group labels and the
+        # PromQL expression has no explicit outer aggregation, legend labels must
+        # NOT be added to the BY clause and no AVG wrapper must be emitted.
+        # ES|QL TS mode groups by TSID naturally — one row per unique dimension
+        # combination per bucket — so data accuracy is fully preserved.
+        result = self.translate(
+            'max_over_time(process_resident_memory_bytes{job="$job"}[5m])',
+            translation_hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(result.source_type, "TS")
+        self.assertNotIn("AVG(MAX_OVER_TIME(", result.esql_query)
+        self.assertNotIn(", instance", result.esql_query)
+        self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", result.esql_query)
+        self.assertIn("BY time_bucket = TBUCKET", result.esql_query)
+
+    def test_legend_only_bare_gauge_uses_direct_ts_without_group_label_in_by(self):
+        # Issue #99: a bare gauge selector with legend-only group labels must
+        # route to the direct-TS path (no AVG wrapper) and must not emit the
+        # legend field in the BY clause.
+        result = self.translate(
+            'go_goroutines{job="$job"}',
+            translation_hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(result.source_type, "TS")
+        self.assertNotIn("AVG(", result.esql_query)
+        self.assertNotIn(", instance", result.esql_query)
+        self.assertIn("BY time_bucket = TBUCKET", result.esql_query)
+
+    def test_legend_only_range_agg_panel_migrated_without_warnings(self):
+        # Issue #99: a panel with a range_agg expression and legendFormat-only
+        # labels must reach `migrated` status, not `migrated_with_warnings`.
+        # Static label filter isolates issue #99: a `$job` template-variable
+        # matcher would add a separate "dropped variable-driven label filters"
+        # warning (issue #64, deferred), which is orthogonal to the AVG mechanism.
+        panel = {
+            "id": 104,
+            "type": "timeseries",
+            "title": "Memory RSS",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "expr": 'max_over_time(process_resident_memory_bytes{job="prod"}[5m])',
+                    "refId": "A",
+                    "legendFormat": "{{instance}}",
+                }
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        self.assertEqual(result.status, "migrated")
+        self.assertFalse(
+            any(
+                "requires an outer aggregation when grouping TS functions by label fields" in reason
+                for reason in result.reasons
+            )
+        )
+
     def test_query_ir_semantic_losses_include_accuracy_warning(self):
         ctx = SimpleNamespace(
             query_language="promql",

@@ -360,6 +360,20 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "sum_over_time",
 }
 
+# ``*_over_time`` range functions are instant gauge-shaped aggregations: on the
+# TS path with only ``BY TBUCKET`` they yield one value per series per bucket, so
+# legend labels need not enter BY (issue #99). Counter rates (rate/irate/increase/
+# delta/deriv) keep their intentional outer-AVG downsample and are excluded here.
+_OVER_TIME_RANGE_FUNCS = frozenset(
+    {
+        "avg_over_time",
+        "count_over_time",
+        "max_over_time",
+        "min_over_time",
+        "sum_over_time",
+    }
+)
+
 _SET_OPERATORS = frozenset({"or", "and", "unless"})
 
 
@@ -2808,6 +2822,89 @@ def _gauge_can_use_ts(metric_name, resolver, rule_pack):
     return not _field_disproven_tsds_gauge(metric_name, resolver)
 
 
+def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
+    """Issue #99: decide whether legend-derived BY labels are redundant on TS.
+
+    When a PromQL expression has **no explicit outer aggregation** (a bare
+    selector or a range-vector function with no enclosing ``sum()``/``avg()``/…)
+    and it lands on the ES|QL ``TS`` source, time series mode already groups by
+    TSID (the full set of dimensions) when only ``TBUCKET`` is in the ``BY``
+    clause — each unique series gets its own row. Adding a ``legendFormat``-origin
+    label to ``BY`` is therefore unnecessary, and worse: it forces the time
+    series function to be wrapped in an outer ``AVG()``, which distorts the value
+    (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
+    not already show, so it is dropped.
+
+    Only applies on the ``TS`` path — ``FROM`` has no TSID grouping, so dropping
+    the label there would collapse multiple series into one line.
+    """
+    if frag.outer_agg:
+        return False
+    if frag.family == "simple_metric":
+        is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        # Counters already wrap LAST_OVER_TIME in MAX (no AVG distortion); leave
+        # them be. Gauges must actually be able to use TS for TSID grouping.
+        return (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
+    if frag.family == "range_agg":
+        # Only ``*_over_time`` instant aggregations: they run on the TS source and
+        # produce one value per TSID per bucket with BY TBUCKET alone, so the
+        # spurious outer AVG is avoidable. Counter rates keep their AVG downsample.
+        #
+        # The TSID-split premise only holds when the field is an actual TSDS series
+        # (dimensions present). Gate on ``_gauge_can_use_ts`` exactly like the
+        # ``simple_metric`` branch: ``range_agg_family_rule`` forces ``source=TS``
+        # for any ``*_over_time`` regardless of field typing, so without this guard a
+        # non-TSDS field would have its only series-splitting label dropped and
+        # collapse every series into one line.
+        return frag.range_func in _OVER_TIME_RANGE_FUNCS and _gauge_can_use_ts(
+            frag.metric, resolver, rule_pack
+        )
+    return False
+
+
+def _drop_legend_labels_if_redundant(
+    frag,
+    resolver,
+    rule_pack,
+    group_fields,
+    preferred_origin,
+    summary_mode,
+    allow_direct_ts_gauge=True,
+):
+    """Issue #99: return ``group_fields`` with redundant legendFormat-origin labels
+    dropped, or unchanged if dropping is unsafe.
+
+    Shared by the direct family rules (``translate.py``) and the formula/binary
+    measure-spec path (:func:`_build_measure_spec`) so arithmetic panels avoid the
+    same distorting outer ``AVG`` the direct path does. All guards must hold to drop:
+
+    * **Non-summary panel** — the TSID split is a line-chart affordance; summary /
+      categorical panels (bargauge) render their breakdown from the explicit
+      ``output_group_fields`` column, so dropping there collapses per-series bars.
+    * **Legend origin** — the labels came from ``legendFormat``, not an explicit
+      PromQL ``by()`` (which is semantically meaningful and stays).
+    * **Redundant on TS** — see :func:`_legend_grouping_redundant_on_ts`.
+    * **Direct-TS form reachable** — ``simple_metric`` only splits series via the
+      bare ``STATS field = field`` form; when that is disabled (multi-target fusion
+      passes ``allow_direct_ts_gauge=False``) an explicit ``AVG`` would collapse the
+      series, so the label is kept. ``range_agg`` does not use this form, so it is
+      unaffected.
+    """
+    if summary_mode:
+        return group_fields
+    if preferred_origin != "legend":
+        return group_fields
+    if not group_fields:
+        return group_fields
+    if _frag_group_labels(frag, resolver):
+        return group_fields
+    if frag.family == "simple_metric" and not allow_direct_ts_gauge:
+        return group_fields
+    if not _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
+        return group_fields
+    return []
+
+
 def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):
     if group_fields:
         return False
@@ -2845,6 +2942,7 @@ def _build_measure_spec(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    drop_legend_labels=True,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
@@ -2862,6 +2960,20 @@ def _build_measure_spec(
         preferred_group_labels,
         preferred_origin=preferred_group_labels_origin,
     )
+    # Issue #99: drop legend-origin BY labels that ES|QL TSID already splits, so
+    # formula/binary panels avoid the distorting outer AVG the direct path now skips.
+    # ``drop_legend_labels`` lets the formula planner force-disable the drop when a
+    # mixed-family plan would otherwise produce divergent (unmergeable) groupings.
+    if drop_legend_labels:
+        group_fields = _drop_legend_labels_if_redundant(
+            frag,
+            resolver,
+            rule_pack,
+            group_fields,
+            preferred_group_labels_origin,
+            summary_mode,
+            allow_direct_ts_gauge,
+        )
     if _frag_has_incompatible_group_fields(frag, resolver, preferred_group_labels):
         warnings.append("Dropped grouping fields with incompatible target field types during migration")
     if alias_hint:
@@ -3545,6 +3657,7 @@ def _build_formula_plan(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    drop_legend_labels=True,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
@@ -3760,6 +3873,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -3771,6 +3885,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
         if not left_plan or not right_plan:
             return None
@@ -3794,6 +3909,34 @@ def _build_formula_plan(
                     allow_direct_ts_gauge=allow_direct_ts_gauge,
                     preferred_group_labels_origin=preferred_group_labels_origin,
                     allow_tsds_gauge_promotion=False,
+                    drop_legend_labels=drop_legend_labels,
+                )
+
+        # Issue #99: the legend-label drop is decided per operand, so a mixed-family
+        # formula (e.g. ``max_over_time(...)[5m] + go_goroutines``) can end up with
+        # the range_agg side dropping its legend labels (``[]``) while the
+        # simple_metric side keeps them (the bare direct-TS-gauge form is disabled
+        # in fusion). The mergeability check rejects that divergent grouping and the
+        # panel falls to ``not_feasible``. When the operands' groupings disagree only
+        # because of the drop, rebuild both with the drop disabled so they share one
+        # consistent grouping (the pre-#99 AVG form, feasible). Genuine source-level
+        # divergence still falls through to the unmergeable path below.
+        if drop_legend_labels:
+            group_fields_seen = {
+                tuple(spec.group_fields) for spec in left_plan.specs + right_plan.specs
+            }
+            if len(group_fields_seen) > 1:
+                return _build_formula_plan(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                    drop_legend_labels=False,
                 )
         warnings = []
         for warning in left_plan.warnings + right_plan.warnings:
@@ -3838,6 +3981,7 @@ def _build_formula_plan(
         allow_direct_ts_gauge=allow_direct_ts_gauge,
         preferred_group_labels_origin=preferred_group_labels_origin,
         allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        drop_legend_labels=drop_legend_labels,
     )
     if not spec:
         return None

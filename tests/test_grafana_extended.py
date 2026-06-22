@@ -2809,6 +2809,10 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
 
     def test_bare_gauge_with_labels_has_no_loss_warning(self):
+        # Issue #99: a bare gauge with a legendFormat label and no explicit outer
+        # aggregation uses the direct TS gauge path. ES|QL TS mode splits series
+        # by TSID with BY TBUCKET alone, so the legend label is NOT added to BY
+        # (adding it would force a distorting outer AVG). No collapse loss either.
         ctx = self._translate(
             "node_xyz_metric",
             hints={
@@ -2817,7 +2821,194 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
             },
         )
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
-        self.assertIn("BY time_bucket", ctx.esql_query)
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("STATS node_xyz_metric = node_xyz_metric BY time_bucket", ctx.esql_query)
+        self.assertNotIn("instance", ctx.esql_query)
+        self.assertNotIn("AVG(", ctx.esql_query)
+
+    def test_bare_gauge_legend_label_no_outer_agg_omits_label_from_by(self):
+        # Issue #99 Case A: go_goroutines{...} with legendFormat={{instance}}.
+        # No explicit PromQL outer aggregation -> direct TS gauge, no outer AVG,
+        # legend label kept out of BY, and no warning (promoted to `migrated`).
+        ctx = self._translate(
+            'go_goroutines{job="prod"}',
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("STATS go_goroutines = go_goroutines BY time_bucket", ctx.esql_query)
+        self.assertNotIn("AVG(", ctx.esql_query)
+        self.assertNotIn(", instance", ctx.esql_query)
+        self.assertEqual(ctx.warnings, [])
+
+    def test_range_func_legend_label_no_outer_agg_omits_outer_avg(self):
+        # Issue #99 Case B: max_over_time(...) with legendFormat={{instance}}.
+        # No explicit PromQL outer aggregation -> bare MAX_OVER_TIME with no outer
+        # AVG, legend label kept out of BY, and no AVG-distortion warning.
+        ctx = self._translate(
+            'max_over_time(process_resident_memory_bytes{job="prod"}[5m])',
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", ctx.esql_query)
+        self.assertNotIn("AVG(", ctx.esql_query)
+        self.assertNotIn(", instance", ctx.esql_query)
+        self.assertFalse(any("Added outer AVG" in w for w in ctx.warnings))
+
+    def test_explicit_outer_agg_keeps_by_labels(self):
+        # Issue #99: an explicit PromQL outer aggregation is semantically
+        # meaningful; its by() labels stay in BY and the aggregation is unchanged.
+        ctx = self._translate(
+            "sum(go_goroutines) by (job)",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertIn("SUM(go_goroutines)", ctx.esql_query)
+        # by(job) -> service.name stays in BY; the legend label is not added.
+        self.assertIn("service.name", ctx.esql_query)
+        self.assertNotIn("service.instance.id", ctx.esql_query)
+
+    def test_from_path_gauge_keeps_legend_label(self):
+        # Issue #99: the no-BY-label rule applies only on the TS path, where TSID
+        # grouping splits series. On the FROM path (non-TSDS gauge) there is no
+        # TSID grouping, so the legend label must stay in BY for per-series detail.
+        ctx = self._translate(
+            "node_xyz_metric",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+            assume_tsds_gauges=False,
+        )
+        self.assertEqual(ctx.source_type, "FROM")
+        self.assertIn("instance", ctx.esql_query)
+
+    def test_summary_panel_keeps_legend_label_for_categorical_breakdown(self):
+        # Issue #99 review: the TSID split is a time-series-line affordance. A
+        # bargauge carries legend-origin labels too (see _target_translation_hints)
+        # but renders its breakdown from the explicit output_group_fields column, so
+        # the label must NOT be dropped on the summary path — otherwise the per-series
+        # bars collapse instead of relocating to a TSID-driven legend.
+        ctx = self._translate(
+            "go_goroutines",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+                "summary_mode": True,
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("instance", ctx.esql_query)
+
+    def test_range_func_non_tsds_field_keeps_legend_label(self):
+        # Issue #99 review: the range_agg drop must verify the field can actually use
+        # TS (TSID grouping), exactly as the simple_metric branch does. range_agg
+        # forces source=TS for any *_over_time regardless of field typing, so for a
+        # field that cannot be proven a TSDS series the legend label is the only thing
+        # splitting series and must be kept (the old AVG-wrapped behavior).
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m])",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+            assume_tsds_gauges=False,
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("instance", ctx.esql_query)
+        self.assertIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
+
+    def test_formula_range_func_drops_legend_label_no_outer_avg(self):
+        # Issue #99 review: arithmetic/formula panels go through _build_measure_spec,
+        # a parallel path that must apply the same legend-label drop. A range function
+        # in a formula must emit the bare TS function (TSID-split) with no distorting
+        # outer AVG and no legend label in BY.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", ctx.esql_query)
+        self.assertNotIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
+        self.assertNotIn(", instance", ctx.esql_query)
+        self.assertFalse(any("Added outer AVG" in w for w in ctx.warnings))
+
+    def test_formula_range_func_non_tsds_keeps_legend_label(self):
+        # Issue #99 review: the formula path applies the same TS-eligibility gate.
+        # A non-TSDS *_over_time field keeps its legend label (old AVG behavior)
+        # rather than collapsing series.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+            assume_tsds_gauges=False,
+        )
+        self.assertIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
+        self.assertIn("instance", ctx.esql_query)
+
+    def test_mixed_formula_range_and_simple_metric_stays_feasible(self):
+        # Issue #99 review: the drop is decided per operand, so a mixed-family formula
+        # could end up with the range_agg side dropping its legend labels while the
+        # simple_metric side keeps them — divergent groupings that the mergeability
+        # check rejected, regressing the panel to not_feasible. The planner must
+        # reconcile to one consistent grouping (the AVG form) so it stays feasible.
+        for expr in (
+            "max_over_time(process_resident_memory_bytes[5m]) + go_goroutines",
+            "go_goroutines + max_over_time(process_resident_memory_bytes[5m])",
+        ):
+            with self.subTest(expr=expr):
+                ctx = self._translate(
+                    expr,
+                    hints={
+                        "preferred_group_labels": ["instance"],
+                        "preferred_group_labels_origin": "legend",
+                    },
+                )
+                self.assertEqual(ctx.source_type, "TS")
+                self.assertTrue(ctx.esql_query, "expected a feasible translation")
+                # One STATS with both operands grouped by the same BY clause.
+                self.assertEqual(ctx.esql_query.count("| STATS "), 1)
+                self.assertIn("service.instance.id", ctx.esql_query)
+                self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", ctx.esql_query)
+
+    def test_range_range_formula_keeps_avg_free_improvement(self):
+        # Issue #99 review: when every operand can drop (range_agg + range_agg), the
+        # reconciliation must NOT kick in — both groupings already agree on [], so the
+        # AVG-free improvement is preserved rather than reverted to the AVG form.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + sum_over_time(go_goroutines[5m])",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertNotIn("AVG(", ctx.esql_query)
+        self.assertNotIn("service.instance.id", ctx.esql_query)
+
+    def test_formula_summary_panel_keeps_legend_label(self):
+        # Issue #99 review: the summary/categorical guard applies on the formula path
+        # too — a bargauge formula keeps its breakdown column.
+        ctx = self._translate(
+            "go_goroutines + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+                "summary_mode": True,
+            },
+        )
         self.assertIn("instance", ctx.esql_query)
 
     def test_target_hints_backfill_from_dashboard_map_when_panel_has_none(self):
