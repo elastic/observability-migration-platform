@@ -258,7 +258,7 @@ def normalize_translated(data: dict) -> dict[SeriesKey, list[tuple[float, float]
             time_idx = i
             continue
         if lname == "_timeseries":
-            # TS direct-gauge (STATS field = field BY TBUCKET) carries the series
+            # TS direct-gauge (STATS field = AVG(field) BY TBUCKET) carries the series
             # dimensions here as a JSON label set instead of broken-out columns.
             timeseries_idx = i
             continue

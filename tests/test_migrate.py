@@ -1910,7 +1910,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"Emitted invalid STDDEV function: {translated.esql_query}",
         )
 
-    def test_live_gauge_selector_uses_direct_ts_without_avg_warning(self):
+    def test_live_gauge_selector_uses_direct_ts_without_loss_warning(self):
+        # A proven TSDS gauge takes the direct-TS path. Issue #176: the per-bucket
+        # STATS is wrapped in the default gauge aggregate (a valid ES|QL aggregate,
+        # not the rejected ``col = col`` passthrough). On the TS source ``BY TBUCKET``
+        # alone splits each series by TSID, so this is a faithful per-series
+        # downsample with no collapse — hence no honest-loss warning.
         self.seed_field_caps(
             {
                 "node_systemd_units": {
@@ -1929,25 +1934,27 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = AVG(node_systemd_units) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
-        self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
+        self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
 
     def test_unknown_gauge_selector_assumes_tsds_direct_ts(self):
-        # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge
-        # (STATS field = field), which preserves per-series rows. No FROM+AVG collapse,
-        # so no honest-loss warning (the series are retained, nothing is dropped).
+        # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge,
+        # which preserves per-series rows (TSID split with BY TBUCKET alone). Issue
+        # #176: the per-bucket STATS is wrapped in the default gauge aggregate, never
+        # the invalid ``col = col`` passthrough. No FROM+AVG collapse, so no honest-loss
+        # warning (the series are retained, nothing is dropped).
         translated = self.translate("node_systemd_units")
 
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = AVG(node_systemd_units) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
-        self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
+        self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertFalse(any("Collapsed all series" in warning for warning in translated.warnings))
 
     def test_unknown_gauge_selector_keeps_avg_fallback_when_opt_out(self):
@@ -1960,6 +1967,45 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("FROM metrics-*", translated.esql_query)
         self.assertIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertTrue(any("Collapsed all series" in warning for warning in translated.warnings))
+
+    def test_issue176_bare_gauge_direct_ts_wraps_stats_in_aggregate(self):
+        # Issue #176: a raw gauge with no explicit aggregation on the direct TS path
+        # must wrap the per-bucket STATS right-hand side in an aggregate. ES|QL rejects
+        # ``STATS col = col BY ...`` with a verification_exception ("column must appear
+        # in the STATS BY clause or be used in an aggregate function"), so the bare
+        # self-referential passthrough is never valid output.
+        self.seed_field_caps(
+            {
+                "node_filesystem_size_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                }
+            }
+        )
+
+        translated = self.translate("node_filesystem_size_bytes")
+
+        self.assertEqual(translated.source_type, "TS")
+        self.assertIn(
+            "| STATS node_filesystem_size_bytes = AVG(node_filesystem_size_bytes) "
+            "BY time_bucket = TBUCKET(5 minute)",
+            translated.esql_query,
+        )
+        # The invalid self-referential passthrough must never appear.
+        self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
+
+    def test_issue176_bare_gauge_in_math_formula_wraps_stats_in_aggregate(self):
+        # Issue #176: the formula/binary measure-spec path (abs/sqrt/clamp/etc. over a
+        # bare gauge) builds its own per-bucket STATS and must also wrap the column in
+        # an aggregate rather than emit the invalid ``STATS col = col`` passthrough.
+        translated = self.translate("abs(node_memory_usage)")
+
+        self.assertNotRegex(translated.esql_query or "", r"STATS\s+(\w+)\s*=\s*\1\b")
+        self.assertIn("AVG(node_memory_usage)", translated.esql_query or "")
 
     def test_issue8_simple_sum_gauge_on_proven_tsds_uses_ts(self):
         # Issue #8: sum(gauge_metric) on a TSDS must emit TS, not FROM. With FROM
@@ -2043,9 +2089,9 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_issue8_multi_target_gauge_fusion_uses_ts(self):
         # Multi-target gauge fusion (translate.py: _build_multi_target_series_query)
-        # disables ``allow_direct_ts_gauge`` because ``STATS field = field`` cannot
-        # be CASE-wrapped per target. But ``AVG(field)`` can — so proven TSDS
-        # gauges must still take the TS path to avoid per-sample inflation.
+        # disables ``allow_direct_ts_gauge`` so each per-target measure is CASE-wrapped
+        # and combined rather than emitted as a standalone direct-TS gauge. Proven TSDS
+        # gauges must still take the TS path (not FROM) to avoid per-sample inflation.
         self.seed_field_caps(
             {
                 "node_systemd_units": {
@@ -3694,8 +3740,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_legend_only_bare_gauge_uses_direct_ts_without_group_label_in_by(self):
         # Issue #99: a bare gauge selector with legend-only group labels must
-        # route to the direct-TS path (no AVG wrapper) and must not emit the
-        # legend field in the BY clause.
+        # route to the direct-TS path and must not emit the legend field in the
+        # BY clause (TSID already splits each series on the TS source). Issue #176:
+        # the per-bucket downsample is AVG over TBUCKET alone — a faithful per-series
+        # aggregate, never the invalid ``col = col`` passthrough — and the dropped
+        # legend label means no cross-series collapse.
         result = self.translate(
             'go_goroutines{job="$job"}',
             translation_hints={
@@ -3704,7 +3753,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.source_type, "TS")
-        self.assertNotIn("AVG(", result.esql_query)
+        self.assertIn("STATS go_goroutines = AVG(go_goroutines)", result.esql_query)
         self.assertNotIn(", instance", result.esql_query)
         self.assertIn("BY time_bucket = TBUCKET", result.esql_query)
 

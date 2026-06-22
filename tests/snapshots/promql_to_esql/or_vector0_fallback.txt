@@ -6,5 +6,5 @@ TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE service.name == "prom"
 | WHERE up IS NOT NULL
-| STATS up = up BY time_bucket = TBUCKET(5 minute)
+| STATS up = AVG(up) BY time_bucket = TBUCKET(5 minute)
 | SORT time_bucket ASC

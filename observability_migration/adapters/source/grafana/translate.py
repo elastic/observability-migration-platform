@@ -1911,8 +1911,11 @@ def _drop_redundant_legend_grouping(context, frag, group_fields):
     When a PromQL expression has no explicit outer aggregation and runs on the TS
     path, ``BY TBUCKET`` alone yields one row per TSID per bucket — series are
     split natively. Adding a ``legendFormat``-derived label to BY is redundant and
-    forces a distorting outer ``AVG`` (issue #99). It is only safe to drop on the
-    TS path and only when the label did not come from an explicit PromQL ``by()``.
+    collapses every series sharing that label value into one row, distorting the
+    per-series value (issue #99; the per-bucket downsample aggregate from issue #176
+    then averages across the collapsed series instead of within each). It is only
+    safe to drop on the TS path and only when the label did not come from an
+    explicit PromQL ``by()``.
 
     The TSID-driven split is a *time series chart* affordance: Kibana renders one
     line per TSID row. Summary/categorical panels (bargauge, which still carries
@@ -2381,7 +2384,12 @@ def simple_metric_family_rule(context):
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = physical_metric
+        # Issue #176: every STATS output expression must be an aggregate (or appear in
+        # BY) — a bare ``STATS col = col`` is rejected with verification_exception. On
+        # the TS source ``BY TBUCKET`` alone still splits each series by TSID, so the
+        # default gauge aggregator is a faithful per-series intra-bucket downsample
+        # (no collapse, hence no honest-loss warning), not a cross-series average.
+        stats_expr = f"{rp.default_gauge_agg.upper()}({physical_metric})"
     elif can_use_ts_aggregated_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter

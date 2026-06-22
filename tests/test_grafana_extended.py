@@ -2801,18 +2801,22 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
 
     def test_bare_gauge_default_uses_ts_and_preserves_series(self):
         # Migration default: a bare gauge assumes TSDS and uses TS, which preserves
-        # per-series rows natively (STATS field = field BY TBUCKET). No collapse, so
-        # no loss warning.
+        # per-series rows natively (TSID split with BY TBUCKET alone). Issue #176: the
+        # per-bucket STATS is wrapped in the default gauge aggregate, not the invalid
+        # ``col = col`` passthrough. No collapse, so no loss warning.
         ctx = self._translate("node_xyz_metric")
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = node_xyz_metric", ctx.esql_query)
+        self.assertIn("STATS node_xyz_metric = AVG(node_xyz_metric)", ctx.esql_query)
+        self.assertNotRegex(ctx.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
 
     def test_bare_gauge_with_labels_has_no_loss_warning(self):
         # Issue #99: a bare gauge with a legendFormat label and no explicit outer
         # aggregation uses the direct TS gauge path. ES|QL TS mode splits series
         # by TSID with BY TBUCKET alone, so the legend label is NOT added to BY
-        # (adding it would force a distorting outer AVG). No collapse loss either.
+        # (adding it would collapse series and distort the value). Issue #176: the
+        # per-bucket downsample is AVG over TBUCKET alone — faithful per series, not
+        # a cross-series average. No collapse loss either.
         ctx = self._translate(
             "node_xyz_metric",
             hints={
@@ -2822,14 +2826,15 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         )
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = node_xyz_metric BY time_bucket", ctx.esql_query)
+        self.assertIn("STATS node_xyz_metric = AVG(node_xyz_metric) BY time_bucket", ctx.esql_query)
         self.assertNotIn("instance", ctx.esql_query)
-        self.assertNotIn("AVG(", ctx.esql_query)
 
     def test_bare_gauge_legend_label_no_outer_agg_omits_label_from_by(self):
         # Issue #99 Case A: go_goroutines{...} with legendFormat={{instance}}.
-        # No explicit PromQL outer aggregation -> direct TS gauge, no outer AVG,
-        # legend label kept out of BY, and no warning (promoted to `migrated`).
+        # No explicit PromQL outer aggregation -> direct TS gauge, legend label kept
+        # out of BY, and no warning (promoted to `migrated`). Issue #176: the per-bucket
+        # STATS is the default gauge aggregate over TBUCKET alone (faithful per series),
+        # never the invalid ``col = col`` passthrough.
         ctx = self._translate(
             'go_goroutines{job="prod"}',
             hints={
@@ -2838,8 +2843,8 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
             },
         )
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS go_goroutines = go_goroutines BY time_bucket", ctx.esql_query)
-        self.assertNotIn("AVG(", ctx.esql_query)
+        self.assertIn("STATS go_goroutines = AVG(go_goroutines) BY time_bucket", ctx.esql_query)
+        self.assertNotRegex(ctx.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertNotIn(", instance", ctx.esql_query)
         self.assertEqual(ctx.warnings, [])
 

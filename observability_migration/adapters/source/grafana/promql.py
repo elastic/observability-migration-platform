@@ -2830,9 +2830,10 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
     and it lands on the ES|QL ``TS`` source, time series mode already groups by
     TSID (the full set of dimensions) when only ``TBUCKET`` is in the ``BY``
     clause — each unique series gets its own row. Adding a ``legendFormat``-origin
-    label to ``BY`` is therefore unnecessary, and worse: it forces the time
-    series function to be wrapped in an outer ``AVG()``, which distorts the value
-    (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
+    label to ``BY`` is therefore unnecessary, and worse: it collapses every series
+    sharing that label value into one row, so the per-bucket downsample aggregate
+    (issue #176) averages across those series instead of within each and distorts the
+    value (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
     not already show, so it is dropped.
 
     Only applies on the ``TS`` path — ``FROM`` has no TSID grouping, so dropping
@@ -2884,11 +2885,12 @@ def _drop_legend_labels_if_redundant(
     * **Legend origin** — the labels came from ``legendFormat``, not an explicit
       PromQL ``by()`` (which is semantically meaningful and stays).
     * **Redundant on TS** — see :func:`_legend_grouping_redundant_on_ts`.
-    * **Direct-TS form reachable** — ``simple_metric`` only splits series via the
-      bare ``STATS field = field`` form; when that is disabled (multi-target fusion
-      passes ``allow_direct_ts_gauge=False``) an explicit ``AVG`` would collapse the
-      series, so the label is kept. ``range_agg`` does not use this form, so it is
-      unaffected.
+    * **Direct-TS form reachable** — ``simple_metric`` splits series natively via
+      the direct-TS gauge path (``STATS field = AVG(field) BY TBUCKET`` alone, which
+      TSID-splits each series — issue #176); when that path is disabled (multi-target
+      fusion passes ``allow_direct_ts_gauge=False``) the per-target measure is
+      CASE-wrapped and combined, which collapses series, so the label is kept to
+      preserve them. ``range_agg`` does not use this path, so it is unaffected.
     """
     if summary_mode:
         return group_fields
@@ -2993,11 +2995,12 @@ def _build_measure_spec(
         )
         # Issue #8: keep TS for TSDS gauges whenever the direct-gauge path isn't
         # available — either because of group_fields or because the caller disabled it
-        # (multi-target fusion uses ``allow_direct_ts_gauge=False`` since ``STATS field =
-        # field`` cannot be CASE-wrapped, but ``AVG(field)`` can). ``FROM`` against a TSDS
-        # sums every per-sample doc and inflates the value, so use ``TS`` with the default
-        # aggregator instead. Gauge TSDS status is proven by the resolver or, when unknown,
-        # assumed per ``rule_pack.assume_tsds_gauges`` (the migration default).
+        # (multi-target fusion uses ``allow_direct_ts_gauge=False`` so the per-target
+        # measure carries the honest-loss warning the warning-free direct path skips).
+        # ``FROM`` against a TSDS sums every per-sample doc and inflates the value, so use
+        # ``TS`` with the default aggregator instead. Gauge TSDS status is proven by the
+        # resolver or, when unknown, assumed per ``rule_pack.assume_tsds_gauges`` (the
+        # migration default).
         can_use_ts_aggregated_gauge = (
             allow_tsds_gauge_promotion
             and (not is_counter)
@@ -3019,7 +3022,12 @@ def _build_measure_spec(
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = metric_field
+            # Issue #176: every STATS output expression must be an aggregate (or appear
+            # in BY) — a bare ``STATS col = col`` is rejected with verification_exception.
+            # On the TS source ``BY TBUCKET`` alone still splits each series by TSID, so
+            # the default gauge aggregator is a faithful per-series intra-bucket
+            # downsample (no collapse, hence no honest-loss warning).
+            stats_expr = f"{rule_pack.default_gauge_agg.upper()}({metric_field})"
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
