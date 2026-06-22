@@ -2070,6 +2070,90 @@ def simple_agg_family_rule(context):
             if counter_warning:
                 _append_unique(context.warnings, counter_warning)
         filter_value = _format_scalar_value(pre_agg_filter["value"])
+
+        # Issue #166: ``count(<metric> <cmp> <value>)`` ("how many targets match")
+        # must count distinct SERIES (targets), not raw samples. Counting documents
+        # (``COUNT(*)``) inflates the answer with every stored sample, so the number
+        # grows the longer data is collected. The TS command is no help here either
+        # — it cannot filter on a metric value in a bare ``WHERE`` (``WHERE up == 0``
+        # fails with "Unknown column [up]"). So collapse to one row per series first,
+        # then COUNT the series, exactly like the counter ``count()`` path below. The
+        # series identity is the source grouping labels plus the instance dimension;
+        # if neither can be determined we cannot honestly name the targets, so flag
+        # for manual review instead of emitting a wrong number.
+        if frag.outer_agg == "count":
+            instance_field = _default_instance_field(rp)
+            series_dims = [d for d in [*group_fields, instance_field] if d]
+            series_dims = list(dict.fromkeys(series_dims))
+            if not series_dims:
+                context.feasibility = "not_feasible"
+                context.confidence = 0.0
+                context.translation_complete = True
+                _append_unique(
+                    context.warnings,
+                    "count() over a comparison cannot identify the target series "
+                    "(no grouping labels or instance dimension available); "
+                    "flagged for manual review",
+                )
+                frag.extra.pop("post_filter", None)
+                return "count over a comparison: target series unidentifiable"
+            # Issue #166 follow-up (review): PromQL ``count()`` counts vector
+            # elements — series keyed by their FULL label set (e.g. ``up`` is
+            # keyed by ``{job, instance}``). When the query supplies no grouping
+            # labels the collapse key falls back to the instance dimension ALONE,
+            # which is not a complete Prometheus series identity: two matching
+            # series that share an ``instance`` but differ on another label (e.g.
+            # ``job``) collapse into one row and the count is under-stated. The
+            # target schema cannot tell us the source label set, so we keep the
+            # best-effort collapse but surface the ambiguity instead of letting a
+            # clean (warning-free) migration imply the result is exact.
+            if not group_fields:
+                _append_unique(
+                    context.warnings,
+                    "count() over a comparison collapses matching samples to "
+                    "series by the instance dimension only (the query supplied no "
+                    "grouping labels); if matching series share an instance but "
+                    "differ on another label such as job, the count may be "
+                    "under-stated — add the distinguishing label to by(...) or "
+                    "verify the series identity",
+                )
+            where_lines = [
+                f"FROM {context.index}",
+                f"| WHERE {rp.from_time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
+            ]
+            inner_by = ", ".join(series_dims)
+            if metric_like:
+                context.output_group_fields = list(group_fields)
+                outer_line = f"| STATS {alias} = COUNT(*)"
+                if group_fields:
+                    outer_line += f" BY {', '.join(group_fields)}"
+                lines = [
+                    *where_lines,
+                    f"| STATS series_present = COUNT(*) BY {inner_by}",
+                    outer_line,
+                ]
+            else:
+                context.output_group_fields = ["time_bucket", *group_fields]
+                outer_line = f"| STATS {alias} = COUNT(*) BY time_bucket"
+                if group_fields:
+                    outer_line += f", {', '.join(group_fields)}"
+                lines = [
+                    *where_lines,
+                    f"| STATS series_present = COUNT(*) BY {rp.from_bucket}, {inner_by}",
+                    outer_line,
+                    "| SORT time_bucket ASC",
+                ]
+            context.esql_query = "\n".join(lines)
+            context.parser_backend = "fragment"
+            context.source_type = "FROM"
+            context.metric_name = alias
+            context.output_metric_field = alias
+            frag.extra.pop("post_filter", None)
+            context.translation_complete = True
+            return "translated count() over a comparison by distinct series"
+
         # Issue #8: when the filtered metric is a TSDS gauge, the pre-agg filter must
         # run under TS so that the outer SUM/AVG/MAX aggregates one value per (series,
         # bucket) instead of every per-sample doc. TSDS is proven by the resolver or, when
@@ -2084,21 +2168,17 @@ def simple_agg_family_rule(context):
             *_build_where_lines(filters),
             f"| WHERE {gauge_physical_metric} {pre_agg_filter['op']} {filter_value}",
         ]
-        # The TS command rejects ``COUNT(*)`` ("count_star can't be used with TS
-        # command; use count on a field instead"). The WHERE has already
-        # constrained rows to the comparison, so counting the (non-null) metric
-        # field is equivalent and valid. FROM keeps the cheaper ``COUNT(*)``.
-        count_expr = f"COUNT({gauge_physical_metric})" if pre_source == "TS" else "COUNT(*)"
+        # ``count()`` returned above (issue #166); only SUM/AVG/MAX/MIN reach here.
         if metric_like and not group_fields:
             context.output_group_fields = []
-            lines.append(f"| STATS {alias} = {count_expr}" if frag.outer_agg == "count" else f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
+            lines.append(f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)}")
         else:
             group_by_parts = list(group_fields)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
                 context.output_group_fields = ["time_bucket", *context.output_group_fields]
-            stats_expr = count_expr if frag.outer_agg == "count" else _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
+            stats_expr = _agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), gauge_physical_metric, frag)
             stats_line = f"| STATS {alias} = {stats_expr}"
             if group_by_parts:
                 stats_line += f" BY {', '.join(group_by_parts)}"
@@ -2110,11 +2190,6 @@ def simple_agg_family_rule(context):
         context.source_type = pre_source
         context.metric_name = alias
         context.output_metric_field = alias
-        if frag.outer_agg == "count":
-            _append_unique(
-                context.warnings,
-                "count() over a comparison is approximated as document COUNT(*); multi-sample series may be over-counted",
-            )
         frag.extra.pop("post_filter", None)
         context.translation_complete = True
         return "translated aggregation with pre-aggregation comparison filter"

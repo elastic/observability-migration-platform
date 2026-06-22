@@ -1634,14 +1634,82 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("| WHERE foo_sum == 1", translated.esql_query)
 
     def test_count_comparison_counts_matching_series(self):
+        # Issue #166: count(<metric> <cmp> <value>) answers "how many targets
+        # match". It must count distinct SERIES, not raw samples, so the value
+        # does not grow as more samples are collected. The translation collapses
+        # to one row per series (by the instance dimension) and then counts the
+        # rows. A bare ``COUNT(*)`` over the filtered docs would over-count.
         translated = self.translate("count(up == 1)", panel_type="stat")
-        where_idx = translated.esql_query.index("| WHERE up == 1")
-        # The TS command forbids COUNT(*); count the filtered metric field
-        # instead so the query is valid at runtime (not just offline-feasible).
-        stats_idx = translated.esql_query.index("| STATS up_count = COUNT(up)")
-        self.assertLess(where_idx, stats_idx)
-        self.assertNotIn("COUNT(*)", translated.esql_query)
-        self.assertNotIn("| WHERE up_count == 1", translated.esql_query)
+        query = translated.esql_query
+        self.assertEqual(translated.source_type, "FROM")
+        where_idx = query.index("| WHERE up == 1")
+        collapse_idx = query.index("| STATS series_present = COUNT(*) BY")
+        count_idx = query.index("| STATS up_count = COUNT(*)")
+        self.assertLess(where_idx, collapse_idx)
+        self.assertLess(collapse_idx, count_idx)
+        self.assertNotIn("| WHERE up_count == 1", query)
+        # The misleading "approximated as document COUNT(*); may be over-counted"
+        # warning must be gone now that the result is the true series count.
+        self.assertFalse(
+            any("over-counted" in w for w in translated.warnings),
+            f"unexpected over-count warning: {translated.warnings}",
+        )
+
+    def test_count_comparison_over_count_is_fixed_on_from_path(self):
+        # Issue #166 regression: even with assume_tsds_gauges disabled (the
+        # non-time-series gauge path that previously emitted a bare COUNT(*)
+        # over every matching document), the result must be the distinct series
+        # count, not the inflated document count.
+        self.rule_pack.assume_tsds_gauges = False
+        translated = self.translate("count(up == 0)", panel_type="stat")
+        query = translated.esql_query
+        self.assertEqual(translated.source_type, "FROM")
+        collapse_idx = query.index("| STATS series_present = COUNT(*) BY")
+        count_idx = query.index("| STATS up_count = COUNT(*)")
+        # Two-stage collapse: per-series collapse must precede the final count.
+        # The old bug counted documents directly after the WHERE (no collapse).
+        self.assertLess(query.index("| WHERE up == 0"), collapse_idx)
+        self.assertLess(collapse_idx, count_idx)
+        self.assertEqual(query.count("COUNT(*)"), 2)
+
+    def test_count_comparison_grouped_counts_series_per_group(self):
+        # count(<cmp>) by (label): collapse must keep the group label AND the
+        # series dimension so the outer COUNT counts series within each group.
+        translated = self.translate("count(up == 0) by (job)", panel_type="stat")
+        query = translated.esql_query
+        self.assertRegex(query, r"\| STATS series_present = COUNT\(\*\) BY .*service\.name")
+        self.assertRegex(query, r"\| STATS up_count = COUNT\(\*\) BY service\.name")
+
+    def test_count_comparison_ungrouped_warns_series_identity_may_undercount(self):
+        # Issue #166 review follow-up: PromQL count() counts vector elements,
+        # which are keyed by the FULL series label set (``up`` is keyed by
+        # ``{job, instance}``). With no grouping labels the collapse key falls
+        # back to the instance dimension ALONE — two matching ``up`` series on
+        # the SAME instance but DIFFERENT job collapse into one row and the
+        # count is under-stated. The clean migration must not imply the result
+        # is exact, so an honest "may be under-stated" caveat must surface.
+        translated = self.translate("count(up == 0)", panel_type="stat")
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        # Collapse key is the lone instance dimension (the under-count risk):
+        # the line carries no other BY dimension.
+        self.assertIn(
+            "| STATS series_present = COUNT(*) BY service.instance.id\n",
+            translated.esql_query,
+        )
+        self.assertTrue(
+            any("under-stated" in w for w in translated.warnings),
+            f"expected a series-identity under-count caveat, got: {translated.warnings}",
+        )
+
+    def test_count_comparison_grouped_by_job_does_not_warn_undercount(self):
+        # When the distinguishing label (job) is in by(...), the collapse key
+        # carries it, so distinct series on a shared instance are preserved and
+        # there is no under-count ambiguity to warn about.
+        translated = self.translate("count(up == 0) by (job)", panel_type="stat")
+        self.assertFalse(
+            any("under-stated" in w for w in translated.warnings),
+            f"unexpected under-count caveat for grouped count: {translated.warnings}",
+        )
 
     def test_xy_panel_with_extra_grouping_dimension_warns(self):
         # A query grouped by two non-time dimensions can only show one as the XY
