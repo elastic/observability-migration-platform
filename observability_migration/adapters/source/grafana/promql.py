@@ -360,6 +360,20 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "sum_over_time",
 }
 
+# ``*_over_time`` range functions are instant gauge-shaped aggregations: on the
+# TS path with only ``BY TBUCKET`` they yield one value per series per bucket, so
+# legend labels need not enter BY (issue #99). Counter rates (rate/irate/increase/
+# delta/deriv) keep their intentional outer-AVG downsample and are excluded here.
+_OVER_TIME_RANGE_FUNCS = frozenset(
+    {
+        "avg_over_time",
+        "count_over_time",
+        "max_over_time",
+        "min_over_time",
+        "sum_over_time",
+    }
+)
+
 _SET_OPERATORS = frozenset({"or", "and", "unless"})
 
 
@@ -2648,6 +2662,46 @@ def _gauge_can_use_ts(metric_name, resolver, rule_pack):
     if not getattr(rule_pack, "assume_tsds_gauges", True):
         return False
     return not _field_disproven_tsds_gauge(metric_name, resolver)
+
+
+def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
+    """Issue #99: decide whether legend-derived BY labels are redundant on TS.
+
+    When a PromQL expression has **no explicit outer aggregation** (a bare
+    selector or a range-vector function with no enclosing ``sum()``/``avg()``/…)
+    and it lands on the ES|QL ``TS`` source, time series mode already groups by
+    TSID (the full set of dimensions) when only ``TBUCKET`` is in the ``BY``
+    clause — each unique series gets its own row. Adding a ``legendFormat``-origin
+    label to ``BY`` is therefore unnecessary, and worse: it forces the time
+    series function to be wrapped in an outer ``AVG()``, which distorts the value
+    (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
+    not already show, so it is dropped.
+
+    Only applies on the ``TS`` path — ``FROM`` has no TSID grouping, so dropping
+    the label there would collapse multiple series into one line.
+    """
+    if frag.outer_agg:
+        return False
+    if frag.family == "simple_metric":
+        is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+        # Counters already wrap LAST_OVER_TIME in MAX (no AVG distortion); leave
+        # them be. Gauges must actually be able to use TS for TSID grouping.
+        return (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
+    if frag.family == "range_agg":
+        # Only ``*_over_time`` instant aggregations: they run on the TS source and
+        # produce one value per TSID per bucket with BY TBUCKET alone, so the
+        # spurious outer AVG is avoidable. Counter rates keep their AVG downsample.
+        #
+        # The TSID-split premise only holds when the field is an actual TSDS series
+        # (dimensions present). Gate on ``_gauge_can_use_ts`` exactly like the
+        # ``simple_metric`` branch: ``range_agg_family_rule`` forces ``source=TS``
+        # for any ``*_over_time`` regardless of field typing, so without this guard a
+        # non-TSDS field would have its only series-splitting label dropped and
+        # collapse every series into one line.
+        return frag.range_func in _OVER_TIME_RANGE_FUNCS and _gauge_can_use_ts(
+            frag.metric, resolver, rule_pack
+        )
+    return False
 
 
 def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):
