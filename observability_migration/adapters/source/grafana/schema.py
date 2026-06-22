@@ -88,6 +88,7 @@ class SchemaResolver:
         self._schema_profile_cache_id = None
         self._discovery_status = "not_attempted"
         self._discovery_error = ""
+        self._cooccurrence_cache = {}
 
     def _candidate_fields(self, label):
         candidates = []
@@ -254,12 +255,23 @@ class SchemaResolver:
         except Exception:
             pass
 
-    def resolve_label(self, label):
+    def resolve_label(self, label, metric_field=None):
         if label in self._rule_pack.ignored_labels:
             return None
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
         self._discover_fields()
+        # Metric-aware: when the label is scoped to a metric (a
+        # `label_values(metric, label)` control, or a panel selector/group-by on
+        # `metric{label=...}`), prefer the candidate field that co-occurs with
+        # the metric over the index-global short-circuit below. The global check
+        # would pick any field that merely *exists* in the index — even one
+        # written by unrelated sources — and select a disjoint document set from
+        # the metric scope, emptying the control/panel (issue #163).
+        if metric_field:
+            scoped = self._resolve_label_scoped_to_metric(label, metric_field)
+            if scoped is not None:
+                return scoped
         # Source-faithful: if the target advertises the original label as a real
         # field, use it as-is. This keeps PromQL semantics intact when the target
         # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
@@ -288,6 +300,90 @@ class SchemaResolver:
         if candidates:
             return candidates[0]
         return label
+
+    def _resolve_label_scoped_to_metric(self, label, metric_field):
+        """Resolve a label to the candidate field that co-occurs with the metric.
+
+        Builds the candidate list (source-faithful label first, then the
+        OTel/Prometheus normalization candidates, then the profile-namespaced
+        forms) and returns the first candidate that actually co-occurs with the
+        scoped metric in the live index. Returns ``None`` — so the caller falls
+        back to the index-global resolution — when nothing co-occurs, live caps
+        are unavailable, or the probes error.
+
+        Co-occurrence is per-document and cannot be derived from `_field_caps`
+        (which is per-index), so it requires a live ES|QL probe.
+        """
+        if not metric_field or not self.has_field_capabilities():
+            return None
+        # Candidate priority mirrors the index-global ``resolve_label`` order so
+        # metric-aware resolution stays source-faithful: bare label first, then
+        # the active profile's namespaced label form (so a dual-shipping
+        # Prometheus index keeps `prometheus.labels.<x>` / `labels.<x>` over an
+        # OTel alias), then the OTel/Prometheus normalization candidates, then
+        # the remaining namespaced forms.
+        candidates = [label]
+        profile = self._current_schema_profile()
+        if profile == "prometheus_remote_write":
+            candidates.append(f"prometheus.labels.{label}")
+        elif profile == "prometheus_native":
+            candidates.append(f"labels.{label}")
+        candidates.extend(self._candidate_fields(label))
+        candidates.append(f"labels.{label}")
+        candidates.append(f"prometheus.labels.{label}")
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            # Only probe fields the target actually advertises; an ES|QL probe
+            # against an unknown column would 400 (→ wasted query, None result).
+            if candidate not in self._field_cache:
+                continue
+            if self._cooccurs(metric_field, candidate):
+                return candidate
+        return None
+
+    def _cooccurs(self, metric_field, candidate):
+        """Whether ``metric_field`` and ``candidate`` co-occur on any document.
+
+        Cached ES|QL COUNT probe, keyed by ``(metric_field, candidate)``.
+        Returns ``True``/``False``, or ``None`` when the target is unreachable
+        or the probe errors. ``metric_field`` and ``candidate`` are the
+        unescaped physical field names; this method adds its own backticks.
+        """
+        if not self._es_url:
+            return None
+        key = (metric_field, candidate)
+        if key in self._cooccurrence_cache:
+            return self._cooccurrence_cache[key]
+        result = self._probe_cooccurrence(metric_field, candidate)
+        self._cooccurrence_cache[key] = result
+        return result
+
+    def _probe_cooccurrence(self, metric_field, candidate):
+        query = (
+            f"FROM {self._index_pattern} "
+            f"| WHERE `{metric_field}` IS NOT NULL AND `{candidate}` IS NOT NULL "
+            f"| STATS c = COUNT(*) | LIMIT 1"
+        )
+        try:
+            resp = requests.post(
+                f"{self._es_url}/_query",
+                params={"format": "json"},
+                json={"query": query},
+                headers={**self._es_headers(), "Content-Type": "application/json"},
+                timeout=10,
+                verify=self._verify,
+            )
+            if resp.status_code != 200:
+                return None
+            values = resp.json().get("values") or []
+            if not values or not values[0]:
+                return False
+            return (values[0][0] or 0) > 0
+        except Exception:
+            return None
 
     def resolve_metric_field(self, metric_name, *, prefer=None):
         """Resolve a PromQL metric name to its actual stored field.
@@ -330,10 +426,10 @@ class SchemaResolver:
         default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
         return f"prometheus.{metric_name}{default_suffix}"
 
-    def resolve_labels(self, labels):
+    def resolve_labels(self, labels, metric_field=None):
         resolved = []
         for label in labels or []:
-            mapped = self.resolve_label(label)
+            mapped = self.resolve_label(label, metric_field=metric_field)
             if mapped:
                 resolved.append(mapped)
         return resolved
@@ -468,10 +564,10 @@ class SchemaResolver:
                 return True
         return False
 
-    def resolve_control_field(self, variable_name):
+    def resolve_control_field(self, variable_name, metric_field=None):
         if variable_name in self._rule_pack.control_field_overrides:
             return self._rule_pack.control_field_overrides[variable_name]
-        return self.resolve_label(variable_name)
+        return self.resolve_label(variable_name, metric_field=metric_field)
 
     def concrete_index_candidates(self):
         self._discover_concrete_indexes()
