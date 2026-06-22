@@ -708,6 +708,164 @@ def preprocess_grafana_macros(expr, rule_pack=None):
     return result
 
 
+# Functions whose listed (0-based) argument slots take a *scalar* (a number),
+# not an instant/range vector. A Grafana dropdown sitting in one of these slots
+# stands for a number (percentile, top-N, threshold), so substituting the
+# dropdown's bare ``label_<name>`` identifier there produces a vector where a
+# scalar is required and the PromQL parser rejects it (issue #157). When the
+# dropdown's selected value is known we substitute the number instead.
+_SCALAR_ARG_SLOTS = {
+    "histogram_quantile": (0,),
+    "quantile_over_time": (0,),
+    "quantile": (0,),
+    "topk": (0,),
+    "bottomk": (0,),
+    "limitk": (0,),
+    "vector": (0,),
+    "clamp": (1, 2),
+    "clamp_min": (1,),
+    "clamp_max": (1,),
+    "round": (1,),
+}
+
+_SCALAR_VAR_TOKEN_RE = re.compile(
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
+    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
+)
+
+# The aggregate operators among the scalar-slot functions. Unlike ordinary
+# functions, PromQL aggregations accept an optional ``by (…)`` / ``without (…)``
+# modifier that may appear *before* the argument list — ``topk by (pod) (5, …)``
+# is equivalent to ``topk(5, …) by (pod)``. The argument list (and thus the
+# scalar slot) sits after that leading modifier, so the call matcher has to skip
+# it to land on the right ``(`` (issue #157 review follow-up).
+_SCALAR_AGG_FUNCS = {"topk", "bottomk", "limitk", "quantile"}
+_SCALAR_NONAGG_FUNCS = set(_SCALAR_ARG_SLOTS) - _SCALAR_AGG_FUNCS
+
+# An optional leading aggregation modifier: ``by (a, b)`` or ``without ()``.
+_AGG_MODIFIER = r"(?:(?:by|without)\b\s*\([^)]*\)\s*)?"
+
+_SCALAR_FUNC_CALL_RE = re.compile(
+    r"(?<![\w:.])(?:"
+    + r"(?P<agg>" + "|".join(sorted(_SCALAR_AGG_FUNCS, key=len, reverse=True)) + r")\s*" + _AGG_MODIFIER + r"\("
+    + r"|"
+    + r"(?P<func>" + "|".join(sorted(_SCALAR_NONAGG_FUNCS, key=len, reverse=True)) + r")\s*\("
+    + r")",
+    re.IGNORECASE,
+)
+
+
+def _scan_call_args(text, open_idx):
+    """Split a function call's arguments at top-level commas.
+
+    ``open_idx`` is the index of the call's ``(``. Returns
+    ``(args, end_idx)`` where *args* is the list of raw argument substrings
+    and *end_idx* is the index just past the matching ``)``. Returns
+    ``(None, len(text))`` when the parentheses are unbalanced.
+
+    Commas inside nested parentheses, ``{...}`` label selectors, ``[...]``
+    ranges, and quoted strings do not split arguments.
+    """
+    paren = 0
+    bracket = 0
+    args = []
+    start = open_idx + 1
+    quote = ""
+    escaped = False
+    i = open_idx
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+        elif ch == "(":
+            paren += 1
+        elif ch == ")":
+            paren -= 1
+            if paren == 0:
+                args.append(text[start:i])
+                return args, i + 1
+        elif ch in "{[":
+            bracket += 1
+        elif ch in "}]":
+            bracket -= 1
+        elif ch == "," and paren == 1 and bracket == 0:
+            args.append(text[start:i])
+            start = i + 1
+        i += 1
+    return None, n
+
+
+def substitute_scalar_template_vars(expr, values):
+    """Substitute Grafana template variables that sit in a *scalar* argument
+    slot with their resolved numeric value (issue #157).
+
+    *values* maps a Grafana variable name to the numeric string the dropdown is
+    set to (e.g. ``{"quantile": "0.95", "top_n": "5"}``). Only variables present
+    in *values* are substituted, and only when they occur inside a scalar slot
+    of one of :data:`_SCALAR_ARG_SLOTS` (``histogram_quantile``'s percentile,
+    ``topk``'s ``k``, ``vector``'s value, a ``clamp`` bound, etc.). Every other
+    occurrence is left untouched so the generic ``$var`` handling and the
+    label-matcher / control machinery still apply elsewhere.
+
+    Substituting before either translation path runs turns
+    ``histogram_quantile($quantile, …)`` into ``histogram_quantile(0.95, …)`` —
+    valid PromQL that migrates into a working panel instead of silently
+    degrading to a "Migration Required" placeholder.
+    """
+    if not values or not isinstance(expr, str) or not expr:
+        return expr
+    if "$" not in expr and "[[" not in expr:
+        return expr
+
+    def _replace_tokens(text):
+        def repl(match):
+            name = match.group("braced") or match.group("plain") or match.group("bracket")
+            replacement = values.get(name)
+            return replacement if replacement is not None else match.group(0)
+
+        return _SCALAR_VAR_TOKEN_RE.sub(repl, text)
+
+    def process(text):
+        out = []
+        pos = 0
+        while True:
+            match = _SCALAR_FUNC_CALL_RE.search(text, pos)
+            if not match:
+                out.append(text[pos:])
+                break
+            fname = (match.group("agg") or match.group("func")).lower()
+            open_idx = match.end() - 1
+            args, end_idx = _scan_call_args(text, open_idx)
+            if args is None:
+                out.append(text[pos:])
+                break
+            out.append(text[pos:match.end()])
+            slots = _SCALAR_ARG_SLOTS[fname]
+            rendered = []
+            for idx, arg in enumerate(args):
+                processed = process(arg)
+                if idx in slots:
+                    processed = _replace_tokens(processed)
+                rendered.append(processed)
+            out.append(",".join(rendered))
+            out.append(")")
+            pos = end_idx
+        return "".join(out)
+
+    return process(expr)
+
+
 def classify_promql_complexity(expr, rule_pack=None):
     """Classify a PromQL expression's translation complexity."""
     rule_pack = rule_pack or RulePackConfig()
@@ -3728,4 +3886,5 @@ __all__ = [
     "grafana_template_var_name",
     "preprocess_grafana_macros",
     "substitute_grafana_range_macros",
+    "substitute_scalar_template_vars",
 ]

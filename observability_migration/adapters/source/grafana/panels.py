@@ -83,6 +83,7 @@ from .promql import (
     _unique_safe_alias,
     grafana_template_var_name,
     substitute_grafana_range_macros,
+    substitute_scalar_template_vars,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
@@ -4210,6 +4211,94 @@ def _resolve_variable_values(variable: dict) -> tuple[list[str], str]:
     return [], ""
 
 
+def _coerce_scalar_number(value) -> str | None:
+    """Return *value* as a numeric string when it represents a single number.
+
+    Preserves the source formatting (``"0.95"`` stays ``"0.95"``, ``"95"`` stays
+    ``"95"``) so the substituted PromQL reads like the author's intent. Lists
+    collapse to their first element (Grafana multi-select snapshot). Returns
+    ``None`` for anything that is not a single finite number — label names,
+    ``"All"`` sentinels, regexes, etc.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        text = repr(value)
+    elif isinstance(value, list):
+        return _coerce_scalar_number(value[0]) if value else None
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return text
+
+
+def _dropdown_scalar_values(variables) -> dict[str, str]:
+    """Map each Grafana template variable to its selected numeric value.
+
+    Only variables whose dropdown is currently set to a single number are
+    included — those are the ones that legitimately stand for a scalar in a
+    PromQL slot (issue #157). The variable's ``current`` selection is preferred;
+    a sole numeric option is used as a fallback when there is no ``current``.
+    """
+    out: dict[str, str] = {}
+    for variable in variables or []:
+        if not isinstance(variable, dict):
+            continue
+        name = variable.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        current = variable.get("current")
+        number = None
+        if isinstance(current, dict):
+            number = _coerce_scalar_number(current.get("value"))
+            if number is None:
+                number = _coerce_scalar_number(current.get("text"))
+        if number is None:
+            values, _source = _resolve_variable_values(variable)
+            if len(values) == 1:
+                number = _coerce_scalar_number(values[0])
+        if number is not None:
+            out[name] = number
+    return out
+
+
+def _substitute_scalar_dropdown_values(dashboard: dict) -> dict:
+    """Rewrite numeric-dropdown variables sitting in PromQL scalar slots.
+
+    Walks every panel target's ``expr`` and substitutes the dropdown's selected
+    value into scalar argument slots (``histogram_quantile``'s percentile,
+    ``topk``'s ``k``, ``vector``'s value, ``clamp`` bounds, …). Mutates the
+    target expressions in place and returns the dashboard so the call site can
+    keep its fluent assignment. A no-op when the dashboard has no numeric
+    dropdowns (the common case), so non-parameterized dashboards are untouched.
+    """
+    variables = (dashboard.get("templating", {}) or {}).get("list", []) or []
+    scalar_values = _dropdown_scalar_values(variables)
+    if not scalar_values:
+        return dashboard
+
+    for panel in _flatten_dashboard_panels(dashboard):
+        targets = panel.get("targets")
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            expr = target.get("expr")
+            if isinstance(expr, str) and expr:
+                target["expr"] = substitute_scalar_template_vars(expr, scalar_values)
+    return dashboard
+
+
 def _substitute_grafana_variables(text: str, substitutions: dict[str, str]) -> str:
     """Replace ``$var`` and ``${var}`` (and ``${var:fmt}``) in ``text``
     with ``substitutions[var]``. Variables not in the dict are left
@@ -5065,6 +5154,14 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # (non-templated) panel and the rest of the pipeline can stay
     # ignorant of the fan-out.
     dashboard = _expand_repeat_panels(dashboard, result)
+
+    # Issue #157: a Grafana dropdown that stands for a *number* (percentile,
+    # top-N, threshold) lands in a PromQL scalar slot. Substitute the dropdown's
+    # selected value into those slots BEFORE any translation path runs so e.g.
+    # ``histogram_quantile($quantile, …)`` becomes ``histogram_quantile(0.95, …)``
+    # — valid PromQL that migrates into a working panel instead of silently
+    # degrading to a "Migration Required" placeholder.
+    dashboard = _substitute_scalar_dropdown_values(dashboard)
 
     all_panels = _flatten_dashboard_panels(dashboard)
     result.total_panels = len(all_panels)
