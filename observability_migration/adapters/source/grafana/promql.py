@@ -109,6 +109,41 @@ def _resolve_metric_field(resolver, metric_name, *, prefer=None):
         return _esql_field(metric_name)
     return _esql_field(resolve(metric_name, prefer=prefer))
 
+
+def _frag_metric_field_raw(frag, resolver):
+    """Unescaped physical field for the fragment's metric, for metric-aware
+    label resolution (issue #163).
+
+    Unlike ``_resolve_metric_field`` this returns the field *without* ES|QL
+    backticks, because the co-occurrence probe in ``resolve_label`` adds its
+    own. Returns ``None`` when there is no metric or the resolver cannot resolve
+    one, so the label paths fall back to index-global resolution.
+    """
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name or resolver is None:
+        return None
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if resolve is None:
+        return metric_name
+    try:
+        return resolve(metric_name) or metric_name
+    except Exception:
+        return metric_name
+
+
+def _resolve_label_for(resolver, label, metric_field=None):
+    """Resolve a label through the resolver, metric-aware when a metric is given.
+
+    Falls back to the bare label when there is no resolver. Centralizes the
+    metric-aware vs index-global choice so the filter/group *generators* and the
+    incompatibility *checks* resolve the same field (issue #163).
+    """
+    if not resolver:
+        return label
+    if metric_field:
+        return resolver.resolve_label(label, metric_field=metric_field)
+    return resolver.resolve_label(label)
+
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -1174,8 +1209,8 @@ def _param_binds_regex_default(resolver, param_name):
     return bool(names) and param_name in names
 
 
-def _matcher_to_esql(matcher, resolver):
-    label = resolver.resolve_label(matcher["label"]) if resolver else matcher["label"]
+def _matcher_to_esql(matcher, resolver, metric_field=None):
+    label = _resolve_label_for(resolver, matcher["label"], metric_field)
     op = matcher["op"]
     value = matcher["value"]
     if not label:
@@ -2392,10 +2427,11 @@ def _frag_filters(frag, resolver):
     emitted when a matcher produced no WHERE clause. When the target binds
     ``?var`` parameters the filter is preserved (issue #64) and not counted.
     """
+    metric_field = _frag_metric_field_raw(frag, resolver)
     filters = []
     had_vars = False
     for matcher in frag.matchers:
-        filter_expr = _matcher_to_esql(matcher, resolver)
+        filter_expr = _matcher_to_esql(matcher, resolver, metric_field=metric_field)
         if filter_expr:
             filters.append(filter_expr)
         elif _matcher_has_dropped_variable(matcher):
@@ -2404,10 +2440,14 @@ def _frag_filters(frag, resolver):
 
 
 def _frag_has_incompatible_target_fields(frag, resolver):
+    # Resolve with the same scoped metric the generator uses (issue #163);
+    # otherwise this inspects a different (index-global) field than the WHERE
+    # clause emits and produces a false "dropped incompatible field" warning.
+    metric_field = _frag_metric_field_raw(frag, resolver)
     return any(
         _matcher_has_incompatible_target_field(
             m,
-            resolver.resolve_label(m["label"]) if resolver else m["label"],
+            _resolve_label_for(resolver, m["label"], metric_field),
             resolver,
         )
         for m in frag.matchers
@@ -2485,9 +2525,14 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     variables (``$Var`` → ``label_Var``) and are silently dropped; keeping
     them would emit non-existent field names in the BY clause.
     """
+    metric_field = _frag_metric_field_raw(frag, resolver)
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
-    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
-    preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    explicit = resolver.resolve_labels(raw, metric_field=metric_field) if resolver else list(raw)
+    preferred = (
+        resolver.resolve_labels(preferred_labels or [], metric_field=metric_field)
+        if resolver
+        else list(preferred_labels or [])
+    )
     explicit = _filter_usable_group_fields(explicit, resolver)
     preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
     return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
@@ -2496,9 +2541,16 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
 def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
     if frag is None:
         return False
+    # Mirror the metric-aware resolution in `_frag_group_labels` so the check
+    # inspects the same BY/KEEP fields the generator emits (issue #163).
+    metric_field = _frag_metric_field_raw(frag, resolver)
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
-    explicit = resolver.resolve_labels(raw) if resolver else list(raw)
-    preferred = resolver.resolve_labels(preferred_labels or []) if resolver else list(preferred_labels or [])
+    explicit = resolver.resolve_labels(raw, metric_field=metric_field) if resolver else list(raw)
+    preferred = (
+        resolver.resolve_labels(preferred_labels or [], metric_field=metric_field)
+        if resolver
+        else list(preferred_labels or [])
+    )
     return any(not _group_field_is_usable(field_name, resolver) for field_name in explicit) or any(
         not _group_field_is_usable(field_name, resolver, drop_missing=False) for field_name in preferred
     )
