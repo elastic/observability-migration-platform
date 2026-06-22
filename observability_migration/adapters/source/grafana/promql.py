@@ -3017,25 +3017,24 @@ def _build_measure_spec(
             # value per TBUCKET window, matching PromQL instant-vector semantics.
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
             warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
-        elif can_use_direct_ts_gauge:
-            source = "TS"
-            time_filter = rule_pack.ts_time_filter
-            bucket_expr = rule_pack.ts_bucket
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            # Issue #176: every STATS output expression must be an aggregate (or appear
-            # in BY) — a bare ``STATS col = col`` is rejected with verification_exception.
-            # On the TS source ``BY TBUCKET`` alone still splits each series by TSID, so
-            # the default gauge aggregator is a faithful per-series intra-bucket
-            # downsample (no collapse, hence no honest-loss warning).
-            stats_expr = f"{rule_pack.default_gauge_agg.upper()}({metric_field})"
-        elif can_use_ts_aggregated_gauge:
+        elif can_use_direct_ts_gauge or can_use_ts_aggregated_gauge:
+            # Both TS-gauge paths emit the same per-bucket aggregate. Issue #176: every
+            # STATS output expression must be an aggregate (or appear in BY) — a bare
+            # ``STATS col = col`` is rejected with verification_exception. The default
+            # gauge aggregator over ``BY TBUCKET`` is the faithful downsample.
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             stats_expr = f"{default_agg}({metric_field})"
-            warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+            # The sole difference between the two paths is the warning. The direct path
+            # (no group_fields) is TSID-split per series, so it is loss-free and silent.
+            # The aggregated path is reached when group_fields are present or the direct
+            # path was disabled (multi-target fusion); only then can the default
+            # aggregator collapse series, so it carries the honest-loss warning.
+            if not can_use_direct_ts_gauge:
+                warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter

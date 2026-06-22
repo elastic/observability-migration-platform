@@ -2379,28 +2379,25 @@ def simple_metric_family_rule(context):
         inner_expr = f"LAST_OVER_TIME({physical_metric})"
         _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
         stats_expr = f"MAX({inner_expr})"
-    elif can_use_direct_ts_gauge:
-        source = "TS"
-        time_filter = rp.ts_time_filter
-        bucket = rp.ts_bucket
-        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        # Issue #176: every STATS output expression must be an aggregate (or appear in
-        # BY) — a bare ``STATS col = col`` is rejected with verification_exception. On
-        # the TS source ``BY TBUCKET`` alone still splits each series by TSID, so the
-        # default gauge aggregator is a faithful per-series intra-bucket downsample
-        # (no collapse, hence no honest-loss warning), not a cross-series average.
-        stats_expr = f"{rp.default_gauge_agg.upper()}({physical_metric})"
-    elif can_use_ts_aggregated_gauge:
+    elif can_use_direct_ts_gauge or can_use_ts_aggregated_gauge:
+        # Both TS-gauge paths emit the same per-bucket aggregate. Issue #176: every STATS
+        # output expression must be an aggregate (or appear in BY) — a bare ``STATS col =
+        # col`` is rejected with verification_exception. The default gauge aggregator over
+        # ``BY TBUCKET`` is the faithful downsample, not a cross-series average.
         source = "TS"
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         default_agg = rp.default_gauge_agg.upper()
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
         stats_expr = f"{default_agg}({physical_metric})"
-        # No explicit PromQL aggregator was given; default to the gauge aggregator. With
-        # grouping labels this is a faithful per-series downsample; without them it collapses
-        # series and the warning says so (and is recorded as a semantic loss).
-        _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+        # The sole difference between the two paths is the warning. The direct path (no
+        # group_fields) is TSID-split per series on the TS source, so it is loss-free and
+        # silent. The aggregated path is reached when grouping labels are present or the
+        # direct path was disabled (multi-target fusion); only then can the default
+        # aggregator collapse series, so it carries the honest-loss warning (which itself
+        # downgrades to "faithful per series" when grouping labels are present).
+        if not can_use_direct_ts_gauge:
+            _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
