@@ -2704,6 +2704,49 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
     return False
 
 
+def _drop_legend_labels_if_redundant(
+    frag,
+    resolver,
+    rule_pack,
+    group_fields,
+    preferred_origin,
+    summary_mode,
+    allow_direct_ts_gauge=True,
+):
+    """Issue #99: return ``group_fields`` with redundant legendFormat-origin labels
+    dropped, or unchanged if dropping is unsafe.
+
+    Shared by the direct family rules (``translate.py``) and the formula/binary
+    measure-spec path (:func:`_build_measure_spec`) so arithmetic panels avoid the
+    same distorting outer ``AVG`` the direct path does. All guards must hold to drop:
+
+    * **Non-summary panel** — the TSID split is a line-chart affordance; summary /
+      categorical panels (bargauge) render their breakdown from the explicit
+      ``output_group_fields`` column, so dropping there collapses per-series bars.
+    * **Legend origin** — the labels came from ``legendFormat``, not an explicit
+      PromQL ``by()`` (which is semantically meaningful and stays).
+    * **Redundant on TS** — see :func:`_legend_grouping_redundant_on_ts`.
+    * **Direct-TS form reachable** — ``simple_metric`` only splits series via the
+      bare ``STATS field = field`` form; when that is disabled (multi-target fusion
+      passes ``allow_direct_ts_gauge=False``) an explicit ``AVG`` would collapse the
+      series, so the label is kept. ``range_agg`` does not use this form, so it is
+      unaffected.
+    """
+    if summary_mode:
+        return group_fields
+    if preferred_origin != "legend":
+        return group_fields
+    if not group_fields:
+        return group_fields
+    if _frag_group_labels(frag, resolver):
+        return group_fields
+    if frag.family == "simple_metric" and not allow_direct_ts_gauge:
+        return group_fields
+    if not _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
+        return group_fields
+    return []
+
+
 def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):
     if group_fields:
         return False
@@ -2757,6 +2800,17 @@ def _build_measure_spec(
         resolver,
         preferred_group_labels,
         preferred_origin=preferred_group_labels_origin,
+    )
+    # Issue #99: drop legend-origin BY labels that ES|QL TSID already splits, so
+    # formula/binary panels avoid the distorting outer AVG the direct path now skips.
+    group_fields = _drop_legend_labels_if_redundant(
+        frag,
+        resolver,
+        rule_pack,
+        group_fields,
+        preferred_group_labels_origin,
+        summary_mode,
+        allow_direct_ts_gauge,
     )
     if _frag_has_incompatible_group_fields(frag, resolver, preferred_group_labels):
         warnings.append("Dropped grouping fields with incompatible target field types during migration")

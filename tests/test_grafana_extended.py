@@ -2925,6 +2925,52 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertIn("instance", ctx.esql_query)
         self.assertIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
 
+    def test_formula_range_func_drops_legend_label_no_outer_avg(self):
+        # Issue #99 review: arithmetic/formula panels go through _build_measure_spec,
+        # a parallel path that must apply the same legend-label drop. A range function
+        # in a formula must emit the bare TS function (TSID-split) with no distorting
+        # outer AVG and no legend label in BY.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", ctx.esql_query)
+        self.assertNotIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
+        self.assertNotIn(", instance", ctx.esql_query)
+        self.assertFalse(any("Added outer AVG" in w for w in ctx.warnings))
+
+    def test_formula_range_func_non_tsds_keeps_legend_label(self):
+        # Issue #99 review: the formula path applies the same TS-eligibility gate.
+        # A non-TSDS *_over_time field keeps its legend label (old AVG behavior)
+        # rather than collapsing series.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+            assume_tsds_gauges=False,
+        )
+        self.assertIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
+        self.assertIn("instance", ctx.esql_query)
+
+    def test_formula_summary_panel_keeps_legend_label(self):
+        # Issue #99 review: the summary/categorical guard applies on the formula path
+        # too — a bargauge formula keeps its breakdown column.
+        ctx = self._translate(
+            "go_goroutines + 0",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+                "summary_mode": True,
+            },
+        )
+        self.assertIn("instance", ctx.esql_query)
+
     def test_target_hints_backfill_from_dashboard_map_when_panel_has_none(self):
         target = {"expr": "go_goroutines", "legendFormat": ""}
         hints = panels._target_translation_hints(

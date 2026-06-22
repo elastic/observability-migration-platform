@@ -46,6 +46,7 @@ from .promql import (
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
     _counter_type_uncertainty_warning,
+    _drop_legend_labels_if_redundant,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -56,7 +57,6 @@ from .promql import (
     _grouping_parts,
     _inline_filters_into_stats_expr,
     _is_counter_fallback,
-    _legend_grouping_redundant_on_ts,
     _parse_fragment,
     _parse_logql_search,
     _resolve_metric_field,
@@ -1919,17 +1919,19 @@ def _drop_redundant_legend_grouping(context, frag, group_fields):
     legend-origin labels — see ``_target_translation_hints``) instead render a
     breakdown from the explicit ``output_group_fields`` column, so dropping the
     label there would collapse the per-series bars rather than relocate them.
-    Restrict the drop to non-summary (line-style) panels.
+
+    The decision is shared with the formula/binary path via
+    :func:`_drop_legend_labels_if_redundant`; the direct family rules always allow
+    the bare direct-TS-gauge form, so ``allow_direct_ts_gauge`` defaults to True.
     """
-    if (
-        not _summary_mode_from_metadata(context.metadata)
-        and context.metadata.get("preferred_group_labels_origin") == "legend"
-        and group_fields
-        and not _frag_group_labels(frag, context.resolver)
-        and _legend_grouping_redundant_on_ts(frag, context.resolver, context.rule_pack)
-    ):
-        return []
-    return group_fields
+    return _drop_legend_labels_if_redundant(
+        frag,
+        context.resolver,
+        context.rule_pack,
+        group_fields,
+        context.metadata.get("preferred_group_labels_origin"),
+        _summary_mode_from_metadata(context.metadata),
+    )
 
 
 @QUERY_TRANSLATORS.register("range_agg_family", priority=8)
