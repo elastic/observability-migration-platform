@@ -388,10 +388,11 @@ def analyze_validation_error(query, error_msg, resolver=None):
     counter_mismatch_metrics = [
         metric.strip()
         for metric in re.findall(
-            # Capture only the bare metric identifier (stop at a comma, paren, or
-            # whitespace) so a nested form like ``RATE(CASE(...))`` does not leak a
-            # whole expression in place of a metric name.
-            r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,()\s]+)",
+            # Capture the first argument only when it is a bare metric identifier
+            # immediately followed by the argument-separating comma or the closing
+            # paren. A nested form like ``RATE(CASE(...))`` then matches nothing
+            # rather than leaking the wrapper function name (``CASE``) as a metric.
+            r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,()\s]+)\s*[,)]",
             error_msg,
         )
     ]

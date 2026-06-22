@@ -3879,6 +3879,28 @@ class TranslatorRegressionTests(unittest.TestCase):
         suggestions = {entry["name"]: entry["suggested_fields"] for entry in analysis["unknown_columns"]}
         self.assertEqual(suggestions["status"], ["state", "tags"])
 
+    def test_validation_error_analysis_captures_bare_counter_metric(self):
+        # A plain RATE/INCREASE over a metric field yields the bare metric name.
+        query = "TS metrics-*\n| STATS x = RATE(foo_total, 5 minute)"
+        error = (
+            "the first argument of [RATE(foo_total, 5 minute)] must be [counter], "
+            "found value [foo_total] type [double]"
+        )
+        analysis = migrate.analyze_validation_error(query, error, resolver=None)
+        self.assertEqual(analysis["counter_mismatch_metrics"], ["foo_total"])
+
+    def test_validation_error_analysis_skips_nested_rate_expression(self):
+        # A nested first argument (e.g. RATE(CASE(...))) must not leak the wrapper
+        # function name as a bogus counter-mismatch metric (would surface as
+        # "`CASE` is not stored as a counter" in the self-heal warning).
+        query = 'TS metrics-*\n| STATS x = RATE(CASE(state == "idle", value, 0), 5 minute)'
+        error = (
+            'the first argument of [RATE(CASE(state == "idle", value, 0), 5 minute)] '
+            "must be [counter], found value [CASE(...)] type [double]"
+        )
+        analysis = migrate.analyze_validation_error(query, error, resolver=None)
+        self.assertEqual(analysis["counter_mismatch_metrics"], [])
+
     def test_validation_failure_self_heals_for_missing_field(self):
         # An Unknown column failure means the target field has not been ingested
         # yet; the ES|QL is structurally valid and will render once data arrives.
