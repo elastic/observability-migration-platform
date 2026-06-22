@@ -734,8 +734,24 @@ _SCALAR_VAR_TOKEN_RE = re.compile(
     r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
 )
 
+# The aggregate operators among the scalar-slot functions. Unlike ordinary
+# functions, PromQL aggregations accept an optional ``by (…)`` / ``without (…)``
+# modifier that may appear *before* the argument list — ``topk by (pod) (5, …)``
+# is equivalent to ``topk(5, …) by (pod)``. The argument list (and thus the
+# scalar slot) sits after that leading modifier, so the call matcher has to skip
+# it to land on the right ``(`` (issue #157 review follow-up).
+_SCALAR_AGG_FUNCS = {"topk", "bottomk", "limitk", "quantile"}
+_SCALAR_NONAGG_FUNCS = set(_SCALAR_ARG_SLOTS) - _SCALAR_AGG_FUNCS
+
+# An optional leading aggregation modifier: ``by (a, b)`` or ``without ()``.
+_AGG_MODIFIER = r"(?:(?:by|without)\b\s*\([^)]*\)\s*)?"
+
 _SCALAR_FUNC_CALL_RE = re.compile(
-    r"(?<![\w:.])(" + "|".join(sorted(_SCALAR_ARG_SLOTS, key=len, reverse=True)) + r")\s*\(",
+    r"(?<![\w:.])(?:"
+    + r"(?P<agg>" + "|".join(sorted(_SCALAR_AGG_FUNCS, key=len, reverse=True)) + r")\s*" + _AGG_MODIFIER + r"\("
+    + r"|"
+    + r"(?P<func>" + "|".join(sorted(_SCALAR_NONAGG_FUNCS, key=len, reverse=True)) + r")\s*\("
+    + r")",
     re.IGNORECASE,
 )
 
@@ -828,7 +844,7 @@ def substitute_scalar_template_vars(expr, values):
             if not match:
                 out.append(text[pos:])
                 break
-            fname = match.group(1).lower()
+            fname = (match.group("agg") or match.group("func")).lower()
             open_idx = match.end() - 1
             args, end_idx = _scan_call_args(text, open_idx)
             if args is None:

@@ -99,6 +99,49 @@ class TestSubstituteScalarTemplateVars(unittest.TestCase):
             "clamp_max(histogram_quantile(0.95, foo), 5)",
         )
 
+    def test_aggregate_leading_by_modifier(self):
+        # PromQL allows the aggregation modifier *before* the argument list:
+        # ``topk by (pod) (5, …)`` ≡ ``topk(5, …) by (pod)``. The scalar slot
+        # still sits in the trailing argument list and must be substituted.
+        self.assertEqual(
+            self._sub("topk by (pod) ($top_n, rate(http_requests_total[5m]))"),
+            "topk by (pod) (5, rate(http_requests_total[5m]))",
+        )
+
+    def test_aggregate_leading_without_modifier(self):
+        self.assertEqual(
+            self._sub("bottomk without (job) ($top_n, rate(http_requests_total[5m]))"),
+            "bottomk without (job) (5, rate(http_requests_total[5m]))",
+        )
+
+    def test_quantile_leading_by_modifier(self):
+        self.assertEqual(
+            self._sub("quantile by (job) ($quantile, latency_seconds)"),
+            "quantile by (job) (0.95, latency_seconds)",
+        )
+
+    def test_aggregate_trailing_modifier_still_substitutes(self):
+        # The trailing-modifier form was already handled; keep it covered so the
+        # leading-modifier support doesn't regress it.
+        self.assertEqual(
+            self._sub("topk($top_n, rate(http_requests_total[5m])) by (pod)"),
+            "topk(5, rate(http_requests_total[5m])) by (pod)",
+        )
+
+    def test_empty_without_label_list_modifier(self):
+        self.assertEqual(
+            self._sub("bottomk without () ($top_n, foo)"),
+            "bottomk without () (5, foo)",
+        )
+
+    def test_leading_modifier_does_not_confuse_similar_function(self):
+        # ``quantile_over_time`` is a range function, not the ``quantile``
+        # aggregate, so the agg-modifier branch must not swallow its prefix.
+        self.assertEqual(
+            self._sub("quantile_over_time($cpu_percentile, foo[5m])"),
+            "quantile_over_time(0.9, foo[5m])",
+        )
+
     def test_label_matcher_value_is_left_untouched(self):
         # A variable inside a label selector is NOT a scalar slot — leave it for
         # the label-matcher / control machinery.
@@ -276,6 +319,15 @@ class TestDropdownMatchesHardcodedEndToEnd(unittest.TestCase):
             "clamp_max(up, 5)",
             "clamp_max(up, $max)",
             [{"name": "max", "current": {"value": "5"}}],
+        )
+
+    def test_topk_top_n_leading_modifier(self):
+        # The leading ``by (…)`` aggregation form must migrate as well as the
+        # hardcoded value, just like the trailing form.
+        self._assert_parity(
+            "topk by (pod) (5, rate(http_requests_total[5m]))",
+            "topk by (pod) ($top_n, rate(http_requests_total[5m]))",
+            [{"name": "top_n", "current": {"value": "5"}}],
         )
 
 
