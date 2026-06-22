@@ -1562,7 +1562,7 @@ class TestValueWrapperTranslations(unittest.TestCase):
 
 
 class TestPromQLOrFallback(unittest.TestCase):
-    """PromQL 'or' between distinct metrics: translate left operand with warning."""
+    """PromQL 'or' between distinct metrics: keep BOTH as a COALESCE union (issue #167)."""
 
     _INDEX = "metrics-*"
 
@@ -1574,17 +1574,43 @@ class TestPromQLOrFallback(unittest.TestCase):
         rp = RulePackConfig()
         return translate_promql_to_esql(expr, esql_index=self._INDEX, rule_pack=rp)
 
-    def test_or_between_two_rates_uses_left_operand(self):
-        """rate(a) or rate(b) → translates, references left metric, warns about fallback."""
+    def test_or_between_two_rates_keeps_both_metrics(self):
+        """rate(a) or rate(b) → keeps both metrics; right fills where left has no data.
+
+        Regression for issue #167: the old behavior translated the left operand
+        alone and silently dropped every series that came only from the right
+        metric. The union must reference both metrics and COALESCE them with
+        left precedence.
+        """
         ctx = self._translate(
             "rate(http_requests_total[5m]) or rate(http_errors_total[5m])"
         )
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
-        self.assertIn("http_requests_total", ctx.esql_query or "")
+        query = ctx.esql_query or ""
+        self.assertIn("http_requests_total", query)
+        self.assertIn("http_errors_total", query)
+        self.assertIn("COALESCE(", query.upper())
+        # left operand comes first inside COALESCE (PromQL left precedence)
+        self.assertLess(
+            query.find("COALESCE(http_requests_total"),
+            query.find("http_errors_total", query.find("COALESCE(")),
+        )
         self.assertTrue(
-            any("or" in w.lower() and ("fallback" in w.lower() or "left" in w.lower())
-                for w in ctx.warnings),
-            f"Expected or-fallback warning; got: {ctx.warnings}",
+            any("or" in w.lower() and "both metrics" in w.lower() for w in ctx.warnings),
+            f"Expected an or-union note mentioning both metrics; got: {ctx.warnings}",
+        )
+
+    def test_or_between_metrics_with_divergent_grouping_needs_manual_review(self):
+        """A cross-metric 'or' whose operands group by different dimensions has no
+        safe ES|QL alignment, so it must be flagged for manual review rather than
+        dropping half the data (issue #167)."""
+        ctx = self._translate(
+            "sum by (instance)(node_a) or sum by (job)(node_b)"
+        )
+        self.assertEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertTrue(
+            any("manual review" in w.lower() for w in ctx.warnings),
+            f"Expected a manual-review warning; got: {ctx.warnings}",
         )
 
     def test_or_with_vector_zero_uses_left_operand(self):

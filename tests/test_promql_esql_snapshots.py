@@ -277,8 +277,11 @@ CASES: list[tuple[str, str, str]] = [
         'http_requests_total{instance="i",status=~"4.."} or http_requests_total{instance="i",status=~"5.."}',
         "timeseries",
     ),
+    # Cross-metric ``or`` keeps BOTH metrics as a COALESCE union (issue #167):
+    # the left operand takes precedence and the right fills series where the
+    # left has no data, instead of silently dropping the right operand.
     (
-        "or_cross_metric_left_fallback",
+        "or_cross_metric_union",
         "rate(http_requests_total[5m]) or rate(http_errors_total[5m])",
         "timeseries",
     ),
