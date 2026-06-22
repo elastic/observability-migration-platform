@@ -24,6 +24,44 @@ _REL_LAST_RE = re.compile(
 )
 
 
+# Kibana enforces a minimum rule schedule interval (default 1m); a shorter
+# interval is rejected or silently coerced on rule creation, so sub-minute
+# source cadences must be raised to this floor.
+_KIBANA_MIN_SCHEDULE_SECONDS = 60
+
+
+def _seconds_to_compact_duration(seconds: int, *, allow_days: bool = False) -> str:
+    """Render whole seconds as a compact ``<number><unit>`` duration string.
+
+    Use the largest unit that divides evenly (``300`` -> ``"5m"``,
+    ``3600`` -> ``"1h"``), otherwise fall back to seconds (``90`` -> ``"90s"``).
+    Non-positive or unparseable values yield ``""``. Days are only emitted when
+    ``allow_days`` is set, so callers that must stay within hours (Datadog
+    windows) keep their existing output.
+    """
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0:
+        return ""
+    units = ((86400, "d"), (3600, "h"), (60, "m")) if allow_days else ((3600, "h"), (60, "m"))
+    for unit_seconds, suffix in units:
+        if total % unit_seconds == 0:
+            return f"{total // unit_seconds}{suffix}"
+    return f"{total}s"
+
+
+def _seconds_to_kibana_interval(seconds: int) -> str:
+    """Render a Grafana group interval (seconds) as a Kibana schedule string.
+
+    Grafana evaluation groups express their interval in whole seconds; Kibana
+    schedules want a ``<number><unit>`` string. Delegates to
+    ``_seconds_to_compact_duration`` (days allowed, since Kibana accepts ``d``).
+    """
+    return _seconds_to_compact_duration(seconds, allow_days=True)
+
+
 @dataclass
 class AlertingIR:
     """Source-agnostic alerting / monitor asset.
@@ -337,13 +375,9 @@ def _datadog_calendar_shift_timezone_is_exact(timezone_name: str) -> bool:
 
 
 def _datadog_seconds_to_window(total_seconds: int) -> str:
-    if total_seconds <= 0:
-        return ""
-    if total_seconds % 3600 == 0:
-        return f"{total_seconds // 3600}h"
-    if total_seconds % 60 == 0:
-        return f"{total_seconds // 60}m"
-    return f"{total_seconds}s"
+    # Datadog windows top out at hours; keep days disabled so existing output
+    # (e.g. 86400 -> "24h") is preserved.
+    return _seconds_to_compact_duration(total_seconds)
 
 
 def _datadog_automation_tier(monitor_type: str) -> str:
@@ -520,8 +554,16 @@ def _grafana_source_queries(
 def build_alerting_ir_from_grafana_unified(
     rule: dict[str, Any],
     datasource_map: dict[str, dict[str, Any]] | None = None,
+    group_intervals: dict[tuple[str, str], int] | None = None,
 ) -> AlertingIR:
-    """Build an AlertingIR from a Grafana Unified Alerting provisioned rule dict."""
+    """Build an AlertingIR from a Grafana Unified Alerting provisioned rule dict.
+
+    ``group_intervals`` maps ``(folderUID, ruleGroup)`` to the evaluation
+    group's interval in seconds. In Grafana the schedule lives on the group,
+    not the rule, so the interval must be resolved here. When it cannot be
+    resolved the schedule is left empty; the mapping layer then applies a
+    default and ``record_semantic_losses`` flags the dropped cadence.
+    """
     title = str(rule.get("title", "") or "")
     uid = str(rule.get("uid", "") or "")
     alert_id = uid if uid else title
@@ -539,6 +581,16 @@ def build_alerting_ir_from_grafana_unified(
     pending = str(rule.get("for", "") or "")
     source_queries, used_datasources = _grafana_source_queries(data, datasource_map)
 
+    group_key = (str(rule.get("folderUID", "") or ""), str(rule.get("ruleGroup", "") or ""))
+    interval_seconds = group_intervals.get(group_key) if group_intervals else None
+    schedule_interval = ""
+    schedule_interval_clamped_from = ""
+    if interval_seconds:
+        effective_seconds = max(interval_seconds, _KIBANA_MIN_SCHEDULE_SECONDS)
+        if effective_seconds != interval_seconds:
+            schedule_interval_clamped_from = _seconds_to_kibana_interval(interval_seconds)
+        schedule_interval = _seconds_to_kibana_interval(effective_seconds)
+
     source_extension: dict[str, Any] = {
         "data": data,
         "labels": dict(labels),
@@ -546,6 +598,8 @@ def build_alerting_ir_from_grafana_unified(
         "source_queries": source_queries,
         "datasource_map": used_datasources,
     }
+    if schedule_interval_clamped_from:
+        source_extension["schedule_interval_clamped_from"] = schedule_interval_clamped_from
 
     ann_summary = " ".join(f"{k}={v}" for k, v in annotations.items() if v)[:2000]
 
@@ -568,6 +622,7 @@ def build_alerting_ir_from_grafana_unified(
         source_extension=source_extension,
         automation_tier="draft_requires_review",
         target_rule_type="es-query",
+        schedule_interval=schedule_interval,
         pending_period=pending,
         notification_summary=ann_summary,
     )

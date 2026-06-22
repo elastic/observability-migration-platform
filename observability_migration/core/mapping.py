@@ -591,6 +591,17 @@ def record_semantic_losses(ir: AlertingIR) -> list[str]:
         annotations = ext.get("annotations", {})
         if annotations.get("__dashboardUid__") or annotations.get("__panelId__"):
             losses.append("Dashboard-linked alert annotation requires manual Kibana linkage")
+        if not ir.schedule_interval:
+            losses.append(
+                "Evaluation interval could not be resolved from the source group; "
+                "applying default schedule (1m)"
+            )
+        clamped_from = ext.get("schedule_interval_clamped_from")
+        if clamped_from:
+            losses.append(
+                f"Source evaluation interval ({clamped_from}) is below Kibana's "
+                f"minimum schedule interval; raised to {ir.schedule_interval}"
+            )
 
     ir.losses = losses
     return losses
