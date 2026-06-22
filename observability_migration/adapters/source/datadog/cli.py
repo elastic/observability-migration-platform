@@ -947,7 +947,7 @@ def _validate_all_dashboards(
         print("  Top missing metrics: " + ", ".join(f"{name} ({count})" for name, count in top_metrics))
     if validation_summary.get("counter_type_mismatches"):
         top_counters = list(validation_summary["counter_type_mismatches"].items())[:5]
-        print("  Residual counter type mismatches: " + ", ".join(f"{name} ({count})" for name, count in top_counters))
+        print("  Counter type mismatches (kept as self-healing panels, will populate once stored as counters): " + ", ".join(f"{name} ({count})" for name, count in top_counters))
     if validation_summary.get("empty_fallback_indexes"):
         top_fallbacks = list(validation_summary["empty_fallback_indexes"].items())[:5]
         print("  Empty fallback streams: " + ", ".join(f"{name} ({count})" for name, count in top_fallbacks))

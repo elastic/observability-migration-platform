@@ -3919,20 +3919,70 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
         )
 
-    def test_validation_failure_does_not_self_heal_for_counter_mismatch(self):
-        # A counter type mismatch means the field exists but is the wrong type;
-        # data is present, so waiting will not fix it.
-        self.assertFalse(
+    def test_validation_failure_self_heals_for_counter_mismatch(self):
+        # Issue #170: a counter type mismatch is environment-dependent. The same
+        # RATE/IRATE/INCREASE/DELTA query passes against a target that stores the
+        # metric with counter semantics and fails against one that does not. The
+        # query form is the faithful translation of a counter operation in the
+        # source, so the check cannot positively confirm the form is wrong -- it
+        # only knows this target has not confirmed counter storage. The panel
+        # should self-heal (kept with a warning) instead of being marked failed.
+        self.assertTrue(
             disposition.validation_failure_self_heals(
                 {
                     "status": "fail",
                     "analysis": {
-                        "unknown_columns": [{"name": "foo", "role": "metric"}],
-                        "counter_mismatch_metrics": ["foo"],
+                        "counter_mismatch_metrics": ["foo_total"],
+                        "raw_error": (
+                            "the first argument of [RATE(foo_total, 5 minute)] "
+                            "must be [counter], found value [foo_total] type [double]"
+                        ),
                     },
                 }
             )
         )
+
+    def test_counter_mismatch_warning_names_metric(self):
+        # Issue #170: the self-heal warning for a counter mismatch names the
+        # metric and explains it is a target storage gap, not a broken query.
+        message = disposition.missing_target_field_warning(
+            {
+                "analysis": {
+                    "counter_mismatch_metrics": ["foo_total"],
+                }
+            }
+        )
+        self.assertIn("foo_total", message)
+        self.assertIn("counter", message)
+
+    def test_counter_mismatch_warning_pluralizes_multiple_metrics(self):
+        # Multiple mismatched metrics must read grammatically ("are", not "is").
+        message = disposition.missing_target_field_warning(
+            {"analysis": {"counter_mismatch_metrics": ["foo_total", "bar_total"]}}
+        )
+        self.assertIn("foo_total", message)
+        self.assertIn("bar_total", message)
+        self.assertIn("are not stored as a counter", message)
+
+    def test_warning_names_both_counter_and_missing_field(self):
+        # A single live validation can report several problems at once ("Found N
+        # problems"). The warning must surface BOTH the counter-storage gap and
+        # the unresolved field/index -- otherwise a reviewer told to fix counter
+        # storage never learns the field is also missing and the panel never
+        # self-heals.
+        message = disposition.missing_target_field_warning(
+            {
+                "analysis": {
+                    "counter_mismatch_metrics": ["foo_total"],
+                    "unknown_columns": [{"name": "pod", "role": "label"}],
+                    "unknown_indexes": ["metrics-prometheus.bar-default"],
+                }
+            }
+        )
+        self.assertIn("foo_total", message)
+        self.assertIn("counter", message)
+        self.assertIn("pod", message)
+        self.assertIn("metrics-prometheus.bar-default", message)
 
     def test_missing_target_field_warning_names_fields_and_indexes(self):
         message = disposition.missing_target_field_warning(
@@ -4708,6 +4758,35 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(panel.status, "migrated_with_warnings")
         self.assertEqual(panel.kibana_type, "line")
         self.assertFalse(panel.post_validation_action.startswith("placeholder_"))
+
+    def test_apply_failed_validation_outcome_self_heals_counter_mismatch(self):
+        # Issue #170: a counter type mismatch is an environment-dependent target
+        # storage gap, not a broken query. The faithful RATE/IRATE form is kept
+        # with a warning instead of being placeholdered (which would mark the
+        # dashboard failed) for a query that is valid against a counter target.
+        from observability_migration.adapters.source.grafana.cli import (
+            _apply_failed_validation_outcome,
+        )
+
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
+        panel.esql_query = "TS metrics-*\n| STATS foo = RATE(foo_total, 5 minute)"
+        outcome = _apply_failed_validation_outcome(
+            panel,
+            {
+                "error": (
+                    "the first argument of [RATE(foo_total, 5 minute)] must be "
+                    "[counter], found value [foo_total] type [double]"
+                ),
+                "analysis": {"counter_mismatch_metrics": ["foo_total"]},
+            },
+        )
+        self.assertEqual(outcome, "self_heal")
+        self.assertEqual(panel.status, "migrated_with_warnings")
+        self.assertEqual(panel.kibana_type, "line")
+        self.assertFalse(panel.post_validation_action.startswith("placeholder_"))
+        joined = " ".join(panel.reasons + panel.notes)
+        self.assertIn("foo_total", joined)
+        self.assertIn("counter", joined)
 
     def test_apply_failed_validation_outcome_placeholders_malformed_query(self):
         from observability_migration.adapters.source.grafana.cli import (
