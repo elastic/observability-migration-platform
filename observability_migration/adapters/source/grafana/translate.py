@@ -2097,6 +2097,26 @@ def simple_agg_family_rule(context):
                 )
                 frag.extra.pop("post_filter", None)
                 return "count over a comparison: target series unidentifiable"
+            # Issue #166 follow-up (review): PromQL ``count()`` counts vector
+            # elements — series keyed by their FULL label set (e.g. ``up`` is
+            # keyed by ``{job, instance}``). When the query supplies no grouping
+            # labels the collapse key falls back to the instance dimension ALONE,
+            # which is not a complete Prometheus series identity: two matching
+            # series that share an ``instance`` but differ on another label (e.g.
+            # ``job``) collapse into one row and the count is under-stated. The
+            # target schema cannot tell us the source label set, so we keep the
+            # best-effort collapse but surface the ambiguity instead of letting a
+            # clean (warning-free) migration imply the result is exact.
+            if not group_fields:
+                _append_unique(
+                    context.warnings,
+                    "count() over a comparison collapses matching samples to "
+                    "series by the instance dimension only (the query supplied no "
+                    "grouping labels); if matching series share an instance but "
+                    "differ on another label such as job, the count may be "
+                    "under-stated — add the distinguishing label to by(...) or "
+                    "verify the series identity",
+                )
             where_lines = [
                 f"FROM {context.index}",
                 f"| WHERE {rp.from_time_filter}",

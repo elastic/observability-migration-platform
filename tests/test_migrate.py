@@ -1680,6 +1680,37 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertRegex(query, r"\| STATS series_present = COUNT\(\*\) BY .*service\.name")
         self.assertRegex(query, r"\| STATS up_count = COUNT\(\*\) BY service\.name")
 
+    def test_count_comparison_ungrouped_warns_series_identity_may_undercount(self):
+        # Issue #166 review follow-up: PromQL count() counts vector elements,
+        # which are keyed by the FULL series label set (``up`` is keyed by
+        # ``{job, instance}``). With no grouping labels the collapse key falls
+        # back to the instance dimension ALONE — two matching ``up`` series on
+        # the SAME instance but DIFFERENT job collapse into one row and the
+        # count is under-stated. The clean migration must not imply the result
+        # is exact, so an honest "may be under-stated" caveat must surface.
+        translated = self.translate("count(up == 0)", panel_type="stat")
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        # Collapse key is the lone instance dimension (the under-count risk):
+        # the line carries no other BY dimension.
+        self.assertIn(
+            "| STATS series_present = COUNT(*) BY service.instance.id\n",
+            translated.esql_query,
+        )
+        self.assertTrue(
+            any("under-stated" in w for w in translated.warnings),
+            f"expected a series-identity under-count caveat, got: {translated.warnings}",
+        )
+
+    def test_count_comparison_grouped_by_job_does_not_warn_undercount(self):
+        # When the distinguishing label (job) is in by(...), the collapse key
+        # carries it, so distinct series on a shared instance are preserved and
+        # there is no under-count ambiguity to warn about.
+        translated = self.translate("count(up == 0) by (job)", panel_type="stat")
+        self.assertFalse(
+            any("under-stated" in w for w in translated.warnings),
+            f"unexpected under-count caveat for grouped count: {translated.warnings}",
+        )
+
     def test_xy_panel_with_extra_grouping_dimension_warns(self):
         # A query grouped by two non-time dimensions can only show one as the XY
         # breakdown; the dropped dimension must be surfaced, not hidden.
