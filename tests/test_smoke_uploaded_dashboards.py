@@ -963,6 +963,91 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         )
         self.assertTrue(issues)
 
+    def test_browser_audit_detects_verification_exception_block(self):
+        dom = (
+            "<html><body>"
+            "<div class='embPanel__error'><div class='euiText'>"
+            "verification_exception: Found 1 problem line 3:9: column [node_cpu] must "
+            "appear in the [STATS BY] clause or be used in an aggregate function"
+            "</div></div></body></html>"
+        )
+        issues = smoke._browser_audit_issues(dom)
+        self.assertTrue(issues, "verification_exception error block should be detected")
+
+    def test_browser_audit_surfaces_no_results_found_as_warning(self):
+        dom = "<html><body><div class='euiText'>No results found</div></body></html>"
+        self.assertEqual(smoke._browser_audit_issues(dom), [])
+        warnings = smoke._browser_audit_empty_states(dom)
+        self.assertTrue(warnings, "'No results found' empty state should be surfaced")
+
+    def test_capture_browser_audit_reports_verification_exception_not_clean(self):
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {"title": "Node Exporter Full"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = argparse.Namespace(
+                kibana_url="http://localhost:5601",
+                space_id="",
+                output="uploaded_dashboard_smoke_report.json",
+                screenshot_dir="",
+                browser_audit_dir=tmpdir,
+                chrome_binary="",
+                time_from="now-1h",
+                time_to="now",
+                window_width=1600,
+                window_height=2200,
+                virtual_time_budget_ms=15000,
+                screenshot_retries=1,
+                timeout=30,
+            )
+
+            dom = (
+                "<html><body>"
+                "<div class='embPanel__error'>verification_exception: column [x] must "
+                "appear in the [STATS BY] clause</div>"
+                "<div class='euiText'>No results found</div>"
+                "</body></html>"
+            )
+
+            def fake_run(cmd, stdout=None, stderr=None, text=None, timeout=None, **kwargs):
+                assert stdout is not None
+                stdout.write(dom)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with mock.patch.object(smoke, "discover_chrome_binary", return_value="/usr/bin/chrome"):
+                with mock.patch.object(smoke.subprocess, "run", side_effect=fake_run):
+                    result = smoke.capture_browser_audit(saved_object, args)
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result["issues"])
+        self.assertTrue(result["warnings"])
+
+    def test_build_summary_counts_browser_empty_panels(self):
+        dashboards = [
+            {
+                "title": "Node Exporter Full",
+                "total_panels": 1,
+                "esql_panels": 1,
+                "runtime_checked_panels": 1,
+                "non_query_panels": [],
+                "not_runtime_checked_panels": [],
+                "failing_panels": [],
+                "empty_panels": [],
+                "layout": {"overlaps": [], "invalid_sizes": [], "out_of_bounds": []},
+                "browser_audit": {
+                    "status": "error",
+                    "issues": ["verification_exception ..."],
+                    "warnings": ["No results found", "No results found"],
+                },
+            }
+        ]
+        summary = smoke.build_summary(dashboards)
+        self.assertEqual(summary["dashboards_with_browser_errors"], 1)
+        self.assertEqual(summary["dashboards_with_browser_empty_panels"], 1)
+        self.assertEqual(summary["browser_empty_panels_visible"], 2)
+
     def test_capture_dashboard_screenshot_writes_png(self):
         saved_object = {
             "id": "dashboard-123",

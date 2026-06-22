@@ -40,7 +40,21 @@ BROWSER_ERROR_PATTERNS = (
     r"Could not locate that (?:data view|index-pattern)",
     r"No matching data view",
     r"Embeddable factory",
+    # In-panel runtime query failures Lens/ES|QL renders as a red error block.
+    # These are the false-clean cases from issue #177 (e.g. the
+    # "column ... must appear in the STATS BY clause" verification_exception).
+    r"verification_exception",
+    r"parsing_exception",
+    r"must appear in the \[?STATS",
+    r"Unknown column",
+    r"index_not_found_exception",
+    r"unresolved_relation",
 )
+# Visible "empty" states. Surfaced separately from hard errors because a panel
+# that legitimately has no data in the selected time range is empty-but-valid,
+# not broken. Issue #177 asks for these to be distinguished, not silently
+# folded into either "clean" or "error".
+BROWSER_EMPTY_PATTERNS = (r"No results found",)
 
 
 def parse_args():
@@ -656,16 +670,37 @@ def capture_segmented_screenshots(saved_object, args):
     }
 
 
+def _audit_snippet(html, match):
+    snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
+    return snippet[:240]
+
+
 def _browser_audit_issues(html):
     issues = []
     for pattern in BROWSER_ERROR_PATTERNS:
         match = re.search(pattern, html, flags=re.IGNORECASE)
         if not match:
             continue
-        snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
+        snippet = _audit_snippet(html, match)
         if snippet:
-            issues.append(snippet[:240])
+            issues.append(snippet)
     return issues
+
+
+def _browser_audit_empty_states(html):
+    """Visible "No results found" empty states, surfaced separately from errors.
+
+    Returned independently of :func:`_browser_audit_issues` so a legitimately
+    empty-but-valid panel is reported without being mislabeled as a hard error
+    (issue #177).
+    """
+    warnings = []
+    for pattern in BROWSER_EMPTY_PATTERNS:
+        for match in re.finditer(pattern, html, flags=re.IGNORECASE):
+            snippet = _audit_snippet(html, match)
+            if snippet:
+                warnings.append(snippet)
+    return warnings
 
 
 def capture_browser_audit(saved_object, args):
@@ -685,6 +720,7 @@ def capture_browser_audit(saved_object, args):
             "path": "",
             "error": "Chrome/Chromium binary not found",
             "issues": [],
+            "warnings": [],
             "url": url,
         }
 
@@ -718,11 +754,13 @@ def capture_browser_audit(saved_object, args):
         if proc.returncode == 0:
             html = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
             issues = _browser_audit_issues(html)
+            warnings = _browser_audit_empty_states(html)
             return {
                 "status": "error" if issues else "clean",
                 "path": str(output_path),
                 "error": "",
                 "issues": issues,
+                "warnings": warnings,
                 "url": url,
             }
 
@@ -733,6 +771,7 @@ def capture_browser_audit(saved_object, args):
         "path": str(output_path),
         "error": last_error[:800],
         "issues": [],
+        "warnings": [],
         "url": url,
     }
 
@@ -1108,6 +1147,12 @@ def build_summary(dashboards):
         "dashboards_with_browser_errors": sum(
             1 for item in dashboards if item.get("browser_audit", {}).get("status") == "error"
         ),
+        "dashboards_with_browser_empty_panels": sum(
+            1 for item in dashboards if item.get("browser_audit", {}).get("warnings")
+        ),
+        "browser_empty_panels_visible": sum(
+            len(item.get("browser_audit", {}).get("warnings", []) or []) for item in dashboards
+        ),
         "runtime_error_panels": sum(len(item["failing_panels"]) for item in dashboards),
         "empty_panels": sum(len(item["empty_panels"]) for item in dashboards),
         "screenshots_captured": sum(
@@ -1204,6 +1249,7 @@ def main(verify: bool | str = True):
         print(
             f"Browser audit: {summary['browser_audits_clean']} clean, "
             f"{summary['dashboards_with_browser_errors']} with visible errors, "
+            f"{summary['browser_empty_panels_visible']} 'No results found' panel(s), "
             f"{summary['browser_audits_failed']} failed, {summary['browser_audits_skipped']} skipped"
         )
     for dashboard in dashboards:

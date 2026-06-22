@@ -1289,7 +1289,8 @@ def _smoke_uploaded_dashboards(
     if args.browser_audit:
         print(
             "    Browser audit: "
-            f"{summary.get('dashboards_with_browser_errors', 0)} dashboard(s) with visible errors"
+            f"{summary.get('dashboards_with_browser_errors', 0)} dashboard(s) with visible errors, "
+            f"{summary.get('browser_empty_panels_visible', 0)} 'No results found' panel(s)"
         )
     if merge_summary.get("merged"):
         print(
