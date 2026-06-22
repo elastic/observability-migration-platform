@@ -2784,6 +2784,7 @@ def _build_measure_spec(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    drop_legend_labels=True,
 ):
     if not frag or (not frag.metric and frag.family != "uptime"):
         return None
@@ -2803,15 +2804,18 @@ def _build_measure_spec(
     )
     # Issue #99: drop legend-origin BY labels that ES|QL TSID already splits, so
     # formula/binary panels avoid the distorting outer AVG the direct path now skips.
-    group_fields = _drop_legend_labels_if_redundant(
-        frag,
-        resolver,
-        rule_pack,
-        group_fields,
-        preferred_group_labels_origin,
-        summary_mode,
-        allow_direct_ts_gauge,
-    )
+    # ``drop_legend_labels`` lets the formula planner force-disable the drop when a
+    # mixed-family plan would otherwise produce divergent (unmergeable) groupings.
+    if drop_legend_labels:
+        group_fields = _drop_legend_labels_if_redundant(
+            frag,
+            resolver,
+            rule_pack,
+            group_fields,
+            preferred_group_labels_origin,
+            summary_mode,
+            allow_direct_ts_gauge,
+        )
     if _frag_has_incompatible_group_fields(frag, resolver, preferred_group_labels):
         warnings.append("Dropped grouping fields with incompatible target field types during migration")
     if alias_hint:
@@ -3495,6 +3499,7 @@ def _build_formula_plan(
     allow_direct_ts_gauge=True,
     preferred_group_labels_origin=None,
     allow_tsds_gauge_promotion=True,
+    drop_legend_labels=True,
 ):
     scalar_expr = _scalar_fragment_expr(frag)
     if scalar_expr is not None:
@@ -3710,6 +3715,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
         right_plan = _build_formula_plan(
             frag.extra.get("right_frag"),
@@ -3721,6 +3727,7 @@ def _build_formula_plan(
             allow_direct_ts_gauge=False,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
         if not left_plan or not right_plan:
             return None
@@ -3744,6 +3751,34 @@ def _build_formula_plan(
                     allow_direct_ts_gauge=allow_direct_ts_gauge,
                     preferred_group_labels_origin=preferred_group_labels_origin,
                     allow_tsds_gauge_promotion=False,
+                    drop_legend_labels=drop_legend_labels,
+                )
+
+        # Issue #99: the legend-label drop is decided per operand, so a mixed-family
+        # formula (e.g. ``max_over_time(...)[5m] + go_goroutines``) can end up with
+        # the range_agg side dropping its legend labels (``[]``) while the
+        # simple_metric side keeps them (the bare direct-TS-gauge form is disabled
+        # in fusion). The mergeability check rejects that divergent grouping and the
+        # panel falls to ``not_feasible``. When the operands' groupings disagree only
+        # because of the drop, rebuild both with the drop disabled so they share one
+        # consistent grouping (the pre-#99 AVG form, feasible). Genuine source-level
+        # divergence still falls through to the unmergeable path below.
+        if drop_legend_labels:
+            group_fields_seen = {
+                tuple(spec.group_fields) for spec in left_plan.specs + right_plan.specs
+            }
+            if len(group_fields_seen) > 1:
+                return _build_formula_plan(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                    drop_legend_labels=False,
                 )
         warnings = []
         for warning in left_plan.warnings + right_plan.warnings:
@@ -3788,6 +3823,7 @@ def _build_formula_plan(
         allow_direct_ts_gauge=allow_direct_ts_gauge,
         preferred_group_labels_origin=preferred_group_labels_origin,
         allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        drop_legend_labels=drop_legend_labels,
     )
     if not spec:
         return None

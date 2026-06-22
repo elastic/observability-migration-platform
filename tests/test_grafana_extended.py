@@ -2958,6 +2958,46 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
         self.assertIn("instance", ctx.esql_query)
 
+    def test_mixed_formula_range_and_simple_metric_stays_feasible(self):
+        # Issue #99 review: the drop is decided per operand, so a mixed-family formula
+        # could end up with the range_agg side dropping its legend labels while the
+        # simple_metric side keeps them — divergent groupings that the mergeability
+        # check rejected, regressing the panel to not_feasible. The planner must
+        # reconcile to one consistent grouping (the AVG form) so it stays feasible.
+        for expr in (
+            "max_over_time(process_resident_memory_bytes[5m]) + go_goroutines",
+            "go_goroutines + max_over_time(process_resident_memory_bytes[5m])",
+        ):
+            with self.subTest(expr=expr):
+                ctx = self._translate(
+                    expr,
+                    hints={
+                        "preferred_group_labels": ["instance"],
+                        "preferred_group_labels_origin": "legend",
+                    },
+                )
+                self.assertEqual(ctx.source_type, "TS")
+                self.assertTrue(ctx.esql_query, "expected a feasible translation")
+                # One STATS with both operands grouped by the same BY clause.
+                self.assertEqual(ctx.esql_query.count("| STATS "), 1)
+                self.assertIn("service.instance.id", ctx.esql_query)
+                self.assertIn("MAX_OVER_TIME(process_resident_memory_bytes, 5m)", ctx.esql_query)
+
+    def test_range_range_formula_keeps_avg_free_improvement(self):
+        # Issue #99 review: when every operand can drop (range_agg + range_agg), the
+        # reconciliation must NOT kick in — both groupings already agree on [], so the
+        # AVG-free improvement is preserved rather than reverted to the AVG form.
+        ctx = self._translate(
+            "max_over_time(process_resident_memory_bytes[5m]) + sum_over_time(go_goroutines[5m])",
+            hints={
+                "preferred_group_labels": ["instance"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertNotIn("AVG(", ctx.esql_query)
+        self.assertNotIn("service.instance.id", ctx.esql_query)
+
     def test_formula_summary_panel_keeps_legend_label(self):
         # Issue #99 review: the summary/categorical guard applies on the formula path
         # too — a bargauge formula keeps its breakdown column.
