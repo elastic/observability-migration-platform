@@ -1983,7 +1983,7 @@ def main(argv: list[str] | None = None):
         print(
             f"  Validated {total_queries} queries: "
             f"{passed} passed, {fixed} auto-fixed, {fixed_empty} manualized after empty fallback, "
-            f"{failed} failed ({self_healing_failed} kept as empty panels awaiting data, "
+            f"{failed} failed ({self_healing_failed} kept as self-healing panels, "
             f"{manualized_failed} replaced with upload-safe placeholders)"
         )
         if validation_summary.get("missing_labels"):
