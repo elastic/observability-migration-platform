@@ -3098,7 +3098,10 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
+            # Quote the column reference: a Prometheus label can be a reserved
+            # ES|QL keyword (e.g. ``in``) or carry dots (``prometheus.labels.x``),
+            # both of which ES|QL rejects as a bare ``TO_STRING(...)`` argument.
+            concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(column)}), "")')
         else:
             if segment == "":
                 continue
@@ -3323,8 +3326,14 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             represented = _composite_legend_covered_columns(
                 panel["query"], legend_labels, known_columns=by_cols
             )
+    # Warn against the panel's ACTUAL breakdown field, not the pre-rewrite one:
+    # a composite rewrite changes it to ``legend`` (folding only the legend
+    # labels), so a grouping column that is neither the dimension, the legend,
+    # nor a legend-covered label is now visually merged and must still warn —
+    # even if it happened to be the original single-breakdown column.
+    effective_breakdown_field = panel.get("breakdown", {}).get("field", breakdown_field)
     _warn_extra_breakdown_dimensions(
-        by_cols, dimension_field, breakdown_field, warnings, represented=represented
+        by_cols, dimension_field, effective_breakdown_field, warnings, represented=represented
     )
     return panel
 
@@ -3373,8 +3382,14 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             represented = _composite_legend_covered_columns(
                 panel["query"], legend_labels, known_columns=by_cols
             )
+    # Warn against the panel's ACTUAL breakdown field, not the pre-rewrite one:
+    # a composite rewrite changes it to ``legend`` (folding only the legend
+    # labels), so a grouping column that is neither the dimension, the legend,
+    # nor a legend-covered label is now visually merged and must still warn —
+    # even if it happened to be the original single-breakdown column.
+    effective_breakdown_field = panel.get("breakdown", {}).get("field", breakdown_field)
     _warn_extra_breakdown_dimensions(
-        by_cols, dimension_field, breakdown_field, warnings, represented=represented
+        by_cols, dimension_field, effective_breakdown_field, warnings, represented=represented
     )
     return panel
 
