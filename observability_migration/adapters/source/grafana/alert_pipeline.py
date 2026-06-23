@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,56 @@ def load_unified_alerting_resources(args) -> dict[str, Any]:
     return resources
 
 
+_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+_DURATION_TOKEN_RE = re.compile(r"(\d+)([smhdw])")
+
+
+def _coerce_interval_seconds(value: Any) -> int:
+    """Coerce a Grafana group interval to whole seconds.
+
+    The provisioning API returns an integer count of seconds, but file-based
+    inputs (e.g. exported provisioning YAML/JSON) may express it as a Prometheus
+    duration string such as ``"5m"`` or ``"1m30s"``. Both are accepted; anything
+    unparseable yields ``0``.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        return int(text)
+    tokens = _DURATION_TOKEN_RE.findall(text)
+    if not tokens or "".join(f"{n}{u}" for n, u in tokens) != text:
+        return 0
+    return sum(int(n) * _DURATION_UNIT_SECONDS[u] for n, u in tokens)
+
+
+def build_group_interval_map(rule_groups: Any) -> dict[tuple[str, str], int]:
+    """Map ``(folderUID, ruleGroup)`` to the group's interval in seconds.
+
+    Grafana group dicts key the folder as ``folderUid`` and the group name as
+    ``title``; alert rules reference them as ``folderUID``/``ruleGroup``. The
+    values match, so the lookup built here resolves directly from a rule.
+    """
+    intervals: dict[tuple[str, str], int] = {}
+    if not isinstance(rule_groups, list):
+        return intervals
+    for group in rule_groups:
+        if not isinstance(group, dict):
+            continue
+        folder = str(group.get("folderUid", "") or group.get("folderUID", "") or "")
+        name = str(group.get("title", "") or "")
+        if not folder or not name:
+            continue
+        seconds = _coerce_interval_seconds(group.get("interval", 0))
+        if seconds > 0:
+            intervals[(folder, name)] = seconds
+    return intervals
+
+
 def build_unified_alert_irs(unified_resources: dict[str, Any]) -> list[Any]:
     unified_rules = unified_resources.get("alert_rules", [])
     if not isinstance(unified_rules, list):
@@ -116,8 +167,26 @@ def build_unified_alert_irs(unified_resources: dict[str, Any]) -> list[Any]:
     datasource_map = unified_resources.get("datasources", {})
     if not isinstance(datasource_map, dict):
         datasource_map = {}
+    group_intervals = build_group_interval_map(unified_resources.get("rule_groups", []))
+    grouped_rules = [
+        rule
+        for rule in unified_rules
+        if isinstance(rule, dict) and rule.get("folderUID") and rule.get("ruleGroup")
+    ]
+    if grouped_rules and not group_intervals:
+        # A Grafana group always carries an interval, so resolving none for any
+        # rule means the rule-groups data was never fetched (endpoint disabled,
+        # missing scope, or no rule_groups artifact). Surface that once, loudly,
+        # instead of only as a per-rule semantic loss buried in the report.
+        print(
+            f"  WARN: No evaluation-group intervals resolved for {len(grouped_rules)} "
+            "unified alert rule(s); they will fall back to the default 1m schedule. "
+            "Check that the provisioning rule-groups endpoint is reachable."
+        )
     return [
-        build_alerting_ir_from_grafana_unified(rule, datasource_map=datasource_map)
+        build_alerting_ir_from_grafana_unified(
+            rule, datasource_map=datasource_map, group_intervals=group_intervals
+        )
         for rule in unified_rules
         if isinstance(rule, dict)
     ]
@@ -373,6 +442,7 @@ def run_alert_pipeline(
 
 
 __all__ = [
+    "build_group_interval_map",
     "build_legacy_alert_irs_from_dashboards",
     "build_legacy_alert_tasks_from_dashboards",
     "build_unified_alert_irs",

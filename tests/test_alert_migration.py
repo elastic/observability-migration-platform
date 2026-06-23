@@ -776,6 +776,178 @@ class TestBuildAlertingIRFromGrafanaUnified(unittest.TestCase):
         )
         self.assertEqual(ir.source_extension["datasource_map"]["prometheus"]["type"], "prometheus")
 
+    def test_unified_rule_schedule_interval_from_group(self):
+        rule = _grafana_unified_rule()  # folderUID="folder-1", ruleGroup="resource-alerts"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 300},
+        )
+        self.assertEqual(ir.schedule_interval, "5m")
+
+    def test_unified_rule_hourly_group_interval(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 3600},
+        )
+        self.assertEqual(ir.schedule_interval, "1h")
+
+    def test_unified_rule_unresolved_group_leaves_interval_empty(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("other-folder", "other-group"): 300},
+        )
+        self.assertEqual(ir.schedule_interval, "")
+
+    def test_unified_rule_no_group_data_leaves_interval_empty(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(rule)
+        self.assertEqual(ir.schedule_interval, "")
+
+    def test_unified_rule_sub_minute_interval_clamped_to_minimum(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 30},
+        )
+        self.assertEqual(ir.schedule_interval, "1m")
+        self.assertEqual(
+            ir.source_extension.get("schedule_interval_clamped_from"), "30s"
+        )
+
+    def test_unified_rule_minute_interval_not_clamped(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 60},
+        )
+        self.assertEqual(ir.schedule_interval, "1m")
+        self.assertNotIn("schedule_interval_clamped_from", ir.source_extension)
+
+
+class TestBuildUnifiedAlertIrs(unittest.TestCase):
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.alert_pipeline import build_unified_alert_irs
+        self.build = build_unified_alert_irs
+
+    def test_rule_gets_its_group_interval(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],  # group resource-alerts
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 300},
+            ],
+        }
+        irs = self.build(resources)
+        self.assertEqual(irs[0].schedule_interval, "5m")
+
+    def test_hourly_group_yields_hourly_interval(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 3600},
+            ],
+        }
+        irs = self.build(resources)
+        self.assertEqual(irs[0].schedule_interval, "1h")
+
+    def test_all_rules_in_group_share_interval(self):
+        rule_a = _grafana_unified_rule()
+        rule_b = _grafana_unified_rule()
+        rule_b["uid"] = "rule-uid-2"
+        resources = {
+            "alert_rules": [rule_a, rule_b],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 300},
+            ],
+        }
+        irs = self.build(resources)
+        self.assertEqual([ir.schedule_interval for ir in irs], ["5m", "5m"])
+
+    def test_distinct_groups_get_distinct_intervals(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule(), _grafana_unified_logql_rule()],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 300},
+                {"folderUid": "folder-1", "title": "log-alerts", "interval": 3600},
+            ],
+        }
+        irs = self.build(resources)
+        by_group = {ir.alert_id: ir.schedule_interval for ir in irs}
+        self.assertEqual(by_group["rule-uid-1"], "5m")
+        self.assertEqual(by_group["rule-log-1"], "1h")
+
+    def test_group_interval_reaches_kibana_schedule(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 300},
+            ],
+        }
+        batch = map_alerts_batch(self.build(resources))
+        payload = batch["results"][0]["mapping"]["rule_payload"]
+        self.assertEqual(payload["schedule"]["interval"], "5m")
+
+    def test_missing_group_falls_back_to_default_schedule(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],
+            "rule_groups": [],  # group interval unavailable
+        }
+        batch = map_alerts_batch(self.build(resources))
+        payload = batch["results"][0]["mapping"]["rule_payload"]
+        self.assertEqual(payload["schedule"]["interval"], "1m")
+
+    def test_duration_string_group_interval_is_parsed(self):
+        # File-based provisioning exports may express interval as a duration
+        # string (e.g. "5m") rather than integer seconds.
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": "5m"},
+            ],
+        }
+        irs = self.build(resources)
+        self.assertEqual(irs[0].schedule_interval, "5m")
+
+    def test_sub_minute_group_interval_clamped_in_payload(self):
+        resources = {
+            "alert_rules": [_grafana_unified_rule()],
+            "rule_groups": [
+                {"folderUid": "folder-1", "title": "resource-alerts", "interval": 30},
+            ],
+        }
+        batch = map_alerts_batch(self.build(resources))
+        payload = batch["results"][0]["mapping"]["rule_payload"]
+        self.assertEqual(payload["schedule"]["interval"], "1m")
+
+
+class TestSecondsToKibanaInterval(unittest.TestCase):
+    def setUp(self):
+        from observability_migration.core.assets.alerting import _seconds_to_kibana_interval
+        self.convert = _seconds_to_kibana_interval
+
+    def test_whole_minutes(self):
+        self.assertEqual(self.convert(300), "5m")
+
+    def test_one_minute(self):
+        self.assertEqual(self.convert(60), "1m")
+
+    def test_whole_hours(self):
+        self.assertEqual(self.convert(3600), "1h")
+
+    def test_sub_minute_seconds(self):
+        self.assertEqual(self.convert(30), "30s")
+
+    def test_whole_days(self):
+        self.assertEqual(self.convert(86400), "1d")
+
+    def test_non_divisible_falls_back_to_seconds(self):
+        self.assertEqual(self.convert(90), "90s")
+
+    def test_non_positive_returns_empty(self):
+        self.assertEqual(self.convert(0), "")
+        self.assertEqual(self.convert(-5), "")
+
 
 class TestBuildAlertingIRFromDatadog(unittest.TestCase):
     def test_metric_monitor_basic_fields(self):
@@ -1562,6 +1734,30 @@ class TestRecordSemanticLosses(unittest.TestCase):
         ir = build_alerting_ir_from_grafana_unified(rule)
         losses = record_semantic_losses(ir)
         self.assertTrue(any("Multi-query" in loss for loss in losses))
+
+    def test_grafana_unified_unresolved_interval_records_loss(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(rule)  # no group interval resolved
+        losses = record_semantic_losses(ir)
+        self.assertTrue(any("interval" in loss.lower() for loss in losses))
+
+    def test_grafana_unified_resolved_interval_records_no_interval_loss(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 300},
+        )
+        losses = record_semantic_losses(ir)
+        self.assertFalse(any("interval" in loss.lower() for loss in losses))
+
+    def test_grafana_unified_clamped_interval_records_loss(self):
+        rule = _grafana_unified_rule()
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            group_intervals={("folder-1", "resource-alerts"): 30},
+        )
+        losses = record_semantic_losses(ir)
+        self.assertTrue(any("minimum schedule interval" in loss for loss in losses))
 
     def test_grafana_unified_literal_dashboard_link_reports_loss(self):
         rule = _grafana_unified_rule()
@@ -2976,6 +3172,66 @@ class TestGrafanaExtractSession(unittest.TestCase):
         self.assertIn("Bearer", session.headers.get("Authorization", ""))
 
 
+class TestExtractUnifiedAlertRuleGroups(unittest.TestCase):
+    @staticmethod
+    def _group_for_path(*args, **kwargs):
+        # _fetch_unified_provisioning_json(session, base_url, path, empty_on_error, label)
+        path = args[2]
+        folder = path.split("/folder/")[1].split("/rule-groups/")[0]
+        group = path.split("/rule-groups/")[1]
+        return {"folderUid": folder, "title": group, "interval": 300}
+
+    @patch("observability_migration.adapters.source.grafana.extract._fetch_unified_provisioning_json")
+    @patch("observability_migration.adapters.source.grafana.extract._grafana_session")
+    def test_fetches_group_for_each_unique_folder_group(self, mock_session, mock_fetch):
+        from observability_migration.adapters.source.grafana.extract import extract_unified_alert_rule_groups
+        mock_fetch.side_effect = self._group_for_path
+        rules = [
+            {"uid": "r1", "folderUID": "folder-1", "ruleGroup": "resource-alerts"},
+            {"uid": "r2", "folderUID": "folder-1", "ruleGroup": "log-alerts"},
+        ]
+        groups = extract_unified_alert_rule_groups(rules, "http://grafana:3000")
+        self.assertEqual(mock_fetch.call_count, 2)
+        titles = {g["title"] for g in groups}
+        self.assertEqual(titles, {"resource-alerts", "log-alerts"})
+
+    @patch("observability_migration.adapters.source.grafana.extract._fetch_unified_provisioning_json")
+    @patch("observability_migration.adapters.source.grafana.extract._grafana_session")
+    def test_dedupes_rules_in_same_group(self, mock_session, mock_fetch):
+        from observability_migration.adapters.source.grafana.extract import extract_unified_alert_rule_groups
+        mock_fetch.side_effect = self._group_for_path
+        rules = [
+            {"uid": "r1", "folderUID": "folder-1", "ruleGroup": "resource-alerts"},
+            {"uid": "r2", "folderUID": "folder-1", "ruleGroup": "resource-alerts"},
+        ]
+        groups = extract_unified_alert_rule_groups(rules, "http://grafana:3000")
+        self.assertEqual(mock_fetch.call_count, 1)
+        self.assertEqual(len(groups), 1)
+
+    @patch("observability_migration.adapters.source.grafana.extract._fetch_unified_provisioning_json")
+    @patch("observability_migration.adapters.source.grafana.extract._grafana_session")
+    def test_requests_per_group_provisioning_endpoint(self, mock_session, mock_fetch):
+        from observability_migration.adapters.source.grafana.extract import extract_unified_alert_rule_groups
+        mock_fetch.side_effect = self._group_for_path
+        rules = [{"uid": "r1", "folderUID": "folder-1", "ruleGroup": "resource-alerts"}]
+        extract_unified_alert_rule_groups(rules, "http://grafana:3000")
+        path = mock_fetch.call_args_list[0].args[2]
+        self.assertEqual(path, "/api/v1/provisioning/folder/folder-1/rule-groups/resource-alerts")
+
+    @patch("observability_migration.adapters.source.grafana.extract._fetch_unified_provisioning_json")
+    @patch("observability_migration.adapters.source.grafana.extract._grafana_session")
+    def test_skips_rules_without_folder_or_group(self, mock_session, mock_fetch):
+        from observability_migration.adapters.source.grafana.extract import extract_unified_alert_rule_groups
+        mock_fetch.side_effect = self._group_for_path
+        rules = [
+            {"uid": "r1", "folderUID": "", "ruleGroup": "resource-alerts"},
+            {"uid": "r2", "folderUID": "folder-1", "ruleGroup": ""},
+        ]
+        groups = extract_unified_alert_rule_groups(rules, "http://grafana:3000")
+        self.assertEqual(mock_fetch.call_count, 0)
+        self.assertEqual(groups, [])
+
+
 class TestGrafanaExtractAllAlertingResources(unittest.TestCase):
     @patch("observability_migration.adapters.source.grafana.extract._fetch_unified_provisioning_json")
     @patch("observability_migration.adapters.source.grafana.extract._grafana_session")
@@ -2985,6 +3241,7 @@ class TestGrafanaExtractAllAlertingResources(unittest.TestCase):
         from observability_migration.adapters.source.grafana.extract import extract_all_alerting_resources
         result = extract_all_alerting_resources("http://grafana:3000")
         self.assertIn("alert_rules", result)
+        self.assertIn("rule_groups", result)
         self.assertIn("contact_points", result)
         self.assertIn("notification_policies", result)
         self.assertIn("mute_timings", result)
@@ -3016,6 +3273,23 @@ class TestGrafanaExtractAllAlertingResources(unittest.TestCase):
         self.assertEqual(result["datasources"]["prometheus"]["type"], "prometheus")
         self.assertEqual(result["datasources"]["loki"]["name"], "Loki")
         self.assertEqual(result["contact_points"], [])
+
+    def test_loads_rule_groups_from_files(self):
+        from observability_migration.adapters.source.grafana.extract import extract_all_alerting_resources_from_files
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            alerts_dir = Path(tmpdir) / "alerts"
+            alerts_dir.mkdir()
+            (alerts_dir / "grafana_rule_groups.json").write_text(
+                json.dumps([
+                    {"folderUid": "folder-1", "title": "resource-alerts", "interval": 300},
+                ]),
+                encoding="utf-8",
+            )
+            result = extract_all_alerting_resources_from_files(tmpdir)
+
+        self.assertEqual(len(result["rule_groups"]), 1)
+        self.assertEqual(result["rule_groups"][0]["interval"], 300)
 
 
 # =====================================================================
