@@ -1222,6 +1222,47 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("label_metric", fields)
         self.assertNotIn("m", fields)
 
+    def test_contract_includes_parameterized_target_filter_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Elasticsearch",
+                                "panel": "Nodes",
+                                "source_query": (
+                                    'elasticsearch_cluster_health_number_of_nodes{'
+                                    'job="$job", instance=~"$instance", cluster="$cluster"}'
+                                ),
+                                "translated_query": (
+                                    "TS metrics-*\n"
+                                    "| WHERE service.name RLIKE ?job\n"
+                                    "| WHERE service.instance.id RLIKE ?instance\n"
+                                    "| WHERE k8s.cluster.name RLIKE ?cluster\n"
+                                    "| WHERE elasticsearch_cluster_health_number_of_nodes IS NOT NULL\n"
+                                    "| STATS elasticsearch_cluster_health_number_of_nodes = "
+                                    "LAST_OVER_TIME(elasticsearch_cluster_health_number_of_nodes, 5m) "
+                                    "BY time_bucket = TBUCKET(5 minute)"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("service.name", fields)
+        self.assertIn("service.instance.id", fields)
+        self.assertIn("k8s.cluster.name", fields)
+        self.assertEqual(fields["k8s.cluster.name"]["role"], "dimension")
+        self.assertEqual(fields["cluster"]["role"], "dimension")
+
     def test_contract_rejects_composite_template_required_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

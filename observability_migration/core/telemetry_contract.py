@@ -1019,7 +1019,8 @@ def _extract_dimensions(query: str) -> set[str]:
     metrics = set(_extract_metrics(query))
     derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
     where_pattern = re.compile(
-        rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+LIKE|LIKE|NOT\s+RLIKE|RLIKE)\s*(?:\"|\(|-?\d|TRUE\b|FALSE\b)",
+        rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+LIKE|LIKE|NOT\s+RLIKE|RLIKE)\s*"
+        rf"(?:\"|\(|-?\d|TRUE\b|FALSE\b|\?[A-Za-z_]\w*)",
         re.IGNORECASE | re.DOTALL,
     )
 
