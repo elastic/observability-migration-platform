@@ -12,10 +12,15 @@ importing an adapter (issue #154).
 
 from __future__ import annotations
 
-# Structured semantic-loss marker recorded when a panel/widget is kept as a
-# self-healing visualization. Mirrors the placeholder path's marker so coverage
-# reports surface the disposition (issue #154).
-SELF_HEAL_SEMANTIC_LOSS = "target telemetry not yet ingested (self-healing panel)"
+SELF_HEAL_SEMANTIC_LOSS = "target telemetry not yet ingested or not confirmed (self-healing panel)"
+
+
+def _names(values):
+    return [str(value or "").strip() for value in values or [] if str(value or "").strip()]
+
+
+def _backtick_join(names):
+    return ", ".join(f"`{name}`" for name in names)
 
 
 def validation_failure_self_heals(validation_result):
@@ -28,13 +33,23 @@ def validation_failure_self_heals(validation_result):
     its own once data arrives, so it should be kept (with a warning) instead of
     being replaced by a markdown placeholder.
 
-    A counter type mismatch is excluded: the field exists but has the wrong
-    type, so waiting for data will not fix it.
+    A counter type mismatch only self-heals when validation could not positively
+    confirm that the target field is non-counter. If Elasticsearch reports a
+    concrete non-counter type, the panel would continue rendering an error and
+    must stay manual.
     """
     analysis = (validation_result or {}).get("analysis") or {}
-    if analysis.get("counter_mismatch_metrics"):
-        return False
-    return bool(analysis.get("unknown_columns") or analysis.get("unknown_indexes"))
+    counter_metrics = _names(analysis.get("counter_mismatch_metrics"))
+    if counter_metrics:
+        if "counter_mismatch_confirmed_non_counter" not in analysis:
+            return False
+        confirmed_non_counter = set(_names(analysis.get("counter_mismatch_confirmed_non_counter")))
+        return not any(metric in confirmed_non_counter for metric in counter_metrics)
+
+    if analysis.get("unknown_columns") or analysis.get("unknown_indexes"):
+        return True
+
+    return False
 
 
 def missing_target_field_warning(validation_result):
@@ -47,16 +62,28 @@ def missing_target_field_warning(validation_result):
     already flowing.
     """
     analysis = (validation_result or {}).get("analysis") or {}
+    counter_metrics = _names(analysis.get("counter_mismatch_metrics"))
+    confirmed_non_counter = set(_names(analysis.get("counter_mismatch_confirmed_non_counter")))
+    unconfirmed_counter_metrics = [metric for metric in counter_metrics if metric not in confirmed_non_counter]
     names = [col.get("name", "") for col in analysis.get("unknown_columns") or []]
     names.extend(analysis.get("unknown_indexes") or [])
-    names = [name for name in names if name]
-    if names:
-        field_list = ", ".join(f"`{name}`" for name in names)
-        return (
-            f"Live ES|QL validation could not find target field/index {field_list} "
-            "yet; the query is structurally valid and the panel will populate once "
-            "this telemetry is ingested (verify the field name if data is already flowing)."
+    names = _names(names)
+    clauses = []
+    if unconfirmed_counter_metrics:
+        verb = "is" if len(unconfirmed_counter_metrics) == 1 else "are"
+        clauses.append(
+            f"{_backtick_join(unconfirmed_counter_metrics)} {verb} not confirmed as a counter "
+            "in the target yet (the rate query is structurally valid for counter storage; "
+            "verify the metric type if data is already flowing)"
         )
+    if names:
+        clauses.append(
+            f"target field/index {_backtick_join(names)} could not be found yet (the "
+            "query is structurally valid and the panel will populate once this telemetry "
+            "is ingested; verify the field name if data is already flowing)"
+        )
+    if clauses:
+        return "Live ES|QL validation reports " + "; also, ".join(clauses) + "."
     return (
         "Live ES|QL validation found no matching data yet; the query is "
         "structurally valid and the panel will populate once telemetry is ingested "

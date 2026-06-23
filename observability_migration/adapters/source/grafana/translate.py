@@ -2381,7 +2381,7 @@ def simple_metric_family_rule(context):
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = physical_metric
+        stats_expr = f"LAST_OVER_TIME({physical_metric})"
     elif can_use_ts_aggregated_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter

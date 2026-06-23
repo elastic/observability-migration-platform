@@ -380,6 +380,14 @@ def parse_args(argv: list[str] | None = None):
         help="Optional Chrome/Chromium binary path for browser audit or screenshots",
     )
     parser.add_argument(
+        "--chrome-user-data-dir",
+        default=os.getenv("CHROME_USER_DATA_DIR", ""),
+        help=(
+            "Optional Chrome profile directory for browser audit or screenshots. "
+            "Use this to reuse SSO cookies from a prior interactive Chrome login."
+        ),
+    )
+    parser.add_argument(
         "--shadow-space",
         default="",
         help="Kibana space ID for shadow deployment (rollout safety)",
@@ -610,6 +618,7 @@ def _smoke_uploaded_dashboards(
             browser_audit=args.browser_audit,
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
+            chrome_user_data_dir=getattr(args, "chrome_user_data_dir", ""),
             verify=_resolve_tls_from_args(args),
         )
     except Exception as exc:
@@ -635,7 +644,8 @@ def _smoke_uploaded_dashboards(
     if args.browser_audit:
         print(
             "    Browser audit: "
-            f"{summary.get('dashboards_with_browser_errors', 0)} dashboard(s) with visible errors"
+            f"{summary.get('dashboards_with_browser_errors', 0)} dashboard(s) with visible errors, "
+            f"{summary.get('browser_empty_panels_visible', 0)} 'No results found' panel(s)"
         )
     if merge_summary.get("merged"):
         print(
@@ -1918,6 +1928,7 @@ def main(argv: list[str] | None = None):
         fixed = 0
         fixed_empty = 0
         failed = 0
+        self_healing_failed = 0
         manualized_failed = 0
         self_healing_failed = 0
         validation_jobs = [
@@ -1983,7 +1994,7 @@ def main(argv: list[str] | None = None):
         print(
             f"  Validated {total_queries} queries: "
             f"{passed} passed, {fixed} auto-fixed, {fixed_empty} manualized after empty fallback, "
-            f"{failed} failed ({self_healing_failed} kept as empty panels awaiting data, "
+            f"{failed} failed ({self_healing_failed} kept as self-healing panels, "
             f"{manualized_failed} replaced with upload-safe placeholders)"
         )
         if validation_summary.get("missing_labels"):
@@ -1994,7 +2005,7 @@ def main(argv: list[str] | None = None):
             print("  Top missing metrics: " + ", ".join(f"{name} ({count})" for name, count in top_metrics))
         if validation_summary.get("counter_type_mismatches"):
             top_counters = list(validation_summary["counter_type_mismatches"].items())[:5]
-            print("  Residual counter type mismatches: " + ", ".join(f"{name} ({count})" for name, count in top_counters))
+            print("  Counter type mismatches: " + ", ".join(f"{name} ({count})" for name, count in top_counters))
         if validation_summary.get("empty_fallback_indexes"):
             top_fallbacks = list(validation_summary["empty_fallback_indexes"].items())[:5]
             print("  Empty fallback streams: " + ", ".join(f"{name} ({count})" for name, count in top_fallbacks))
