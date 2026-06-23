@@ -30,10 +30,24 @@ can run against an artifact set without re-installing the translator.
 
 from __future__ import annotations
 
+from .invariants import (
+    Finding,
+    InvariantCategory,
+    Severity,
+    lint_report,
+)
 from .records import (
     DRIFT_AXES,
     PanelRecord,
     Verdict,
 )
 
-__all__ = ["DRIFT_AXES", "PanelRecord", "Verdict"]
+__all__ = [
+    "DRIFT_AXES",
+    "Finding",
+    "InvariantCategory",
+    "PanelRecord",
+    "Severity",
+    "Verdict",
+    "lint_report",
+]
