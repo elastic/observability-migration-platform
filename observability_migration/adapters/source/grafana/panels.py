@@ -3043,7 +3043,8 @@ def _grok_label_extraction(label):
 
 
 def _apply_composite_legend_to_xy_panel(yaml_panel, *,
-                                        legend_format_template, legend_labels):
+                                        legend_format_template, legend_labels,
+                                        known_columns=None):
     """Rewrite an XY panel to break down by a synthetic ``legend`` column.
 
     Lens ``breakdown.field`` only supports a single column, so a Grafana panel
@@ -3057,6 +3058,13 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
     * Inserts ``| EVAL legend = CONCAT(...)`` before the final ``| KEEP`` and
       rewrites that ``KEEP`` to drop the now-redundant per-label columns.
     * Sets ``breakdown.field = "legend"``.
+
+    ``known_columns`` lists output columns the caller already knows about that
+    the query text doesn't expose to the parser. The native ``PROMQL index=…
+    value=(… by (verb, resource_kind))`` command emits its ``by`` labels as
+    output columns without any STATS/KEEP stage to parse, so without this the
+    labels can't be resolved and the composite legend silently collapses to the
+    first label (issue #189).
 
     Returns the panel either way; the panel is mutated in place.
     """
@@ -3073,6 +3081,8 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
         return yaml_panel
 
     columns = _output_columns_for_composite_legend(query)
+    if known_columns:
+        columns = set(columns) | set(known_columns)
     resolved = {}
     for label in template_labels:
         column = _resolve_legend_label_to_column(label, columns)
@@ -3210,7 +3220,33 @@ def _append_eval_before_trailing_sort(query, eval_line):
     return query + " " + eval_line
 
 
-def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings):
+def _composite_legend_covered_columns(esql_query, legend_labels, known_columns=None):
+    """Return the output columns a composite ``legend`` breakdown represents.
+
+    When :func:`_apply_composite_legend_to_xy_panel` rewrites a panel to break
+    down by a synthetic ``legend`` column, that column folds every resolved
+    legend label into a single visual series key — so those underlying grouping
+    dimensions are NOT merged even though only ``legend`` is the breakdown
+    field. This resolves each legend label back to its output column so callers
+    can exclude them from the "visually merged" warning.
+
+    ``known_columns`` augments the columns parsed from the query text, mirroring
+    :func:`_apply_composite_legend_to_xy_panel` so native ``PROMQL`` ``by``
+    labels (never present in a STATS/KEEP stage) are still recognised.
+    """
+    columns = _output_columns_for_composite_legend(esql_query)
+    if known_columns:
+        columns = set(columns) | set(known_columns)
+    covered = set()
+    for label in legend_labels or []:
+        column = _resolve_legend_label_to_column(label, columns)
+        if column is not None:
+            covered.add(column)
+    return covered
+
+
+def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field,
+                                     warnings, represented=None):
     """Warn when an XY panel has more grouping dimensions than it can display.
 
     A Kibana XY chart breaks the series down by a single field. When the ES|QL
@@ -3218,13 +3254,19 @@ def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, 
     visual breakdown and the rest are not represented on the chart, so series
     that differ only in a dropped dimension are visually merged. Surface that as
     a warning rather than silently rendering a different shape than the source.
+
+    ``represented`` lists additional columns that ARE on the chart through some
+    other mechanism — notably a composite ``legend`` breakdown that folds
+    several grouping dimensions into one series key (issue #189). Those columns
+    are not merged, so they must be excluded from the warning.
     """
     if warnings is None:
         return
+    represented = represented or set()
     extra = [
         col
         for col in (by_cols or [])
-        if col != dimension_field and col != breakdown_field
+        if col != dimension_field and col != breakdown_field and col not in represented
     ]
     if extra:
         _append_unique(
@@ -3259,7 +3301,6 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             "Rendered instant/single-value query as a metric (no time dimension to plot)",
         )
         return _build_esql_metric_panel(esql, metric_col=metric_col)
-    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,
@@ -3270,12 +3311,21 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    represented = set()
     if legend_format_template and legend_labels and len(legend_labels) >= 2:
         _apply_composite_legend_to_xy_panel(
             {"esql": panel},
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
+            known_columns=by_cols,
         )
+        if panel.get("breakdown", {}).get("field") == "legend":
+            represented = _composite_legend_covered_columns(
+                panel["query"], legend_labels, known_columns=by_cols
+            )
+    _warn_extra_breakdown_dimensions(
+        by_cols, dimension_field, breakdown_field, warnings, represented=represented
+    )
     return panel
 
 
@@ -3301,7 +3351,6 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             "Rendered instant/single-value query as a summary table (no time dimension to plot)",
         )
         return _build_esql_datatable_panel(esql, metric_fields=metric_fields)
-    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,
@@ -3312,12 +3361,21 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
+    represented = set()
     if legend_format_template and legend_labels and len(legend_labels) >= 2:
         _apply_composite_legend_to_xy_panel(
             {"esql": panel},
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
+            known_columns=by_cols,
         )
+        if panel.get("breakdown", {}).get("field") == "legend":
+            represented = _composite_legend_covered_columns(
+                panel["query"], legend_labels, known_columns=by_cols
+            )
+    _warn_extra_breakdown_dimensions(
+        by_cols, dimension_field, breakdown_field, warnings, represented=represented
+    )
     return panel
 
 
