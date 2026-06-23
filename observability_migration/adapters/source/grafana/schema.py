@@ -316,12 +316,29 @@ class SchemaResolver:
         """
         if not metric_field or not self.has_field_capabilities():
             return None
-        # Candidate priority mirrors the index-global ``resolve_label`` order so
-        # metric-aware resolution stays source-faithful: bare label first, then
-        # the active profile's namespaced label form (so a dual-shipping
-        # Prometheus index keeps `prometheus.labels.<x>` / `labels.<x>` over an
-        # OTel alias), then the OTel/Prometheus normalization candidates, then
-        # the remaining namespaced forms.
+        ordered = self._scoped_candidate_fields(label)
+        if not ordered:
+            return None
+        # One batched probe covers every candidate at once (issue #182); pick
+        # the first, in priority order, that co-occurs with the scoped metric.
+        cooccurrence = self._cooccurring_candidates(metric_field, ordered)
+        for candidate in ordered:
+            if cooccurrence.get(candidate):
+                return candidate
+        return None
+
+    def _scoped_candidate_fields(self, label):
+        """Advertised candidate fields for ``label``, in resolution priority.
+
+        Mirrors the index-global ``resolve_label`` order so metric-aware
+        resolution stays source-faithful: bare label first, then the active
+        profile's namespaced label form (so a dual-shipping Prometheus index
+        keeps ``prometheus.labels.<x>`` / ``labels.<x>`` over an OTel alias),
+        then the OTel/Prometheus normalization candidates, then the remaining
+        namespaced forms. De-duplicated in priority order and filtered to fields
+        the target actually advertises — an ES|QL probe against an unknown
+        column would 400 (→ wasted query, None result).
+        """
         candidates = [label]
         profile = self._current_schema_profile()
         if profile == "prometheus_remote_write":
@@ -331,41 +348,96 @@ class SchemaResolver:
         candidates.extend(self._candidate_fields(label))
         candidates.append(f"labels.{label}")
         candidates.append(f"prometheus.labels.{label}")
+        ordered = []
         seen = set()
         for candidate in candidates:
             if candidate in seen:
                 continue
             seen.add(candidate)
-            # Only probe fields the target actually advertises; an ES|QL probe
-            # against an unknown column would 400 (→ wasted query, None result).
-            if candidate not in self._field_cache:
-                continue
-            if self._cooccurs(metric_field, candidate):
-                return candidate
-        return None
+            if candidate in (self._field_cache or {}):
+                ordered.append(candidate)
+        return ordered
+
+    def prime_label_cooccurrence(self, labels, metric_field):
+        """Pre-warm the co-occurrence cache for a whole set of labels scoped to
+        one metric, in a SINGLE batched probe (issue #182).
+
+        Callers that already know every label resolved against a given metric
+        (e.g. all of a panel fragment's selector matchers and group-by labels)
+        prime here once. The union of all candidates across the labels is
+        counted in one ``/_query``; the subsequent per-label ``resolve_label``
+        calls then hit the warm cache and issue no further round-trips. Purely a
+        cache pre-fill — it changes nothing about which field a label resolves
+        to, only how many probes that resolution costs.
+        """
+        if not metric_field or not self.has_field_capabilities():
+            return
+        candidates = []
+        seen = set()
+        for label in labels or []:
+            for candidate in self._scoped_candidate_fields(label):
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+        if candidates:
+            self._cooccurring_candidates(metric_field, candidates)
+
+    def _cooccurring_candidates(self, metric_field, candidates):
+        """Co-occurrence map ``{candidate: True/False/None}`` for ``candidates``
+        against ``metric_field``.
+
+        Cache-first, keyed by ``(metric_field, candidate)`` and shared across
+        dashboards. Cache misses are resolved with a SINGLE batched ES|QL probe
+        that counts every uncached candidate in one round-trip (issue #182),
+        collapsing what used to be one blocking probe per candidate. ``None``
+        (probe error / unreachable) is cached too, matching the prior per-pair
+        behaviour so a transient failure is not re-probed mid-run.
+        """
+        result = {}
+        uncached = []
+        for candidate in candidates:
+            key = (metric_field, candidate)
+            if key in self._cooccurrence_cache:
+                result[candidate] = self._cooccurrence_cache[key]
+            else:
+                uncached.append(candidate)
+        if uncached:
+            probed = self._probe_cooccurrence_batch(metric_field, uncached)
+            for candidate in uncached:
+                value = probed.get(candidate) if probed is not None else None
+                self._cooccurrence_cache[(metric_field, candidate)] = value
+                result[candidate] = value
+        return result
 
     def _cooccurs(self, metric_field, candidate):
         """Whether ``metric_field`` and ``candidate`` co-occur on any document.
 
-        Cached ES|QL COUNT probe, keyed by ``(metric_field, candidate)``.
-        Returns ``True``/``False``, or ``None`` when the target is unreachable
-        or the probe errors. ``metric_field`` and ``candidate`` are the
-        unescaped physical field names; this method adds its own backticks.
+        Thin per-pair wrapper over the batched probe. Returns ``True``/``False``,
+        or ``None`` when the target is unreachable or the probe errors. Results
+        are cached per ``(metric_field, candidate)``.
         """
-        if not self._es_url:
-            return None
-        key = (metric_field, candidate)
-        if key in self._cooccurrence_cache:
-            return self._cooccurrence_cache[key]
-        result = self._probe_cooccurrence(metric_field, candidate)
-        self._cooccurrence_cache[key] = result
-        return result
+        return self._cooccurring_candidates(metric_field, [candidate]).get(candidate)
 
-    def _probe_cooccurrence(self, metric_field, candidate):
+    def _probe_cooccurrence_batch(self, metric_field, candidates):
+        """Single ES|QL probe counting, among documents where ``metric_field``
+        is non-null, how many also carry each candidate field.
+
+        Returns ``{candidate: bool}``, or ``None`` when the target is
+        unreachable or the probe errors. ``metric_field`` and the candidates are
+        unescaped physical field names; this method adds its own backticks. Each
+        candidate gets a ``c<i>`` COUNT alias and results are mapped back by
+        column name, so the mapping is robust to column reordering.
+        """
+        if not self._es_url or not candidates:
+            return None
+        aliases = {f"c{i}": candidate for i, candidate in enumerate(candidates)}
+        stats = ", ".join(
+            f"{alias} = COUNT(`{candidate}`)" for alias, candidate in aliases.items()
+        )
         query = (
             f"FROM {self._index_pattern} "
-            f"| WHERE `{metric_field}` IS NOT NULL AND `{candidate}` IS NOT NULL "
-            f"| STATS c = COUNT(*) | LIMIT 1"
+            f"| WHERE `{metric_field}` IS NOT NULL "
+            f"| STATS {stats} | LIMIT 1"
         )
         try:
             resp = requests.post(
@@ -378,10 +450,22 @@ class SchemaResolver:
             )
             if resp.status_code != 200:
                 return None
-            values = resp.json().get("values") or []
+            body = resp.json()
+            values = body.get("values") or []
             if not values or not values[0]:
-                return False
-            return (values[0][0] or 0) > 0
+                return {candidate: False for candidate in candidates}
+            row = values[0]
+            by_alias = {}
+            for idx, column in enumerate(body.get("columns") or []):
+                if idx < len(row):
+                    by_alias[column.get("name")] = row[idx]
+            result = {}
+            for idx, (alias, candidate) in enumerate(aliases.items()):
+                # Prefer the column-name mapping; fall back to positional order
+                # when the response omits `columns`.
+                count = by_alias.get(alias) if by_alias else (row[idx] if idx < len(row) else None)
+                result[candidate] = (count or 0) > 0
+            return result
         except Exception:
             return None
 
