@@ -33,6 +33,7 @@ from verifier.invariants import (  # noqa: E402
     Severity,
     lint_report,
     lint_report_panel,
+    lint_translation,
     static_query_columns,
 )
 
@@ -348,6 +349,102 @@ class TestDriverAndSummary:
 # --------------------------------------------------------------------- #
 # Layer 12 - self-test: corrupt a passing panel, assert the check bites
 # --------------------------------------------------------------------- #
+
+
+class TestRealWorldRobustness:
+    """Regressions for false-positive classes found by linting real dashboards
+    (node-exporter-full, prometheus-all, user corpus) end-to-end."""
+
+    def test_backtick_escaped_columns_do_not_false_flag_accessor(self) -> None:
+        # ES|QL escapes dotted fields with backticks; the breakdown references
+        # the unescaped name. Must NOT be reported as a broken accessor.
+        query = (
+            "TS metrics-* "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), "
+            "`service.instance.id`, `service.name` "
+            "| KEEP time_bucket, v, `service.instance.id`, `service.name`"
+        )
+        cols = static_query_columns(query)
+        assert cols is not None
+        assert "service.instance.id" in cols  # backticks stripped
+        panel = _esql_panel(
+            query=query,
+            breakdown_field="service.instance.id",
+            metrics_field="v",
+            output_group_fields=["time_bucket", "service.instance.id", "service.name"],
+            warnings=["additional grouping dimensions are visually merged"],
+        )
+        cats = _categories(lint_report_panel(panel, "Dash"))
+        assert InvariantCategory.ACCESSOR_BROKEN not in cats
+
+    def test_text_panel_to_markdown_is_not_placeholder_drop(self) -> None:
+        panel = _markdown_panel(status="migrated", reasons=[], post_validation_action="")
+        panel["grafana_type"] = "text"
+        assert lint_report_panel(panel, "Dash") == []
+
+    def test_row_panel_to_markdown_is_not_placeholder_drop(self) -> None:
+        panel = _markdown_panel(status="migrated", reasons=[], post_validation_action="")
+        panel["grafana_type"] = "row"
+        assert lint_report_panel(panel, "Dash") == []
+
+    def test_lint_translation_prefers_visual_ir_over_zipped_yaml(self) -> None:
+        # The emitter reorders panels; an externally-passed yaml panel may belong
+        # to a different panel. lint_translation must use panel_result.visual_ir.
+        class _PR:
+            title = "Correct Panel"
+            status = "migrated"
+            reasons: list[str] = []
+            post_validation_action = ""
+            esql_query = ""
+            query_ir = {"output_shape": "time_series", "output_group_fields": ["time_bucket", "verb"]}
+
+            class _VIR:
+                @staticmethod
+                def to_dict() -> dict:
+                    return {
+                        "presentation": {
+                            "kind": "esql",
+                            "config": {
+                                "type": "line",
+                                "query": _CLEAN_XY_QUERY,
+                                "dimension": {"field": "time_bucket"},
+                                "metrics": [{"field": "value"}],
+                                "breakdown": {"field": "verb"},
+                            },
+                        }
+                    }
+
+            visual_ir = _VIR()
+
+        # Pass a WRONG yaml panel (different, broken). Linter must ignore it in
+        # favor of visual_ir and therefore report no findings.
+        wrong_yaml = {
+            "title": "Wrong Panel",
+            "esql": {"type": "line", "query": "TS x | STATS a = AVG(b) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", "breakdown": {"field": "ghost"}},
+        }
+        findings = lint_translation(wrong_yaml, _PR(), "Dash")
+        assert findings == []
+
+    def test_lint_translation_falls_back_to_yaml_when_no_visual_ir(self) -> None:
+        class _PR:
+            title = "P"
+            status = "migrated"
+            reasons: list[str] = []
+            post_validation_action = ""
+            esql_query = ""
+            query_ir = {"output_group_fields": ["time_bucket", "verb"]}
+            visual_ir = None
+
+        yaml_panel = {
+            "title": "P",
+            "esql": {
+                "type": "line",
+                "query": _CLEAN_XY_QUERY,
+                "breakdown": {"field": "ghost"},
+            },
+        }
+        cats = _categories(lint_translation(yaml_panel, _PR(), "Dash"))
+        assert InvariantCategory.ACCESSOR_BROKEN in cats
 
 
 class TestInvariantSelfTest:

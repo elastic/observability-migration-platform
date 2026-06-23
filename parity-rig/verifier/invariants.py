@@ -261,14 +261,28 @@ def static_query_columns(esql: str) -> set[str] | None:
             # Union with the embedded parser so EVAL-added columns the package
             # parser may not surface (it tracks projected_fields conservatively)
             # are still considered present.
-            return cols | embedded
+            return {_strip_ident(c) for c in (cols | embedded)}
         except Exception:  # pragma: no cover - defensive
             pass
-    return _columns_via_embedded_parser(esql)
+    parsed = _columns_via_embedded_parser(esql)
+    if parsed is None:
+        return None
+    return {_strip_ident(c) for c in parsed}
+
+
+def _strip_ident(name: str) -> str:
+    """Normalize an ES|QL identifier for comparison.
+
+    ES|QL escapes field names containing dots/special chars with backticks
+    (the column ``service.instance.id`` is written wrapped in backticks). The
+    column a query *produces* is the unescaped name, so accessor comparison must
+    strip the backticks on both sides to avoid false ACCESSOR_BROKEN findings.
+    """
+    return str(name or "").strip().strip("`")
 
 
 def is_time_like(field_name: str) -> bool:
-    return str(field_name or "").strip() in _TIME_LIKE_FIELDS
+    return _strip_ident(field_name) in _TIME_LIKE_FIELDS
 
 
 # --------------------------------------------------------------------- #
@@ -306,7 +320,7 @@ def make_es_columns_oracle(es_url: str, api_key: str) -> ColumnsOracle:
 
 def _field_of(container: Any) -> str:
     if isinstance(container, dict):
-        return str(container.get("field") or "").strip()
+        return _strip_ident(container.get("field") or "")
     return ""
 
 
@@ -342,6 +356,20 @@ def referenced_fields(esql_config: dict[str, Any]) -> list[tuple[str, str]]:
 
 _XY_CHART_TYPES = {"line", "area", "bar"}
 
+# Grafana panel types that are not data charts; rendering them as markdown/text
+# in Kibana is the correct outcome, not a silent placeholder drop.
+_NON_DATA_GRAFANA_TYPES = {
+    "text",
+    "row",
+    "dashlist",
+    "news",
+    "welcome",
+    "alertlist",
+    "annolist",
+    "pluginlist",
+    "getting-started",
+}
+
 
 def lint_report_panel(
     panel: dict[str, Any],
@@ -369,7 +397,11 @@ def lint_report_panel(
     findings: list[Finding] = []
 
     # --- Placeholder honesty -------------------------------------------------
-    if kind == "markdown" and status == "migrated" and not pva and not reasons:
+    # Grafana panel types that are *inherently* non-data: migrating them to a
+    # markdown/text panel is correct, not a silent chart drop.
+    grafana_type = str(panel.get("grafana_type") or "").lower()
+    non_data_source = grafana_type in _NON_DATA_GRAFANA_TYPES
+    if kind == "markdown" and status == "migrated" and not pva and not reasons and not non_data_source:
         findings.append(
             Finding(
                 InvariantCategory.PLACEHOLDER_DROPPED,
@@ -523,15 +555,36 @@ def report_panel_from_translation(
     if not isinstance(query_ir, dict):
         query_ir = {}
     title = getattr(panel_result, "title", "") or (yaml_panel or {}).get("title", "")
+
+    # Prefer the pipeline-associated visual_ir: the emitter reorders/expands
+    # panels, so an externally-zipped yaml panel can belong to a different panel.
+    # Fall back to the yaml panel only when visual_ir is absent/empty.
+    presentation = _presentation_from_visual_ir(getattr(panel_result, "visual_ir", None))
+    if not presentation.get("kind"):
+        presentation = _presentation_from_yaml(yaml_panel)
+
     return {
         "title": title,
         "status": str(getattr(panel_result, "status", "") or ""),
+        "grafana_type": str(getattr(panel_result, "grafana_type", "") or ""),
         "reasons": list(getattr(panel_result, "reasons", []) or []),
         "post_validation_action": str(getattr(panel_result, "post_validation_action", "") or ""),
         "esql": str(getattr(panel_result, "esql_query", "") or ""),
         "query_ir": query_ir,
-        "visual_ir": {"presentation": _presentation_from_yaml(yaml_panel)},
+        "visual_ir": {"presentation": presentation},
     }
+
+
+def _presentation_from_visual_ir(visual_ir: Any) -> dict[str, Any]:
+    if visual_ir is None:
+        return {"kind": "", "config": {}}
+    vird = visual_ir.to_dict() if hasattr(visual_ir, "to_dict") else visual_ir
+    if not isinstance(vird, dict):
+        return {"kind": "", "config": {}}
+    pres = vird.get("presentation")
+    if isinstance(pres, dict) and isinstance(pres.get("config"), dict):
+        return {"kind": str(pres.get("kind") or ""), "config": dict(pres["config"])}
+    return {"kind": "", "config": {}}
 
 
 def lint_translation(
