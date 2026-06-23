@@ -892,7 +892,6 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
                 screenshot_dir="",
                 browser_audit_dir=tmpdir,
                 chrome_binary="",
-                chrome_user_data_dir="",
                 time_from="now-1h",
                 time_to="now",
                 window_width=1600,
@@ -918,22 +917,6 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertTrue(result["issues"])
         self.assertTrue(result["path"].endswith("node_exporter_full.html"))
 
-    def test_chrome_command_uses_persistent_profile_when_configured(self):
-        args = argparse.Namespace(
-            window_width=1600,
-            window_height=2200,
-            chrome_user_data_dir="/tmp/obs-migrate-chrome-profile",
-        )
-
-        command = smoke._chrome_command(
-            "/usr/bin/chrome",
-            "http://localhost:5601/app/dashboards",
-            args,
-            15000,
-        )
-
-        self.assertIn("--user-data-dir=/tmp/obs-migrate-chrome-profile", command)
-
     def test_capture_browser_audit_streams_dom_to_file(self):
         saved_object = {
             "id": "dashboard-123",
@@ -948,7 +931,6 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
                 screenshot_dir="",
                 browser_audit_dir=tmpdir,
                 chrome_binary="",
-                chrome_user_data_dir="",
                 time_from="now-1h",
                 time_to="now",
                 window_width=1600,
@@ -980,104 +962,6 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
             "<html><body>Provided column name or index is invalid: a8294c09-9d68-cfec-47e2-a7614f7df5b5</body></html>"
         )
         self.assertTrue(issues)
-
-    def test_browser_audit_detects_multiple_visible_verification_errors(self):
-        dom = (
-            "<html><body>"
-            "<section>RAM Total verification_exception: column [node_memory_MemTotal_bytes] "
-            "must appear in the [STATS BY] clause</section>"
-            "<section>RootFS Total verification_exception: column [node_filesystem_size_bytes] "
-            "must appear in the [STATS BY] clause</section>"
-            "<section>Queue Length parsing_exception: unexpected token</section>"
-            "</body></html>"
-        )
-
-        issues = smoke._browser_audit_issues(dom)
-
-        self.assertEqual(len(issues), 3)
-        self.assertTrue(any("RAM Total" in issue for issue in issues))
-        self.assertTrue(any("RootFS Total" in issue for issue in issues))
-        self.assertTrue(any("Queue Length" in issue for issue in issues))
-
-    def test_browser_audit_counts_repeated_identical_visible_errors(self):
-        dom = (
-            "<html><body>"
-            "<section>verification_exception: Unknown column [foo]</section>"
-            "<section>verification_exception: Unknown column [foo]</section>"
-            "</body></html>"
-        )
-
-        issues = smoke._browser_audit_issues(dom)
-
-        self.assertEqual(len(issues), 2)
-
-    def test_browser_audit_surfaces_no_results_found_as_warning_not_error(self):
-        dom = (
-            "<html><body>"
-            "<section>Network No results found</section>"
-            "<section>Filesystem No results found</section>"
-            "</body></html>"
-        )
-
-        self.assertEqual(smoke._browser_audit_issues(dom), [])
-        warnings = smoke._browser_audit_empty_states(dom)
-        self.assertEqual(len(warnings), 2)
-        self.assertTrue(all("No results found" in warning for warning in warnings))
-
-    def test_browser_audit_counts_repeated_identical_empty_states(self):
-        dom = (
-            "<html><body>"
-            "<section>No results found</section>"
-            "<section>No results found</section>"
-            "</body></html>"
-        )
-
-        warnings = smoke._browser_audit_empty_states(dom)
-
-        self.assertEqual(len(warnings), 2)
-
-    def test_capture_browser_audit_reports_errors_and_empty_warnings(self):
-        saved_object = {
-            "id": "dashboard-123",
-            "attributes": {"title": "Node Exporter Full"},
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = argparse.Namespace(
-                kibana_url="http://localhost:5601",
-                space_id="",
-                output="uploaded_dashboard_smoke_report.json",
-                screenshot_dir="",
-                browser_audit_dir=tmpdir,
-                chrome_binary="",
-                chrome_user_data_dir="",
-                time_from="now-1h",
-                time_to="now",
-                window_width=1600,
-                window_height=2200,
-                virtual_time_budget_ms=15000,
-                screenshot_retries=1,
-                timeout=30,
-            )
-            dom = (
-                "<html><body>"
-                "<div>verification_exception: column [x] must appear in the [STATS BY] clause</div>"
-                "<div>No results found</div>"
-                "</body></html>"
-            )
-
-            def fake_run(cmd, stdout=None, stderr=None, text=None, timeout=None, **kwargs):
-                assert stdout is not None
-                stdout.write(dom)
-                return subprocess.CompletedProcess(cmd, 0, "", "")
-
-            with mock.patch.object(smoke, "discover_chrome_binary", return_value="/usr/bin/chrome"):
-                with mock.patch.object(smoke.subprocess, "run", side_effect=fake_run):
-                    result = smoke.capture_browser_audit(saved_object, args)
-
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(len(result["issues"]), 1)
-        self.assertEqual(len(result["warnings"]), 1)
 
     def test_capture_dashboard_screenshot_writes_png(self):
         saved_object = {

@@ -675,7 +675,6 @@ __all__ = [
     "_panel_query_index",
     "build_runtime_summary",
     "build_summary_view",
-    "mark_panel_migrated_with_missing_target_fields",
     "mark_panel_requires_manual_after_failed_validation",
     "mark_panel_requires_manual_after_validation",
     "pct",

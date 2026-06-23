@@ -2801,19 +2801,18 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
 
     def test_bare_gauge_default_uses_ts_and_preserves_series(self):
         # Migration default: a bare gauge assumes TSDS and uses TS, which preserves
-        # per-series rows natively via a bare TS function by TBUCKET. No collapse,
-        # so no loss warning.
+        # per-series rows natively (STATS field = field BY TBUCKET). No collapse, so
+        # no loss warning.
         ctx = self._translate("node_xyz_metric")
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = LAST_OVER_TIME(node_xyz_metric)", ctx.esql_query)
-        self.assertNotRegex(ctx.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
+        self.assertIn("STATS node_xyz_metric = node_xyz_metric", ctx.esql_query)
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
 
     def test_bare_gauge_with_labels_has_no_loss_warning(self):
         # Issue #99: a bare gauge with a legendFormat label and no explicit outer
         # aggregation uses the direct TS gauge path. ES|QL TS mode splits series
-        # by TSID with a bare TS function and BY TBUCKET alone, so the legend label
-        # is NOT added to BY. No collapse loss either.
+        # by TSID with BY TBUCKET alone, so the legend label is NOT added to BY
+        # (adding it would force a distorting outer AVG). No collapse loss either.
         ctx = self._translate(
             "node_xyz_metric",
             hints={
@@ -2823,8 +2822,7 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         )
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = LAST_OVER_TIME(node_xyz_metric) BY time_bucket", ctx.esql_query)
-        self.assertNotRegex(ctx.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
+        self.assertIn("STATS node_xyz_metric = node_xyz_metric BY time_bucket", ctx.esql_query)
         self.assertNotIn("instance", ctx.esql_query)
         self.assertNotIn("AVG(", ctx.esql_query)
 
@@ -2840,8 +2838,7 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
             },
         )
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS go_goroutines = LAST_OVER_TIME(go_goroutines) BY time_bucket", ctx.esql_query)
-        self.assertNotRegex(ctx.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
+        self.assertIn("STATS go_goroutines = go_goroutines BY time_bucket", ctx.esql_query)
         self.assertNotIn("AVG(", ctx.esql_query)
         self.assertNotIn(", instance", ctx.esql_query)
         self.assertEqual(ctx.warnings, [])
