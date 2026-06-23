@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -363,6 +364,46 @@ def extract_unified_alert_rules(grafana_url, user="", password="", token="", ver
     return data if isinstance(data, list) else []
 
 
+def extract_unified_alert_rule_groups(rules, grafana_url, user="", password="", token="", verify: bool | str = True):
+    """Fetch the evaluation groups for the given unified alert rules.
+
+    In Grafana the evaluation interval lives on the rule's group, not the rule
+    itself, so it must be fetched separately via
+    ``GET /api/v1/provisioning/folder/{folderUID}/rule-groups/{group}``. Returns
+    one group dict per unique ``(folderUID, ruleGroup)`` seen in ``rules``.
+    """
+    base = str(grafana_url or "").rstrip("/")
+    session = _grafana_session(grafana_url, user=user, password=password, token=token, verify=verify)
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        folder = str(rule.get("folderUID", "") or "")
+        group = str(rule.get("ruleGroup", "") or "")
+        if not folder or not group:
+            continue
+        key = (folder, group)
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return []
+
+    def _fetch_group(key: tuple[str, str]) -> Any:
+        folder, group = key
+        path = f"/api/v1/provisioning/folder/{quote(folder, safe='')}/rule-groups/{quote(group, safe='')}"
+        return _fetch_unified_provisioning_json(session, base, path, {}, f"alert rule group '{group}'")
+
+    # One GET per group can fan out to hundreds of round-trips on large estates;
+    # fetch them concurrently (bounded) instead of serially. pool.map preserves
+    # input order so the result is deterministic.
+    with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
+        fetched = list(pool.map(_fetch_group, keys))
+    return [data for data in fetched if isinstance(data, dict) and data]
+
+
 def extract_unified_contact_points(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch contact points (GET /api/v1/provisioning/contact-points)."""
     base = str(grafana_url or "").rstrip("/")
@@ -473,9 +514,13 @@ def filter_unified_alert_rules(
 
 def extract_all_alerting_resources(grafana_url, user="", password="", token="", verify: bool | str = True):
     """Fetch all unified alerting provisioning resources; each part degrades gracefully."""
+    alert_rules = extract_unified_alert_rules(
+        grafana_url, user=user, password=password, token=token, verify=verify
+    )
     return {
-        "alert_rules": extract_unified_alert_rules(
-            grafana_url, user=user, password=password, token=token, verify=verify
+        "alert_rules": alert_rules,
+        "rule_groups": extract_unified_alert_rule_groups(
+            alert_rules, grafana_url, user=user, password=password, token=token, verify=verify
         ),
         "contact_points": extract_unified_contact_points(
             grafana_url, user=user, password=password, token=token, verify=verify
@@ -572,6 +617,10 @@ def extract_all_alerting_resources_from_files(directory: str) -> dict[str, Any]:
         "alert_rules.json",
         "unified_alert_rules.json",
     ])
+    rule_groups_raw = _first_present([
+        "grafana_rule_groups.json",
+        "rule_groups.json",
+    ])
     contact_points_raw = _first_present([
         "grafana_contact_points.json",
         "contact_points.json",
@@ -596,6 +645,7 @@ def extract_all_alerting_resources_from_files(directory: str) -> dict[str, Any]:
 
     return {
         "alert_rules": _normalize_file_alert_rules(alert_rules_raw),
+        "rule_groups": _normalize_file_list(rule_groups_raw, "rule_groups"),
         "contact_points": _normalize_file_list(contact_points_raw, "contact_points"),
         "notification_policies": _normalize_file_dict(notification_policies_raw, "notification_policies"),
         "mute_timings": _normalize_file_list(mute_timings_raw, "mute_timings"),
@@ -612,6 +662,7 @@ __all__ = [
     "extract_dashboards_from_files",
     "extract_dashboards_from_grafana",
     "extract_datasources",
+    "extract_unified_alert_rule_groups",
     "extract_unified_alert_rules",
     "extract_unified_contact_points",
     "extract_unified_mute_timings",
