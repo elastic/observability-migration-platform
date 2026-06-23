@@ -510,6 +510,8 @@ def should_include_dashboard(saved_object, dashboard_titles, dashboard_ids):
         return False
     if dashboard_ids and dashboard_id not in set(dashboard_ids):
         return False
+    if not dashboard_titles and not dashboard_ids and title.startswith("[DELETED]"):
+        return False
     return True
 
 
@@ -1144,9 +1146,15 @@ def main(verify: bool | str = True):
             per_page=args.saved_objects_per_page,
         )
 
-    for item in dashboard_items:
-        if not should_include_dashboard(item, args.dashboard_title, args.dashboard_id):
-            continue
+    selected_items = [
+        item
+        for item in dashboard_items
+        if should_include_dashboard(item, args.dashboard_title, args.dashboard_id)
+    ]
+    scope = "requested dashboard(s)" if (args.dashboard_title or args.dashboard_id) else "all non-deleted dashboard(s)"
+    print(f"Inspecting {len(selected_items)}/{len(dashboard_items)} {scope}")
+
+    for item in selected_items:
         attributes = item.get("attributes", {}) or {}
         saved_object = item if attributes.get("panelsJSON") else load_dashboard(
             session,

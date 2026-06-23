@@ -125,6 +125,14 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in dashboards], ["dashboard-1", "dashboard-2"])
         session.post.assert_called_once()
 
+    def test_should_include_dashboard_skips_deleted_placeholders_when_unscoped(self):
+        deleted = {"id": "old-dashboard", "attributes": {"title": "[DELETED] old-dashboard"}}
+        active = {"id": "new-dashboard", "attributes": {"title": "Migrated Dashboard"}}
+
+        self.assertFalse(smoke.should_include_dashboard(deleted, [], []))
+        self.assertTrue(smoke.should_include_dashboard(active, [], []))
+        self.assertTrue(smoke.should_include_dashboard(deleted, [], ["old-dashboard"]))
+
     def test_main_loads_requested_dashboard_ids_directly(self):
         args = argparse.Namespace(
             kibana_url="http://localhost:5601",
