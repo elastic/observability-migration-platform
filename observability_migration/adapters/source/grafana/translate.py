@@ -1664,7 +1664,7 @@ def nested_agg_family_rule(context):
                 *_build_where_lines(filters),
                 f"| WHERE {physical_metric} IS NOT NULL",
                 f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {esql_outer}({inner_alias}) BY time_bucket",
+                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag)} BY time_bucket",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -1694,7 +1694,7 @@ def nested_agg_family_rule(context):
             summary_lines.append(f"| STATS {first_stats_expr} BY {', '.join(inner_group)}")
         else:
             summary_lines.append(f"| STATS {first_stats_expr}")
-        summary_lines.append(f"| STATS {result_alias} = {esql_outer}({second_stats_arg})")
+            summary_lines.append(f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag)}")
         context.esql_query = "\n".join(summary_lines)
     else:
         context.output_group_fields = ["time_bucket"]
@@ -1710,7 +1710,7 @@ def nested_agg_family_rule(context):
                 *_build_where_lines(filters),
                 *( [count_presence_filter] if count_presence_filter else [] ),
                 f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {esql_outer}({second_stats_arg}) BY time_bucket",
+                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag)} BY time_bucket",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -1980,7 +1980,7 @@ def range_agg_family_rule(context):
             "when grouping TS functions by label fields",
         )
     else:
-        stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
+        stats_expr = _agg_stats_expr(outer, inner_expr, frag) if outer else inner_expr
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     group_by_parts, output_group = _grouping_parts(bucket, group_fields)
