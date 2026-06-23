@@ -479,6 +479,11 @@ class FormulaPlan:
     # comparison indicator (``CASE(cond, 1, 0)``). A parent division uses this to
     # re-render the indicator with a NULL false-branch so it never divides by 0.
     bool_compare_cond: str = ""
+    # Set when ``expr`` is a cross-metric PromQL ``or`` rendered as a
+    # ``COALESCE(left, right, ...)`` union (left precedence, right fills the
+    # gaps). The translator uses this to emit the correct set-union note instead
+    # of the same-bucket arithmetic caveat.
+    set_or_fill: bool = False
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -3647,6 +3652,169 @@ def _set_or_distinguishing_labels(operand_frags):
     return [label for label, values in by_label_values.items() if len(values) > 1]
 
 
+def _flatten_or_operands(frag):
+    """Flatten a left-leaning ``A or B or C`` chain into ``[A, B, C]``.
+
+    PromQL ``or`` is left-associative, so the operands are returned in
+    source order — left to right — which is the precedence order
+    ``COALESCE`` must preserve. Returns ``None`` if the chain is malformed.
+    """
+    if frag.family == "binary_expr" and (frag.binary_op or "").lower() == "or":
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        if left is None or right is None:
+            return None
+        left_ops = _flatten_or_operands(left)
+        right_ops = _flatten_or_operands(right)
+        if left_ops is None or right_ops is None:
+            return None
+        return left_ops + right_ops
+    return [frag]
+
+
+def _vector_matching_restricts_or(matching):
+    """Return True when an ``or`` modifier narrows the series-matching key.
+
+    The AST parser attaches a ``vector_matching`` entry to every set-operator
+    node, even a bare ``or`` with no modifier (``type=''``, no labels) and a
+    label-less ``ignoring()`` (``type='Exclude'``, no labels) — both of which
+    mean "match on the full label set", exactly what the ``COALESCE`` union's
+    full-grouping identity already does. Only an explicit key narrows matching:
+    any ``on(...)``/``ignoring(...)`` with labels, or an ``on()`` (type
+    ``Include``) that matches on the empty set.
+    """
+    if not matching:
+        return False
+    if matching.get("labels"):
+        return True
+    return matching.get("type") == "Include"
+
+
+def _or_chain_has_vector_matching(frag):
+    """Return True if any ``or`` node in the chain carries an ``on()``/``ignoring()`` key.
+
+    PromQL ``or`` with a vector-matching modifier matches the operands by the
+    modifier's label key — not by the full series label set — when deciding
+    which right-operand series fill a missing left-operand series. The
+    ``COALESCE`` union rewrite uses the emitted ES|QL grouping fields as the
+    series identity and has no way to honor that narrower key, so a right
+    series with the same matched labels but a differing unmatched label would
+    survive when PromQL would suppress it. Refuse the rewrite in that case so
+    the panel is flagged for manual review instead of over-reporting series.
+    """
+    if frag.family == "binary_expr" and (frag.binary_op or "").lower() == "or":
+        if _vector_matching_restricts_or(frag.extra.get("vector_matching")):
+            return True
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        return bool(
+            (left is not None and _or_chain_has_vector_matching(left))
+            or (right is not None and _or_chain_has_vector_matching(right))
+        )
+    return False
+
+
+def _try_rewrite_set_or_cross_metric(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    preferred_group_labels_origin=None,
+):
+    """Rewrite a cross-metric ``A or B`` as a ``COALESCE(A, B)`` union.
+
+    PromQL's ``or`` is set union with **left precedence**: every series the
+    left operand produces survives unchanged, and a right-operand series fills
+    in only where the left has no series with that label set. When both
+    operands line up to the same ES|QL grouping (same source command, time
+    bucket and group fields), that is exactly ``COALESCE(left, right)`` grouped
+    by that label set — the left value wins inside any group it produced and
+    the right value fills the groups the left never produced. Longer chains
+    ``A or B or C`` collapse to ``COALESCE(A, B, C)`` in source order.
+
+    This keeps **both** metrics instead of silently dropping the right operand
+    (issue #167). When the operands cannot be aligned safely — different
+    grouping dimensions, divergent source commands, or an operand that itself
+    has no honest translation — we return ``None`` so the caller marks the
+    panel for manual review rather than emitting half the data.
+    """
+    if (frag.binary_op or "").lower() != "or":
+        return None
+
+    operand_frags = _flatten_or_operands(frag)
+    if not operand_frags or len(operand_frags) < 2:
+        return None
+
+    # An ``on(...)``/``ignoring(...)`` modifier changes which right-operand
+    # series fill a missing left-operand series — PromQL matches by the
+    # modifier's key, not the full label set. The COALESCE union groups by the
+    # emitted ES|QL fields and cannot honor that key, so refuse the rewrite
+    # (→ manual review) rather than over-report right-operand series.
+    if _or_chain_has_vector_matching(frag):
+        return None
+
+    # Every operand must be translatable on its own. A nested set operator or a
+    # carried not-feasible reason means we cannot faithfully include that side,
+    # so refuse the whole union (→ manual review) instead of dropping it.
+    for operand in operand_frags:
+        if not operand.metric:
+            return None
+        if operand.extra.get("not_feasible_reasons"):
+            return None
+        if operand.family == "binary_expr" and (operand.binary_op or "").lower() in _SET_OPERATORS:
+            return None
+
+    # A pure same-metric ``or`` is handled by the dedicated WHERE-OR rewrite,
+    # which keeps a single fetch; only fall through to the union when the
+    # operands span more than one metric.
+    if len({operand.metric for operand in operand_frags}) < 2:
+        return None
+
+    specs = []
+    for operand in operand_frags:
+        # ``allow_direct_ts_gauge=False`` forces a gauge to an aggregatable
+        # ``AVG(field)`` (rather than a bare ``field``) so multiple operands can
+        # share one ``STATS`` and be CASE-wrapped if their filters diverge.
+        spec = _build_measure_spec(
+            operand,
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=False,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+        )
+        if spec is None:
+            return None
+        specs.append(spec)
+
+    # The operands must align to one shared pipeline (same source/bucket/group
+    # fields). When they don't, there is no safe ES|QL union — refuse so the
+    # panel is flagged for manual review.
+    if not _measure_specs_mergeable(specs):
+        return None
+
+    coalesce_args = ", ".join(_esql_identifier(spec.final_alias) for spec in specs)
+    expr = f"COALESCE({coalesce_args})"
+
+    warnings = []
+    for spec in specs:
+        for w in spec.warnings:
+            if w not in warnings:
+                warnings.append(w)
+    note = (
+        "PromQL 'or': kept both metrics — left operand takes precedence and the "
+        "right operand fills series where the left has no data"
+    )
+    if note not in warnings:
+        warnings.append(note)
+
+    return FormulaPlan(specs=specs, expr=expr, warnings=warnings, set_or_fill=True)
+
+
 def _build_formula_plan(
     frag,
     resolver,
@@ -3778,6 +3946,22 @@ def _build_formula_plan(
             )
             if rewritten is not None:
                 return rewritten
+            if op_lower == "or":
+                # Cross-metric ``A or B``: keep both metrics as a COALESCE union
+                # (left precedence, right fills the gaps) instead of dropping the
+                # right operand (issue #167). Returns ``None`` when the operands
+                # cannot be aligned safely so the caller marks it for manual review.
+                cross = _try_rewrite_set_or_cross_metric(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                )
+                if cross is not None:
+                    return cross
             return None
 
         if op_lower in ("+", "-"):

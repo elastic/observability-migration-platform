@@ -57,6 +57,7 @@ from .promql import (
     _grouping_parts,
     _inline_filters_into_stats_expr,
     _is_counter_fallback,
+    _or_chain_has_vector_matching,
     _parse_fragment,
     _parse_logql_search,
     _resolve_metric_field,
@@ -1188,45 +1189,33 @@ def binary_expr_family_rule(context):
         preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
     )
     if not plan:
-        # ``or`` between distinct metrics: translate the left operand alone.
-        # This covers the common "primary or fallback" / "metric or vector(0)"
-        # PromQL idioms where the left side is the meaningful signal.
+        # A cross-metric ``or`` reaches here only when it could not be unified
+        # into a COALESCE union (``_try_rewrite_set_or_cross_metric`` returned
+        # ``None`` because the operands cannot be lined up safely). ``and`` /
+        # ``unless`` likewise have no honest single-stage ES|QL equivalent.
+        # Flag for manual review instead of silently dropping half the data
+        # (issue #167) — never emit the left operand alone.
         op_lower = (frag.binary_op or "").lower()
         if op_lower == "or":
-            left_frag = frag.extra.get("left_frag")
-            if left_frag and not left_frag.extra.get("not_feasible_reasons"):
-                sub = TranslationContext(
-                    promql_expr=left_frag.raw_expr or context.promql_expr,
-                    data_view=context.data_view,
-                    index=context.index,
-                    rule_pack=context.rule_pack,
-                    resolver=context.resolver,
-                    metadata=dict(context.metadata),
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            if _or_chain_has_vector_matching(frag):
+                reason = (
+                    "PromQL 'or' with an on()/ignoring() vector-matching modifier: "
+                    "the union must match series by the modifier's label key, which "
+                    "the ES|QL COALESCE rewrite cannot reproduce; marked for manual "
+                    "review so right-operand series are not over-reported"
                 )
-                sub.fragment = left_frag
-                sub.metadata["fragment_family"] = left_frag.family
-                QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
-                QUERY_POSTPROCESSORS.apply(sub)
-                if sub.esql_query and sub.feasibility != "not_feasible":
-                    context.esql_query = sub.esql_query
-                    context.metric_name = sub.metric_name
-                    context.output_metric_field = sub.output_metric_field
-                    context.output_group_fields = sub.output_group_fields
-                    context.source_type = sub.source_type
-                    context.parser_backend = "fragment"
-                    context.translation_complete = True
-                    for w in sub.warnings:
-                        _append_unique(context.warnings, w)
-                    _append_unique(
-                        context.warnings,
-                        "PromQL 'or' fallback: using left operand only; "
-                        "right-hand side metric ignored",
-                    )
-                    return "or fallback: translated left operand"
-
-        # ``and`` / ``unless`` and unresolvable ``or`` have no honest single-stage
-        # ES|QL equivalent. Surface a clear ``not_feasible``.
-        if op_lower in {"or", "and", "unless"}:
+            else:
+                reason = (
+                    "PromQL 'or' between metrics that cannot be aligned in ES|QL "
+                    "(differing grouping dimensions or source shapes); marked for "
+                    "manual review so no series are silently dropped"
+                )
+            _append_unique(context.warnings, reason)
+            return "or union not alignable; marked not_feasible"
+        if op_lower in {"and", "unless"}:
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             context.translation_complete = True
@@ -1269,8 +1258,9 @@ def binary_expr_family_rule(context):
         # must migrate clean, since flagging it would wrongly signal degradation
         # (issue #156). Plain arithmetic (no matcher), ``ignoring(...)`` joins,
         # and joins that dropped an operand ``by(...)`` label (review #164) keep
-        # the same-bucket caveat.
-        if not _join_is_faithful(frag, resolver, output_group_fields):
+        # the same-bucket caveat. A cross-metric ``or`` union carries its own
+        # set-union note (issue #167) and is not arithmetic, so skip it.
+        if not plan.set_or_fill and not _join_is_faithful(frag, resolver, output_group_fields):
             _append_unique(
                 context.warnings,
                 "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -1297,6 +1287,8 @@ def binary_expr_family_rule(context):
     context.output_metric_field = result_alias
     context.esql_query = "\n".join(parts)
     context.translation_complete = True
+    if plan.set_or_fill:
+        return "translated cross-metric 'or' as COALESCE union"
     return "translated arithmetic expression"
 
 
