@@ -1613,6 +1613,25 @@ class TestPromQLOrFallback(unittest.TestCase):
             f"Expected a manual-review warning; got: {ctx.warnings}",
         )
 
+    def test_or_with_vector_matching_modifier_needs_manual_review(self):
+        """A cross-metric 'or' with an on()/ignoring() modifier matches series by
+        the modifier's key, which the COALESCE union cannot reproduce. It must be
+        flagged for manual review rather than over-reporting right-operand series
+        (issue #167 review)."""
+        ctx = self._translate(
+            "sum by (instance, job)(rate(a_total[5m])) or ignoring(job) "
+            "sum by (instance, job)(rate(b_total[5m]))"
+        )
+        self.assertEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertTrue(
+            any("manual review" in w.lower() for w in ctx.warnings),
+            f"Expected a manual-review warning; got: {ctx.warnings}",
+        )
+        self.assertTrue(
+            any("vector-matching" in w.lower() or "ignoring()" in w.lower() for w in ctx.warnings),
+            f"Expected a vector-matching reason; got: {ctx.warnings}",
+        )
+
     def test_or_with_vector_zero_uses_left_operand(self):
         """rate(a) or vector(0) is a 'default to 0' idiom — translate left side."""
         ctx = self._translate("rate(http_requests_total[5m]) or vector(0)")

@@ -3672,6 +3672,48 @@ def _flatten_or_operands(frag):
     return [frag]
 
 
+def _vector_matching_restricts_or(matching):
+    """Return True when an ``or`` modifier narrows the series-matching key.
+
+    The AST parser attaches a ``vector_matching`` entry to every set-operator
+    node, even a bare ``or`` with no modifier (``type=''``, no labels) and a
+    label-less ``ignoring()`` (``type='Exclude'``, no labels) — both of which
+    mean "match on the full label set", exactly what the ``COALESCE`` union's
+    full-grouping identity already does. Only an explicit key narrows matching:
+    any ``on(...)``/``ignoring(...)`` with labels, or an ``on()`` (type
+    ``Include``) that matches on the empty set.
+    """
+    if not matching:
+        return False
+    if matching.get("labels"):
+        return True
+    return matching.get("type") == "Include"
+
+
+def _or_chain_has_vector_matching(frag):
+    """Return True if any ``or`` node in the chain carries an ``on()``/``ignoring()`` key.
+
+    PromQL ``or`` with a vector-matching modifier matches the operands by the
+    modifier's label key — not by the full series label set — when deciding
+    which right-operand series fill a missing left-operand series. The
+    ``COALESCE`` union rewrite uses the emitted ES|QL grouping fields as the
+    series identity and has no way to honor that narrower key, so a right
+    series with the same matched labels but a differing unmatched label would
+    survive when PromQL would suppress it. Refuse the rewrite in that case so
+    the panel is flagged for manual review instead of over-reporting series.
+    """
+    if frag.family == "binary_expr" and (frag.binary_op or "").lower() == "or":
+        if _vector_matching_restricts_or(frag.extra.get("vector_matching")):
+            return True
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        return bool(
+            (left is not None and _or_chain_has_vector_matching(left))
+            or (right is not None and _or_chain_has_vector_matching(right))
+        )
+    return False
+
+
 def _try_rewrite_set_or_cross_metric(
     frag,
     resolver,
@@ -3703,6 +3745,14 @@ def _try_rewrite_set_or_cross_metric(
 
     operand_frags = _flatten_or_operands(frag)
     if not operand_frags or len(operand_frags) < 2:
+        return None
+
+    # An ``on(...)``/``ignoring(...)`` modifier changes which right-operand
+    # series fill a missing left-operand series — PromQL matches by the
+    # modifier's key, not the full label set. The COALESCE union groups by the
+    # emitted ES|QL fields and cannot honor that key, so refuse the rewrite
+    # (→ manual review) rather than over-report right-operand series.
+    if _or_chain_has_vector_matching(frag):
         return None
 
     # Every operand must be translatable on its own. A nested set operator or a

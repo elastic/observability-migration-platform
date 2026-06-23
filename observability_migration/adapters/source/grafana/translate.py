@@ -57,6 +57,7 @@ from .promql import (
     _grouping_parts,
     _inline_filters_into_stats_expr,
     _is_counter_fallback,
+    _or_chain_has_vector_matching,
     _parse_fragment,
     _parse_logql_search,
     _resolve_metric_field,
@@ -1199,12 +1200,20 @@ def binary_expr_family_rule(context):
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             context.translation_complete = True
-            _append_unique(
-                context.warnings,
-                "PromQL 'or' between metrics that cannot be aligned in ES|QL "
-                "(differing grouping dimensions or source shapes); marked for "
-                "manual review so no series are silently dropped",
-            )
+            if _or_chain_has_vector_matching(frag):
+                reason = (
+                    "PromQL 'or' with an on()/ignoring() vector-matching modifier: "
+                    "the union must match series by the modifier's label key, which "
+                    "the ES|QL COALESCE rewrite cannot reproduce; marked for manual "
+                    "review so right-operand series are not over-reported"
+                )
+            else:
+                reason = (
+                    "PromQL 'or' between metrics that cannot be aligned in ES|QL "
+                    "(differing grouping dimensions or source shapes); marked for "
+                    "manual review so no series are silently dropped"
+                )
+            _append_unique(context.warnings, reason)
             return "or union not alignable; marked not_feasible"
         if op_lower in {"and", "unless"}:
             context.feasibility = "not_feasible"
