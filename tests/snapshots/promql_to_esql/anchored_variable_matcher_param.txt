@@ -6,6 +6,6 @@ TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE phase == "Running"
 | WHERE kube_pod_status_phase IS NOT NULL
-| STATS kube_pod_status_phase = kube_pod_status_phase BY time_bucket = TBUCKET(5 minute)
+| STATS kube_pod_status_phase = LAST_OVER_TIME(kube_pod_status_phase) BY time_bucket = TBUCKET(5 minute)
 | WHERE kube_pod_status_phase > 0
 | SORT time_bucket ASC
