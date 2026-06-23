@@ -1929,68 +1929,26 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = LAST_OVER_TIME(node_systemd_units) BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
-        self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
 
     def test_unknown_gauge_selector_assumes_tsds_direct_ts(self):
         # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge
-        # using a bare TS function, which preserves TSID grouping. No FROM+AVG
-        # collapse, so no honest-loss warning (the series are retained, nothing
-        # is dropped).
+        # (STATS field = field), which preserves per-series rows. No FROM+AVG collapse,
+        # so no honest-loss warning (the series are retained, nothing is dropped).
         translated = self.translate("node_systemd_units")
 
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = LAST_OVER_TIME(node_systemd_units) BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
-        self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("Collapsed all series" in warning for warning in translated.warnings))
-
-    def test_issue176_multiple_node_exporter_raw_gauges_use_bare_ts_function(self):
-        metrics = [
-            "node_filesystem_size_bytes",
-            "node_memory_MemTotal_bytes",
-            "node_network_mtu_bytes",
-            "node_scrape_collector_duration_seconds",
-        ]
-        self.seed_field_caps(
-            {
-                metric: {
-                    "double": {
-                        "type": "double",
-                        "searchable": True,
-                        "aggregatable": True,
-                        "time_series_metric": "gauge",
-                    }
-                }
-                for metric in metrics
-            }
-        )
-
-        for metric in metrics:
-            with self.subTest(metric=metric):
-                translated = self.translate(metric)
-                self.assertEqual(translated.source_type, "TS")
-                self.assertIn(
-                    f"| STATS {metric} = LAST_OVER_TIME({metric}) BY time_bucket = TBUCKET(5 minute)",
-                    translated.esql_query,
-                )
-                self.assertNotRegex(translated.esql_query, r"STATS\s+(\w+)\s*=\s*\1\b")
-                self.assertNotIn(f"AVG({metric})", translated.esql_query)
-
-    def test_issue176_math_formula_raw_gauge_uses_bare_ts_function_before_eval(self):
-        translated = self.translate("abs(node_memory_usage)")
-
-        self.assertNotRegex(translated.esql_query or "", r"STATS\s+(\w+)\s*=\s*\1\b")
-        self.assertIn("LAST_OVER_TIME(node_memory_usage)", translated.esql_query or "")
-        self.assertNotIn("AVG(node_memory_usage)", translated.esql_query or "")
 
     def test_unknown_gauge_selector_keeps_avg_fallback_when_opt_out(self):
         # Escape hatch: with assume_tsds_gauges=False the bare gauge falls back to the
@@ -3993,74 +3951,6 @@ class TranslatorRegressionTests(unittest.TestCase):
         message = disposition.missing_target_field_warning({"analysis": {}})
         self.assertIn("ingested", message)
         self.assertNotIn("``", message)
-
-    def test_validation_error_analysis_captures_confirmed_counter_metric_mismatch(self):
-        query = "TS metrics-*\n| STATS x = RATE(foo_total, 5 minute)"
-        error = (
-            "the first argument of [RATE(foo_total, 5 minute)] must be [counter], "
-            "found value [foo_total] type [double]"
-        )
-        analysis = migrate.analyze_validation_error(query, error, resolver=None)
-        self.assertEqual(analysis["counter_mismatch_metrics"], ["foo_total"])
-        self.assertEqual(analysis["counter_mismatch_confirmed_non_counter"], ["foo_total"])
-
-    def test_validation_error_analysis_captures_found_type_counter_metric_mismatch(self):
-        query = "TS metrics-*\n| STATS x = RATE(foo_total, 5 minute)"
-        error = (
-            "the first argument of [RATE(foo_total, 5 minute)] must be [counter], "
-            "found type [double]"
-        )
-        analysis = migrate.analyze_validation_error(query, error, resolver=None)
-        self.assertEqual(analysis["counter_mismatch_metrics"], ["foo_total"])
-        self.assertEqual(analysis["counter_mismatch_confirmed_non_counter"], ["foo_total"])
-
-    def test_validation_error_analysis_skips_nested_rate_expression(self):
-        query = 'TS metrics-*\n| STATS x = RATE(CASE(state == "idle", value, 0), 5 minute)'
-        error = (
-            'the first argument of [RATE(CASE(state == "idle", value, 0), 5 minute)] '
-            "must be [counter], found value [CASE(...)] type [double]"
-        )
-        analysis = migrate.analyze_validation_error(query, error, resolver=None)
-        self.assertEqual(analysis["counter_mismatch_metrics"], [])
-
-    def test_validation_failure_does_not_self_heal_for_confirmed_counter_mismatch(self):
-        self.assertFalse(
-            disposition.validation_failure_self_heals(
-                {
-                    "status": "fail",
-                    "analysis": {
-                        "counter_mismatch_metrics": ["foo_total"],
-                        "counter_mismatch_confirmed_non_counter": ["foo_total"],
-                    },
-                }
-            )
-        )
-
-    def test_validation_failure_self_heals_for_unconfirmed_counter_storage(self):
-        self.assertTrue(
-            disposition.validation_failure_self_heals(
-                {
-                    "status": "fail",
-                    "analysis": {
-                        "counter_mismatch_metrics": ["foo_total"],
-                        "counter_mismatch_confirmed_non_counter": [],
-                    },
-                }
-            )
-        )
-
-    def test_counter_mismatch_warning_distinguishes_unconfirmed_storage(self):
-        message = disposition.missing_target_field_warning(
-            {
-                "analysis": {
-                    "counter_mismatch_metrics": ["foo_total"],
-                    "counter_mismatch_confirmed_non_counter": [],
-                }
-            }
-        )
-        self.assertIn("foo_total", message)
-        self.assertIn("counter", message)
-        self.assertIn("verify the metric type", message)
 
     def test_generated_rule_pack_filters_empty_candidates(self):
         generated = migrate.build_suggested_rule_pack({

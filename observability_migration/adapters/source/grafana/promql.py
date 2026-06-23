@@ -3024,7 +3024,7 @@ def _build_measure_spec(
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = f"LAST_OVER_TIME({metric_field})"
+            stats_expr = metric_field
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter

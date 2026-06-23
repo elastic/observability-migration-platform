@@ -5,6 +5,6 @@ warning: deg() translated via exact ES|QL equivalent
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE node_memory_usage IS NOT NULL
-| STATS node_memory_usage = LAST_OVER_TIME(node_memory_usage) BY time_bucket = TBUCKET(5 minute)
+| STATS node_memory_usage = node_memory_usage BY time_bucket = TBUCKET(5 minute)
 | EVAL node_memory_usage = (node_memory_usage * 180 / PI())
 | SORT time_bucket ASC

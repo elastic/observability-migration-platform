@@ -202,7 +202,6 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--smoke-output", default="")
     migrate.add_argument("--smoke-timeout", type=int, default=30)
     migrate.add_argument("--chrome-binary", default="")
-    migrate.add_argument("--chrome-user-data-dir", default="")
     migrate.add_argument("--smoke-report", default="")
     migrate.add_argument(
         "--grafana-url", default="",
@@ -789,7 +788,6 @@ def _run_grafana_migration(args: Any) -> None:
         or args.capture_screenshots
         or bool(args.smoke_output)
         or bool(args.chrome_binary)
-        or bool(getattr(args, "chrome_user_data_dir", ""))
     )
     if smoke_requested:
         if args.smoke:
@@ -803,8 +801,6 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--smoke-timeout", str(args.smoke_timeout)])
         if args.chrome_binary:
             legacy_argv.extend(["--chrome-binary", args.chrome_binary])
-        if getattr(args, "chrome_user_data_dir", ""):
-            legacy_argv.extend(["--chrome-user-data-dir", args.chrome_user_data_dir])
     sys.argv = ["obs-migrate"] + legacy_argv
     grafana_main()
 
@@ -875,7 +871,6 @@ def _run_datadog_migration(args: Any) -> None:
         or args.capture_screenshots
         or bool(args.smoke_output)
         or bool(args.chrome_binary)
-        or bool(getattr(args, "chrome_user_data_dir", ""))
     )
     if smoke_requested:
         if args.smoke:
@@ -889,8 +884,6 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--smoke-timeout", str(args.smoke_timeout)])
         if args.chrome_binary:
             legacy_argv.extend(["--chrome-binary", args.chrome_binary])
-        if getattr(args, "chrome_user_data_dir", ""):
-            legacy_argv.extend(["--chrome-user-data-dir", args.chrome_user_data_dir])
     sys.argv = ["obs-migrate"] + legacy_argv
     datadog_main()
 

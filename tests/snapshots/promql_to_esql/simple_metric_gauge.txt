@@ -4,5 +4,5 @@ feasibility: feasible
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE node_memory_MemAvailable_bytes IS NOT NULL
-| STATS node_memory_MemAvailable_bytes = LAST_OVER_TIME(node_memory_MemAvailable_bytes) BY time_bucket = TBUCKET(5 minute)
+| STATS node_memory_MemAvailable_bytes = node_memory_MemAvailable_bytes BY time_bucket = TBUCKET(5 minute)
 | SORT time_bucket ASC

@@ -163,7 +163,6 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
             browser_audit=True,
             capture_screenshots=True,
             chrome_binary="/usr/bin/chrome",
-            chrome_user_data_dir="/tmp/obs-migrate-chrome-profile",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -196,7 +195,6 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
         self.assertTrue(smoke_kwargs["browser_audit"])
         self.assertTrue(smoke_kwargs["capture_screenshots"])
         self.assertEqual(smoke_kwargs["chrome_binary"], "/usr/bin/chrome")
-        self.assertEqual(smoke_kwargs["chrome_user_data_dir"], "/tmp/obs-migrate-chrome-profile")
         mock_merge.assert_called_once_with([result], smoke_payload)
 
 

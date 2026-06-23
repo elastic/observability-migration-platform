@@ -388,35 +388,14 @@ def analyze_validation_error(query, error_msg, resolver=None):
     counter_mismatch_metrics = [
         metric.strip()
         for metric in re.findall(
-            r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,()\s]+)\s*[,)]",
+            r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,]+)",
             error_msg,
         )
     ]
-    confirmed_non_counter = []
-    for metric in counter_mismatch_metrics:
-        type_match = re.search(
-            rf"found value \[{re.escape(metric)}\] type \[([^\]]+)\]",
-            error_msg,
-            flags=re.IGNORECASE,
-        )
-        if not type_match:
-            type_match = re.search(r"found type \[([^\]]+)\]", error_msg, flags=re.IGNORECASE)
-        if not type_match:
-            capability = resolver.field_capability(metric) if resolver and hasattr(resolver, "field_capability") else None
-            if capability and not (
-                getattr(capability, "time_series_metric_kind", "") == "counter"
-                or getattr(capability, "type", "") in {"counter_double", "counter_long"}
-            ):
-                confirmed_non_counter.append(metric)
-            continue
-        found_type = type_match.group(1).strip().lower()
-        if found_type not in {"counter", "counter_double", "counter_long"}:
-            confirmed_non_counter.append(metric)
     return {
         "unknown_columns": unknown_columns,
         "unknown_indexes": unknown_indexes,
         "counter_mismatch_metrics": counter_mismatch_metrics,
-        "counter_mismatch_confirmed_non_counter": confirmed_non_counter,
         "raw_error": error_msg,
     }
 
@@ -688,10 +667,7 @@ def _try_fix_esql_field_error(query, error_msg, resolver):
             if fixed != query:
                 return fixed
 
-    counter_mismatch = re.search(
-        r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,()\s]+)\s*[,)]",
-        error_msg,
-    )
+    counter_mismatch = re.search(r"first argument of \[(?:RATE|IRATE|INCREASE|DELTA)\(([^,]+)", error_msg)
     if counter_mismatch:
         metric = counter_mismatch.group(1).strip()
         fixed = re.sub(r"^TS\b", "FROM", query, count=1)

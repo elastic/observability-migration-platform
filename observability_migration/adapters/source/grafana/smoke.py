@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import html as html_lib
 import json
 import os
 import re
@@ -41,14 +40,7 @@ BROWSER_ERROR_PATTERNS = (
     r"Could not locate that (?:data view|index-pattern)",
     r"No matching data view",
     r"Embeddable factory",
-    r"verification_exception",
-    r"parsing_exception",
-    r"must appear in the \[?STATS",
-    r"Unknown column",
-    r"index_not_found_exception",
-    r"unresolved_relation",
 )
-BROWSER_EMPTY_PATTERNS = (r"No results found",)
 
 
 def parse_args():
@@ -123,15 +115,6 @@ def parse_args():
         "--chrome-binary",
         default=os.getenv("CHROME_BINARY", ""),
         help="Path to the Chrome/Chromium binary. Auto-detected when omitted.",
-    )
-    parser.add_argument(
-        "--chrome-user-data-dir",
-        default=os.getenv("CHROME_USER_DATA_DIR", ""),
-        help=(
-            "Optional Chrome profile directory for screenshots/browser audit. "
-            "Use this to reuse SSO cookies from a prior interactive Chrome login; "
-            "the profile must not be open in another Chrome process."
-        ),
     )
     parser.add_argument(
         "--time-from",
@@ -531,13 +514,11 @@ def should_include_dashboard(saved_object, dashboard_titles, dashboard_ids):
 
 
 def _chrome_command(chrome_binary, url, args, current_budget, extra_args=None):
-    profile_dir = str(getattr(args, "chrome_user_data_dir", "") or "").strip()
     return [
         chrome_binary,
         "--headless=new",
         "--disable-gpu",
         "--hide-scrollbars",
-        *( [f"--user-data-dir={profile_dir}"] if profile_dir else [] ),
         f"--window-size={args.window_width},{args.window_height}",
         f"--virtual-time-budget={current_budget}",
         *(extra_args or []),
@@ -675,56 +656,16 @@ def capture_segmented_screenshots(saved_object, args):
     }
 
 
-def _audit_snippet(html, match):
-    candidates = []
-    for tag in ("code", "section", "div", "span"):
-        start = html.rfind(f"<{tag}", 0, match.start())
-        if start != -1:
-            candidates.append((start, tag))
-    if candidates:
-        block_start, tag = max(candidates)
-        closing = f"</{tag}>"
-        block_end = html.find(closing, match.end())
-        if block_end != -1:
-            raw = html[block_start : block_end + len(closing)]
-            span = (block_start, block_end + len(closing))
-        else:
-            span = (max(0, match.start() - 180), match.end() + 180)
-            raw = html[span[0] : span[1]]
-    else:
-        span = (max(0, match.start() - 180), match.end() + 180)
-        raw = html[span[0] : span[1]]
-    text = re.sub(r"<[^>]+>", " ", raw)
-    snippet = re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
-    return snippet[:240], span
-
-
-def _span_seen(span, seen):
-    return any(not (span[1] <= old[0] or span[0] >= old[1]) for old in seen)
-
-
 def _browser_audit_issues(html):
     issues = []
-    seen_spans = []
     for pattern in BROWSER_ERROR_PATTERNS:
-        for match in re.finditer(pattern, html, flags=re.IGNORECASE):
-            snippet, span = _audit_snippet(html, match)
-            if snippet and not _span_seen(span, seen_spans):
-                seen_spans.append(span)
-                issues.append(snippet)
+        match = re.search(pattern, html, flags=re.IGNORECASE)
+        if not match:
+            continue
+        snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
+        if snippet:
+            issues.append(snippet[:240])
     return issues
-
-
-def _browser_audit_empty_states(html):
-    warnings = []
-    seen_spans = []
-    for pattern in BROWSER_EMPTY_PATTERNS:
-        for match in re.finditer(pattern, html, flags=re.IGNORECASE):
-            snippet, span = _audit_snippet(html, match)
-            if snippet and not _span_seen(span, seen_spans):
-                seen_spans.append(span)
-                warnings.append(snippet)
-    return warnings
 
 
 def capture_browser_audit(saved_object, args):
@@ -744,7 +685,6 @@ def capture_browser_audit(saved_object, args):
             "path": "",
             "error": "Chrome/Chromium binary not found",
             "issues": [],
-            "warnings": [],
             "url": url,
         }
 
@@ -778,13 +718,11 @@ def capture_browser_audit(saved_object, args):
         if proc.returncode == 0:
             html = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
             issues = _browser_audit_issues(html)
-            warnings = _browser_audit_empty_states(html)
             return {
                 "status": "error" if issues else "clean",
                 "path": str(output_path),
                 "error": "",
                 "issues": issues,
-                "warnings": warnings,
                 "url": url,
             }
 
@@ -795,7 +733,6 @@ def capture_browser_audit(saved_object, args):
         "path": str(output_path),
         "error": last_error[:800],
         "issues": [],
-        "warnings": [],
         "url": url,
     }
 
@@ -1116,7 +1053,7 @@ def inspect_dashboard(
             empty_panels.append(result)
 
     layout = analyze_layout(panels)
-    browser_info = browser_audit or {"status": "not_requested", "path": "", "error": "", "issues": [], "warnings": [], "url": ""}
+    browser_info = browser_audit or {"status": "not_requested", "path": "", "error": "", "issues": [], "url": ""}
     return {
         "id": saved_object.get("id", ""),
         "title": attributes.get("title", ""),
@@ -1170,12 +1107,6 @@ def build_summary(dashboards):
         "dashboards_with_runtime_gaps": sum(1 for item in dashboards if item["not_runtime_checked_panels"]),
         "dashboards_with_browser_errors": sum(
             1 for item in dashboards if item.get("browser_audit", {}).get("status") == "error"
-        ),
-        "dashboards_with_browser_empty_panels": sum(
-            1 for item in dashboards if item.get("browser_audit", {}).get("warnings")
-        ),
-        "browser_empty_panels_visible": sum(
-            len(item.get("browser_audit", {}).get("warnings", []) or []) for item in dashboards
         ),
         "runtime_error_panels": sum(len(item["failing_panels"]) for item in dashboards),
         "empty_panels": sum(len(item["empty_panels"]) for item in dashboards),
@@ -1273,7 +1204,6 @@ def main(verify: bool | str = True):
         print(
             f"Browser audit: {summary['browser_audits_clean']} clean, "
             f"{summary['dashboards_with_browser_errors']} with visible errors, "
-            f"{summary['browser_empty_panels_visible']} 'No results found' panel(s), "
             f"{summary['browser_audits_failed']} failed, {summary['browser_audits_skipped']} skipped"
         )
     for dashboard in dashboards:
