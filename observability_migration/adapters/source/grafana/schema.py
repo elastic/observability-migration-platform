@@ -375,6 +375,12 @@ class SchemaResolver:
         candidates = []
         seen = set()
         for label in labels or []:
+            # Mirror ``resolve_label``'s short-circuits: ignored and rewritten
+            # labels never reach a co-occurrence probe, so priming must skip
+            # them too — otherwise it issues round-trips for labels resolution
+            # will never probe.
+            if label in self._rule_pack.ignored_labels or label in self._rule_pack.label_rewrites:
+                continue
             for candidate in self._scoped_candidate_fields(label):
                 if candidate not in seen:
                     seen.add(candidate)

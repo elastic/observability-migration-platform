@@ -519,6 +519,36 @@ class TestBatchedCooccurrenceProbe(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 1)
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_prime_skips_ignored_and_rewritten_labels(self, mock_post):
+        # `resolve_label` short-circuits rule-pack ignored/rewritten labels before
+        # any probe; priming must mirror that, or it issues round-trips for labels
+        # resolution will never probe (defeats #182's goal).
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {"columns": [{"name": "c0", "type": "long"}], "values": [[5]]},
+        )
+        rp = RulePackConfig()
+        rp.label_rewrites = {"instance": "host.name"}
+        rp.ignored_labels = list(rp.ignored_labels) + ["job"]
+        resolver = SchemaResolver(rp, es_url="https://es", index_pattern="metrics-*")
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "instance": {},
+            "service.instance.id": {},
+            "host.name": {},
+            "service.name": {},
+            "metrics.foo": {},
+        }
+        # Only ignored/rewritten labels → nothing to probe.
+        resolver.prime_label_cooccurrence(["instance", "job"], "metrics.foo")
+        self.assertEqual(mock_post.call_count, 0)
+        # A normal label (node → host.name candidate, present in cache) still
+        # primes in a single batched probe.
+        resolver.prime_label_cooccurrence(["node"], "metrics.foo")
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_batch_probe_maps_results_by_column_name(self, mock_post):
         # Robust against column reordering: map COUNT aliases by name, not index.
         mock_post.return_value = Mock(
