@@ -22,7 +22,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import collectors
+from . import collectors, invariants
 from .compare import (
     aggregate_drift_axes,
     aggregate_verdicts,
@@ -91,6 +91,24 @@ def build_argparser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Process at most this many panels (0 = no limit).",
+    )
+    p.add_argument(
+        "--no-invariants",
+        action="store_true",
+        help="Skip the Layer-9 deterministic invariant linter (accessor / "
+             "merged-series / placeholder honesty).",
+    )
+    p.add_argument(
+        "--live-oracle",
+        action="store_true",
+        help="Resolve ES|QL output columns via the live cluster (POST /_query) "
+             "instead of the offline parser. Requires --es-url and --api-key.",
+    )
+    p.add_argument(
+        "--fail-on-invariant",
+        action="store_true",
+        help="Exit non-zero if any invariant finding has ERROR severity "
+             "(useful as a CI gate).",
     )
     p.add_argument(
         "--verbose",
@@ -173,12 +191,32 @@ def main(argv: list[str] | None = None) -> int:
         if args.limit and len(records) >= args.limit:
             break
 
+    invariant_findings: list[invariants.Finding] = []
+    if not args.no_invariants:
+        columns_oracle = None
+        if args.live_oracle and args.es_url and args.api_key:
+            LOG.info("using live ES column oracle for invariant checks")
+            columns_oracle = invariants.make_es_columns_oracle(args.es_url, args.api_key)
+        elif args.live_oracle:
+            LOG.warning("--live-oracle requested but --es-url/--api-key missing; "
+                        "falling back to offline column inference")
+        # When --limit scopes the panel loop, scope invariant linting to the
+        # same panels so the report stays internally consistent and
+        # --fail-on-invariant cannot trip on panels outside the sample.
+        lint_target = report
+        if args.limit:
+            sampled = {(r.dashboard_title, r.title) for r in records}
+            lint_target = _scope_report_to_panels(report, sampled)
+        invariant_findings = invariants.lint_report(lint_target, columns_oracle=columns_oracle)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "dashboard_id": args.dashboard_id or "",
         "dashboard_title": records[0].dashboard_title if records else "",
         "verdict_counts": aggregate_verdicts(records),
         "drift_axis_counts": aggregate_drift_axes(records),
+        "invariant_summary": invariants.summarize(invariant_findings),
+        "invariant_findings": [f.to_jsonable() for f in invariant_findings],
         "panels": [r.to_jsonable() for r in records],
     }
     args.output.write_text(json.dumps(payload, indent=2, default=str))
@@ -189,7 +227,41 @@ def main(argv: list[str] | None = None) -> int:
     LOG.info("wrote %s", md_path)
 
     print(_render_console_summary(payload))
+
+    error_findings = payload["invariant_summary"].get("error_count", 0)
+    if args.fail_on_invariant and error_findings:
+        print(
+            f"\nFAIL: {error_findings} invariant finding(s) with ERROR severity",
+            file=sys.stderr,
+        )
+        return 1
     return 0
+
+
+def _scope_report_to_panels(
+    report: dict, sampled: set[tuple[str, str]]
+) -> dict:
+    """Return a shallow report copy keeping only the sampled ``(dashboard, panel)``.
+
+    Used so ``--limit`` scopes invariant linting to the same panels the five-tier
+    loop processed, keeping ``panels`` and ``invariant_findings`` consistent.
+    """
+    scoped = dict(report)
+    scoped_dashboards = []
+    for dashboard in report.get("dashboards", []):
+        if not isinstance(dashboard, dict):
+            continue
+        dtitle = str(dashboard.get("title") or "")
+        kept = [
+            panel
+            for panel in dashboard.get("panels", [])
+            if isinstance(panel, dict)
+            and (dtitle, str(panel.get("title") or "")) in sampled
+        ]
+        if kept:
+            scoped_dashboards.append({**dashboard, "panels": kept})
+    scoped["dashboards"] = scoped_dashboards
+    return scoped
 
 
 def _load_compiled_panels(compiled_dir: Path) -> dict[str, str]:
@@ -219,6 +291,14 @@ def _render_console_summary(payload: dict) -> str:
     lines.append("drift axes:")
     for axis, count in payload["drift_axis_counts"].items():
         lines.append(f"  {axis:<8} {count}")
+    summary = payload.get("invariant_summary") or {}
+    if summary.get("total"):
+        lines.append("")
+        lines.append("invariant findings:")
+        for category, count in summary.get("by_category", {}).items():
+            if count:
+                lines.append(f"  {category:<26} {count}")
+        lines.append(f"  {'(errors)':<26} {summary.get('error_count', 0)}")
     return "\n".join(lines)
 
 
@@ -246,6 +326,28 @@ def _render_markdown(payload: dict, records: list[PanelRecord]) -> str:
     ]
     for axis, count in payload["drift_axis_counts"].items():
         lines.append(f"| `{axis}` | {count} |")
+
+    summary = payload.get("invariant_summary") or {}
+    findings = payload.get("invariant_findings") or []
+    if summary.get("total"):
+        lines += [
+            "",
+            "## invariant findings (Layer 9)",
+            "",
+            f"- total: **{summary.get('total', 0)}** "
+            f"(errors: **{summary.get('error_count', 0)}**)",
+            "",
+            "| panel | category | severity | message |",
+            "| --- | --- | --- | --- |",
+        ]
+        for f in findings:
+            lines.append(
+                f"| {_md_escape(f.get('panel_title', ''))} "
+                f"| `{f.get('category', '')}` "
+                f"| `{f.get('severity', '')}` "
+                f"| {_md_escape(f.get('message', ''))} |"
+            )
+
     lines += [
         "",
         "## per-panel triage",

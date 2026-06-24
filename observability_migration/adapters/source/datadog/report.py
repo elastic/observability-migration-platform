@@ -420,6 +420,7 @@ def save_detailed_report(
                 "query_language": pr.query_language,
                 "source_queries": pr.source_queries,
                 "esql_query": pr.esql_query,
+                "yaml_panel": pr.yaml_panel,
                 "warnings": pr.warnings,
                 "semantic_losses": pr.semantic_losses,
                 "reasons": pr.reasons,

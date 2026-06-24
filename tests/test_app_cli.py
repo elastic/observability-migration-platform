@@ -1121,6 +1121,9 @@ class TestUnifiedCliVerifyPanels(unittest.TestCase):
                 "verify-panels",
                 "--migration-out", "/tmp/migration",
                 "--output", "/tmp/report.json",
+                "--no-invariants",
+                "--live-oracle",
+                "--fail-on-invariant",
             ]
         )
         self.assertEqual(args.command, "verify-panels")
@@ -1128,6 +1131,9 @@ class TestUnifiedCliVerifyPanels(unittest.TestCase):
         self.assertEqual(args.output, "/tmp/report.json")
         self.assertEqual(args.space, "default")
         self.assertEqual(args.limit, 0)
+        self.assertTrue(args.no_invariants)
+        self.assertTrue(args.live_oracle)
+        self.assertTrue(args.fail_on_invariant)
         self.assertFalse(args.verbose)
 
     def test_verify_panels_routes_to_verifier_main(self):
@@ -1151,6 +1157,9 @@ class TestUnifiedCliVerifyPanels(unittest.TestCase):
             space="custom",
             es_index="metrics-*",
             limit=5,
+            no_invariants=True,
+            live_oracle=True,
+            fail_on_invariant=True,
             verbose=True,
         )
         with patch("sys.exit") as mock_exit, patch(
@@ -1167,6 +1176,9 @@ class TestUnifiedCliVerifyPanels(unittest.TestCase):
         self.assertIn("custom", forwarded)
         self.assertIn("--limit", forwarded)
         self.assertIn("5", forwarded)
+        self.assertIn("--no-invariants", forwarded)
+        self.assertIn("--live-oracle", forwarded)
+        self.assertIn("--fail-on-invariant", forwarded)
         self.assertIn("--verbose", forwarded)
         mock_exit.assert_called_once_with(0)
 
