@@ -353,6 +353,14 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         bound = {k: v for d in seen["params"] for k, v in d.items()}
         self.assertEqual(set(bound), {"_tstart", "_tend"})
 
+    def test_native_promql_instant_passthrough_is_single_value_reduction(self):
+        query = "PROMQL index=metrics-* time=?_tend value=(avg(node_memory_MemAvailable_bytes))"
+        self.assertTrue(po.is_single_value_reduction(query))
+
+    def test_native_promql_range_passthrough_is_not_single_value_reduction(self):
+        query = "PROMQL index=metrics-* step=1m value=(sum(rate(http_requests_total[5m])))"
+        self.assertFalse(po.is_single_value_reduction(query))
+
 
 class ExecutionTests(unittest.TestCase):
     def _fake_request(self, native_data, translated_data, *, native_error=None):

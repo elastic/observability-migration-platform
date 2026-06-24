@@ -868,6 +868,13 @@ def is_single_value_reduction(esql: str) -> bool:
     left to point-wise comparison.
     """
     text = esql or ""
+    # Native PROMQL passthrough for stat/gauge panels uses an instant query
+    # (``time=?_tend``), producing one scalar per series rather than a range
+    # series. Comparing that single endpoint against the native range oracle
+    # yields a false "no overlapping time buckets" FAIL; skip it unless a future
+    # scalar comparator can mirror the exact instant query.
+    if _is_promql_passthrough(text) and re.search(r"\btime\s*=\s*\?_tend\b", text, re.IGNORECASE):
+        return True
     # ``ROW constant_value = 2.0`` (a constant PromQL panel) emits a single
     # literal row with no time dimension at all.
     if re.match(r"(?i)^\s*ROW\b", text):
