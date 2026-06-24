@@ -8326,9 +8326,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             legend_labels=["method", "path", "status"],
         )
         query = result["esql"]["query"]
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.method), "")', query)
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.path), "")', query)
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.status), "")', query)
+        # Dotted column names are invalid as a bare TO_STRING(...) argument, so
+        # they must be backtick-quoted in the composite legend expression.
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.method`), "")', query)
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.path`), "")', query)
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.status`), "")', query)
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
 
     def test_apply_composite_legend_no_op_when_label_missing_from_query(self):
@@ -9345,9 +9347,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             "targets": [{"expr": "up", "refId": "A"}],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertIsNone(yaml_panel)
+        self.assertIsNotNone(yaml_panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(any("Unknown" in r for r in result.reasons))
+        self.assertIn("markdown", yaml_panel)
+        self.assertIn("Migration Required", yaml_panel["markdown"]["content"])
+        self.assertIn("flamegraph", yaml_panel["markdown"]["content"])
 
     def test_no_promql_targets_produces_placeholder(self):
         panel = {

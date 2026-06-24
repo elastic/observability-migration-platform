@@ -450,9 +450,13 @@ class TestClassificationCorrectness(unittest.TestCase):
         panel = {"id": 1, "type": "unknown_plugin_xyz", "title": "Unknown",
                  "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
                  "targets": [{"expr": "foo", "refId": "A"}]}
-        _, result = _translate_panel(panel)
+        yaml_panel, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(any("Unknown" in r for r in result.reasons))
+        self.assertIsNotNone(yaml_panel)
+        self.assertIn("markdown", yaml_panel)
+        self.assertIn("Migration Required", yaml_panel["markdown"]["content"])
+        self.assertIn("unknown_plugin_xyz", yaml_panel["markdown"]["content"])
 
     def test_text_panel_migrates_cleanly(self):
         panel = {"id": 1, "type": "text", "title": "Info",
@@ -1712,6 +1716,114 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(result.visual_ir.presentation.config["query"], query)
         self.assertEqual(result.visual_ir.title, yaml_panel["title"])
         self.assertEqual(result.query_ir.get("target_query"), query)
+
+    def test_native_promql_grouped_multi_label_legend_uses_composite_breakdown(self):
+        panel = _make_panel(
+            1,
+            "sum(increase(argocd_app_k8s_request_total[1m])) by (verb, resource_kind)",
+            panel_type="graph",
+        )
+        panel["targets"][0]["legendFormat"] = "{{verb}} {{resource_kind}}"
+
+        yaml_panel, _result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["breakdown"]["field"], "legend")
+        self.assertIn("EVAL legend = CONCAT(", esql["query"])
+        self.assertIn("TO_STRING(verb)", esql["query"])
+        self.assertIn("TO_STRING(resource_kind)", esql["query"])
+
+    def test_native_promql_timeseries_multi_label_legend_uses_composite_breakdown(self):
+        panel = _make_panel(
+            1,
+            "rate(haproxy_server_http_responses_total[5m])",
+            panel_type="graph",
+        )
+        panel["targets"][0]["legendFormat"] = "{{proxy}} / {{server}}"
+
+        yaml_panel, _result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["breakdown"]["field"], "legend")
+        self.assertIn("EVAL legend = CONCAT(", esql["query"])
+        self.assertIn("TO_STRING(proxy)", esql["query"])
+        self.assertIn('" / "', esql["query"])
+        self.assertIn("TO_STRING(server)", esql["query"])
+
+    def test_native_promql_reserved_label_legend_is_escaped(self):
+        # ``in``/``out`` are valid Prometheus labels but ``in`` is a reserved
+        # ES|QL identifier (bare ``IN`` is rejected), so the composite legend
+        # must backtick-quote it inside TO_STRING(...) to stay valid at runtime.
+        panel = _make_panel(
+            1,
+            "sum(increase(net_bytes_total[5m])) by (in, out)",
+            panel_type="graph",
+        )
+        panel["targets"][0]["legendFormat"] = "{{in}} {{out}}"
+
+        yaml_panel, _result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["breakdown"]["field"], "legend")
+        self.assertIn("EVAL legend = CONCAT(", esql["query"])
+        self.assertIn("TO_STRING(`in`)", esql["query"])
+        self.assertNotIn("TO_STRING(in)", esql["query"])
+        # ``out`` is not reserved, so it stays bare.
+        self.assertIn("TO_STRING(out)", esql["query"])
+
+    def test_composite_legend_escapes_dotted_label(self):
+        # When a legend label resolves to a Fleet-style ``prometheus.labels.x``
+        # output column, that dotted name is invalid as a bare TO_STRING(...)
+        # argument and must be backtick-quoted.
+        warnings = []
+
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS requests = SUM(http_requests_total) "
+                "BY time_bucket = TBUCKET(5 minute), prometheus.labels.verb, server\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            by_cols=["time_bucket", "prometheus.labels.verb", "server"],
+            time_fields=["time_bucket"],
+            legend_format_template="{{verb}} / {{server}}",
+            legend_labels=["verb", "server"],
+            warnings=warnings,
+        )
+
+        self.assertEqual(panel["breakdown"]["field"], "legend")
+        self.assertIn("EVAL legend = CONCAT(", panel["query"])
+        self.assertIn("TO_STRING(`prometheus.labels.verb`)", panel["query"])
+        self.assertNotIn("TO_STRING(prometheus.labels.verb)", panel["query"])
+
+    def test_composite_legend_suppresses_visual_merge_warning(self):
+        warnings = []
+
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS requests = SUM(http_requests_total) "
+                "BY time_bucket = TBUCKET(5 minute), proxy, server\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            by_cols=["time_bucket", "proxy", "server"],
+            time_fields=["time_bucket"],
+            legend_format_template="{{proxy}} / {{server}}",
+            legend_labels=["proxy", "server"],
+            warnings=warnings,
+        )
+
+        self.assertEqual(panel["breakdown"]["field"], "legend")
+        self.assertIn("EVAL legend = CONCAT(", panel["query"])
+        self.assertFalse(
+            any("visually merged" in warning for warning in warnings),
+            warnings,
+        )
 
     def test_topk_without_labels_translates_with_warnings(self):
         # Ungrouped topk now uses single-bucket fallback (not not_feasible)

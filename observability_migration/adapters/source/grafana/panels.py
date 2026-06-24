@@ -1875,36 +1875,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             yaml_panel=None,
         )
 
-    kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
-    if panel_type == "graph" and kibana_type == "line":
-        kibana_type = _infer_graph_chart_style(panel)
-    elif panel_type == "timeseries" and kibana_type == "line":
-        kibana_type = _infer_timeseries_chart_style(panel)
-    if not kibana_type:
-        panel_result = PanelResult(
-            title,
-            panel_type,
-            "",
-            "not_feasible",
-            0.0,
-            reasons=[f"Unknown Grafana panel type: {panel_type}"],
-        )
-        return None, _enrich_panel_result(
-            panel_result,
-            panel=panel,
-            datasource=datasource,
-            query_language=query_language,
-            notes=panel_notes,
-            inventory=panel_inventory,
-            yaml_panel=None,
-        )
-
     grid = panel.get("gridPos", panel.get("gridData", {}))
     raw_w = grid.get("w", GRAFANA_GRID_COLS)
     raw_h = grid.get("h", 10)
     raw_x = grid.get("x", 0)
     raw_y = grid.get("y", 0)
-
     yaml_panel = {
         "title": title,
         "size": {"w": KIBANA_GRID_COLS, "h": KIBANA_DEFAULT_HEIGHT},
@@ -1914,6 +1889,34 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         "_grafana_w": raw_w,
         "_grafana_h": raw_h,
     }
+
+    kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
+    if panel_type == "graph" and kibana_type == "line":
+        kibana_type = _infer_graph_chart_style(panel)
+    elif panel_type == "timeseries" and kibana_type == "line":
+        kibana_type = _infer_timeseries_chart_style(panel)
+    if not kibana_type:
+        reasons = [f"Unknown Grafana panel type: {panel_type}"]
+        yaml_panel["markdown"] = {
+            "content": f"**Migration Required**\n\nReasons: {', '.join(reasons)}"
+        }
+        panel_result = PanelResult(
+            title,
+            panel_type,
+            "markdown",
+            "not_feasible",
+            0.0,
+            reasons=reasons,
+        )
+        return yaml_panel, _enrich_panel_result(
+            panel_result,
+            panel=panel,
+            datasource=datasource,
+            query_language=query_language,
+            notes=panel_notes,
+            inventory=panel_inventory,
+            yaml_panel=yaml_panel,
+        )
 
     if panel_type == "text":
         content = _normalized_text_panel_content(panel)
@@ -2971,7 +2974,55 @@ def _extract_keep_columns(esql_query):
         if not body.lower().startswith("keep "):
             continue
         return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
+    for line in reversed(str(esql_query or "").splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        body = stripped[1:].strip()
+        if body.lower().startswith("keep "):
+            return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
     return []
+
+
+def _native_promql_command_value_expr(query):
+    text = str(query or "").strip()
+    if not text.upper().startswith("PROMQL "):
+        return ""
+    start = text.find("value=(")
+    if start < 0:
+        return ""
+    pos = start + len("value=(")
+    depth = 1
+    quote = None
+    escaped = False
+    pieces = []
+    while pos < len(text):
+        char = text[pos]
+        if quote:
+            pieces.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            pos += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            pieces.append(char)
+        elif char == "(":
+            depth += 1
+            pieces.append(char)
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(pieces).strip()
+            pieces.append(char)
+        else:
+            pieces.append(char)
+        pos += 1
+    return ""
 
 
 def _output_columns_for_composite_legend(esql_query):
@@ -2987,6 +3038,10 @@ def _output_columns_for_composite_legend(esql_query):
         columns.add(metric_col)
     columns.update(by_cols or [])
     columns.update(_extract_keep_columns(esql_query))
+    if str(esql_query or "").lstrip().upper().startswith("PROMQL "):
+        promql_expr = _native_promql_command_value_expr(esql_query)
+        _metric_col, native_cols = _native_promql_result_shape(promql_expr)
+        columns.update(col for col in native_cols if col != "_timeseries")
     return columns
 
 
@@ -3088,7 +3143,10 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
+            # Quote the column reference: a Prometheus label can be a reserved
+            # ES|QL keyword (e.g. ``in``) or carry dots (``prometheus.labels.x``),
+            # both of which ES|QL rejects as a bare ``TO_STRING(...)`` argument.
+            concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(column)}), "")')
         else:
             if segment == "":
                 continue
@@ -3210,7 +3268,13 @@ def _append_eval_before_trailing_sort(query, eval_line):
     return query + " " + eval_line
 
 
-def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings):
+def _warn_extra_breakdown_dimensions(
+    by_cols,
+    dimension_field,
+    breakdown_field,
+    warnings,
+    represented_breakdown_fields=None,
+):
     """Warn when an XY panel has more grouping dimensions than it can display.
 
     A Kibana XY chart breaks the series down by a single field. When the ES|QL
@@ -3224,7 +3288,9 @@ def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, 
     extra = [
         col
         for col in (by_cols or [])
-        if col != dimension_field and col != breakdown_field
+        if col != dimension_field
+        and col != breakdown_field
+        and col not in set(represented_breakdown_fields or [])
     ]
     if extra:
         _append_unique(
@@ -3259,7 +3325,6 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             "Rendered instant/single-value query as a metric (no time dimension to plot)",
         )
         return _build_esql_metric_panel(esql, metric_col=metric_col)
-    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,
@@ -3276,6 +3341,14 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
+    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    _warn_extra_breakdown_dimensions(
+        by_cols,
+        dimension_field,
+        (panel.get("breakdown") or {}).get("field"),
+        warnings,
+        represented_breakdown_fields=represented,
+    )
     return panel
 
 
@@ -3301,7 +3374,6 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             "Rendered instant/single-value query as a summary table (no time dimension to plot)",
         )
         return _build_esql_datatable_panel(esql, metric_fields=metric_fields)
-    _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field, warnings)
     panel = {
         "type": chart_type,
         "query": esql,
@@ -3318,6 +3390,14 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
+    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    _warn_extra_breakdown_dimensions(
+        by_cols,
+        dimension_field,
+        (panel.get("breakdown") or {}).get("field"),
+        warnings,
+        represented_breakdown_fields=represented,
+    )
     return panel
 
 
