@@ -94,6 +94,63 @@ class TestBenchmarkGate:
         assert result.ok
         assert result.skipped_reason == "no compatible baseline"
 
+    def test_uses_previous_different_hash_not_same_hash_rerun(self) -> None:
+        history = [
+            _run(h="aaa001", overall={**_run(h="x")["overall"], "panel_clean_pct": 70.0}),
+            _run(h="bbb002", overall={**_run(h="x")["overall"], "panel_clean_pct": 60.0}),
+            _run(h="bbb002", overall={**_run(h="x")["overall"], "panel_clean_pct": 59.0}),
+        ]
+        result = benchmark_gate.evaluate_history(history)
+        assert not result.ok
+        assert result.baseline_index == 0
+        assert result.baseline_hash == "aaa001"
+
+    def test_can_allow_same_hash_baseline_explicitly(self) -> None:
+        history = [
+            _run(h="aaa001", overall={**_run(h="x")["overall"], "panel_clean_pct": 70.0}),
+            _run(h="bbb002", overall={**_run(h="x")["overall"], "panel_clean_pct": 60.0}),
+            _run(h="bbb002", overall={**_run(h="x")["overall"], "panel_clean_pct": 59.0}),
+        ]
+        result = benchmark_gate.evaluate_history(history, require_different_hash=False)
+        assert not result.ok
+        assert result.baseline_index == 1
+        assert result.baseline_hash == "bbb002"
+
+    def test_count_drop_catches_denominator_regression(self) -> None:
+        before = _run(h="aaa001")["overall"]
+        after = {**before, "panels_total": 80}
+        result = benchmark_gate.evaluate_history([
+            _run(h="aaa001", overall=before),
+            _run(h="bbb002", overall=after),
+        ])
+        assert not result.ok
+        assert {"metric": "panels_total", "baseline": 100, "current": 80, "drop": 20} in result.regressions
+
+    def test_verification_total_drop_is_a_regression(self) -> None:
+        before = _run(h="aaa001")["overall"]
+        after = {**before, "verification_green": 40, "verification_yellow": 10, "verification_red": 0}
+        result = benchmark_gate.evaluate_history([
+            _run(h="aaa001", overall=before),
+            _run(h="bbb002", overall=after),
+        ], max_drop_pp=100)  # ignore pct drop; assert the denominator signal still fires
+        assert not result.ok
+        assert {"metric": "verification_total", "baseline": 100, "current": 50, "drop": 50} in result.regressions
+
+    def test_count_drop_tolerance(self) -> None:
+        before = _run(h="aaa001")["overall"]
+        after = {**before, "panels_total": 98}
+        history = [_run(h="aaa001", overall=before), _run(h="bbb002", overall=after)]
+        assert benchmark_gate.evaluate_history(history, max_count_drop=2).ok
+        assert not benchmark_gate.evaluate_history(history, max_count_drop=1).ok
+
+    def test_current_index_out_of_range(self) -> None:
+        try:
+            benchmark_gate.evaluate_history([_run(h="aaa001")], current_index=3)
+        except IndexError as exc:
+            assert "out of range" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("expected IndexError")
+
     def test_aggregates_grafana_and_datadog_when_overall_missing(self) -> None:
         run = {
             "config": {"grafana": 1, "datadog": 1},

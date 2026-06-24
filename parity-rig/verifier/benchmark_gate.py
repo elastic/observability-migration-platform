@@ -31,6 +31,12 @@ SUCCESS_METRICS = (
     "panel_verified_pct",
 )
 
+COUNT_METRICS = (
+    "dashboards",
+    "panels_total",
+    "verification_total",
+)
+
 
 @dataclass
 class BenchmarkGateResult:
@@ -100,6 +106,7 @@ def _aggregate_metrics(parts: list[dict[str, Any]]) -> dict[str, Any]:
         "verification_green": verification_green,
         "verification_yellow": verification_yellow,
         "verification_red": verification_red,
+        "verification_total": verified_total,
     }
 
 
@@ -107,7 +114,14 @@ def run_metrics(run: dict[str, Any]) -> dict[str, Any]:
     """Return the PM UI metric object for a benchmark run."""
     overall = run.get("overall")
     if isinstance(overall, dict) and overall:
-        return dict(overall)
+        metrics = dict(overall)
+        metrics.setdefault(
+            "verification_total",
+            int(metrics.get("verification_green") or 0)
+            + int(metrics.get("verification_yellow") or 0)
+            + int(metrics.get("verification_red") or 0),
+        )
+        return metrics
     parts = [part for part in (run.get("grafana"), run.get("datadog")) if isinstance(part, dict)]
     return _aggregate_metrics(parts)
 
@@ -127,12 +141,26 @@ def _hash(run: dict[str, Any]) -> str:
     return str(cli.get("hash") or "")
 
 
-def compatible_baseline_index(history: list[dict[str, Any]], current_index: int) -> int | None:
+def compatible_baseline_index(
+    history: list[dict[str, Any]],
+    current_index: int,
+    *,
+    require_different_hash: bool = True,
+) -> int | None:
     current = history[current_index]
     key = _config_key(current)
     schema = _schema_key(current)
+    current_hash = _hash(current)
     for idx in range(current_index - 1, -1, -1):
         candidate = history[idx]
+        candidate_hash = _hash(candidate)
+        if (
+            require_different_hash
+            and current_hash
+            and candidate_hash
+            and candidate_hash == current_hash
+        ):
+            continue
         if _config_key(candidate) == key and _schema_key(candidate) == schema:
             return idx
     return None
@@ -143,13 +171,21 @@ def evaluate_history(
     *,
     current_index: int | None = None,
     max_drop_pp: float = 0.0,
+    max_count_drop: int = 0,
     max_duration_increase_pct: float | None = None,
+    require_different_hash: bool = True,
 ) -> BenchmarkGateResult:
     if not history:
         return BenchmarkGateResult(ok=True, current_index=-1, baseline_index=None, skipped_reason="empty history")
     if current_index is None:
         current_index = len(history) - 1
-    baseline_index = compatible_baseline_index(history, current_index)
+    if current_index < 0 or current_index >= len(history):
+        raise IndexError(f"current_index {current_index} out of range for {len(history)} history entries")
+    baseline_index = compatible_baseline_index(
+        history,
+        current_index,
+        require_different_hash=require_different_hash,
+    )
     current = history[current_index]
     if baseline_index is None:
         return BenchmarkGateResult(
@@ -169,6 +205,12 @@ def evaluate_history(
         drop = round(before - after, 3)
         if drop > max_drop_pp:
             regressions.append({"metric": metric, "baseline": before, "current": after, "drop_pp": drop})
+    for metric in COUNT_METRICS:
+        before = int(baseline_metrics.get(metric) or 0)
+        after = int(current_metrics.get(metric) or 0)
+        drop = before - after
+        if drop > max_count_drop:
+            regressions.append({"metric": metric, "baseline": before, "current": after, "drop": drop})
     if max_duration_increase_pct is not None:
         before = float(baseline.get("duration_s") or 0.0)
         after = float(current.get("duration_s") or 0.0)
@@ -199,7 +241,13 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--current-index", type=int)
     parser.add_argument("--max-drop-pp", type=float, default=0.0)
+    parser.add_argument("--max-count-drop", type=int, default=0)
     parser.add_argument("--max-duration-increase-pct", type=float)
+    parser.add_argument(
+        "--allow-same-hash-baseline",
+        action="store_true",
+        help="Allow comparing a run to an earlier run of the same CLI hash (default: skip same-hash baselines).",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -210,7 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         load_history(args.history),
         current_index=args.current_index,
         max_drop_pp=args.max_drop_pp,
+        max_count_drop=args.max_count_drop,
         max_duration_increase_pct=args.max_duration_increase_pct,
+        require_different_hash=not args.allow_same_hash_baseline,
     )
     payload = result.to_jsonable()
     if args.output:
