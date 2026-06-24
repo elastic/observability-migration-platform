@@ -18,7 +18,7 @@ import requests
 
 from observability_migration.core.http import apply_tls
 
-from .esql_validate import materialize_dashboard_time_query
+from .esql_validate import _validation_params_for_query, materialize_dashboard_time_query
 
 DEFAULT_CHROME_CANDIDATES = (
     "chrome",
@@ -415,6 +415,9 @@ def validate_esql(es_url, query, timeout, es_api_key="", session=None, dsl_filte
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
     client = session or requests
     body = {"query": materialized_query}
+    params = _validation_params_for_query(materialized_query)
+    if params:
+        body["params"] = params
     if dsl_filter:
         body["filter"] = dsl_filter
     response = client.post(

@@ -1875,36 +1875,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             yaml_panel=None,
         )
 
-    kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
-    if panel_type == "graph" and kibana_type == "line":
-        kibana_type = _infer_graph_chart_style(panel)
-    elif panel_type == "timeseries" and kibana_type == "line":
-        kibana_type = _infer_timeseries_chart_style(panel)
-    if not kibana_type:
-        panel_result = PanelResult(
-            title,
-            panel_type,
-            "",
-            "not_feasible",
-            0.0,
-            reasons=[f"Unknown Grafana panel type: {panel_type}"],
-        )
-        return None, _enrich_panel_result(
-            panel_result,
-            panel=panel,
-            datasource=datasource,
-            query_language=query_language,
-            notes=panel_notes,
-            inventory=panel_inventory,
-            yaml_panel=None,
-        )
-
     grid = panel.get("gridPos", panel.get("gridData", {}))
     raw_w = grid.get("w", GRAFANA_GRID_COLS)
     raw_h = grid.get("h", 10)
     raw_x = grid.get("x", 0)
     raw_y = grid.get("y", 0)
-
     yaml_panel = {
         "title": title,
         "size": {"w": KIBANA_GRID_COLS, "h": KIBANA_DEFAULT_HEIGHT},
@@ -1914,6 +1889,34 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         "_grafana_w": raw_w,
         "_grafana_h": raw_h,
     }
+
+    kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
+    if panel_type == "graph" and kibana_type == "line":
+        kibana_type = _infer_graph_chart_style(panel)
+    elif panel_type == "timeseries" and kibana_type == "line":
+        kibana_type = _infer_timeseries_chart_style(panel)
+    if not kibana_type:
+        reasons = [f"Unknown Grafana panel type: {panel_type}"]
+        yaml_panel["markdown"] = {
+            "content": f"**Migration Required**\n\nReasons: {', '.join(reasons)}"
+        }
+        panel_result = PanelResult(
+            title,
+            panel_type,
+            "markdown",
+            "not_feasible",
+            0.0,
+            reasons=reasons,
+        )
+        return yaml_panel, _enrich_panel_result(
+            panel_result,
+            panel=panel,
+            datasource=datasource,
+            query_language=query_language,
+            notes=panel_notes,
+            inventory=panel_inventory,
+            yaml_panel=yaml_panel,
+        )
 
     if panel_type == "text":
         content = _normalized_text_panel_content(panel)
@@ -2971,7 +2974,55 @@ def _extract_keep_columns(esql_query):
         if not body.lower().startswith("keep "):
             continue
         return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
+    for line in reversed(str(esql_query or "").splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        body = stripped[1:].strip()
+        if body.lower().startswith("keep "):
+            return [part.strip() for part in _split_top_level_csv(body[5:].strip()) if part.strip()]
     return []
+
+
+def _native_promql_command_value_expr(query):
+    text = str(query or "").strip()
+    if not text.upper().startswith("PROMQL "):
+        return ""
+    start = text.find("value=(")
+    if start < 0:
+        return ""
+    pos = start + len("value=(")
+    depth = 1
+    quote = None
+    escaped = False
+    pieces = []
+    while pos < len(text):
+        char = text[pos]
+        if quote:
+            pieces.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            pos += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            pieces.append(char)
+        elif char == "(":
+            depth += 1
+            pieces.append(char)
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(pieces).strip()
+            pieces.append(char)
+        else:
+            pieces.append(char)
+        pos += 1
+    return ""
 
 
 def _output_columns_for_composite_legend(esql_query):
@@ -2987,6 +3038,10 @@ def _output_columns_for_composite_legend(esql_query):
         columns.add(metric_col)
     columns.update(by_cols or [])
     columns.update(_extract_keep_columns(esql_query))
+    if str(esql_query or "").lstrip().upper().startswith("PROMQL "):
+        promql_expr = _native_promql_command_value_expr(esql_query)
+        _metric_col, native_cols = _native_promql_result_shape(promql_expr)
+        columns.update(col for col in native_cols if col != "_timeseries")
     return columns
 
 
@@ -3043,8 +3098,7 @@ def _grok_label_extraction(label):
 
 
 def _apply_composite_legend_to_xy_panel(yaml_panel, *,
-                                        legend_format_template, legend_labels,
-                                        known_columns=None):
+                                        legend_format_template, legend_labels):
     """Rewrite an XY panel to break down by a synthetic ``legend`` column.
 
     Lens ``breakdown.field`` only supports a single column, so a Grafana panel
@@ -3058,13 +3112,6 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
     * Inserts ``| EVAL legend = CONCAT(...)`` before the final ``| KEEP`` and
       rewrites that ``KEEP`` to drop the now-redundant per-label columns.
     * Sets ``breakdown.field = "legend"``.
-
-    ``known_columns`` lists output columns the caller already knows about that
-    the query text doesn't expose to the parser. The native ``PROMQL index=…
-    value=(… by (verb, resource_kind))`` command emits its ``by`` labels as
-    output columns without any STATS/KEEP stage to parse, so without this the
-    labels can't be resolved and the composite legend silently collapses to the
-    first label (issue #189).
 
     Returns the panel either way; the panel is mutated in place.
     """
@@ -3081,8 +3128,6 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
         return yaml_panel
 
     columns = _output_columns_for_composite_legend(query)
-    if known_columns:
-        columns = set(columns) | set(known_columns)
     resolved = {}
     for label in template_labels:
         column = _resolve_legend_label_to_column(label, columns)
@@ -3098,10 +3143,7 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            # Quote the column reference: a Prometheus label can be a reserved
-            # ES|QL keyword (e.g. ``in``) or carry dots (``prometheus.labels.x``),
-            # both of which ES|QL rejects as a bare ``TO_STRING(...)`` argument.
-            concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(column)}), "")')
+            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
         else:
             if segment == "":
                 continue
@@ -3223,33 +3265,13 @@ def _append_eval_before_trailing_sort(query, eval_line):
     return query + " " + eval_line
 
 
-def _composite_legend_covered_columns(esql_query, legend_labels, known_columns=None):
-    """Return the output columns a composite ``legend`` breakdown represents.
-
-    When :func:`_apply_composite_legend_to_xy_panel` rewrites a panel to break
-    down by a synthetic ``legend`` column, that column folds every resolved
-    legend label into a single visual series key — so those underlying grouping
-    dimensions are NOT merged even though only ``legend`` is the breakdown
-    field. This resolves each legend label back to its output column so callers
-    can exclude them from the "visually merged" warning.
-
-    ``known_columns`` augments the columns parsed from the query text, mirroring
-    :func:`_apply_composite_legend_to_xy_panel` so native ``PROMQL`` ``by``
-    labels (never present in a STATS/KEEP stage) are still recognised.
-    """
-    columns = _output_columns_for_composite_legend(esql_query)
-    if known_columns:
-        columns = set(columns) | set(known_columns)
-    covered = set()
-    for label in legend_labels or []:
-        column = _resolve_legend_label_to_column(label, columns)
-        if column is not None:
-            covered.add(column)
-    return covered
-
-
-def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field,
-                                     warnings, represented=None):
+def _warn_extra_breakdown_dimensions(
+    by_cols,
+    dimension_field,
+    breakdown_field,
+    warnings,
+    represented_breakdown_fields=None,
+):
     """Warn when an XY panel has more grouping dimensions than it can display.
 
     A Kibana XY chart breaks the series down by a single field. When the ES|QL
@@ -3257,19 +3279,15 @@ def _warn_extra_breakdown_dimensions(by_cols, dimension_field, breakdown_field,
     visual breakdown and the rest are not represented on the chart, so series
     that differ only in a dropped dimension are visually merged. Surface that as
     a warning rather than silently rendering a different shape than the source.
-
-    ``represented`` lists additional columns that ARE on the chart through some
-    other mechanism — notably a composite ``legend`` breakdown that folds
-    several grouping dimensions into one series key (issue #189). Those columns
-    are not merged, so they must be excluded from the warning.
     """
     if warnings is None:
         return
-    represented = represented or set()
     extra = [
         col
         for col in (by_cols or [])
-        if col != dimension_field and col != breakdown_field and col not in represented
+        if col != dimension_field
+        and col != breakdown_field
+        and col not in set(represented_breakdown_fields or [])
     ]
     if extra:
         _append_unique(
@@ -3314,26 +3332,19 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
-    represented = set()
     if legend_format_template and legend_labels and len(legend_labels) >= 2:
         _apply_composite_legend_to_xy_panel(
             {"esql": panel},
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
-            known_columns=by_cols,
         )
-        if panel.get("breakdown", {}).get("field") == "legend":
-            represented = _composite_legend_covered_columns(
-                panel["query"], legend_labels, known_columns=by_cols
-            )
-    # Warn against the panel's ACTUAL breakdown field, not the pre-rewrite one:
-    # a composite rewrite changes it to ``legend`` (folding only the legend
-    # labels), so a grouping column that is neither the dimension, the legend,
-    # nor a legend-covered label is now visually merged and must still warn —
-    # even if it happened to be the original single-breakdown column.
-    effective_breakdown_field = panel.get("breakdown", {}).get("field", breakdown_field)
+    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
     _warn_extra_breakdown_dimensions(
-        by_cols, dimension_field, effective_breakdown_field, warnings, represented=represented
+        by_cols,
+        dimension_field,
+        (panel.get("breakdown") or {}).get("field"),
+        warnings,
+        represented_breakdown_fields=represented,
     )
     return panel
 
@@ -3370,26 +3381,19 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         panel["mode"] = mode
     if breakdown_field:
         panel["breakdown"] = {"field": breakdown_field}
-    represented = set()
     if legend_format_template and legend_labels and len(legend_labels) >= 2:
         _apply_composite_legend_to_xy_panel(
             {"esql": panel},
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
-            known_columns=by_cols,
         )
-        if panel.get("breakdown", {}).get("field") == "legend":
-            represented = _composite_legend_covered_columns(
-                panel["query"], legend_labels, known_columns=by_cols
-            )
-    # Warn against the panel's ACTUAL breakdown field, not the pre-rewrite one:
-    # a composite rewrite changes it to ``legend`` (folding only the legend
-    # labels), so a grouping column that is neither the dimension, the legend,
-    # nor a legend-covered label is now visually merged and must still warn —
-    # even if it happened to be the original single-breakdown column.
-    effective_breakdown_field = panel.get("breakdown", {}).get("field", breakdown_field)
+    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
     _warn_extra_breakdown_dimensions(
-        by_cols, dimension_field, effective_breakdown_field, warnings, represented=represented
+        by_cols,
+        dimension_field,
+        (panel.get("breakdown") or {}).get("field"),
+        warnings,
+        represented_breakdown_fields=represented,
     )
     return panel
 

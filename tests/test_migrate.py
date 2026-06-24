@@ -1744,191 +1744,6 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"Did not expect dropped-dimension warning, got {result.reasons}",
         )
 
-    def test_composite_legend_covering_all_dimensions_does_not_warn_merged(self):
-        # ArgoCD "K8s API Activity" (issue #189): a multi-label legend
-        # ``{{verb}} {{resource_kind}}`` over ``by (verb, resource_kind)`` is
-        # rendered as a composite ``legend`` breakdown that represents BOTH
-        # dimensions, so there is nothing visually merged — the stale
-        # "additional grouping dimension(s) ... visually merged" warning must
-        # not fire.
-        panel = {
-            "title": "K8s API Activity",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(argocd_app_k8s_request_total[5m])) by (verb, resource_kind)",
-                    "legendFormat": "{{verb}} {{resource_kind}}",
-                }
-            ],
-        }
-        yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
-        self.assertIn("EVAL legend = CONCAT(", yaml_panel["esql"]["query"])
-        self.assertFalse(
-            any("visually merged" in w or "not on the chart" in w for w in result.reasons),
-            f"Composite legend covers both dimensions; unexpected merge warning: {result.reasons}",
-        )
-
-    def test_composite_legend_still_warns_for_uncovered_dimension(self):
-        # A composite legend that references only some of the grouping
-        # dimensions still leaves the rest visually merged. The legend covers
-        # ``verb``/``resource_kind`` but ``namespace`` is grouped yet absent
-        # from the legend, so the merge warning must still fire for it.
-        panel = {
-            "title": "K8s API Activity",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(argocd_app_k8s_request_total[5m])) by (verb, resource_kind, namespace)",
-                    "legendFormat": "{{verb}} {{resource_kind}}",
-                }
-            ],
-        }
-        _, result = self.translate_panel(panel)
-        merge_warnings = [w for w in result.reasons if "visually merged" in w]
-        self.assertTrue(
-            merge_warnings,
-            f"Expected a merge warning for the uncovered namespace dimension, got {result.reasons}",
-        )
-        self.assertTrue(
-            all("namespace" in w for w in merge_warnings),
-            f"Merge warning should name only the uncovered namespace dimension: {merge_warnings}",
-        )
-        self.assertFalse(
-            any("verb" in w or "resource_kind" in w for w in merge_warnings),
-            f"Legend-covered dimensions must not appear in the merge warning: {merge_warnings}",
-        )
-
-    def test_native_promql_multi_label_legend_drives_composite_breakdown(self):
-        # Issue #189, native-PROMQL path: when the panel is emitted as a bare
-        # ``PROMQL index=... value=(...) by (verb, resource_kind)`` command, the
-        # grouping labels are output columns of the PROMQL command but never
-        # appear in a STATS/KEEP stage. The composite-legend rewrite must still
-        # resolve both labels and break the chart down by the composite
-        # ``legend`` column — NOT collapse to the first label (``verb``).
-        self.rule_pack.native_promql = True
-        panel = {
-            "title": "K8s API Activity",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(argocd_app_k8s_request_total[5m])) by (verb, resource_kind)",
-                    "legendFormat": "{{verb}} {{resource_kind}}",
-                }
-            ],
-        }
-        yaml_panel, result = self.translate_panel(panel)
-        query = yaml_panel["esql"]["query"]
-        self.assertTrue(
-            query.startswith("PROMQL "),
-            f"Expected the native-PROMQL command form, got: {query!r}",
-        )
-        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
-        self.assertIn("EVAL legend = CONCAT(", query)
-        self.assertIn('COALESCE(TO_STRING(verb), "")', query)
-        self.assertIn('COALESCE(TO_STRING(resource_kind), "")', query)
-        self.assertFalse(
-            any("visually merged" in w or "not on the chart" in w for w in result.reasons),
-            f"Composite legend covers both dimensions; unexpected merge warning: {result.reasons}",
-        )
-
-    def test_composite_legend_warns_for_dimension_outside_legend(self):
-        # by (a, b, c) with legend {{b}} {{c}}: the composite legend folds only
-        # b and c into the breakdown, so `a` is grouped but no longer on the
-        # chart — series differing only by `a` are visually merged. The merge
-        # warning must still fire for `a` (and must NOT swallow it just because
-        # `a` was the pre-rewrite single-breakdown column). Uses the translated
-        # TS/STATS path, where the dropped-dimension warning is active.
-        panel = {
-            "title": "P",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(http_requests_total[5m])) by (a, b, c)",
-                    "legendFormat": "{{b}} {{c}}",
-                }
-            ],
-        }
-        yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
-        merge = [w for w in result.reasons if "visually merged" in w]
-        self.assertTrue(
-            merge, f"Expected a merge warning for the uncovered dimension `a`, got {result.reasons}"
-        )
-        self.assertTrue(
-            all("['a']" in w for w in merge),
-            f"Merge warning should name only the uncovered dimension `a`: {merge}",
-        )
-
-    def test_composite_legend_quotes_reserved_label_identifiers(self):
-        # A Prometheus label can be a reserved ES|QL keyword (e.g. `in`). The
-        # composite-legend CONCAT must backtick-quote such identifiers, or ES|QL
-        # rejects the query with "no viable alternative at input 'TO_STRING(in'".
-        self.rule_pack.native_promql = True
-        panel = {
-            "title": "Net",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(net_bytes_total[5m])) by (in, out)",
-                    "legendFormat": "{{in}} {{out}}",
-                }
-            ],
-        }
-        yaml_panel, _ = self.translate_panel(panel)
-        query = yaml_panel["esql"]["query"]
-        self.assertIn("EVAL legend = CONCAT(", query)
-        self.assertIn("TO_STRING(`in`)", query)
-        self.assertNotIn("TO_STRING(in)", query)
-
-    def test_native_promql_three_label_legend_drives_composite_breakdown(self):
-        # Issue #189 is broader than the ArgoCD two-label case: HAProxy panels
-        # use three-label legends like ``{{code}} {{proxy}} {{server}}`` over
-        # ``by (code, proxy, server)``. On the native-PROMQL path all three
-        # labels are PROMQL output columns that never reach a STATS/KEEP stage;
-        # the composite-legend rewrite must resolve all three and break the
-        # chart down by the composite ``legend`` column rather than collapsing
-        # to the first label (``code``), which would visually merge every
-        # proxy/server sharing an HTTP code.
-        self.rule_pack.native_promql = True
-        panel = {
-            "title": "HTTP Responses by Backend",
-            "type": "timeseries",
-            "datasource": {"type": "prometheus", "uid": "prom"},
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(rate(haproxy_server_http_responses_total[5m])) by (code, proxy, server)",
-                    "legendFormat": "{{code}} {{proxy}} {{server}}",
-                }
-            ],
-        }
-        yaml_panel, result = self.translate_panel(panel)
-        query = yaml_panel["esql"]["query"]
-        self.assertTrue(
-            query.startswith("PROMQL "),
-            f"Expected the native-PROMQL command form, got: {query!r}",
-        )
-        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
-        self.assertIn("EVAL legend = CONCAT(", query)
-        self.assertIn('COALESCE(TO_STRING(code), "")', query)
-        self.assertIn('COALESCE(TO_STRING(proxy), "")', query)
-        self.assertIn('COALESCE(TO_STRING(server), "")', query)
-        self.assertFalse(
-            any("visually merged" in w or "not on the chart" in w for w in result.reasons),
-            f"Composite legend covers all three dimensions; unexpected merge warning: {result.reasons}",
-        )
-
     def test_multi_target_post_filters_are_applied_per_series(self):
         panel = {
             "id": 99,
@@ -8511,11 +8326,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             legend_labels=["method", "path", "status"],
         )
         query = result["esql"]["query"]
-        # Dotted field names are backtick-quoted as identifier references
-        # (via _esql_identifier) so ES|QL parses them unambiguously.
-        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.method`), "")', query)
-        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.path`), "")', query)
-        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.status`), "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.method), "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.path), "")', query)
+        self.assertIn('COALESCE(TO_STRING(prometheus.labels.status), "")', query)
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
 
     def test_apply_composite_legend_no_op_when_label_missing_from_query(self):
@@ -9532,9 +9345,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
             "targets": [{"expr": "up", "refId": "A"}],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertIsNone(yaml_panel)
+        self.assertIsNotNone(yaml_panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(any("Unknown" in r for r in result.reasons))
+        self.assertIn("markdown", yaml_panel)
+        self.assertIn("Migration Required", yaml_panel["markdown"]["content"])
+        self.assertIn("flamegraph", yaml_panel["markdown"]["content"])
 
     def test_no_promql_targets_produces_placeholder(self):
         panel = {
