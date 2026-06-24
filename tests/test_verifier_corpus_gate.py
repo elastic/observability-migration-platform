@@ -62,6 +62,21 @@ class TestCorpusGate:
         assert result.total == 3
         assert result.counts == {"STRICT_PASS": 1, "FUZZY_PASS": 1, "SKIP": 1}
 
+    def test_fails_when_no_panels_are_evaluated(self) -> None:
+        result = corpus_gate.evaluate_reports([{"panels": []}])
+        assert not result.ok
+        assert "evaluated panel count 0 is below minimum 1" in result.reasons
+
+    def test_fails_when_all_verdicts_are_blank(self) -> None:
+        result = corpus_gate.evaluate_reports([{"panels": [{"dashboard": "D", "panel": "P"}]}])
+        assert not result.ok
+        assert "evaluated panel count 0 is below minimum 1" in result.reasons
+
+    def test_can_explicitly_allow_empty_reports(self) -> None:
+        result = corpus_gate.evaluate_reports([{"panels": []}], min_panels=0)
+        assert result.ok
+        assert result.reasons == []
+
     def test_load_compare_report(self, tmp_path: Path) -> None:
         path = tmp_path / "compare.json"
         path.write_text(json.dumps(_report(["STRICT_PASS"])))

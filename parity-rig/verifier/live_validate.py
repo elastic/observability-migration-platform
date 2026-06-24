@@ -37,8 +37,7 @@ QueryRunner = Callable[[str, str, str], "tuple[int, dict[str, Any] | str]"]
 # Well-formed query, telemetry simply absent. NOT a translation bug.
 _DATA_GAP = re.compile(
     r"Unknown column|Unknown index|index_not_found|no such index|"
-    r"resolved to no indices|unknown field|"
-    r"verification_exception.*Unknown",
+    r"resolved to no indices|unknown field",
     re.IGNORECASE,
 )
 # The emitted ES|QL is itself invalid. REAL translator bug.
@@ -176,7 +175,7 @@ def queries_from_report(report: dict[str, Any]) -> list[tuple[str, str, str]]:
             if pres.get("kind") == "esql":
                 query = str(cfg.get("query") or "")
             if not query:
-                query = str(panel.get("esql") or "")
+                query = str(panel.get("esql_query") or panel.get("esql") or "")
             if query.strip():
                 items.append((dtitle, title, query))
     return items

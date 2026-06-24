@@ -301,7 +301,7 @@ class TestBenchmarkGate:
             datasource_map={"1": ["prometheus"]},
         ) is None
 
-    def test_filtered_gate_skips_when_current_filter_has_no_matching_dashboards(self) -> None:
+    def test_filtered_gate_fails_when_current_filter_has_no_matching_dashboards(self) -> None:
         history = [
             {
                 "cli_version": {"hash": "a"},
@@ -320,7 +320,52 @@ class TestBenchmarkGate:
             grafana_datasources={"cloudwatch"},
             datasource_map={"1": ["prometheus"]},
         )
+        assert not result.ok
+        assert result.skipped_reason == "no matching current metrics for selected filters"
+
+    def test_filtered_gate_can_explicitly_skip_when_no_dashboards_match(self) -> None:
+        history = [
+            {
+                "cli_version": {"hash": "a"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+            {
+                "cli_version": {"hash": "b"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+        ]
+        result = benchmark_gate.evaluate_history(
+            history,
+            sources={"grafana"},
+            grafana_datasources={"cloudwatch"},
+            datasource_map={"1": ["prometheus"]},
+            allow_filter_skip=True,
+        )
         assert result.ok
+        assert result.skipped_reason == "no matching current metrics for selected filters"
+
+    def test_filtered_gate_without_datasource_map_fails_by_default(self) -> None:
+        history = [
+            {
+                "cli_version": {"hash": "a"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+            {
+                "cli_version": {"hash": "b"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+        ]
+        result = benchmark_gate.evaluate_history(
+            history,
+            sources={"grafana"},
+            grafana_datasources={"prometheus"},
+            datasource_map={},
+        )
+        assert not result.ok
         assert result.skipped_reason == "no matching current metrics for selected filters"
 
     def test_filtered_gate_detects_datasource_slice_regression(self) -> None:

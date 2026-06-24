@@ -293,6 +293,7 @@ def evaluate_history(
     sources: set[str] | None = None,
     grafana_datasources: set[str] | None = None,
     datasource_map: dict[str, list[str]] | None = None,
+    allow_filter_skip: bool = False,
 ) -> BenchmarkGateResult:
     if not history:
         return BenchmarkGateResult(ok=True, current_index=-1, baseline_index=None, skipped_reason="empty history")
@@ -332,7 +333,7 @@ def evaluate_history(
     )
     if current_metrics is None:
         return BenchmarkGateResult(
-            ok=True,
+            ok=allow_filter_skip,
             current_index=current_index,
             baseline_index=baseline_index,
             current_hash=_hash(current),
@@ -341,7 +342,7 @@ def evaluate_history(
         )
     if baseline_metrics is None:
         return BenchmarkGateResult(
-            ok=True,
+            ok=allow_filter_skip,
             current_index=current_index,
             baseline_index=baseline_index,
             current_hash=_hash(current),
@@ -407,6 +408,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grafana-datasource-map", type=Path)
     parser.add_argument(
+        "--allow-filter-skip",
+        action="store_true",
+        help="Allow datasource/source filters that match no current or baseline metrics to pass as skipped.",
+    )
+    parser.add_argument(
         "--allow-same-hash-baseline",
         action="store_true",
         help="Allow comparing a run to an earlier run of the same CLI hash (default: skip same-hash baselines).",
@@ -427,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         sources=set(args.source or ["grafana", "datadog"]),
         grafana_datasources={str(item).lower() for item in args.grafana_datasource},
         datasource_map=load_datasource_map(args.grafana_datasource_map),
+        allow_filter_skip=args.allow_filter_skip,
     )
     payload = result.to_jsonable()
     if args.output:

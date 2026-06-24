@@ -30,6 +30,10 @@ _UNKNOWN_COLUMN = (
 _UNKNOWN_INDEX = (
     '{"error":{"type":"verification_exception","reason":"Unknown index [metrics-*]"},"status":400}'
 )
+_UNKNOWN_FUNCTION_WRAPPED = (
+    '{"error":{"type":"verification_exception",'
+    '"reason":"Found 1 problem\\nline 2:9: Unknown function [FOO]"},"status":400}'
+)
 _TYPE_ERROR = (
     '{"error":{"type":"verification_exception",'
     '"reason":"line 1:20: first argument of [a + b] must be [numeric], found value [b] type [keyword]"},"status":400}'
@@ -59,6 +63,9 @@ class TestClassifyError:
 
     def test_unknown_function_is_real_bug(self) -> None:
         assert classify_error('{"reason":"Unknown function [FOO]"}') == "real_bug"
+
+    def test_wrapped_unknown_function_is_real_bug(self) -> None:
+        assert classify_error(_UNKNOWN_FUNCTION_WRAPPED) == "real_bug"
 
     def test_empty_is_other(self) -> None:
         assert classify_error("") == "other"
@@ -150,3 +157,21 @@ class TestDriverAndExtraction:
         report = {"dashboards": [{"title": "D", "panels": [{"title": "P", "esql": "BARE"}]}]}
         items = live_validate.queries_from_report(report)
         assert items == [("D", "P", "BARE")]
+
+    def test_queries_from_report_reads_datadog_esql_query(self) -> None:
+        report = {
+            "dashboards": [
+                {
+                    "title": "Datadog",
+                    "panels": [
+                        {
+                            "title": "Widget",
+                            "kibana_type": "xy",
+                            "esql_query": "FROM metrics-* | STATS value = AVG(metric)",
+                        }
+                    ],
+                }
+            ]
+        }
+        items = live_validate.queries_from_report(report)
+        assert items == [("Datadog", "Widget", "FROM metrics-* | STATS value = AVG(metric)")]

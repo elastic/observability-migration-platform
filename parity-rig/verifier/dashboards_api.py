@@ -30,6 +30,40 @@ _XY_TYPES = {"line", "area", "bar"}
 _SUPPORTED_ESQL_TYPES = _XY_TYPES | {"metric"}
 
 
+def _is_time_like(field: str) -> bool:
+    name = str(field or "").strip("`")
+    return name in {"time_bucket", "timestamp_bucket", "step", "@timestamp"} or "bucket" in name.lower()
+
+
+def _fallback_esql_config(panel: dict[str, Any]) -> dict[str, Any]:
+    query = str(panel.get("esql_query") or panel.get("esql") or "").strip()
+    if not query:
+        return {}
+    query_ir = panel.get("query_ir") if isinstance(panel.get("query_ir"), dict) else {}
+    metric = str(query_ir.get("output_metric_field") or "value")
+    groups = [str(item) for item in (query_ir.get("output_group_fields") or []) if str(item)]
+    time_dim = next((field for field in groups if _is_time_like(field)), "time_bucket")
+    breakdown = next((field for field in groups if not _is_time_like(field)), "")
+    kibana_type = str(panel.get("kibana_type") or "").lower()
+    chart_type = {
+        "xy": "line",
+        "metric": "metric",
+        "table": "datatable",
+        "partition": "pie",
+        "treemap": "treemap",
+        "heatmap": "heatmap",
+    }.get(kibana_type, kibana_type)
+    config: dict[str, Any] = {"type": chart_type, "query": query}
+    if chart_type in _XY_TYPES:
+        config["dimension"] = {"field": time_dim}
+        config["metrics"] = [{"field": metric}]
+        if breakdown:
+            config["breakdown"] = {"field": breakdown}
+    elif chart_type == "metric":
+        config["primary"] = {"field": metric}
+    return config
+
+
 @dataclass
 class Finding:
     category: str
@@ -54,9 +88,13 @@ def _visual_presentation(panel: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     vir = panel.get("visual_ir") if isinstance(panel.get("visual_ir"), dict) else {}
     pres = vir.get("presentation") if isinstance(vir, dict) else {}
     if not isinstance(pres, dict):
-        return "", {}
+        fallback = _fallback_esql_config(panel)
+        return ("esql", fallback) if fallback else ("", {})
     cfg = pres.get("config") if isinstance(pres.get("config"), dict) else {}
-    return str(pres.get("kind") or ""), dict(cfg)
+    kind = str(pres.get("kind") or "")
+    if (kind != "esql" or not cfg) and (fallback := _fallback_esql_config(panel)):
+        return "esql", fallback
+    return kind, dict(cfg)
 
 
 def _layout(panel: dict[str, Any]) -> dict[str, int]:

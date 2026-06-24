@@ -371,6 +371,25 @@ _NON_DATA_GRAFANA_TYPES = {
 }
 
 
+def _fallback_esql_config(panel: dict[str, Any]) -> dict[str, Any]:
+    query = str(panel.get("esql_query") or panel.get("esql") or "").strip()
+    if not query:
+        return {}
+    kibana_type = str(panel.get("kibana_type") or "").lower()
+    chart_type = {
+        "xy": "line",
+        "metric": "metric",
+        "table": "datatable",
+        "partition": "pie",
+        "treemap": "treemap",
+        "heatmap": "heatmap",
+    }.get(kibana_type, kibana_type)
+    config: dict[str, Any] = {"query": query}
+    if chart_type:
+        config["type"] = chart_type
+    return config
+
+
 def lint_report_panel(
     panel: dict[str, Any],
     dashboard_title: str,
@@ -391,7 +410,12 @@ def lint_report_panel(
     presentation = presentation if isinstance(presentation, dict) else {}
     kind = str(presentation.get("kind") or "")
     config = presentation.get("config") if isinstance(presentation.get("config"), dict) else {}
+    if (kind != "esql" or not config) and (fallback_config := _fallback_esql_config(panel)):
+        kind = "esql"
+        config = fallback_config
     reasons = [str(r) for r in (panel.get("reasons") or [])]
+    top_level_warnings = [str(w) for w in (panel.get("warnings") or [])]
+    top_level_losses = [str(w) for w in (panel.get("semantic_losses") or [])]
     pva = str(panel.get("post_validation_action") or "")
 
     findings: list[Finding] = []
@@ -417,10 +441,19 @@ def lint_report_panel(
     if kind != "esql" or not config:
         return findings
 
-    query = str(config.get("query") or panel.get("esql") or "").strip()
+    query = str(config.get("query") or panel.get("esql_query") or panel.get("esql") or "").strip()
 
     findings.extend(_check_accessor_fields(title, dashboard_title, config, query, columns_oracle))
-    findings.extend(_check_merged_series(title, dashboard_title, query_ir, config, query, reasons))
+    findings.extend(
+        _check_merged_series(
+            title,
+            dashboard_title,
+            query_ir,
+            config,
+            query,
+            reasons + top_level_warnings + top_level_losses,
+        )
+    )
     return findings
 
 

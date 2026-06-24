@@ -75,6 +75,27 @@ class TestPanelMapping:
         assert api_panel["type"] == "markdown"
         assert api_panel["config"]["content"] == "hello"
 
+    def test_datadog_esql_query_panel_maps_without_visual_ir(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D",
+            {
+                "title": "Datadog Requests",
+                "kibana_type": "xy",
+                "esql_query": "FROM metrics-* | STATS value = AVG(metric) BY time_bucket, service.name",
+                "query_ir": {
+                    "output_metric_field": "value",
+                    "output_group_fields": ["time_bucket", "service.name"],
+                },
+            },
+        )
+        assert findings == []
+        assert api_panel is not None
+        layer = api_panel["config"]["layers"][0]
+        assert layer["data_source"]["query"].startswith("FROM metrics-*")
+        assert layer["x"] == {"column": "time_bucket"}
+        assert layer["y"] == [{"column": "value"}]
+        assert layer["breakdown_by"] == {"column": "service.name"}
+
     def test_unsupported_chart_is_info_not_guess(self) -> None:
         api_panel, findings = dashboards_api.api_panel_from_report_panel(
             "D", _panel(chart_type="heatmap")

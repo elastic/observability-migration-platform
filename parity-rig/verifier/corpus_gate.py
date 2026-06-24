@@ -43,6 +43,7 @@ def evaluate_reports(
     max_fail: int = 0,
     max_error: int = 0,
     max_shape_pass: int | None = None,
+    min_panels: int = 1,
 ) -> CorpusGateResult:
     result = CorpusGateResult()
     for report in reports:
@@ -58,6 +59,8 @@ def evaluate_reports(
     fail_count = result.counts.get("FAIL", 0) + result.counts.get("SOURCE_FAIL", 0)
     error_count = result.counts.get("ERROR", 0)
     shape_count = result.counts.get("SHAPE_PASS", 0)
+    if result.total < min_panels:
+        result.reasons.append(f"evaluated panel count {result.total} is below minimum {min_panels}")
     if fail_count > max_fail:
         result.reasons.append(f"FAIL/SOURCE_FAIL count {fail_count} exceeds budget {max_fail}")
     if error_count > max_error:
@@ -77,6 +80,12 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--max-fail", type=int, default=0)
     parser.add_argument("--max-error", type=int, default=0)
     parser.add_argument("--max-shape-pass", type=int)
+    parser.add_argument(
+        "--min-panels",
+        type=int,
+        default=1,
+        help="Minimum number of panels with verdicts required for the gate to pass (0 allows empty reports).",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -89,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         max_fail=args.max_fail,
         max_error=args.max_error,
         max_shape_pass=args.max_shape_pass,
+        min_panels=args.min_panels,
     )
     payload = result.to_jsonable()
     if args.output:

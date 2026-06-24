@@ -233,6 +233,23 @@ class TestAccessorChecks:
         findings = lint_report_panel(panel, "Dash")
         assert InvariantCategory.ACCESSOR_BROKEN not in _categories(findings)
 
+    def test_datadog_esql_query_panel_is_linted(self) -> None:
+        panel = {
+            "title": "Datadog timeseries",
+            "status": "ok",
+            "kibana_type": "xy",
+            "esql_query": (
+                "FROM metrics-* | STATS value = AVG(metric) "
+                "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host, env"
+            ),
+            "query_ir": {
+                "output_shape": "time_series",
+                "output_group_fields": ["time_bucket", "host", "env"],
+            },
+        }
+        findings = lint_report_panel(panel, "Dash")
+        assert InvariantCategory.VISUAL_SEMANTIC_DRIFT in _categories(findings)
+
 
 class TestMergedSeriesChecks:
     def test_silent_merge_is_error(self) -> None:
