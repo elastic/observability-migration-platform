@@ -722,6 +722,34 @@ def _manual_boundary_reason(ir: AlertingIR) -> str:
     return ""
 
 
+# Grafana auto-inserts this no-op "does the query return a value?" math step
+# when a Prometheus/Mimir alerting rule is imported as a Grafana-managed rule:
+# ``is_number($X) || is_nan($X) || is_inf($X)``. It carries no alerting logic —
+# any NaN/Inf/non-number is already excluded by the downstream threshold — so it
+# can be ignored without changing when the alert fires.
+_VALIDITY_STEP_TERM = re.compile(r"^is_(number|nan|inf)\(\s*\$\{?\w+\}?\s*\)$", re.IGNORECASE)
+
+
+def _is_grafana_validity_noop_expression(model: dict[str, Any]) -> bool:
+    if str(model.get("type", "") or "").strip().lower() != "math":
+        return False
+    expression = str(model.get("expression", "") or "").strip()
+    if not expression:
+        return False
+    terms = [term.strip() for term in expression.split("||")]
+    if len(terms) != 3:
+        return False
+    functions: set[str] = set()
+    variables: set[str] = set()
+    for term in terms:
+        match = _VALIDITY_STEP_TERM.match(term)
+        if not match:
+            return False
+        functions.add(match.group(1).lower())
+        variables.add(re.sub(r"[${}]", "", term[term.index("(") + 1 : term.rindex(")")]).strip())
+    return functions == {"number", "nan", "inf"} and len(variables) == 1
+
+
 def _grafana_unified_has_complex_expression_graph(data: list[Any]) -> bool:
     datasource_query_count = 0
     for item in data:
@@ -733,6 +761,8 @@ def _grafana_unified_has_complex_expression_graph(data: list[Any]) -> bool:
         model_type = str(model.get("type", "") or "").strip().lower()
         if datasource_uid not in {"__expr__", "-100"}:
             datasource_query_count += 1
+            continue
+        if _is_grafana_validity_noop_expression(model):
             continue
         if model_type and model_type not in {"reduce", "threshold"}:
             return True

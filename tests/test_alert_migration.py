@@ -241,6 +241,45 @@ def _grafana_unified_prometheus_bottomk_safe_rule():
     return rule
 
 
+def _grafana_unified_prometheus_validity_step_rule():
+    """A Grafana-managed rule imported from Prometheus.
+
+    Grafana auto-inserts an ``is_number($X) || is_nan($X) || is_inf($X)`` math
+    expression — a no-op "does the query return a value?" check — between the
+    reduce and threshold steps. The query and threshold are otherwise identical
+    to ``_grafana_unified_prometheus_safe_rule``.
+    """
+    rule = _grafana_unified_prometheus_safe_rule()
+    rule["uid"] = "rule-prom-validity-1"
+    rule["title"] = "High CPU usage imported from Prometheus"
+    rule["condition"] = "D"
+    rule["data"] = [
+        copy.deepcopy(rule["data"][0]),
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {"type": "reduce", "reducer": "last", "expression": "A"},
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {
+                "type": "math",
+                "expression": "is_number($B) || is_nan($B) || is_inf($B)",
+            },
+        },
+        {
+            "refId": "D",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {"type": "threshold", "conditions": [{"evaluator": {"type": "gt", "params": [80]}}]},
+        },
+    ]
+    return rule
+
+
 def _grafana_unified_unsupported_prometheus_rule():
     rule = copy.deepcopy(_grafana_unified_prometheus_rule())
     rule["uid"] = "rule-prom-unsupported-1"
@@ -1534,6 +1573,50 @@ class TestClassifyAutomationTier(unittest.TestCase):
         )
         self.assertEqual(classify_automation_tier(ir), "automated")
 
+    def test_grafana_unified_prometheus_validity_step_is_automated(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_validity_step_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "automated")
+
+    def test_grafana_unified_validity_step_emits_payload(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_validity_step_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        self.assertTrue(result["payload_emitted"])
+        self.assertEqual(result["automation_tier"], "automated")
+
+    def test_grafana_unified_validity_step_yields_same_query_as_without(self):
+        ds = {"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        with_step = map_alert_to_kibana_payload(
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_validity_step_rule(), datasource_map=ds
+            )
+        )
+        without_step = map_alert_to_kibana_payload(
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_safe_rule(), datasource_map=ds
+            )
+        )
+        self.assertEqual(
+            with_step["rule_payload"]["params"]["esqlQuery"]["esql"],
+            without_step["rule_payload"]["params"]["esqlQuery"]["esql"],
+        )
+
+    def test_grafana_unified_genuine_math_step_is_not_automated(self):
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        # A real math expression carries alerting semantics and must not be
+        # mistaken for the no-op validity check.
+        rule["data"][2]["model"]["expression"] = "$B * 2"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertNotEqual(classify_automation_tier(ir), "automated")
+
     def test_grafana_legacy_prometheus_query_is_automated(self):
         ir = build_alerting_ir_from_grafana(_grafana_legacy_prometheus_alert_task())
         self.assertEqual(classify_automation_tier(ir), "automated")
@@ -1730,6 +1813,12 @@ class TestRecordSemanticLosses(unittest.TestCase):
         self.assertFalse(any("no-data policy" in loss for loss in losses))
         self.assertFalse(any("alert labels" in loss for loss in losses))
         self.assertFalse(any("Dashboard-linked" in loss for loss in losses))
+
+    def test_grafana_unified_validity_step_has_no_multi_query_loss(self):
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        ir = build_alerting_ir_from_grafana_unified(rule)
+        losses = record_semantic_losses(ir)
+        self.assertFalse(any("Multi-query" in loss for loss in losses))
 
     def test_grafana_unified_multiple_source_queries_report_multi_query_loss(self):
         rule = _grafana_unified_multi_source_prometheus_rule()
