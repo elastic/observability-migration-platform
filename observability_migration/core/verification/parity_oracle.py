@@ -932,8 +932,41 @@ def _control_param_names(esql: str) -> set[str]:
     return {name for name in _NAMED_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
 
 
+def _control_param_occurrences(esql: str) -> list[tuple[str, tuple[int, int]]]:
+    return [
+        (match.group(1), match.span())
+        for match in _NAMED_PARAM_RE.finditer(esql or "")
+        if match.group(1) not in _TIME_PARAM_NAMES
+    ]
+
+
+def _rlike_is_negated(esql: str, rlike_start: int) -> bool:
+    segment = (esql or "")[:rlike_start].rsplit("|", 1)[-1]
+    return bool(
+        re.search(r"\bNOT\s*\([^|)]*$", segment, re.IGNORECASE)
+        or re.search(r"\bNOT\s+[^|()]*$", segment, re.IGNORECASE)
+    )
+
+
+def _positive_rlike_param_spans(esql: str) -> set[tuple[int, int]]:
+    spans: set[tuple[int, int]] = set()
+    for match in _RLIKE_PARAM_RE.finditer(esql or ""):
+        name = match.group(1)
+        if name in _TIME_PARAM_NAMES or _rlike_is_negated(esql, match.start()):
+            continue
+        spans.add((match.start(1) - 1, match.end(1)))
+    return spans
+
+
 def _regex_control_param_names(esql: str) -> set[str]:
-    return {name for name in _RLIKE_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
+    occurrences = _control_param_occurrences(esql)
+    positive_rlike_spans = _positive_rlike_param_spans(esql)
+    bindable: set[str] = set()
+    for name in {item[0] for item in occurrences}:
+        spans = [span for candidate, span in occurrences if candidate == name]
+        if spans and all(span in positive_rlike_spans for span in spans):
+            bindable.add(name)
+    return bindable
 
 
 def _exact_control_param_names(esql: str) -> set[str]:

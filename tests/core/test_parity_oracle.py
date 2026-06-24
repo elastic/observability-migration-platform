@@ -318,6 +318,37 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         self.assertEqual(bound["node"], ".*")
         self.assertNotIn("job", bound)
 
+    def test_run_translated_does_not_bind_negated_rlike_control_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE NOT (service.instance.id RLIKE ?instance) "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_run_translated_does_not_bind_same_param_mixed_exact_and_rlike(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE service.name == ?job "
+            "| WHERE service.instance.id RLIKE ?job "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
     def test_compare_panel_skips_exact_control_params_without_defaults(self):
         calls = []
 
@@ -336,6 +367,49 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
             start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
         )
         self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertEqual(calls, [])
+
+    def test_compare_panel_skips_negated_rlike_control_params_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='up{instance!~"$instance"}',
+            translated_query=(
+                "TS metrics-* | WHERE NOT (service.instance.id RLIKE ?instance) "
+                "| STATS v = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertIn("?instance", result.skipped_reason)
+        self.assertEqual(calls, [])
+
+    def test_compare_panel_skips_same_param_mixed_exact_and_rlike_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='up{job="$job"}',
+            translated_query=(
+                "TS metrics-* | WHERE service.name == ?job "
+                "| WHERE service.instance.id RLIKE ?job "
+                "| STATS v = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertIn("?job", result.skipped_reason)
         self.assertEqual(calls, [])
 
     def test_run_translated_no_extra_params_when_only_time(self):
