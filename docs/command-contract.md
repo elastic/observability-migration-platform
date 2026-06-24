@@ -636,6 +636,90 @@ then clean up:
   --confirm
 ```
 
+### Verification And Benchmark Gates
+
+The `parity-rig/verifier/` tools are repo-oriented correctness gates used by
+development and CI. They are intentionally layered: each gate answers a different
+question, and no single gate is sufficient for "the dashboard is correct".
+
+| Tool | Input | What it proves | Typical gate |
+|---|---|---|---|
+| `verifier.live_validate` | `migration_report.json` | Elasticsearch accepts the emitted ES|QL (`real_bug` vs `data_gap`) | no `real_bug` |
+| `verifier.dashboards_api` | `migration_report.json` + Kibana | Kibana's typed Dashboards API accepts the mapped panel payload | no `dashboards_api_rejected` |
+| `obs-migrate compare` | `verification_packets.json` + seeded data | Native PromQL and translated ES|QL are numerically close | no `FAIL`/`ERROR`; bounded `SHAPE_PASS` |
+| `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
+| `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
+| `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
+| `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
+| `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
+
+Examples:
+
+```bash
+# Runtime ES|QL oracle: catches invalid emitted ES|QL that compile/lint miss.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
+  --migration-out migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --fail-on-bug
+
+# Typed Kibana UI contract: validates mapped panels against /api/dashboards.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.dashboards_api \
+  --migration-out migration_output/dashboards \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --api-key "$KEY" \
+  --fail-on-error
+
+# Semantic corpus gate over compare reports.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_gate \
+  --report comparison_report.json \
+  --max-fail 0 \
+  --max-error 0 \
+  --max-shape-pass 25
+
+# PM benchmark-history gate. Compare the latest run to the most recent
+# compatible different CLI hash (same G/D config and schema-discovery class).
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.benchmark_gate \
+  --history benchmark_history.json \
+  --max-drop-pp 0.5 \
+  --max-count-drop 5 \
+  --max-duration-increase-pct 100
+
+# Same gate, but scoped like the PM UI's datasource filters.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.benchmark_gate \
+  --history benchmark_history.json \
+  --source grafana \
+  --grafana-datasource prometheus \
+  --grafana-datasource-map grafana-datasources.json \
+  --max-drop-pp 0.5 \
+  --max-count-drop 5
+
+# Build a bigger pinned corpus manifest without introducing marketplace noise.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
+  --grafana-catalog dashboards.json \
+  --grafana-datasource-map grafana-datasources.json \
+  --top 500 \
+  --long-tail tail_500_2000:500:2000:100 \
+  --datasource-quota prometheus=100 \
+  --datasource-quota loki=50 \
+  --bug-seed 1860 \
+  --output corpus.manifest.json
+```
+
+Regression-gate guidance:
+
+- Use `benchmark_gate` for the PM trend numbers (`dashboard_migration_pct`,
+  `dashboard_clean_pct`, `panel_migration_pct`, `panel_clean_pct`,
+  `panel_verified_pct`, and optional duration). It also checks denominator drops
+  (`dashboards`, `panels_total`, `verification_total`) so stable percentages
+  cannot hide a smaller corpus or reduced verification coverage.
+- Keep PR gates smaller and deterministic. Use a pinned manifest from
+  `corpus_manifest` plus bug seeds. Run the larger stratified corpus nightly or
+  before risky translator changes.
+- A `benchmark_gate` "no compatible baseline" result is not a pass on quality;
+  it means the run changed config/schema class enough that the gate cannot make
+  a fair comparison. Establish a new baseline before relying on trend decisions.
+
 ### Remove Sample Data
 
 `obs-migrate remove-sample-data` tears down what `seed-sample-data` created. It

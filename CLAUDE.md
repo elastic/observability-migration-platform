@@ -21,6 +21,27 @@ this repo as the single source of truth for it. (See the Naming note in
 - Build / test / lint: see `AGENTS.md` (use `make test`, `make lint`, `make typecheck`).
 - Preserve "degrade gracefully" behavior for unsupported translations — do not silently hide semantic gaps.
 - Do not commit secrets or generated local artifacts.
+- Dashboard migration fixes must be checked against the schema, compiled saved
+  object, and uploaded Kibana behavior. Do not infer YAML support from Kibana UI
+  controls alone: Lens XY YAML supports one `breakdown`, while multi-breakdown
+  arrays are for schemas such as datatable/pie/treemap unless
+  `docs/dashboards/schema.json` and the compiler prove otherwise.
+- Before claiming migrated dashboards render correctly, validate real artifacts:
+  generated YAML, compiled NDJSON/saved object, scoped smoke or direct `_query`,
+  and a clean view-mode browser session. Clear stale dashboard edit state before
+  trusting browser observations.
+- For dashboard-regression work, use the layered verifier gates documented in
+  `docs/command-contract.md`: `verifier.live_validate` for runtime ES|QL errors,
+  `verifier.dashboards_api` for typed Kibana UI-contract validation,
+  `obs-migrate compare` plus `verifier.corpus_gate` for semantic parity, and
+  `verifier.benchmark_gate` for PM benchmark-history regressions. Do not rely
+  on a single migrated/clean percentage; also watch denominator drops
+  (`panels_total`, `dashboards`, `verification_total`) and filtered datasource
+  slices.
+- When growing benchmark coverage, prefer pinned stratified manifests from
+  `verifier.corpus_manifest` (top dashboards + long-tail + datasource quotas +
+  bug seeds) over an unpinned "top N today" sample. Use small deterministic PR
+  gates and larger/nightly corpus gates.
 - Skills live in both `.claude/skills/` and `.cursor/skills/` — edit both copies in lockstep (see the mirroring rule in `AGENTS.md` for the `.claude`↔`.cursor` path-prefix caveat).
 
 ## Commit Workflow
