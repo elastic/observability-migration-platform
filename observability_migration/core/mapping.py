@@ -26,54 +26,91 @@ CUSTOM_THRESHOLD_RULE_TYPE = "observability.rules.custom_threshold"
 # pending period by the effective check interval, so an unknown/empty schedule
 # falls back to this same floor.
 _DEFAULT_SCHEDULE_SECONDS = 60
-_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
-_DURATION_TOKEN_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
+# Prometheus-style duration units, which Grafana provisioning reuses. ``ms`` and
+# ``y`` are included so long pending periods written that way (e.g. ``120000ms``,
+# ``1y``) are parsed rather than silently dropped.
+_DURATION_UNIT_SECONDS: dict[str, float] = {
+    "ms": 0.001,
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+    "w": 604800,
+    "y": 31536000,
+}
+# ``ms`` is listed before the single-letter units so it is matched greedily.
+_DURATION_TOKEN_RE = re.compile(r"(\d+)\s*(ms|[smhdwy])", re.IGNORECASE)
 
 
-def _duration_to_seconds(value: str) -> int:
-    """Parse a Grafana/Prometheus duration to whole seconds.
+def _duration_to_seconds(value: str) -> float | None:
+    """Parse a Grafana/Prometheus duration to seconds.
 
-    Accepts compact duration strings (``"5m"``, ``"1h30m"``) and bare integers
-    (treated as seconds). Unparseable input yields ``0``.
+    Accepts compact duration strings (``"5m"``, ``"1h30m"``, ``"120000ms"``,
+    ``"1y"``) and bare integers (treated as seconds). Returns ``None`` when the
+    input is empty or cannot be parsed, so callers can distinguish an explicit
+    zero (``"0"`` / ``"0s"`` -> ``0``) from invalid/unsupported input.
     """
     text = str(value or "").strip().lower()
     if not text:
-        return 0
+        return None
     if text.isdigit():
         return int(text)
     compact = re.sub(r"\s+", "", text)
     tokens = _DURATION_TOKEN_RE.findall(compact)
     if not tokens or "".join(f"{n}{u}" for n, u in tokens) != compact:
-        return 0
-    return sum(int(n) * _DURATION_UNIT_SECONDS[u.lower()] for n, u in tokens)
+        return None
+    return sum(int(n) * _DURATION_UNIT_SECONDS[u] for n, u in tokens)
 
 
-def compute_alert_delay(pending_period: str, schedule_interval: str) -> tuple[int, bool] | None:
+def compute_alert_delay(pending_period: str, schedule_interval: str) -> tuple[int | None, str | None] | None:
     """Convert a Grafana pending period into a Kibana ``alert_delay`` count.
 
     Grafana's pending period (the rule ``for`` field) holds the alert in a
     ``Pending`` state until the condition has breached continuously for that
     duration. Kibana models the same intent with "Alert delay" — fire only after
     ``N`` consecutive matching checks — where a check happens once per rule
-    schedule. The two convert as ``N = ceil(pending / schedule)``.
+    schedule.
 
-    Returns ``(active, rounded_up)`` where ``active`` is the consecutive-match
-    count (minimum 1), or ``None`` when the source supplied no pending period so
-    the Kibana default is left untouched. ``rounded_up`` is ``True`` when a
-    non-zero pending period shorter than one check interval was raised to a
-    single match.
+    Grafana/Prometheus first marks the alert pending on the evaluation where the
+    condition is *first* met, then only fires on a later evaluation once the
+    pending period has elapsed. Kibana's ``alert_delay.active`` counts the
+    consecutive matching runs *including* that first one, so the conversion is
+    ``N = ceil(pending / schedule) + 1`` for a non-zero pending period.
+
+    Returns one of:
+
+    - ``None`` — the source supplied no pending period, so the Kibana default is
+      left untouched (no ``alert_delay``, no note).
+    - ``(active, note)`` — ``active`` is the consecutive-match count to emit, or
+      ``None`` to omit ``alert_delay`` (non-empty but unparseable pending period);
+      ``note`` is a semantic-loss note to record, or ``None``.
     """
     text = str(pending_period or "").strip()
     if not text:
         return None
     pending_seconds = _duration_to_seconds(text)
+    if pending_seconds is None:
+        # Non-empty but unparseable (e.g. an unsupported unit): don't guess a
+        # delay. Leave the Kibana default in place and surface the dropped
+        # pending period rather than silently firing on the first match.
+        note = (
+            f"Grafana pending period '{pending_period}' could not be parsed; "
+            "alert delay was not set (migrated rule may fire earlier than the source)"
+        )
+        return (None, note)
     if pending_seconds <= 0:
         # Grafana skips the Pending state for a 0 pending period: fire immediately.
-        return (1, False)
+        return (1, None)
     interval_seconds = _duration_to_seconds(schedule_interval) or _DEFAULT_SCHEDULE_SECONDS
-    active = max(1, math.ceil(pending_seconds / interval_seconds))
-    rounded_up = pending_seconds < interval_seconds
-    return (active, rounded_up)
+    active = math.ceil(pending_seconds / interval_seconds) + 1
+    note = None
+    if pending_seconds < interval_seconds:
+        note = (
+            f"Grafana pending period '{pending_period}' is shorter than the "
+            f"{schedule_interval or '1m'} check interval; alert delay rounded up to "
+            f"{active} consecutive matches"
+        )
+    return (active, note)
 
 # ---- Fidelity classification ----
 
@@ -1070,15 +1107,11 @@ def map_alert_to_kibana_payload(
     pending_period = ir.pending_period or str((ir.source_extension or {}).get("pending_for", "") or "")
     alert_delay = compute_alert_delay(pending_period, schedule)
     if alert_delay is not None:
-        active, rounded_up = alert_delay
-        payload["alert_delay"] = {"active": active}
-        if rounded_up:
-            note = (
-                f"Grafana pending period '{pending_period}' is shorter than the "
-                f"{schedule} check interval; alert delay rounded up to 1 consecutive match"
-            )
-            if note not in losses:
-                losses.append(note)
+        active, note = alert_delay
+        if active is not None:
+            payload["alert_delay"] = {"active": active}
+        if note and note not in losses:
+            losses.append(note)
 
     ir.target_rule_payload = payload
     ir.target_rule_type = normalized_rule_type

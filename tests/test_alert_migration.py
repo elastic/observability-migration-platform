@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -2444,23 +2445,44 @@ class TestComputeAlertDelay(unittest.TestCase):
         self.assertIsNone(compute_alert_delay("", "1m"))
 
     def test_five_minute_pending_at_one_minute_interval(self):
-        self.assertEqual(compute_alert_delay("5m", "1m"), (5, False))
+        # Grafana marks the alert pending on the first match and only fires on
+        # the later evaluation once 5m has elapsed, so Kibana needs 6 matches.
+        self.assertEqual(compute_alert_delay("5m", "1m"), (6, None))
 
     def test_zero_pending_period_is_one_match(self):
-        self.assertEqual(compute_alert_delay("0", "1m"), (1, False))
-        self.assertEqual(compute_alert_delay("0s", "1m"), (1, False))
+        self.assertEqual(compute_alert_delay("0", "1m"), (1, None))
+        self.assertEqual(compute_alert_delay("0s", "1m"), (1, None))
 
-    def test_pending_shorter_than_interval_rounds_up_to_one(self):
-        self.assertEqual(compute_alert_delay("30s", "1m"), (1, True))
+    def test_pending_shorter_than_interval_rounds_up_and_records_note(self):
+        active, note = compute_alert_delay("30s", "1m")
+        self.assertEqual(active, 2)
+        self.assertIsNotNone(note)
+        self.assertIn("rounded up to", note)
 
     def test_non_multiple_rounds_up(self):
-        self.assertEqual(compute_alert_delay("90s", "1m"), (2, False))
+        self.assertEqual(compute_alert_delay("90s", "1m"), (3, None))
 
     def test_empty_schedule_falls_back_to_one_minute_floor(self):
-        self.assertEqual(compute_alert_delay("5m", ""), (5, False))
+        self.assertEqual(compute_alert_delay("5m", ""), (6, None))
 
     def test_compound_duration(self):
-        self.assertEqual(compute_alert_delay("1h", "5m"), (12, False))
+        self.assertEqual(compute_alert_delay("1h", "5m"), (13, None))
+
+    def test_millisecond_unit_is_parsed(self):
+        # 120000ms == 120s == 2m -> ceil(120/60) + 1 = 3.
+        self.assertEqual(compute_alert_delay("120000ms", "1m"), (3, None))
+
+    def test_year_unit_is_parsed(self):
+        # 1y is a real (long) pending period, not a near-immediate alert.
+        active, note = compute_alert_delay("1y", "1m")
+        self.assertEqual(active, math.ceil(31536000 / 60) + 1)
+        self.assertIsNone(note)
+
+    def test_unparseable_pending_period_omits_alert_delay_and_records_note(self):
+        active, note = compute_alert_delay("soon", "1m")
+        self.assertIsNone(active)
+        self.assertIsNotNone(note)
+        self.assertIn("could not be parsed", note)
 
 
 class TestAlertDelayInPayload(unittest.TestCase):
@@ -2469,16 +2491,18 @@ class TestAlertDelayInPayload(unittest.TestCase):
             _grafana_unified_prometheus_safe_rule(),
             datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
         )
-        # Default schedule of 1m with a 5m pending period -> 5 consecutive matches.
+        # Default schedule of 1m with a 5m pending period -> 6 consecutive matches
+        # (the first match starts the pending window; the alert fires on the
+        # evaluation after 5m has elapsed).
         result = map_alert_to_kibana_payload(ir)
         self.assertTrue(result["payload_emitted"])
-        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 5})
+        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 6})
 
     def test_grafana_legacy_pending_for_becomes_alert_delay(self):
         ir = build_alerting_ir_from_grafana(_grafana_legacy_prometheus_alert_task())
         result = map_alert_to_kibana_payload(ir)
         self.assertTrue(result["payload_emitted"])
-        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 5})
+        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 6})
 
     def test_no_pending_period_omits_alert_delay(self):
         rule = _grafana_unified_prometheus_safe_rule()
@@ -2509,9 +2533,23 @@ class TestAlertDelayInPayload(unittest.TestCase):
             datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
         )
         result = map_alert_to_kibana_payload(ir)
-        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 1})
+        self.assertEqual(result["rule_payload"]["alert_delay"], {"active": 2})
         self.assertTrue(
-            any("rounded up to 1 consecutive match" in loss for loss in result["losses"]),
+            any("rounded up to" in loss for loss in result["losses"]),
+            result["losses"],
+        )
+
+    def test_unparseable_pending_period_omits_alert_delay_and_records_loss(self):
+        rule = _grafana_unified_prometheus_safe_rule()
+        rule["for"] = "soon"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        self.assertNotIn("alert_delay", result["rule_payload"])
+        self.assertTrue(
+            any("could not be parsed" in loss for loss in result["losses"]),
             result["losses"],
         )
 
