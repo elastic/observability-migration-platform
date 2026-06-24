@@ -916,8 +916,30 @@ def _run_query(request, query: str, params: list | None = None) -> dict:
     return request("POST", "/_query?format=json", body, "application/json")
 
 
+_NAMED_PARAM_RE = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
 def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
-    return _run_query(request, esql, params=[{"_tstart": tstart}, {"_tend": tend}])
+    """Run the emitted ES|QL, binding time params and any dashboard-control params.
+
+    Beyond ``?_tstart`` / ``?_tend``, a templated panel's ES|QL references the
+    Grafana template variables it parameterized as Kibana controls (e.g.
+    ``service.instance.id RLIKE ?node``). The oracle's native side strips those
+    variable matchers (``sanitize_source_for_oracle``) so it runs over all
+    series; bind the translated side's control params to a match-all regex so it
+    matches the same series. Without this, every templated panel fails with
+    "Unknown query parameter [node]" and cannot be numerically verified - which
+    is the majority of real-world dashboards.
+    """
+    params: list[dict[str, str]] = [{"_tstart": tstart}, {"_tend": tend}]
+    extra = {
+        name
+        for name in _NAMED_PARAM_RE.findall(esql or "")
+        if name not in ("_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend")
+    }
+    for name in sorted(extra):
+        params.append({name: ".*"})
+    return _run_query(request, esql, params=params)
 
 
 def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:

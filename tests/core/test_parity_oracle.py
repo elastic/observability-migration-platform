@@ -276,6 +276,44 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         self.assertIn("native", seen)
         self.assertNotIn("$job", seen["native"])
 
+    def test_run_translated_binds_dashboard_control_params(self):
+        # A templated panel's ES|QL references control params (?node, ?job) on
+        # top of ?_tstart/?_tend; run_translated must bind them all so the query
+        # does not fail with "Unknown query parameter [node]". Control params
+        # bind to a match-all regex to align with the matcher-stripped native side.
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE service.instance.id RLIKE ?node "
+            "| WHERE service.name RLIKE ?job "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(bound["_tstart"], "2026-01-01T00:00:00Z")
+        self.assertEqual(bound["_tend"], "2026-01-01T01:00:00Z")
+        self.assertEqual(bound["node"], ".*")
+        self.assertEqual(bound["job"], ".*")
+
+    def test_run_translated_no_extra_params_when_only_time(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        po.run_translated(
+            request,
+            "TS metrics-* | STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            "s", "e",
+        )
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
 
 class ExecutionTests(unittest.TestCase):
     def _fake_request(self, native_data, translated_data, *, native_error=None):
