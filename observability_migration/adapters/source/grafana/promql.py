@@ -3265,6 +3265,16 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
     agg = match.group("agg")
     inner = match.group("inner").strip()
     condition = " and ".join(f"({filter_expr})" for filter_expr in filters)
+    # PERCENTILE(value_expr, phi) takes the percentile as a second, top-level
+    # argument (issue #213). Only the value expression may be wrapped in CASE;
+    # folding the whole inner would push the percentile constant inside CASE and
+    # emit an invalid 3-arg CASE. Split the trailing percentile arg off first.
+    if agg == "PERCENTILE":
+        args = _split_top_level_csv(inner)
+        if len(args) == 2:
+            value_expr, percentile = args[0].strip(), args[1].strip()
+            return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
+        return None
     ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
     if agg.endswith("_OVER_TIME") and ts_match:
         field = ts_match.group("field").strip()
