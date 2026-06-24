@@ -2431,10 +2431,11 @@ def _apply_fragment_to_context(frag, context):
     if not context.range_window and (frag.range_window or summary.range_window):
         context.range_window = frag.range_window or summary.range_window
 
-def _build_stats_call(outer_agg, inner_func, metric_name, range_window):
+def _build_stats_call(outer_agg, inner_func, metric_name, range_window, frag=None):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
     esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
-    return f"{esql_outer}({esql_inner}({metric_name}, {range_window}))"
+    inner_expr = f"{esql_inner}({metric_name}, {range_window})"
+    return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
 def _apply_outer_agg(esql_outer, inner_expr, frag):

@@ -58,6 +58,21 @@ class TestQuantilePercentile:
             _esql("quantile(0.99, sum(rate(http_requests_total[5m])) by (instance))"), 99
         )
 
+    def test_quantile_nested_summary_with_inner_group_emits_outer_stats(self) -> None:
+        esql = _esql(
+            "quantile(0.99, sum(node_memory_MemAvailable_bytes) by (instance))",
+            panel_type="stat",
+        )
+        _assert_percentile_pct(esql, 99)
+        assert "inner_val =" in esql, esql
+        assert re.search(r"\| STATS node_memory_MemAvailable_bytes_quantile = PERCENTILE\(inner_val, 99\)", esql), esql
+
+    def test_topk_quantile_over_rate_emits_two_arg_percentile(self) -> None:
+        _assert_percentile_pct(
+            _esql("topk(5, quantile(0.9, rate(http_requests_total[5m])))"),
+            90,
+        )
+
     def test_quantile_median(self) -> None:
         _assert_percentile_pct(_esql("quantile(0.5, node_memory_MemAvailable_bytes)"), 50)
 
