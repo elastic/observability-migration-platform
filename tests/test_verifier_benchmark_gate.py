@@ -229,6 +229,126 @@ class TestBenchmarkGate:
         assert metrics["dashboard_clean_pct"] == 50.0
         assert metrics["panel_verified_pct"] == 60.0
 
+    def test_source_filter_uses_selected_legs(self) -> None:
+        run = {
+            "config": {"grafana": 1, "datadog": 1},
+            "overall": {
+                "panel_migration_pct": 1,
+                "panel_clean_pct": 1,
+                "dashboard_migration_pct": 1,
+                "dashboard_clean_pct": 1,
+                "panel_verified_pct": 1,
+            },
+            "grafana": {
+                "dashboards": 1, "dashboards_ok": 1, "dashboards_warn": 0,
+                "panels_total": 10, "panels_ok": 10, "panels_warn": 0,
+                "verification_green": 10, "verification_yellow": 0, "verification_red": 0,
+            },
+            "datadog": {
+                "dashboards": 1, "dashboards_ok": 0, "dashboards_warn": 1,
+                "panels_total": 10, "panels_ok": 0, "panels_warn": 10,
+                "verification_green": 0, "verification_yellow": 10, "verification_red": 0,
+            },
+        }
+        metrics = benchmark_gate.run_metrics(run, sources={"grafana"})
+        assert metrics["panel_migration_pct"] == 100.0
+        assert metrics["panel_clean_pct"] == 100.0
+        assert metrics["panel_verified_pct"] == 100.0
+
+    def test_grafana_datasource_filter_recomputes_from_results(self) -> None:
+        run = {
+            "config": {"grafana": 2, "datadog": 0},
+            "overall": {"panel_clean_pct": 0},
+            "results": {
+                "1": {
+                    "status": "ok", "panels": 10, "ok": 10, "warn": 0, "nf": 0,
+                    "verification": {"green": 8, "yellow": 1, "red": 1},
+                },
+                "2": {
+                    "status": "warn", "panels": 10, "ok": 2, "warn": 8, "nf": 0,
+                    "verification": {"green": 1, "yellow": 9, "red": 0},
+                },
+                "grafana_esql_legacy": {
+                    "status": "error", "panels": 100, "ok": 0, "warn": 0, "nf": 100,
+                    "verification": {"green": 0, "yellow": 0, "red": 100},
+                },
+                "dd_x": {
+                    "status": "error", "panels": 100, "ok": 0, "warn": 0, "nf": 100,
+                    "verification": {"green": 0, "yellow": 0, "red": 100},
+                },
+            },
+        }
+        metrics = benchmark_gate.run_metrics(
+            run,
+            sources={"grafana"},
+            grafana_datasources={"prometheus"},
+            datasource_map={"1": ["prometheus"], "2": ["loki"]},
+        )
+        assert metrics["dashboards"] == 1
+        assert metrics["panels_total"] == 10
+        assert metrics["panel_clean_pct"] == 100.0
+        assert metrics["panel_verified_pct"] == 80.0
+
+    def test_grafana_datasource_filter_returns_none_when_no_match(self) -> None:
+        run = {
+            "config": {"grafana": 1, "datadog": 0},
+            "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+        }
+        assert benchmark_gate.run_metrics(
+            run,
+            sources={"grafana"},
+            grafana_datasources={"cloudwatch"},
+            datasource_map={"1": ["prometheus"]},
+        ) is None
+
+    def test_filtered_gate_skips_when_current_filter_has_no_matching_dashboards(self) -> None:
+        history = [
+            {
+                "cli_version": {"hash": "a"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+            {
+                "cli_version": {"hash": "b"},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {"1": {"status": "ok", "panels": 1, "ok": 1, "warn": 0}},
+            },
+        ]
+        result = benchmark_gate.evaluate_history(
+            history,
+            sources={"grafana"},
+            grafana_datasources={"cloudwatch"},
+            datasource_map={"1": ["prometheus"]},
+        )
+        assert result.ok
+        assert result.skipped_reason == "no matching current metrics for selected filters"
+
+    def test_filtered_gate_detects_datasource_slice_regression(self) -> None:
+        def run(hash_: str, ok: int):
+            return {
+                "cli_version": {"hash": hash_},
+                "config": {"grafana": 1, "datadog": 0},
+                "results": {
+                    "1": {
+                        "status": "ok" if ok == 10 else "warn",
+                        "panels": 10,
+                        "ok": ok,
+                        "warn": 10 - ok,
+                        "verification": {"green": ok, "yellow": 10 - ok, "red": 0},
+                    }
+                },
+            }
+
+        result = benchmark_gate.evaluate_history(
+            [run("a", 10), run("b", 5)],
+            sources={"grafana"},
+            grafana_datasources={"prometheus"},
+            datasource_map={"1": ["prometheus"]},
+            max_drop_pp=0.5,
+        )
+        assert not result.ok
+        assert {"metric": "panel_clean_pct", "baseline": 100.0, "current": 50.0, "drop_pp": 50.0} in result.regressions
+
     def test_load_history_requires_array(self, tmp_path: Path) -> None:
         path = tmp_path / "history.json"
         path.write_text(json.dumps({"not": "a list"}))

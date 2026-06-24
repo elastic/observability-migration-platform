@@ -67,6 +67,19 @@ def load_history(path: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def load_datasource_map(path: Path | None) -> dict[str, list[str]]:
+    if path is None:
+        return {}
+    raw = json.loads(Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("datasource map must be a JSON object")
+    return {
+        str(key): [str(item).lower() for item in value]
+        for key, value in raw.items()
+        if isinstance(value, list)
+    }
+
+
 def _aggregate_metrics(parts: list[dict[str, Any]]) -> dict[str, Any]:
     panels_total = panels_ok = panels_warn = panels_nf = panels_manual = panels_skipped = 0
     dashboards = dashboards_ok = dashboards_warn = dashboards_failed = 0
@@ -110,8 +123,111 @@ def _aggregate_metrics(parts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def run_metrics(run: dict[str, Any]) -> dict[str, Any]:
+def _per_dashboard_metrics(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    panels_total = panels_ok = panels_warn = panels_nf = panels_manual = panels_skipped = 0
+    dashboards = dashboards_ok = dashboards_warn = dashboards_failed = 0
+    verification_green = verification_yellow = verification_red = 0
+    for item in entries:
+        panels_total += int(item.get("panels") or 0)
+        panels_ok += int(item.get("ok") or 0)
+        panels_warn += int(item.get("warn") or 0)
+        panels_nf += int(item.get("nf") or 0)
+        panels_manual += int(item.get("manual") or 0)
+        panels_skipped += int(item.get("skipped") or 0)
+        dashboards += 1
+        status = str(item.get("status") or "")
+        if status == "ok":
+            dashboards_ok += 1
+        elif status == "warn":
+            dashboards_warn += 1
+        else:
+            dashboards_failed += 1
+        verification = item.get("verification") if isinstance(item.get("verification"), dict) else {}
+        verification_green += int(verification.get("green") or 0)
+        verification_yellow += int(verification.get("yellow") or 0)
+        verification_red += int(verification.get("red") or 0)
+    return _aggregate_metrics([
+        {
+            "panels_total": panels_total,
+            "panels_ok": panels_ok,
+            "panels_warn": panels_warn,
+            "panels_nf": panels_nf,
+            "panels_manual": panels_manual,
+            "panels_skipped": panels_skipped,
+            "dashboards": dashboards,
+            "dashboards_ok": dashboards_ok,
+            "dashboards_warn": dashboards_warn,
+            "dashboards_failed": dashboards_failed,
+            "verification_green": verification_green,
+            "verification_yellow": verification_yellow,
+            "verification_red": verification_red,
+        }
+    ])
+
+
+def _datasource_matches(dashboard_id: str, datasource_map: dict[str, list[str]], wanted: set[str]) -> bool:
+    if not wanted:
+        return True
+    sources = set(datasource_map.get(str(dashboard_id), []))
+    return bool(sources & wanted)
+
+
+def _filtered_metrics(
+    run: dict[str, Any],
+    *,
+    sources: set[str],
+    grafana_datasources: set[str],
+    datasource_map: dict[str, list[str]],
+) -> dict[str, Any] | None:
+    wants_grafana = "grafana" in sources
+    wants_datadog = "datadog" in sources
+    # Datasource filtering needs per-dashboard results for Grafana; this mirrors
+    # the PM UI. Datadog rows are excluded when a Grafana datasource slice is
+    # active because they do not participate in Grafana datasource classification.
+    if grafana_datasources:
+        results = run.get("results") if isinstance(run.get("results"), dict) else {}
+        if not wants_grafana or not results:
+            return None
+        entries: list[dict[str, Any]] = []
+        for dashboard_id, item in results.items():
+            if str(dashboard_id).startswith("grafana_esql_"):
+                continue
+            if str(dashboard_id).startswith("dd_"):
+                continue
+            if not isinstance(item, dict):
+                continue
+            if _datasource_matches(str(dashboard_id), datasource_map, grafana_datasources):
+                entries.append(item)
+        return _per_dashboard_metrics(entries) if entries else None
+
+    parts: list[dict[str, Any]] = []
+    if wants_grafana and isinstance(run.get("grafana"), dict):
+        parts.append(run["grafana"])
+    if wants_datadog and isinstance(run.get("datadog"), dict):
+        parts.append(run["datadog"])
+    if not parts:
+        return None
+    return _aggregate_metrics(parts)
+
+
+def run_metrics(
+    run: dict[str, Any],
+    *,
+    sources: set[str] | None = None,
+    grafana_datasources: set[str] | None = None,
+    datasource_map: dict[str, list[str]] | None = None,
+) -> dict[str, Any] | None:
     """Return the PM UI metric object for a benchmark run."""
+    sources = sources or {"grafana", "datadog"}
+    grafana_datasources = grafana_datasources or set()
+    datasource_map = datasource_map or {}
+    if sources != {"grafana", "datadog"} or grafana_datasources:
+        return _filtered_metrics(
+            run,
+            sources=sources,
+            grafana_datasources=grafana_datasources,
+            datasource_map=datasource_map,
+        )
     overall = run.get("overall")
     if isinstance(overall, dict) and overall:
         metrics = dict(overall)
@@ -174,6 +290,9 @@ def evaluate_history(
     max_count_drop: int = 0,
     max_duration_increase_pct: float | None = None,
     require_different_hash: bool = True,
+    sources: set[str] | None = None,
+    grafana_datasources: set[str] | None = None,
+    datasource_map: dict[str, list[str]] | None = None,
 ) -> BenchmarkGateResult:
     if not history:
         return BenchmarkGateResult(ok=True, current_index=-1, baseline_index=None, skipped_reason="empty history")
@@ -196,8 +315,39 @@ def evaluate_history(
             skipped_reason="no compatible baseline",
         )
     baseline = history[baseline_index]
-    current_metrics = run_metrics(current)
-    baseline_metrics = run_metrics(baseline)
+    sources = sources or {"grafana", "datadog"}
+    grafana_datasources = grafana_datasources or set()
+    datasource_map = datasource_map or {}
+    current_metrics = run_metrics(
+        current,
+        sources=sources,
+        grafana_datasources=grafana_datasources,
+        datasource_map=datasource_map,
+    )
+    baseline_metrics = run_metrics(
+        baseline,
+        sources=sources,
+        grafana_datasources=grafana_datasources,
+        datasource_map=datasource_map,
+    )
+    if current_metrics is None:
+        return BenchmarkGateResult(
+            ok=True,
+            current_index=current_index,
+            baseline_index=baseline_index,
+            current_hash=_hash(current),
+            baseline_hash=_hash(baseline),
+            skipped_reason="no matching current metrics for selected filters",
+        )
+    if baseline_metrics is None:
+        return BenchmarkGateResult(
+            ok=True,
+            current_index=current_index,
+            baseline_index=baseline_index,
+            current_hash=_hash(current),
+            baseline_hash=_hash(baseline),
+            skipped_reason="no matching baseline metrics for selected filters",
+        )
     regressions: list[dict[str, Any]] = []
     for metric in SUCCESS_METRICS:
         before = float(baseline_metrics.get(metric) or 0.0)
@@ -244,6 +394,19 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--max-count-drop", type=int, default=0)
     parser.add_argument("--max-duration-increase-pct", type=float)
     parser.add_argument(
+        "--source",
+        action="append",
+        choices=["grafana", "datadog"],
+        help="Source leg to include. Repeatable. Defaults to both.",
+    )
+    parser.add_argument(
+        "--grafana-datasource",
+        action="append",
+        default=[],
+        help="Filter Grafana results to dashboard IDs whose datasource map includes this source.",
+    )
+    parser.add_argument("--grafana-datasource-map", type=Path)
+    parser.add_argument(
         "--allow-same-hash-baseline",
         action="store_true",
         help="Allow comparing a run to an earlier run of the same CLI hash (default: skip same-hash baselines).",
@@ -261,6 +424,9 @@ def main(argv: list[str] | None = None) -> int:
         max_count_drop=args.max_count_drop,
         max_duration_increase_pct=args.max_duration_increase_pct,
         require_different_hash=not args.allow_same_hash_baseline,
+        sources=set(args.source or ["grafana", "datadog"]),
+        grafana_datasources={str(item).lower() for item in args.grafana_datasource},
+        datasource_map=load_datasource_map(args.grafana_datasource_map),
     )
     payload = result.to_jsonable()
     if args.output:
