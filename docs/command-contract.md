@@ -706,6 +706,12 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
   --output corpus.manifest.json
 ```
 
+`benchmark_gate` exits non-zero when no comparison was made (empty history, no
+compatible baseline, or a datasource/source filter matching no current/baseline
+metrics). Use `--allow-skip` only when intentionally bootstrapping a new
+history/baseline, and `--allow-filter-skip` only when an empty filtered slice is
+expected.
+
 Regression-gate guidance:
 
 - Use `benchmark_gate` for the PM trend numbers (`dashboard_migration_pct`,
@@ -718,7 +724,8 @@ Regression-gate guidance:
   before risky translator changes.
 - A `benchmark_gate` "no compatible baseline" result is not a pass on quality;
   it means the run changed config/schema class enough that the gate cannot make
-  a fair comparison. Establish a new baseline before relying on trend decisions.
+  a fair comparison. By default this exits non-zero in CI; establish a new
+  baseline before relying on trend decisions.
 
 ### Remove Sample Data
 

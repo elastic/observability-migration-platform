@@ -175,3 +175,25 @@ class TestDriverAndExtraction:
         }
         items = live_validate.queries_from_report(report)
         assert items == [("Datadog", "Widget", "FROM metrics-* | STATS value = AVG(metric)")]
+
+    def test_queries_from_report_does_not_execute_explicit_markdown_stale_query(self) -> None:
+        report = {
+            "dashboards": [
+                {
+                    "title": "D",
+                    "panels": [
+                        {
+                            "title": "Manual",
+                            "esql_query": "FROM stale-* | LIMIT 1",
+                            "visual_ir": {
+                                "presentation": {
+                                    "kind": "markdown",
+                                    "config": {"content": "Migration Required"},
+                                }
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        assert live_validate.queries_from_report(report) == []

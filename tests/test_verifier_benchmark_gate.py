@@ -61,16 +61,16 @@ class TestBenchmarkGate:
             {"metric": "panel_clean_pct", "baseline": 70.0, "current": 60.0, "drop_pp": 10.0}
         ]
 
-    def test_allows_config_mismatch_by_skipping_baseline(self) -> None:
+    def test_config_mismatch_fails_without_skip_opt_out(self) -> None:
         history = [_run(h="aaa001", grafana=100), _run(h="bbb002", grafana=500)]
         result = benchmark_gate.evaluate_history(history)
-        assert result.ok
+        assert not result.ok
         assert result.skipped_reason == "no compatible baseline"
 
-    def test_skips_schema_boundary(self) -> None:
+    def test_schema_boundary_fails_without_skip_opt_out(self) -> None:
         history = [_run(h="aaa001", schema=False), _run(h="bbb002", schema=True)]
         result = benchmark_gate.evaluate_history(history)
-        assert result.ok
+        assert not result.ok
         assert result.skipped_reason == "no compatible baseline"
 
     def test_respects_drop_tolerance(self) -> None:
@@ -89,10 +89,20 @@ class TestBenchmarkGate:
             {"metric": "duration_s", "baseline": 60.0, "current": 75.0, "increase_pct": 25.0}
         ]
 
-    def test_first_run_is_ok(self) -> None:
+    def test_first_run_fails_without_skip_opt_out(self) -> None:
         result = benchmark_gate.evaluate_history([_run(h="aaa001")])
+        assert not result.ok
+        assert result.skipped_reason == "no compatible baseline"
+
+    def test_can_allow_skipped_comparison_explicitly(self) -> None:
+        result = benchmark_gate.evaluate_history([_run(h="aaa001")], allow_skip=True)
         assert result.ok
         assert result.skipped_reason == "no compatible baseline"
+
+    def test_empty_history_fails_without_skip_opt_out(self) -> None:
+        result = benchmark_gate.evaluate_history([])
+        assert not result.ok
+        assert result.skipped_reason == "empty history"
 
     def test_uses_previous_different_hash_not_same_hash_rerun(self) -> None:
         history = [

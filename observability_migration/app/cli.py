@@ -288,6 +288,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=0,
         help="Process at most this many panels (0 = no limit).",
     )
+    verify_cmd.add_argument(
+        "--no-invariants",
+        action="store_true",
+        help="Skip the deterministic invariant linter.",
+    )
+    verify_cmd.add_argument(
+        "--live-oracle",
+        action="store_true",
+        help="Resolve invariant columns through the live Elasticsearch _query oracle.",
+    )
+    verify_cmd.add_argument(
+        "--fail-on-invariant",
+        action="store_true",
+        help="Exit non-zero when invariant linting reports ERROR findings.",
+    )
     verify_cmd.add_argument("--verbose", action="store_true", help="Verbose logging.")
 
     visual_cmd = sub.add_parser(
@@ -655,6 +670,12 @@ def _run_verify_panels(args: Any) -> None:
         argv += ["--es-index", args.es_index]
     if args.limit:
         argv += ["--limit", str(args.limit)]
+    if args.no_invariants:
+        argv += ["--no-invariants"]
+    if args.live_oracle:
+        argv += ["--live-oracle"]
+    if args.fail_on_invariant:
+        argv += ["--fail-on-invariant"]
     if args.verbose:
         argv += ["--verbose"]
     sys.exit(verifier_main(argv))

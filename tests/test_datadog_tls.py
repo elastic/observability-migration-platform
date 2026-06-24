@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 import argparse
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +11,7 @@ from unittest import mock
 
 from observability_migration.adapters.source.datadog import cli as datadog_cli
 from observability_migration.adapters.source.datadog import extract as datadog_extract
+from observability_migration.adapters.source.datadog import report as datadog_report
 from observability_migration.adapters.source.datadog import verification as datadog_verification
 from observability_migration.adapters.source.datadog.execution import (
     _execute_metric_query,
@@ -265,6 +267,34 @@ class TestDatadogTlsCliThreading(unittest.TestCase):
         )
 
         self.assertEqual(mock_validate.call_args.kwargs.get("verify"), "/tmp/ca.pem")
+
+    def test_detailed_report_persists_yaml_panel(self):
+        panel = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            kibana_type="xy",
+            esql_query="FROM metrics-* | STATS value = AVG(metric) BY time_bucket",
+            yaml_panel={
+                "esql": {
+                    "type": "line",
+                    "query": "FROM metrics-* | STATS value = AVG(metric) BY time_bucket",
+                    "dimension": {"field": "time_bucket"},
+                    "metrics": [{"field": "value"}],
+                }
+            },
+        )
+        result = DashboardResult(
+            dashboard_id="dash-1",
+            dashboard_title="Dash",
+            panel_results=[panel],
+        )
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "migration_report.json"
+            datadog_report.save_detailed_report([result], str(path))
+            report = json.loads(path.read_text())
+        panel_entry = report["dashboards"][0]["panels"][0]
+        self.assertEqual(panel_entry["yaml_panel"], panel.yaml_panel)
 
 
 class TestDatadogMonitorValidationTls(unittest.TestCase):

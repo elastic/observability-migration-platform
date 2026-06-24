@@ -96,6 +96,37 @@ class TestPanelMapping:
         assert layer["y"] == [{"column": "value"}]
         assert layer["breakdown_by"] == {"column": "service.name"}
 
+    def test_explicit_markdown_with_retained_query_maps_as_markdown(self) -> None:
+        panel = _panel(kind="markdown")
+        panel["esql_query"] = "FROM stale-* | LIMIT 1"
+        api_panel, findings = dashboards_api.api_panel_from_report_panel("D", panel)
+        assert findings == []
+        assert api_panel is not None
+        assert api_panel["type"] == "markdown"
+
+    def test_datadog_yaml_panel_config_maps_without_visual_ir(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D",
+            {
+                "title": "Datadog Requests",
+                "kibana_type": "xy",
+                "esql_query": "FROM metrics-* | STATS value = AVG(metric) BY time_bucket, service.name",
+                "yaml_panel": {
+                    "esql": {
+                        "type": "line",
+                        "query": "FROM metrics-* | STATS value = AVG(metric) BY time_bucket, service.name",
+                        "dimension": {"field": "time_bucket"},
+                        "metrics": [{"field": "value"}],
+                        "breakdown": {"field": "service.name"},
+                    }
+                },
+            },
+        )
+        assert findings == []
+        assert api_panel is not None
+        layer = api_panel["config"]["layers"][0]
+        assert layer["breakdown_by"] == {"column": "service.name"}
+
     def test_unsupported_chart_is_info_not_guess(self) -> None:
         api_panel, findings = dashboards_api.api_panel_from_report_panel(
             "D", _panel(chart_type="heatmap")

@@ -372,6 +372,10 @@ _NON_DATA_GRAFANA_TYPES = {
 
 
 def _fallback_esql_config(panel: dict[str, Any]) -> dict[str, Any]:
+    yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
+    yaml_esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
+    if yaml_esql:
+        return dict(yaml_esql)
     query = str(panel.get("esql_query") or panel.get("esql") or "").strip()
     if not query:
         return {}
@@ -410,7 +414,7 @@ def lint_report_panel(
     presentation = presentation if isinstance(presentation, dict) else {}
     kind = str(presentation.get("kind") or "")
     config = presentation.get("config") if isinstance(presentation.get("config"), dict) else {}
-    if (kind != "esql" or not config) and (fallback_config := _fallback_esql_config(panel)):
+    if not kind and (fallback_config := _fallback_esql_config(panel)):
         kind = "esql"
         config = fallback_config
     reasons = [str(r) for r in (panel.get("reasons") or [])]

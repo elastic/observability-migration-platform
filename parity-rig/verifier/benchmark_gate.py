@@ -293,10 +293,11 @@ def evaluate_history(
     sources: set[str] | None = None,
     grafana_datasources: set[str] | None = None,
     datasource_map: dict[str, list[str]] | None = None,
+    allow_skip: bool = False,
     allow_filter_skip: bool = False,
 ) -> BenchmarkGateResult:
     if not history:
-        return BenchmarkGateResult(ok=True, current_index=-1, baseline_index=None, skipped_reason="empty history")
+        return BenchmarkGateResult(ok=allow_skip, current_index=-1, baseline_index=None, skipped_reason="empty history")
     if current_index is None:
         current_index = len(history) - 1
     if current_index < 0 or current_index >= len(history):
@@ -309,7 +310,7 @@ def evaluate_history(
     current = history[current_index]
     if baseline_index is None:
         return BenchmarkGateResult(
-            ok=True,
+            ok=allow_skip,
             current_index=current_index,
             baseline_index=None,
             current_hash=_hash(current),
@@ -408,6 +409,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grafana-datasource-map", type=Path)
     parser.add_argument(
+        "--allow-skip",
+        action="store_true",
+        help="Allow empty history or no-compatible-baseline comparisons to exit successfully.",
+    )
+    parser.add_argument(
         "--allow-filter-skip",
         action="store_true",
         help="Allow datasource/source filters that match no current or baseline metrics to pass as skipped.",
@@ -433,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         sources=set(args.source or ["grafana", "datadog"]),
         grafana_datasources={str(item).lower() for item in args.grafana_datasource},
         datasource_map=load_datasource_map(args.grafana_datasource_map),
+        allow_skip=args.allow_skip,
         allow_filter_skip=args.allow_filter_skip,
     )
     payload = result.to_jsonable()

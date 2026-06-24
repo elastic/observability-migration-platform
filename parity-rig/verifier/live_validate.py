@@ -172,8 +172,11 @@ def queries_from_report(report: dict[str, Any]) -> list[tuple[str, str, str]]:
             pres = vir.get("presentation") if isinstance(vir, dict) else {}
             pres = pres if isinstance(pres, dict) else {}
             cfg = pres.get("config") if isinstance(pres.get("config"), dict) else {}
-            if pres.get("kind") == "esql":
+            kind = str(pres.get("kind") or "")
+            if kind == "esql":
                 query = str(cfg.get("query") or "")
+            elif kind:
+                continue
             if not query:
                 query = str(panel.get("esql_query") or panel.get("esql") or "")
             if query.strip():
