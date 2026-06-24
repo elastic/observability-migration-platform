@@ -873,8 +873,14 @@ def is_single_value_reduction(esql: str) -> bool:
     # series. Comparing that single endpoint against the native range oracle
     # yields a false "no overlapping time buckets" FAIL; skip it unless a future
     # scalar comparator can mirror the exact instant query.
-    if _is_promql_passthrough(text) and re.search(r"\btime\s*=\s*\?_tend\b", text, re.IGNORECASE):
-        return True
+    if _is_promql_passthrough(text):
+        # Only the PROMQL command header (before ``value=(``) carries the
+        # instant ``time=`` selector; a ``time=?_tend`` substring inside the
+        # ``value=(...)`` PromQL expression (e.g. a quoted label value) must not
+        # reclassify a range (``step=``) query as a single value.
+        header = text.split("value=", 1)[0]
+        if re.search(r"\btime\s*=\s*\?_tend\b", header, re.IGNORECASE):
+            return True
     # ``ROW constant_value = 2.0`` (a constant PromQL panel) emits a single
     # literal row with no time dimension at all.
     if re.match(r"(?i)^\s*ROW\b", text):

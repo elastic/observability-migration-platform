@@ -490,6 +490,12 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         query = "PROMQL index=metrics-* step=1m value=(sum(rate(http_requests_total[5m])))"
         self.assertFalse(po.is_single_value_reduction(query))
 
+    def test_native_promql_range_passthrough_with_time_literal_in_value_is_not_single_value(self):
+        # A ``time=?_tend`` substring inside the value=() PromQL label must not
+        # reclassify a range (step=) query as an instant single value.
+        query = 'PROMQL index=metrics-* step=5m value=(cpu{label="time=?_tend"})'
+        self.assertFalse(po.is_single_value_reduction(query))
+
 
 class ExecutionTests(unittest.TestCase):
     def _fake_request(self, native_data, translated_data, *, native_error=None):
