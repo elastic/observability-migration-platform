@@ -34,6 +34,11 @@ _TYPE_ERROR = (
     '{"error":{"type":"verification_exception",'
     '"reason":"line 1:20: first argument of [a + b] must be [numeric], found value [b] type [keyword]"},"status":400}'
 )
+_FOUND_PROBLEM_TYPE_ERROR = (
+    '{"error":{"type":"verification_exception",'
+    '"reason":"Found 1 problem\\nline 1:20: first argument of [RATE(x)] must be [counter], found [x] type [double]"},'
+    '"status":400}'
+)
 
 
 class TestClassifyError:
@@ -48,6 +53,9 @@ class TestClassifyError:
 
     def test_type_error_is_real_bug(self) -> None:
         assert classify_error(_TYPE_ERROR) == "real_bug"
+
+    def test_found_problem_type_error_is_real_bug(self) -> None:
+        assert classify_error(_FOUND_PROBLEM_TYPE_ERROR) == "real_bug"
 
     def test_unknown_function_is_real_bug(self) -> None:
         assert classify_error('{"reason":"Unknown function [FOO]"}') == "real_bug"

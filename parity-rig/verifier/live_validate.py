@@ -37,7 +37,7 @@ QueryRunner = Callable[[str, str, str], "tuple[int, dict[str, Any] | str]"]
 # Well-formed query, telemetry simply absent. NOT a translation bug.
 _DATA_GAP = re.compile(
     r"Unknown column|Unknown index|index_not_found|no such index|"
-    r"resolved to no indices|Found \d+ problem|unknown field|"
+    r"resolved to no indices|unknown field|"
     r"verification_exception.*Unknown",
     re.IGNORECASE,
 )
