@@ -1,0 +1,135 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+"""Tests for the typed Kibana Dashboards API conformance oracle."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "parity-rig"))
+
+from verifier import dashboards_api  # noqa: E402
+
+
+def _panel(
+    *,
+    title: str = "Requests",
+    kind: str = "esql",
+    chart_type: str = "line",
+    query: str = "FROM metrics-* | STATS value = COUNT() BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name",
+):
+    config = {"content": "hello"} if kind == "markdown" else {
+        "type": chart_type,
+        "query": query,
+        "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "value"}],
+        "breakdown": {"field": "service.name"},
+    }
+    return {
+        "title": title,
+        "visual_ir": {
+            "layout": {"x": 1, "y": 2, "w": 24, "h": 8},
+            "presentation": {"kind": kind, "config": config},
+        },
+    }
+
+
+def _report(panels):
+    return {"dashboards": [{"title": "D", "panels": panels}]}
+
+
+class TestPanelMapping:
+    def test_xy_panel_maps_to_typed_vis_payload(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel("D", _panel())
+        assert findings == []
+        assert api_panel is not None
+        assert api_panel["type"] == "vis"
+        assert api_panel["grid"] == {"x": 1, "y": 2, "w": 24, "h": 8}
+        cfg = api_panel["config"]
+        assert cfg["type"] == "xy"
+        layer = cfg["layers"][0]
+        assert layer["type"] == "line"
+        assert layer["data_source"]["type"] == "esql"
+        assert layer["x"]["column"] == "time_bucket"
+        assert layer["y"] == [{"column": "value"}]
+        assert layer["breakdown"] == {"column": "service.name"}
+
+    def test_metric_panel_maps_to_metric_payload(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(chart_type="metric")
+        )
+        assert findings == []
+        assert api_panel is not None
+        assert api_panel["config"]["type"] == "metric"
+        assert api_panel["config"]["metrics"] == [{"type": "primary", "column": "value"}]
+
+    def test_markdown_maps_to_markdown_panel(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(kind="markdown")
+        )
+        assert findings == []
+        assert api_panel is not None
+        assert api_panel["type"] == "markdown"
+        assert api_panel["config"]["content"] == "hello"
+
+    def test_unsupported_chart_is_info_not_guess(self) -> None:
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(chart_type="heatmap")
+        )
+        assert api_panel is None
+        assert len(findings) == 1
+        assert findings[0].category == "unsupported_by_api_oracle"
+        assert findings[0].severity == "info"
+
+
+class TestPayloadAndValidation:
+    def test_build_dashboard_payload_collects_supported_panels(self) -> None:
+        payload, findings = dashboards_api.build_dashboard_payload(
+            _report([_panel(), _panel(chart_type="heatmap")])
+        )
+        assert payload["title"] == "vf-conformance-D"
+        assert len(payload["panels"]) == 1
+        assert len(findings) == 1
+        assert findings[0].category == "unsupported_by_api_oracle"
+
+    def test_validate_payload_deletes_successful_scratch_dashboard(self) -> None:
+        calls = []
+
+        def api_call(method, path, body=None):
+            calls.append((method, path, body))
+            if method == "POST":
+                return 200, {"id": "scratch-1"}
+            return 204, {}
+
+        findings = dashboards_api.validate_payload(
+            {"title": "t", "panels": [_panel()]}, api_call=api_call
+        )
+        assert findings == []
+        assert calls[0][0:2] == ("POST", "/api/dashboards")
+        assert calls[1][0:2] == ("DELETE", "/api/dashboards/scratch-1")
+
+    def test_validate_payload_reports_api_400(self) -> None:
+        def api_call(method, path, body=None):
+            return 400, {"message": "panel config rejected"}
+
+        findings = dashboards_api.validate_payload(
+            {"title": "t", "panels": [_panel()]}, api_call=api_call
+        )
+        assert len(findings) == 1
+        assert findings[0].category == "dashboards_api_rejected"
+        assert findings[0].severity == "error"
+        assert "panel config rejected" in findings[0].message
+
+    def test_validate_report_combines_local_and_remote_findings(self) -> None:
+        def api_call(method, path, body=None):
+            return 200, {"id": "scratch-1"}
+
+        findings = dashboards_api.validate_report(
+            _report([_panel(), _panel(chart_type="heatmap")]), api_call=api_call
+        )
+        assert [f.category for f in findings] == ["unsupported_by_api_oracle"]
+        assert dashboards_api.summarize(findings)["errors"] == 0
+

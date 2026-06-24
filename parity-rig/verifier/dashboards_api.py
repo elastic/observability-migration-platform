@@ -1,0 +1,298 @@
+"""Typed Kibana Dashboards API conformance oracle.
+
+The saved-object import path accepts a stringified ``panelsJSON`` blob. That is
+useful for migration, but it is not a strong contract for "can Kibana's typed UI
+model accept this dashboard?". Kibana 9.4+ exposes a typed Dashboards API
+(``POST /api/dashboards``) that validates dashboard and visualization payloads
+server-side.
+
+This module converts the *emitted* migration presentation (``visual_ir`` in
+``migration_report.json``) into the typed Dashboards API shape for the common
+ES|QL chart families, submits it to a scratch dashboard, and classifies any 400
+as a UI-contract gap. Unsupported chart families are reported explicitly rather
+than guessed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import requests
+
+ApiCall = Callable[[str, str, dict[str, Any] | None], tuple[int, dict[str, Any] | str]]
+
+_XY_TYPES = {"line", "area", "bar"}
+_SUPPORTED_ESQL_TYPES = _XY_TYPES | {"metric"}
+
+
+@dataclass
+class Finding:
+    category: str
+    severity: str
+    dashboard: str
+    panel: str
+    message: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "category": self.category,
+            "severity": self.severity,
+            "dashboard": self.dashboard,
+            "panel": self.panel,
+            "message": self.message,
+            "evidence": dict(self.evidence),
+        }
+
+
+def _visual_presentation(panel: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    vir = panel.get("visual_ir") if isinstance(panel.get("visual_ir"), dict) else {}
+    pres = vir.get("presentation") if isinstance(vir, dict) else {}
+    if not isinstance(pres, dict):
+        return "", {}
+    cfg = pres.get("config") if isinstance(pres.get("config"), dict) else {}
+    return str(pres.get("kind") or ""), dict(cfg)
+
+
+def _layout(panel: dict[str, Any]) -> dict[str, int]:
+    vir = panel.get("visual_ir") if isinstance(panel.get("visual_ir"), dict) else {}
+    layout = vir.get("layout") if isinstance(vir, dict) else {}
+    if not isinstance(layout, dict):
+        layout = {}
+    return {
+        "x": int(layout.get("x") or 0),
+        "y": int(layout.get("y") or 0),
+        "w": int(layout.get("w") or 24),
+        "h": int(layout.get("h") or 8),
+    }
+
+
+def _field(obj: Any) -> str:
+    if isinstance(obj, dict):
+        return str(obj.get("field") or obj.get("column") or "").strip("`")
+    return ""
+
+
+def _metric_fields(config: dict[str, Any]) -> list[str]:
+    fields: list[str] = []
+    for key in ("metric", "primary"):
+        value = _field(config.get(key))
+        if value:
+            fields.append(value)
+    metrics = config.get("metrics")
+    if isinstance(metrics, list):
+        fields.extend(_field(item) for item in metrics if _field(item))
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(fields))
+
+
+def _api_panel_from_esql(
+    dashboard: str,
+    panel: dict[str, Any],
+    config: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[Finding]]:
+    title = str(panel.get("title") or "")
+    chart_type = str(config.get("type") or "").lower()
+    query = str(config.get("query") or "").strip()
+    if not query:
+        return None, [
+            Finding("missing_query", "error", dashboard, title, "ES|QL panel has no query")
+        ]
+    if chart_type not in _SUPPORTED_ESQL_TYPES:
+        return None, [
+            Finding(
+                "unsupported_by_api_oracle",
+                "info",
+                dashboard,
+                title,
+                f"ES|QL type '{chart_type}' is not yet mapped by the Dashboards API oracle",
+            )
+        ]
+
+    grid = _layout(panel)
+    if chart_type in _XY_TYPES:
+        x_col = _field(config.get("dimension")) or "time_bucket"
+        y_cols = _metric_fields(config) or ["value"]
+        layer: dict[str, Any] = {
+            "type": chart_type,
+            "data_source": {"type": "esql", "query": query},
+            "x": {"column": x_col},
+            "y": [{"column": col} for col in y_cols],
+        }
+        breakdown = _field(config.get("breakdown"))
+        if breakdown:
+            layer["breakdown"] = {"column": breakdown}
+        return {
+            "grid": grid,
+            "type": "vis",
+            "config": {"type": "xy", "title": title, "layers": [layer]},
+        }, []
+
+    metric_col = (_metric_fields(config) or ["value"])[0]
+    return {
+        "grid": grid,
+        "type": "vis",
+        "config": {
+            "type": "metric",
+            "title": title,
+            "data_source": {"type": "esql", "query": query},
+            "metrics": [{"type": "primary", "column": metric_col}],
+        },
+    }, []
+
+
+def api_panel_from_report_panel(
+    dashboard: str, panel: dict[str, Any]
+) -> tuple[dict[str, Any] | None, list[Finding]]:
+    title = str(panel.get("title") or "")
+    kind, config = _visual_presentation(panel)
+    if kind == "markdown":
+        return {
+            "grid": _layout(panel),
+            "type": "markdown",
+            "config": {
+                "title": title,
+                "content": str(config.get("content") or ""),
+            },
+        }, []
+    if kind == "esql":
+        return _api_panel_from_esql(dashboard, panel, config)
+    return None, [
+        Finding(
+            "unsupported_by_api_oracle",
+            "info",
+            dashboard,
+            title,
+            f"visual presentation kind '{kind or '(none)'}' is not mapped",
+        )
+    ]
+
+
+def build_dashboard_payload(report: dict[str, Any]) -> tuple[dict[str, Any], list[Finding]]:
+    panels: list[dict[str, Any]] = []
+    findings: list[Finding] = []
+    title = ""
+    for dash in report.get("dashboards", []):
+        title = title or str(dash.get("title") or "migration conformance")
+        dashboard_title = str(dash.get("title") or "")
+        for panel in dash.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            api_panel, panel_findings = api_panel_from_report_panel(dashboard_title, panel)
+            findings.extend(panel_findings)
+            if api_panel is not None:
+                panels.append(api_panel)
+    return {"title": f"vf-conformance-{title}", "panels": panels}, findings
+
+
+def make_kibana_api_call(kibana_url: str, api_key: str) -> ApiCall:
+    base = kibana_url.rstrip("/")
+    headers = {
+        "Authorization": f"ApiKey {api_key}",
+        "kbn-xsrf": "true",
+        "Content-Type": "application/json",
+    }
+
+    def call(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any] | str]:
+        response = requests.request(
+            method, f"{base}{path}", headers=headers, json=body, timeout=30
+        )
+        try:
+            payload: dict[str, Any] | str = response.json()
+        except ValueError:
+            payload = response.text[:2000]
+        return response.status_code, payload
+
+    return call
+
+
+def validate_payload(
+    payload: dict[str, Any],
+    *,
+    api_call: ApiCall,
+    delete_on_success: bool = True,
+) -> list[Finding]:
+    if not payload.get("panels"):
+        return [
+            Finding(
+                "empty_payload",
+                "warning",
+                str(payload.get("title") or ""),
+                "",
+                "no panels were mapped into the typed Dashboards API payload",
+            )
+        ]
+    status, body = api_call("POST", "/api/dashboards", payload)
+    if 200 <= status < 300 and isinstance(body, dict):
+        dash_id = body.get("id")
+        if delete_on_success and dash_id:
+            api_call("DELETE", f"/api/dashboards/{dash_id}", None)
+        return []
+    message = body if isinstance(body, str) else body.get("message", json.dumps(body))
+    return [
+        Finding(
+            "dashboards_api_rejected",
+            "error",
+            str(payload.get("title") or ""),
+            "",
+            str(message),
+            evidence={"status": status},
+        )
+    ]
+
+
+def validate_report(
+    report: dict[str, Any],
+    *,
+    api_call: ApiCall,
+    delete_on_success: bool = True,
+) -> list[Finding]:
+    payload, findings = build_dashboard_payload(report)
+    findings.extend(validate_payload(payload, api_call=api_call, delete_on_success=delete_on_success))
+    return findings
+
+
+def summarize(findings: list[Finding]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    errors = 0
+    for finding in findings:
+        counts[finding.category] = counts.get(finding.category, 0) + 1
+        if finding.severity == "error":
+            errors += 1
+    return {"total": len(findings), "errors": errors, "by_category": counts}
+
+
+def _build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="verifier.dashboards_api",
+        description="Validate migrated dashboards against Kibana's typed Dashboards API.",
+    )
+    parser.add_argument("--migration-out", type=Path, required=True)
+    parser.add_argument("--kibana-url", required=True)
+    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--fail-on-error", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_argparser().parse_args(argv)
+    report = json.loads((args.migration_out / "migration_report.json").read_text())
+    findings = validate_report(
+        report, api_call=make_kibana_api_call(args.kibana_url, args.api_key)
+    )
+    payload = {"summary": summarize(findings), "findings": [f.to_jsonable() for f in findings]}
+    if args.output:
+        args.output.write_text(json.dumps(payload, indent=2))
+    print(json.dumps(payload["summary"], indent=2))
+    return 1 if args.fail_on_error and payload["summary"]["errors"] else 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
