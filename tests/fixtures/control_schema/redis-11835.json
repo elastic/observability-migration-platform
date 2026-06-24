@@ -1,0 +1,10 @@
+{
+  "_comment": "Seeded schema profile for the Redis Exporter dashboard (Grafana 11835). Controls are chained and metric-scoped on redis_up: namespace -> pod_name(scoped) -> instance(scoped) (ISSUE-001). 'instance' must resolve to service.instance.id because that is the field co-occurring with redis_up (issue #163 / ISSUE-006); namespace and pod stay as-is.",
+  "fields": ["namespace", "pod", "instance", "service.instance.id", "redis_up"],
+  "cooccurrence": [
+    ["redis_up", "namespace", true],
+    ["redis_up", "pod", true],
+    ["redis_up", "instance", false],
+    ["redis_up", "service.instance.id", true]
+  ]
+}

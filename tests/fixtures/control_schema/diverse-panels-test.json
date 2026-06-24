@@ -1,0 +1,8 @@
+{
+  "_comment": "Seeded schema profile so control-field resolution runs metric-aware offline (no ES). Mirrors the contract exercised by tests/test_metric_aware_label_resolution.py. 'fields' are the fields that exist in the target index; 'cooccurrence' lists [metric_field, candidate, co_occurs] triples the COUNT probe would return. The 'instance' control (label_values(up, instance)) must resolve to service.instance.id because that is the field co-occurring with the scoped metric (issue #163 / ISSUE-006).",
+  "fields": ["instance", "service.instance.id", "up"],
+  "cooccurrence": [
+    ["up", "instance", false],
+    ["up", "service.instance.id", true]
+  ]
+}

@@ -1,0 +1,6 @@
+title: Clients
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: redis_connected_clients
+warning: Dropped variable-driven label filters during migration

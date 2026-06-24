@@ -1,0 +1,9 @@
+title: Command Calls / sec
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: cmd
+metrics: ['value']
+mode: stacked
+warning: Dropped variable-driven label filters during migration
+warning: Translated grouped topk() as latest-bucket ES|QL top N

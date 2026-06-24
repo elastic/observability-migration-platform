@@ -1,0 +1,6 @@
+title: Uptime
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: redis_uptime_in_seconds
+warning: Dropped variable-driven label filters during migration

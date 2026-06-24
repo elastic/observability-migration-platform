@@ -1,0 +1,12 @@
+control: Namespace
+  type: options
+  field: namespace
+  multiple: False
+control: Pod Name
+  type: options
+  field: pod
+  multiple: False
+control: instance
+  type: options
+  field: service.instance.id
+  multiple: False

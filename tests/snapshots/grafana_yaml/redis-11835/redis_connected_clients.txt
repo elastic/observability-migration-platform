@@ -1,0 +1,7 @@
+title: Redis connected clients
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['redis_connected_clients']
+warning: Dropped variable-driven label filters during migration
