@@ -95,13 +95,13 @@ def _infer_data_source(attributes: dict[str, Any], filename: str) -> str:
 def _infer_series_type(attributes: dict[str, Any], filename: str) -> str:
     state = attributes.get("state") if isinstance(attributes.get("state"), dict) else {}
     visualization = state.get("visualization") if isinstance(state.get("visualization"), dict) else {}
-    if isinstance(visualization.get("preferredSeriesType"), str):
-        return visualization["preferredSeriesType"]
     layers = visualization.get("layers")
     if isinstance(layers, list) and layers:
         first = layers[0] if isinstance(layers[0], dict) else {}
         if isinstance(first.get("seriesType"), str):
             return first["seriesType"]
+    if isinstance(visualization.get("preferredSeriesType"), str):
+        return visualization["preferredSeriesType"]
     stem = Path(filename).stem.lower()
     for series in ("line", "area", "bar"):
         if series in stem:
@@ -137,7 +137,11 @@ def load_fixture(path: Path) -> LensFixture:
 
 
 def load_fixtures(path: Path) -> list[LensFixture]:
-    return [load_fixture(p) for p in sorted(Path(path).glob("*.json"))]
+    return [
+        load_fixture(p)
+        for p in sorted(Path(path).glob("*.json"))
+        if p.name not in {"report.json", "coverage.json"}
+    ]
 
 
 def validate_fixture(fixture: LensFixture) -> list[str]:
@@ -153,7 +157,71 @@ def validate_fixture(fixture: LensFixture) -> list[str]:
     state = fixture.attributes.get("state") if isinstance(fixture.attributes, dict) else {}
     if not isinstance(state, dict):
         errors.append("attributes.state must be an object")
+    else:
+        errors.extend(_validate_lens_state_accessors(state))
     return errors
+
+
+def _text_based_column_ids(state: dict[str, Any]) -> set[str]:
+    datasource_states = state.get("datasourceStates") if isinstance(state.get("datasourceStates"), dict) else {}
+    text_based = datasource_states.get("textBased") if isinstance(datasource_states.get("textBased"), dict) else {}
+    layers = text_based.get("layers") if isinstance(text_based.get("layers"), dict) else {}
+    ids: set[str] = set()
+    for layer in layers.values():
+        if not isinstance(layer, dict):
+            continue
+        for key in ("columns", "allColumns"):
+            columns = layer.get(key)
+            if not isinstance(columns, list):
+                continue
+            for column in columns:
+                if isinstance(column, dict) and column.get("columnId"):
+                    ids.add(str(column["columnId"]))
+    return ids
+
+
+def _referenced_accessors(visualization: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            refs.add(value)
+
+    add(visualization.get("metricAccessor"))
+    add(visualization.get("secondaryMetricAccessor"))
+    add(visualization.get("maxAccessor"))
+    add(visualization.get("breakdownAccessor"))
+    layers = visualization.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            add(layer.get("xAccessor"))
+            add(layer.get("splitAccessor"))
+            add(layer.get("breakdownAccessor"))
+            for accessor in layer.get("accessors") or []:
+                add(accessor)
+            for item in layer.get("yConfig") or []:
+                if isinstance(item, dict):
+                    add(item.get("forAccessor"))
+    return refs
+
+
+def _validate_lens_state_accessors(state: dict[str, Any]) -> list[str]:
+    visualization = state.get("visualization") if isinstance(state.get("visualization"), dict) else {}
+    if not visualization:
+        return []
+    refs = _referenced_accessors(visualization)
+    if not refs:
+        return []
+    columns = _text_based_column_ids(state)
+    # Only validate textBased / ES|QL fixtures here. Data-view fixtures use
+    # formBased column structures that are intentionally different.
+    datasource_states = state.get("datasourceStates") if isinstance(state.get("datasourceStates"), dict) else {}
+    if "textBased" not in datasource_states:
+        return []
+    missing = sorted(refs - columns)
+    return [f"visualization references missing columnId {item!r}" for item in missing]
 
 
 def coverage_report(fixtures: list[LensFixture], required: set[str]) -> dict[str, Any]:

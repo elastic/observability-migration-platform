@@ -80,6 +80,20 @@ class TestLensFixtures:
         assert fixture.data_source == "data_view"
         assert fixture.coverage_key == "xy:bar"
 
+    def test_layer_series_type_wins_over_preferred_series_type(self, tmp_path: Path) -> None:
+        path = tmp_path / "xy-chart-bar-esql.json"
+        path.write_text(json.dumps({
+            "visualizationType": "lnsXY",
+            "state": {
+                "datasourceStates": {"textBased": {"layers": {}}},
+                "visualization": {
+                    "preferredSeriesType": "line",
+                    "layers": [{"seriesType": "bar"}],
+                },
+            },
+        }))
+        assert lens_fixtures.load_fixture(path).coverage_key == "xy:bar"
+
     def test_validate_fixture_contract(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.json"
         _write_fixture(path, "bad", "", data_source="other", attributes={})
@@ -100,8 +114,10 @@ class TestLensFixtures:
     def test_coverage_report_ok(self, tmp_path: Path) -> None:
         _write_fixture(tmp_path / "xy-line.json", "xy-line", "xy", series_type="line")
         _write_fixture(tmp_path / "metric.json", "metric", "metric")
+        (tmp_path / "report.json").write_text(json.dumps({"ok": True}))
         result = lens_fixtures.validate_fixture_dir(tmp_path, {"xy:line", "metric"})
         assert result["ok"]
+        assert result["fixtures"] == 2
         assert result["coverage"]["missing"] == []
         assert result["by_source_format"] == {"wrapper": 2}
         assert result["by_data_source"] == {"esql": 2}
@@ -109,17 +125,102 @@ class TestLensFixtures:
     def test_validate_real_generator_raw_fixture_dir_shape(self, tmp_path: Path) -> None:
         (tmp_path / "metric-basic-esql.json").write_text(json.dumps({
             "visualizationType": "lnsMetric",
-            "state": {"datasourceStates": {"textBased": {}}, "visualization": {}},
+            "state": {
+                "datasourceStates": {
+                    "textBased": {
+                        "layers": {
+                            "layer_0": {
+                                "columns": [{"columnId": "metric_accessor"}],
+                                "allColumns": [{"columnId": "metric_accessor"}],
+                            }
+                        }
+                    }
+                },
+                "visualization": {"metricAccessor": "metric_accessor"},
+            },
         }))
         (tmp_path / "xy-chart-esql.json").write_text(json.dumps({
             "visualizationType": "lnsXY",
             "state": {
-                "datasourceStates": {"textBased": {}},
-                "visualization": {"preferredSeriesType": "line"},
+                "datasourceStates": {
+                    "textBased": {
+                        "layers": {
+                            "layer_0": {
+                                "columns": [
+                                    {"columnId": "x_accessor"},
+                                    {"columnId": "y_accessor"},
+                                ],
+                                "allColumns": [
+                                    {"columnId": "x_accessor"},
+                                    {"columnId": "y_accessor"},
+                                ],
+                            }
+                        }
+                    }
+                },
+                "visualization": {
+                    "preferredSeriesType": "line",
+                    "layers": [
+                        {
+                            "xAccessor": "x_accessor",
+                            "accessors": ["y_accessor"],
+                            "seriesType": "line",
+                            "yConfig": [{"forAccessor": "y_accessor"}],
+                        }
+                    ],
+                },
             },
         }))
         result = lens_fixtures.validate_fixture_dir(tmp_path, {"metric", "xy:line"})
         assert result["ok"]
         assert result["by_source_format"] == {"raw_attributes": 2}
         assert result["by_data_source"] == {"esql": 2}
+
+    def test_raw_fixture_missing_accessor_is_invalid(self, tmp_path: Path) -> None:
+        (tmp_path / "xy-chart-esql.json").write_text(json.dumps({
+            "visualizationType": "lnsXY",
+            "state": {
+                "datasourceStates": {
+                    "textBased": {
+                        "layers": {
+                            "layer_0": {
+                                "columns": [{"columnId": "x_accessor"}],
+                                "allColumns": [{"columnId": "x_accessor"}],
+                            }
+                        }
+                    }
+                },
+                "visualization": {
+                    "preferredSeriesType": "line",
+                    "layers": [
+                        {
+                            "xAccessor": "x_accessor",
+                            "accessors": ["missing_y"],
+                            "seriesType": "line",
+                            "yConfig": [{"forAccessor": "missing_y"}],
+                        }
+                    ],
+                },
+            },
+        }))
+        result = lens_fixtures.validate_fixture_dir(tmp_path, {"xy:line"})
+        assert not result["ok"]
+        errors = result["errors"]["xy-chart-esql"]
+        assert "visualization references missing columnId 'missing_y'" in errors
+
+    def test_dataview_fixture_accessor_validation_is_skipped(self, tmp_path: Path) -> None:
+        # formBased/data-view fixtures use different column structures; this
+        # oracle only validates raw textBased column IDs.
+        (tmp_path / "xy-chart-dataview.json").write_text(json.dumps({
+            "visualizationType": "lnsXY",
+            "state": {
+                "datasourceStates": {"formBased": {"layers": {}}},
+                "visualization": {
+                    "preferredSeriesType": "line",
+                    "layers": [{"xAccessor": "not_in_text_based", "accessors": ["also_missing"], "seriesType": "line"}],
+                },
+            },
+        }))
+        result = lens_fixtures.validate_fixture_dir(tmp_path, {"xy:line"})
+        assert result["ok"]
 
