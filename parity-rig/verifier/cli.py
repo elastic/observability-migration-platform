@@ -200,7 +200,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.live_oracle:
             LOG.warning("--live-oracle requested but --es-url/--api-key missing; "
                         "falling back to offline column inference")
-        invariant_findings = invariants.lint_report(report, columns_oracle=columns_oracle)
+        # When --limit scopes the panel loop, scope invariant linting to the
+        # same panels so the report stays internally consistent and
+        # --fail-on-invariant cannot trip on panels outside the sample.
+        lint_target = report
+        if args.limit:
+            sampled = {(r.dashboard_title, r.title) for r in records}
+            lint_target = _scope_report_to_panels(report, sampled)
+        invariant_findings = invariants.lint_report(lint_target, columns_oracle=columns_oracle)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -229,6 +236,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     return 0
+
+
+def _scope_report_to_panels(
+    report: dict, sampled: set[tuple[str, str]]
+) -> dict:
+    """Return a shallow report copy keeping only the sampled ``(dashboard, panel)``.
+
+    Used so ``--limit`` scopes invariant linting to the same panels the five-tier
+    loop processed, keeping ``panels`` and ``invariant_findings`` consistent.
+    """
+    scoped = dict(report)
+    scoped_dashboards = []
+    for dashboard in report.get("dashboards", []):
+        if not isinstance(dashboard, dict):
+            continue
+        dtitle = str(dashboard.get("title") or "")
+        kept = [
+            panel
+            for panel in dashboard.get("panels", [])
+            if isinstance(panel, dict)
+            and (dtitle, str(panel.get("title") or "")) in sampled
+        ]
+        if kept:
+            scoped_dashboards.append({**dashboard, "panels": kept})
+    scoped["dashboards"] = scoped_dashboards
+    return scoped
 
 
 def _load_compiled_panels(compiled_dir: Path) -> dict[str, str]:

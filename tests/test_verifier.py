@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VERIFIER_PARENT = ROOT / "parity-rig"
 sys.path.insert(0, str(VERIFIER_PARENT))
 
+from verifier import cli as verifier_cli  # noqa: E402
 from verifier import collectors, compare  # noqa: E402
 from verifier.records import DRIFT_AXES, PanelRecord, Verdict  # noqa: E402
 
@@ -53,6 +54,23 @@ def _build_migration_report(panels: list[dict[str, Any]]) -> dict[str, Any]:
             }
         ]
     }
+
+
+def test_scope_report_to_panels_keeps_only_sampled_panels() -> None:
+    report = _build_migration_report(
+        [{"title": "A"}, {"title": "B"}, {"title": "C"}]
+    )
+    scoped = verifier_cli._scope_report_to_panels(
+        report, {("My Dashboard", "A"), ("My Dashboard", "C")}
+    )
+    titles = [p["title"] for p in scoped["dashboards"][0]["panels"]]
+    assert titles == ["A", "C"]
+
+
+def test_scope_report_to_panels_drops_dashboards_with_no_sampled_panels() -> None:
+    report = _build_migration_report([{"title": "A"}, {"title": "B"}])
+    scoped = verifier_cli._scope_report_to_panels(report, {("Other", "A")})
+    assert scoped["dashboards"] == []
 
 
 # --------------------------------------------------------------------- #
