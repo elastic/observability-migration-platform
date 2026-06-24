@@ -1617,6 +1617,21 @@ class TestClassifyAutomationTier(unittest.TestCase):
         )
         self.assertNotEqual(classify_automation_tier(ir), "automated")
 
+    def test_grafana_unified_validity_step_legacy_expr_uid_is_automated(self):
+        # Grafana's expression steps carry either the modern ``__expr__`` UID or
+        # the legacy ``-100`` UID. Both must be recognized as expression steps so
+        # the validity-step rule migrates rather than being inflated into a
+        # multi-source-query rule that requires review.
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        for item in rule["data"]:
+            if item["datasourceUid"] == "__expr__":
+                item["datasourceUid"] = "-100"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "automated")
+
     def test_grafana_legacy_prometheus_query_is_automated(self):
         ir = build_alerting_ir_from_grafana(_grafana_legacy_prometheus_alert_task())
         self.assertEqual(classify_automation_tier(ir), "automated")
