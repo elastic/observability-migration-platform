@@ -190,6 +190,11 @@ def build_dashboard_payload(report: dict[str, Any]) -> tuple[dict[str, Any], lis
     return {"title": f"vf-conformance-{title}", "panels": panels}, findings
 
 
+def mapped_panel_count(payload: dict[str, Any]) -> int:
+    panels = payload.get("panels")
+    return len(panels) if isinstance(panels, list) else 0
+
+
 def make_kibana_api_call(kibana_url: str, api_key: str) -> ApiCall:
     base = kibana_url.rstrip("/")
     headers = {
@@ -257,14 +262,54 @@ def validate_report(
     return findings
 
 
-def summarize(findings: list[Finding]) -> dict[str, Any]:
+def apply_coverage_budget(
+    findings: list[Finding],
+    *,
+    mapped_panels: int,
+    max_unsupported: int | None = None,
+    min_mapped_panels: int | None = None,
+) -> list[Finding]:
+    budget_findings: list[Finding] = []
+    unsupported = sum(1 for finding in findings if finding.category == "unsupported_by_api_oracle")
+    if max_unsupported is not None and unsupported > max_unsupported:
+        budget_findings.append(
+            Finding(
+                "unsupported_budget_exceeded",
+                "error",
+                "",
+                "",
+                f"unsupported panel count {unsupported} exceeds budget {max_unsupported}",
+                evidence={"unsupported": unsupported, "max_unsupported": max_unsupported},
+            )
+        )
+    if min_mapped_panels is not None and mapped_panels < min_mapped_panels:
+        budget_findings.append(
+            Finding(
+                "mapped_panel_budget_not_met",
+                "error",
+                "",
+                "",
+                f"mapped panel count {mapped_panels} is below required minimum {min_mapped_panels}",
+                evidence={"mapped_panels": mapped_panels, "min_mapped_panels": min_mapped_panels},
+            )
+        )
+    return [*findings, *budget_findings]
+
+
+def summarize(findings: list[Finding], *, mapped_panels: int = 0) -> dict[str, Any]:
     counts: dict[str, int] = {}
     errors = 0
     for finding in findings:
         counts[finding.category] = counts.get(finding.category, 0) + 1
         if finding.severity == "error":
             errors += 1
-    return {"total": len(findings), "errors": errors, "by_category": counts}
+    return {
+        "total": len(findings),
+        "errors": errors,
+        "mapped_panels": mapped_panels,
+        "unsupported": counts.get("unsupported_by_api_oracle", 0),
+        "by_category": counts,
+    }
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -277,16 +322,26 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--fail-on-error", action="store_true")
+    parser.add_argument("--max-unsupported", type=int)
+    parser.add_argument("--min-mapped-panels", type=int)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_argparser().parse_args(argv)
     report = json.loads((args.migration_out / "migration_report.json").read_text())
-    findings = validate_report(
-        report, api_call=make_kibana_api_call(args.kibana_url, args.api_key)
+    payload, findings = build_dashboard_payload(report)
+    mapped = mapped_panel_count(payload)
+    findings.extend(
+        validate_payload(payload, api_call=make_kibana_api_call(args.kibana_url, args.api_key))
     )
-    payload = {"summary": summarize(findings), "findings": [f.to_jsonable() for f in findings]}
+    findings = apply_coverage_budget(
+        findings,
+        mapped_panels=mapped,
+        max_unsupported=args.max_unsupported,
+        min_mapped_panels=args.min_mapped_panels,
+    )
+    payload = {"summary": summarize(findings, mapped_panels=mapped), "findings": [f.to_jsonable() for f in findings]}
     if args.output:
         args.output.write_text(json.dumps(payload, indent=2))
     print(json.dumps(payload["summary"], indent=2))

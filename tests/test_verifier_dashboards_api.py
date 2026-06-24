@@ -92,8 +92,34 @@ class TestPayloadAndValidation:
         )
         assert payload["title"] == "vf-conformance-D"
         assert len(payload["panels"]) == 1
+        assert dashboards_api.mapped_panel_count(payload) == 1
         assert len(findings) == 1
         assert findings[0].category == "unsupported_by_api_oracle"
+
+    def test_unsupported_budget_can_fail_low_coverage(self) -> None:
+        payload, findings = dashboards_api.build_dashboard_payload(
+            _report([_panel(), _panel(chart_type="heatmap"), _panel(chart_type="heatmap")])
+        )
+        findings = dashboards_api.apply_coverage_budget(
+            findings,
+            mapped_panels=dashboards_api.mapped_panel_count(payload),
+            max_unsupported=1,
+            min_mapped_panels=2,
+        )
+        cats = [finding.category for finding in findings]
+        assert "unsupported_budget_exceeded" in cats
+        assert "mapped_panel_budget_not_met" in cats
+
+    def test_summary_reports_mapped_and_unsupported_counts(self) -> None:
+        payload, findings = dashboards_api.build_dashboard_payload(
+            _report([_panel(), _panel(chart_type="heatmap")])
+        )
+        summary = dashboards_api.summarize(
+            findings, mapped_panels=dashboards_api.mapped_panel_count(payload)
+        )
+        assert summary["mapped_panels"] == 1
+        assert summary["unsupported"] == 1
+        assert summary["errors"] == 0
 
     def test_validate_payload_deletes_successful_scratch_dashboard(self) -> None:
         calls = []
