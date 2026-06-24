@@ -20,16 +20,17 @@ from observability_migration.adapters.source.grafana.schema import SchemaResolve
 
 
 def _live_resolver(field_cache, cooccurrence):
-    """A resolver with live caps and a stubbed co-occurrence probe.
+    """A resolver with live caps and pre-seeded co-occurrence results.
 
     ``cooccurrence`` maps ``(metric_field, candidate)`` to True/False/None, the
-    contract of the real ES|QL COUNT probe.
+    contract of the real ES|QL COUNT probe. Seeding the per-pair cache exercises
+    the real resolution path (issue #182 batched probe) without any network.
     """
     resolver = SchemaResolver(RulePackConfig(), es_url="https://es", index_pattern="metrics-*")
     resolver._discovery_attempted = True
     resolver._field_cache = dict(field_cache)
     resolver._discovery_status = "ok"
-    resolver._cooccurs = lambda metric, candidate: cooccurrence.get((metric, candidate))
+    resolver._cooccurrence_cache = dict(cooccurrence)
     return resolver
 
 
@@ -179,10 +180,10 @@ class TestControlBreakdownIsMetricAware(unittest.TestCase):
             },
             "metrics.redis_up": {"double": {"type": "double", "aggregatable": True}},
         }
-        resolver._cooccurs = lambda metric, candidate: {
+        resolver._cooccurrence_cache = {
             ("metrics.redis_up", "instance"): False,
             ("metrics.redis_up", "service.instance.id"): True,
-        }.get((metric, candidate))
+        }
         return rp, resolver
 
     def test_control_breakdown_uses_cooccurring_field(self):
@@ -231,10 +232,10 @@ class TestPanelPathsAreMetricAware(unittest.TestCase):
             },
             "redis_up": {"double": {"type": "double", "aggregatable": True}},
         }
-        resolver._cooccurs = lambda metric, candidate: {
+        resolver._cooccurrence_cache = {
             ("redis_up", "instance"): False,
             ("redis_up", "service.instance.id"): True,
-        }.get((metric, candidate))
+        }
         return rp, resolver
 
     def _translate(self, expr, rp, resolver):
@@ -278,10 +279,10 @@ class TestPanelPathsAreMetricAware(unittest.TestCase):
             },
             "redis_up": {"double": {"type": "double", "aggregatable": True}},
         }
-        resolver._cooccurs = lambda metric, candidate: {
+        resolver._cooccurrence_cache = {
             ("redis_up", "instance"): False,
             ("redis_up", "service.instance.id"): True,
-        }.get((metric, candidate))
+        }
         return rp, resolver
 
     def test_no_false_incompatible_filter_warning_when_metric_aware_field_is_compatible(self):
@@ -307,6 +308,57 @@ class TestPanelPathsAreMetricAware(unittest.TestCase):
         )
 
 
+class TestPanelTranslationPrimesPerMetric(unittest.TestCase):
+    """Issue #182: translating a panel must prime co-occurrence for all of a
+    fragment's labels in ONE batched probe, not one probe per label."""
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_multi_label_panel_issues_single_probe(self, mock_post):
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+
+        # `instance` co-occurs via service.instance.id; `job` via service.name.
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "columns": [
+                    {"name": "c0", "type": "long"},  # instance
+                    {"name": "c1", "type": "long"},  # service.instance.id
+                    {"name": "c2", "type": "long"},  # service.name (job)
+                ],
+                "values": [[0, 9, 4]],
+            },
+        )
+        rp = RulePackConfig()
+        resolver = SchemaResolver(rp, es_url="https://es", index_pattern="metrics-*")
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "instance": {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}},
+            "service.instance.id": {
+                "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+            },
+            "service.name": {
+                "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+            },
+            "redis_up": {"double": {"type": "double", "aggregatable": True}},
+        }
+
+        ctx = translate_promql_to_esql(
+            'sum(redis_up{instance=~"redis.*"}) by (instance, job)',
+            esql_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+        # Both labels resolved to their co-occurring fields...
+        self.assertIn("service.instance.id", ctx.esql_query)
+        self.assertIn("service.name", ctx.esql_query)
+        # ...in a single batched co-occurrence probe for the whole fragment.
+        self.assertEqual(mock_post.call_count, 1)
+
+
 class TestCooccurrenceProbe(unittest.TestCase):
     @staticmethod
     def _resolver():
@@ -320,19 +372,23 @@ class TestCooccurrenceProbe(unittest.TestCase):
     def test_probe_returns_true_when_count_positive(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
-            json=lambda: {"columns": [{"name": "c", "type": "long"}], "values": [[889]]},
+            json=lambda: {"columns": [{"name": "c0", "type": "long"}], "values": [[889]]},
         )
         resolver = self._resolver()
         self.assertIs(resolver._cooccurs("metrics.redis_up", "service.instance.id"), True)
-        # The probe scopes both fields with IS NOT NULL and backticks them itself.
+        # The probe scopes the metric in WHERE and counts the candidate, both
+        # backticked by the probe itself.
         _, kwargs = mock_post.call_args
         query = kwargs["json"]["query"]
         self.assertIn("`metrics.redis_up` IS NOT NULL", query)
-        self.assertIn("`service.instance.id` IS NOT NULL", query)
+        self.assertIn("COUNT(`service.instance.id`)", query)
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_probe_returns_false_when_count_zero(self, mock_post):
-        mock_post.return_value = Mock(status_code=200, json=lambda: {"values": [[0]]})
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {"columns": [{"name": "c0", "type": "long"}], "values": [[0]]},
+        )
         resolver = self._resolver()
         self.assertIs(resolver._cooccurs("metrics.redis_up", "instance"), False)
 
@@ -344,8 +400,216 @@ class TestCooccurrenceProbe(unittest.TestCase):
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_probe_is_cached_per_pair(self, mock_post):
-        mock_post.return_value = Mock(status_code=200, json=lambda: {"values": [[5]]})
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {"columns": [{"name": "c0", "type": "long"}], "values": [[5]]},
+        )
         resolver = self._resolver()
         resolver._cooccurs("metrics.redis_up", "service.instance.id")
         resolver._cooccurs("metrics.redis_up", "service.instance.id")
         self.assertEqual(mock_post.call_count, 1)
+
+
+class TestBatchedCooccurrenceProbe(unittest.TestCase):
+    """Issue #182: resolving a metric-scoped label must collapse the
+    per-candidate co-occurrence checks into a SINGLE batched ``/_query`` probe
+    per metric, instead of one blocking round-trip per candidate."""
+
+    @staticmethod
+    def _resolver():
+        resolver = SchemaResolver(
+            RulePackConfig(), es_url="https://es", index_pattern="metrics-*"
+        )
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "instance": {},
+            "service.instance.id": {},
+            "metrics.redis_up": {},
+        }
+        resolver._discovery_status = "ok"
+        return resolver
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_resolution_issues_single_batched_probe(self, mock_post):
+        # `instance` does not co-occur with the metric, `service.instance.id`
+        # does. One batched STATS query must count both candidates at once.
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "columns": [
+                    {"name": "c0", "type": "long"},
+                    {"name": "c1", "type": "long"},
+                ],
+                "values": [[0, 7]],
+            },
+        )
+        resolver = self._resolver()
+        resolved = resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        self.assertEqual(resolved, "service.instance.id")
+        self.assertEqual(mock_post.call_count, 1)
+        _, kwargs = mock_post.call_args
+        query = kwargs["json"]["query"]
+        # The metric is scoped once in WHERE; each candidate is counted in STATS.
+        self.assertIn("`metrics.redis_up` IS NOT NULL", query)
+        self.assertIn("COUNT(`instance`)", query)
+        self.assertIn("COUNT(`service.instance.id`)", query)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_batch_results_are_cached_per_pair(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "columns": [
+                    {"name": "c0", "type": "long"},
+                    {"name": "c1", "type": "long"},
+                ],
+                "values": [[0, 7]],
+            },
+        )
+        resolver = self._resolver()
+        resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        # Second resolution must be served entirely from the per-pair cache.
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_prime_batches_every_label_in_one_probe(self, mock_post):
+        # Per-metric batching (issue #182): priming a fragment's whole label set
+        # (`instance` → 2 candidates, `job` → 1) issues ONE query covering every
+        # candidate; the subsequent per-label resolutions hit the warm cache and
+        # issue no further probes.
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "columns": [
+                    {"name": "c0", "type": "long"},  # instance
+                    {"name": "c1", "type": "long"},  # service.instance.id
+                    {"name": "c2", "type": "long"},  # host.name
+                    {"name": "c3", "type": "long"},  # service.name (job)
+                ],
+                "values": [[0, 7, 0, 5]],
+            },
+        )
+        resolver = SchemaResolver(
+            RulePackConfig(), es_url="https://es", index_pattern="metrics-*"
+        )
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "instance": {},
+            "service.instance.id": {},
+            "host.name": {},
+            "service.name": {},
+            "metrics.foo": {},
+        }
+        resolver.prime_label_cooccurrence(["instance", "job"], "metrics.foo")
+        self.assertEqual(mock_post.call_count, 1)
+        # One query, every candidate counted.
+        query = mock_post.call_args.kwargs["json"]["query"]
+        for field in ("instance", "service.instance.id", "host.name", "service.name"):
+            self.assertIn(f"COUNT(`{field}`)", query)
+        # Resolution now served entirely from the primed cache.
+        self.assertEqual(
+            resolver.resolve_label("instance", metric_field="metrics.foo"),
+            "service.instance.id",
+        )
+        self.assertEqual(
+            resolver.resolve_label("job", metric_field="metrics.foo"), "service.name"
+        )
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_prime_skips_ignored_and_rewritten_labels(self, mock_post):
+        # `resolve_label` short-circuits rule-pack ignored/rewritten labels before
+        # any probe; priming must mirror that, or it issues round-trips for labels
+        # resolution will never probe (defeats #182's goal).
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {"columns": [{"name": "c0", "type": "long"}], "values": [[5]]},
+        )
+        rp = RulePackConfig()
+        rp.label_rewrites = {"instance": "host.name"}
+        rp.ignored_labels = list(rp.ignored_labels) + ["job"]
+        resolver = SchemaResolver(rp, es_url="https://es", index_pattern="metrics-*")
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "instance": {},
+            "service.instance.id": {},
+            "host.name": {},
+            "service.name": {},
+            "metrics.foo": {},
+        }
+        # Only ignored/rewritten labels → nothing to probe.
+        resolver.prime_label_cooccurrence(["instance", "job"], "metrics.foo")
+        self.assertEqual(mock_post.call_count, 0)
+        # A normal label (node → host.name candidate, present in cache) still
+        # primes in a single batched probe.
+        resolver.prime_label_cooccurrence(["node"], "metrics.foo")
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_batch_error_falls_back_to_per_candidate_probes(self, mock_post):
+        # Issue #182 regression guard: a batched STATS couples every candidate.
+        # If one lower-priority candidate makes the whole query 400 (e.g. a type
+        # conflict across dual-shipping indices), the batch returns None for the
+        # entire set. Without a fallback that would cache None for the primary
+        # candidate too and revert the label to index-global resolution —
+        # re-introducing the #163 disjoint-document-set bug. The resolver must
+        # re-probe each candidate alone so the co-occurring primary still wins.
+        batch_400 = Mock(status_code=400, json=lambda: {})
+
+        def per_candidate(*_args, **kwargs):
+            query = kwargs["json"]["query"]
+            if "COUNT(`instance`)" in query and "COUNT(`service.instance.id`)" in query:
+                # The combined batch query fails (one field is incompatible).
+                return batch_400
+            if "COUNT(`service.instance.id`)" in query:
+                return Mock(
+                    status_code=200,
+                    json=lambda: {
+                        "columns": [{"name": "c0", "type": "long"}],
+                        "values": [[7]],
+                    },
+                )
+            # The incompatible candidate, probed alone, still errors.
+            return batch_400
+
+        mock_post.side_effect = per_candidate
+        resolver = self._resolver()
+        resolved = resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        # Primary candidate resolves correctly despite the poisoned batch.
+        self.assertEqual(resolved, "service.instance.id")
+        # One batched probe + one per-candidate probe each for the fallback.
+        self.assertEqual(mock_post.call_count, 3)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_single_candidate_batch_error_does_not_re_probe(self, mock_post):
+        # With only one candidate the batch query IS the per-candidate query, so
+        # the error fallback must not issue a redundant second identical probe.
+        mock_post.return_value = Mock(status_code=400, json=lambda: {})
+        resolver = SchemaResolver(
+            RulePackConfig(), es_url="https://es", index_pattern="metrics-*"
+        )
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {"instance": {}, "metrics.foo": {}}
+        self.assertIsNone(resolver._cooccurs("metrics.foo", "instance"))
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_batch_probe_maps_results_by_column_name(self, mock_post):
+        # Robust against column reordering: map COUNT aliases by name, not index.
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "columns": [
+                    {"name": "c1", "type": "long"},
+                    {"name": "c0", "type": "long"},
+                ],
+                "values": [[7, 0]],
+            },
+        )
+        resolver = self._resolver()
+        resolved = resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        self.assertEqual(resolved, "service.instance.id")

@@ -144,6 +144,30 @@ def _resolve_label_for(resolver, label, metric_field=None):
         return resolver.resolve_label(label, metric_field=metric_field)
     return resolver.resolve_label(label)
 
+
+def _prime_frag_label_cooccurrence(frag, resolver, preferred_labels=None):
+    """Pre-warm metric-scoped co-occurrence for every label of the fragment in
+    one batched probe (issue #182).
+
+    Each ``_frag_*`` helper below resolves labels scoped to the same metric,
+    one label at a time. Without priming, each first-resolution issues its own
+    co-occurrence round-trip; with it, the union of all the fragment's
+    selector-matcher and group-by labels is counted once, and the per-label
+    resolutions then hit the warm cache. Idempotent and cache-backed, so calling
+    it from several helpers for the same fragment still costs a single probe.
+    """
+    if frag is None or resolver is None or not hasattr(resolver, "prime_label_cooccurrence"):
+        return
+    metric_field = _frag_metric_field_raw(frag, resolver)
+    if not metric_field:
+        return
+    labels = [m["label"] for m in (frag.matchers or [])]
+    labels += [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
+    if preferred_labels:
+        labels += list(preferred_labels)
+    if labels:
+        resolver.prime_label_cooccurrence(labels, metric_field)
+
 try:
     import promql_parser  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -2462,6 +2486,7 @@ def _frag_filters(frag, resolver):
     emitted when a matcher produced no WHERE clause. When the target binds
     ``?var`` parameters the filter is preserved (issue #64) and not counted.
     """
+    _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
     filters = []
     had_vars = False
@@ -2478,6 +2503,7 @@ def _frag_has_incompatible_target_fields(frag, resolver):
     # Resolve with the same scoped metric the generator uses (issue #163);
     # otherwise this inspects a different (index-global) field than the WHERE
     # clause emits and produces a false "dropped incompatible field" warning.
+    _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
     return any(
         _matcher_has_incompatible_target_field(
@@ -2560,6 +2586,7 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     variables (``$Var`` → ``label_Var``) and are silently dropped; keeping
     them would emit non-existent field names in the BY clause.
     """
+    _prime_frag_label_cooccurrence(frag, resolver, preferred_labels)
     metric_field = _frag_metric_field_raw(frag, resolver)
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
     explicit = resolver.resolve_labels(raw, metric_field=metric_field) if resolver else list(raw)
@@ -2578,6 +2605,7 @@ def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
         return False
     # Mirror the metric-aware resolution in `_frag_group_labels` so the check
     # inspects the same BY/KEEP fields the generator emits (issue #163).
+    _prime_frag_label_cooccurrence(frag, resolver, preferred_labels)
     metric_field = _frag_metric_field_raw(frag, resolver)
     raw = [lbl for lbl in (frag.group_labels or []) if not lbl.startswith("label_")]
     explicit = resolver.resolve_labels(raw, metric_field=metric_field) if resolver else list(raw)
