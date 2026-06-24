@@ -126,7 +126,7 @@ def _api_panel_from_esql(
         }
         breakdown = _field(config.get("breakdown"))
         if breakdown:
-            layer["breakdown"] = {"column": breakdown}
+            layer["breakdown_by"] = {"column": breakdown}
         return {
             "grid": grid,
             "type": "vis",

@@ -79,3 +79,33 @@ class TestMutations:
         assert summary["passed"] == 1
         assert summary["failed"][0]["mutation"] == "m2"
 
+    def test_mutations_work_on_native_promql_only_reports(self) -> None:
+        report = {
+            "dashboards": [
+                {
+                    "title": "D",
+                    "panels": [
+                        {
+                            "title": "native",
+                            "status": "migrated",
+                            "grafana_type": "timeseries",
+                            "reasons": [],
+                            "visual_ir": {
+                                "presentation": {
+                                    "kind": "esql",
+                                    "config": {
+                                        "type": "line",
+                                        "query": "PROMQL index=metrics-* step=1m value=(up)",
+                                        "dimension": {"field": "step"},
+                                        "metrics": [{"field": "value"}],
+                                    },
+                                }
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        results = mutations.run_invariant_mutations(report)
+        assert all(result.passed for result in results)
+

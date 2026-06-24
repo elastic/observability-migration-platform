@@ -55,7 +55,7 @@ class TestPanelMapping:
         assert layer["data_source"]["type"] == "esql"
         assert layer["x"]["column"] == "time_bucket"
         assert layer["y"] == [{"column": "value"}]
-        assert layer["breakdown"] == {"column": "service.name"}
+        assert layer["breakdown_by"] == {"column": "service.name"}
 
     def test_metric_panel_maps_to_metric_payload(self) -> None:
         api_panel, findings = dashboards_api.api_panel_from_report_panel(

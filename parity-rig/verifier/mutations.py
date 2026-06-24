@@ -30,6 +30,14 @@ class MutationResult:
         }
 
 
+_SENTINEL_QUERY = (
+    "TS metrics-* "
+    "| STATS value = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name "
+    "| EVAL legend = CONCAT(service.name) "
+    "| KEEP time_bucket, value, legend"
+)
+
+
 def _first_panel(report: dict[str, Any]) -> dict[str, Any] | None:
     for dash in report.get("dashboards", []):
         for panel in dash.get("panels", []):
@@ -47,22 +55,60 @@ def _config(panel: dict[str, Any]) -> dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _static_esql_panel(report: dict[str, Any]) -> dict[str, Any]:
+    for dash in report.get("dashboards", []):
+        for panel in dash.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            cfg = _config(panel)
+            query = str(cfg.get("query") or "")
+            if invariants.static_query_columns(query) is not None:
+                return panel
+    dashboards = report.setdefault("dashboards", [{"title": "mutation-sentinel", "panels": []}])
+    if not dashboards:
+        dashboards.append({"title": "mutation-sentinel", "panels": []})
+    panels = dashboards[0].setdefault("panels", [])
+    sentinel = {
+        "title": "mutation sentinel",
+        "status": "migrated",
+        "grafana_type": "timeseries",
+        "reasons": [],
+        "post_validation_action": "",
+        "query_ir": {
+            "output_shape": "time_series",
+            "output_group_fields": ["time_bucket", "service.name"],
+        },
+        "visual_ir": {
+            "presentation": {
+                "kind": "esql",
+                "config": {
+                    "type": "line",
+                    "query": _SENTINEL_QUERY,
+                    "dimension": {"field": "time_bucket"},
+                    "metrics": [{"field": "value"}],
+                    "breakdown": {"field": "legend"},
+                },
+            }
+        },
+    }
+    panels.append(sentinel)
+    return sentinel
+
+
 def mutate_break_accessor(report: dict[str, Any]) -> dict[str, Any]:
     mutated = copy.deepcopy(report)
-    panel = _first_panel(mutated)
-    if panel:
-        cfg = _config(panel)
-        cfg.setdefault("breakdown", {})["field"] = "__missing_accessor__"
+    panel = _static_esql_panel(mutated)
+    cfg = _config(panel)
+    cfg.setdefault("breakdown", {})["field"] = "__missing_accessor__"
     return mutated
 
 
 def mutate_break_composite_legend(report: dict[str, Any]) -> dict[str, Any]:
     mutated = copy.deepcopy(report)
-    panel = _first_panel(mutated)
-    if panel:
-        cfg = _config(panel)
-        cfg["breakdown"] = {"field": "legend"}
-        cfg["query"] = str(cfg.get("query") or "").replace("legend", "legend_missing")
+    panel = _static_esql_panel(mutated)
+    cfg = _config(panel)
+    cfg["breakdown"] = {"field": "legend"}
+    cfg["query"] = str(cfg.get("query") or "").replace("legend", "legend_missing")
     return mutated
 
 
