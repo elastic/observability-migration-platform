@@ -276,6 +276,226 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         self.assertIn("native", seen)
         self.assertNotIn("$job", seen["native"])
 
+    def test_run_translated_binds_regex_dashboard_control_params(self):
+        # A templated panel's ES|QL references control params (?node, ?job) on
+        # top of ?_tstart/?_tend; run_translated must bind them all so the query
+        # does not fail with "Unknown query parameter [node]". Control params
+        # bind to a match-all regex to align with the matcher-stripped native side.
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE service.instance.id RLIKE ?node "
+            "| WHERE service.name RLIKE ?job "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(bound["_tstart"], "2026-01-01T00:00:00Z")
+        self.assertEqual(bound["_tend"], "2026-01-01T01:00:00Z")
+        self.assertEqual(bound["node"], ".*")
+        self.assertEqual(bound["job"], ".*")
+
+    def test_run_translated_does_not_bind_exact_control_params_as_match_all(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE service.name == ?job "
+            "| WHERE service.instance.id RLIKE ?node "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(bound["_tstart"], "2026-01-01T00:00:00Z")
+        self.assertEqual(bound["_tend"], "2026-01-01T01:00:00Z")
+        self.assertEqual(bound["node"], ".*")
+        self.assertNotIn("job", bound)
+
+    def test_run_translated_does_not_bind_negated_rlike_control_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE NOT (service.instance.id RLIKE ?instance) "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_run_translated_does_not_bind_same_param_mixed_exact_and_rlike(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = (
+            "TS metrics-* | WHERE service.name == ?job "
+            "| WHERE service.instance.id RLIKE ?job "
+            "| STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+        )
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_run_translated_binds_native_promql_regex_control_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host=~?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(bound["host"], ".*")
+
+    def test_run_translated_does_not_bind_negated_native_promql_regex_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host!~?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_run_translated_does_not_bind_mixed_native_promql_regex_and_exact_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host=~?host,job=?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_compare_panel_skips_exact_control_params_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='up{job="$job"}',
+            translated_query=(
+                "TS metrics-* | WHERE service.name == ?job "
+                "| STATS v = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertEqual(calls, [])
+
+    def test_compare_panel_skips_negated_rlike_control_params_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='up{instance!~"$instance"}',
+            translated_query=(
+                "TS metrics-* | WHERE NOT (service.instance.id RLIKE ?instance) "
+                "| STATS v = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertIn("?instance", result.skipped_reason)
+        self.assertEqual(calls, [])
+
+    def test_compare_panel_skips_same_param_mixed_exact_and_rlike_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='up{job="$job"}',
+            translated_query=(
+                "TS metrics-* | WHERE service.name == ?job "
+                "| WHERE service.instance.id RLIKE ?job "
+                "| STATS v = AVG(up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+            ),
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertIn("exact dashboard control param", result.skipped_reason)
+        self.assertIn("?job", result.skipped_reason)
+        self.assertEqual(calls, [])
+
+    def test_compare_panel_runs_native_promql_regex_control_params(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body if isinstance(body, dict) else {})
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='cpu{host=~"$host"}',
+            translated_query="PROMQL index=metrics-* step=5m value=(cpu{host=~?host})",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertNotIn("exact dashboard control param", result.skipped_reason)
+        self.assertEqual(len(calls), 2)
+        translated_params = {k: v for d in calls[1]["params"] for k, v in d.items()}
+        self.assertEqual(translated_params["host"], ".*")
+
+    def test_run_translated_no_extra_params_when_only_time(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        po.run_translated(
+            request,
+            "TS metrics-* | STATS v = AVG(x) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            "s", "e",
+        )
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_native_promql_instant_passthrough_is_single_value_reduction(self):
+        query = "PROMQL index=metrics-* time=?_tend value=(avg(node_memory_MemAvailable_bytes))"
+        self.assertTrue(po.is_single_value_reduction(query))
+
+    def test_native_promql_range_passthrough_is_not_single_value_reduction(self):
+        query = "PROMQL index=metrics-* step=1m value=(sum(rate(http_requests_total[5m])))"
+        self.assertFalse(po.is_single_value_reduction(query))
+
+    def test_native_promql_range_passthrough_with_time_literal_in_value_is_not_single_value(self):
+        # A ``time=?_tend`` substring inside the value=() PromQL label must not
+        # reclassify a range (step=) query as an instant single value.
+        query = 'PROMQL index=metrics-* step=5m value=(cpu{label="time=?_tend"})'
+        self.assertFalse(po.is_single_value_reduction(query))
+
 
 class ExecutionTests(unittest.TestCase):
     def _fake_request(self, native_data, translated_data, *, native_error=None):

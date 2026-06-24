@@ -868,6 +868,19 @@ def is_single_value_reduction(esql: str) -> bool:
     left to point-wise comparison.
     """
     text = esql or ""
+    # Native PROMQL passthrough for stat/gauge panels uses an instant query
+    # (``time=?_tend``), producing one scalar per series rather than a range
+    # series. Comparing that single endpoint against the native range oracle
+    # yields a false "no overlapping time buckets" FAIL; skip it unless a future
+    # scalar comparator can mirror the exact instant query.
+    if _is_promql_passthrough(text):
+        # Only the PROMQL command header (before ``value=(``) carries the
+        # instant ``time=`` selector; a ``time=?_tend`` substring inside the
+        # ``value=(...)`` PromQL expression (e.g. a quoted label value) must not
+        # reclassify a range (``step=``) query as a single value.
+        header = text.split("value=", 1)[0]
+        if re.search(r"\btime\s*=\s*\?_tend\b", header, re.IGNORECASE):
+            return True
     # ``ROW constant_value = 2.0`` (a constant PromQL panel) emits a single
     # literal row with no time dimension at all.
     if re.match(r"(?i)^\s*ROW\b", text):
@@ -916,8 +929,78 @@ def _run_query(request, query: str, params: list | None = None) -> dict:
     return request("POST", "/_query?format=json", body, "application/json")
 
 
+_NAMED_PARAM_RE = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
+_RLIKE_PARAM_RE = re.compile(r"\bRLIKE\s+\?([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
+_PROMQL_REGEX_PARAM_RE = re.compile(r"(?<![!<>=])=~\s*\?([a-zA-Z_][a-zA-Z0-9_]*)")
+_TIME_PARAM_NAMES = frozenset({"_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend"})
+
+
+def _control_param_names(esql: str) -> set[str]:
+    return {name for name in _NAMED_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
+
+
+def _control_param_occurrences(esql: str) -> list[tuple[str, tuple[int, int]]]:
+    return [
+        (match.group(1), match.span())
+        for match in _NAMED_PARAM_RE.finditer(esql or "")
+        if match.group(1) not in _TIME_PARAM_NAMES
+    ]
+
+
+def _rlike_is_negated(esql: str, rlike_start: int) -> bool:
+    segment = (esql or "")[:rlike_start].rsplit("|", 1)[-1]
+    return bool(
+        re.search(r"\bNOT\s*\([^|)]*$", segment, re.IGNORECASE)
+        or re.search(r"\bNOT\s+[^|()]*$", segment, re.IGNORECASE)
+    )
+
+
+def _positive_regex_param_spans(esql: str) -> set[tuple[int, int]]:
+    spans: set[tuple[int, int]] = set()
+    for match in _RLIKE_PARAM_RE.finditer(esql or ""):
+        name = match.group(1)
+        if name in _TIME_PARAM_NAMES or _rlike_is_negated(esql, match.start()):
+            continue
+        spans.add((match.start(1) - 1, match.end(1)))
+    for match in _PROMQL_REGEX_PARAM_RE.finditer(esql or ""):
+        name = match.group(1)
+        if name in _TIME_PARAM_NAMES:
+            continue
+        spans.add((match.start(1) - 1, match.end(1)))
+    return spans
+
+
+def _regex_control_param_names(esql: str) -> set[str]:
+    occurrences = _control_param_occurrences(esql)
+    positive_regex_spans = _positive_regex_param_spans(esql)
+    bindable: set[str] = set()
+    for name in {item[0] for item in occurrences}:
+        spans = [span for candidate, span in occurrences if candidate == name]
+        if spans and all(span in positive_regex_spans for span in spans):
+            bindable.add(name)
+    return bindable
+
+
+def _exact_control_param_names(esql: str) -> set[str]:
+    return _control_param_names(esql) - _regex_control_param_names(esql)
+
+
 def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
-    return _run_query(request, esql, params=[{"_tstart": tstart}, {"_tend": tend}])
+    """Run the emitted ES|QL, binding time params and any dashboard-control params.
+
+    Beyond ``?_tstart`` / ``?_tend``, a templated panel's ES|QL references the
+    Grafana template variables it parameterized as Kibana controls (e.g.
+    ``service.instance.id RLIKE ?node``). The oracle's native side strips those
+    variable matchers (``sanitize_source_for_oracle``) so it runs over all
+    series. For params used as ``RLIKE ?var``, bind the translated side to a
+    match-all regex so it matches the same series. Exact params such as
+    ``field == ?var`` require the concrete dashboard default; compare_panel()
+    skips those honestly rather than binding ".*" as a literal value.
+    """
+    params: list[dict[str, str]] = [{"_tstart": tstart}, {"_tend": tend}]
+    for name in sorted(_regex_control_param_names(esql)):
+        params.append({name: ".*"})
+    return _run_query(request, esql, params=params)
 
 
 def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:
@@ -971,6 +1054,14 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
+        return cmp_
+    exact_control_params = _exact_control_param_names(cmp_.esql)
+    if exact_control_params:
+        names = ", ".join(f"?{name}" for name in sorted(exact_control_params))
+        cmp_.skipped_reason = (
+            "translated query uses exact dashboard control param(s) "
+            f"{names}; numeric parity requires concrete control defaults"
+        )
         return cmp_
     scalar_reductions = None
     if is_single_value_reduction(cmp_.esql):
