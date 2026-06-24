@@ -151,6 +151,63 @@ class TestBenchmarkGate:
         else:  # pragma: no cover
             raise AssertionError("expected IndexError")
 
+    def test_screenshot_like_bad_transition_fails_with_material_drops(self) -> None:
+        history = [
+            _run(
+                h="9864c90",
+                overall={
+                    **_run(h="x")["overall"],
+                    "dashboard_migration_pct": 99.2,
+                    "dashboard_clean_pct": 99.2,
+                    "panel_clean_pct": 77.4,
+                    "panel_verified_pct": 65.5,
+                    "verification_green": 2130,
+                    "verification_yellow": 3959,
+                    "verification_red": 625,
+                },
+            ),
+            _run(
+                h="c658c9a",
+                overall={
+                    **_run(h="x")["overall"],
+                    "dashboard_migration_pct": 57.6,
+                    "dashboard_clean_pct": 57.6,
+                    "panel_clean_pct": 77.2,
+                    "panel_verified_pct": 44.4,
+                    "verification_green": 1444,
+                    "verification_yellow": 4848,
+                    "verification_red": 1329,
+                },
+            ),
+        ]
+        result = benchmark_gate.evaluate_history(
+            history, max_drop_pp=0.5, max_count_drop=5, max_duration_increase_pct=100
+        )
+        assert not result.ok
+        assert {r["metric"] for r in result.regressions} == {
+            "dashboard_migration_pct",
+            "dashboard_clean_pct",
+            "panel_verified_pct",
+        }
+
+    def test_screenshot_like_stable_transition_passes_with_small_count_tolerance(self) -> None:
+        base = {
+            **_run(h="x")["overall"],
+            "dashboard_migration_pct": 99.2,
+            "dashboard_clean_pct": 99.2,
+            "panel_clean_pct": 77.4,
+            "panel_verified_pct": 65.5,
+            "verification_green": 2130,
+            "verification_yellow": 3959,
+            "verification_red": 627,
+        }
+        current = {**base, "verification_red": 625}
+        history = [_run(h="14c0a94", overall=base), _run(h="9864c90", overall=current)]
+        result = benchmark_gate.evaluate_history(
+            history, max_drop_pp=0.5, max_count_drop=5, max_duration_increase_pct=100
+        )
+        assert result.ok
+
     def test_aggregates_grafana_and_datadog_when_overall_missing(self) -> None:
         run = {
             "config": {"grafana": 1, "datadog": 1},
