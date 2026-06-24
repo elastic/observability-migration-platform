@@ -885,10 +885,18 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
     except ImportError:
         return ""
 
+    # A ``Type: Instant`` Grafana query evaluates only the most recent value, so
+    # the migrated alert must emit the instant ``time=?_tend`` selector rather
+    # than the ``step=`` range form. The range form walks every bucket in the
+    # lookback window and fires if the threshold was crossed at *any* point, so a
+    # value that already recovered still over-fires (issue #200). ``?_tend`` is
+    # bound by Kibana's es-query rule executor to the evaluation window end, i.e.
+    # "now" at runtime.
     query = build_native_promql_query(
         expr,
         index=_default_promql_index(data_view),
         kibana_type="metric",
+        instant=_grafana_unified_source_is_instant_like(ir),
     )
 
     if _promql_expr_has_comparison(expr):
