@@ -917,6 +917,20 @@ def _run_query(request, query: str, params: list | None = None) -> dict:
 
 
 _NAMED_PARAM_RE = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
+_RLIKE_PARAM_RE = re.compile(r"\bRLIKE\s+\?([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
+_TIME_PARAM_NAMES = frozenset({"_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend"})
+
+
+def _control_param_names(esql: str) -> set[str]:
+    return {name for name in _NAMED_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
+
+
+def _regex_control_param_names(esql: str) -> set[str]:
+    return {name for name in _RLIKE_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
+
+
+def _exact_control_param_names(esql: str) -> set[str]:
+    return _control_param_names(esql) - _regex_control_param_names(esql)
 
 
 def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
@@ -926,18 +940,13 @@ def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
     Grafana template variables it parameterized as Kibana controls (e.g.
     ``service.instance.id RLIKE ?node``). The oracle's native side strips those
     variable matchers (``sanitize_source_for_oracle``) so it runs over all
-    series; bind the translated side's control params to a match-all regex so it
-    matches the same series. Without this, every templated panel fails with
-    "Unknown query parameter [node]" and cannot be numerically verified - which
-    is the majority of real-world dashboards.
+    series. For params used as ``RLIKE ?var``, bind the translated side to a
+    match-all regex so it matches the same series. Exact params such as
+    ``field == ?var`` require the concrete dashboard default; compare_panel()
+    skips those honestly rather than binding ".*" as a literal value.
     """
     params: list[dict[str, str]] = [{"_tstart": tstart}, {"_tend": tend}]
-    extra = {
-        name
-        for name in _NAMED_PARAM_RE.findall(esql or "")
-        if name not in ("_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend")
-    }
-    for name in sorted(extra):
+    for name in sorted(_regex_control_param_names(esql)):
         params.append({name: ".*"})
     return _run_query(request, esql, params=params)
 
@@ -993,6 +1002,14 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
+        return cmp_
+    exact_control_params = _exact_control_param_names(cmp_.esql)
+    if exact_control_params:
+        names = ", ".join(f"?{name}" for name in sorted(exact_control_params))
+        cmp_.skipped_reason = (
+            "translated query uses exact dashboard control param(s) "
+            f"{names}; numeric parity requires concrete control defaults"
+        )
         return cmp_
     scalar_reductions = None
     if is_single_value_reduction(cmp_.esql):
