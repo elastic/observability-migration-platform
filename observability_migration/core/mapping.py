@@ -441,10 +441,17 @@ def _promql_expr_has_comparison(expr: str) -> bool:
 
 
 def _default_promql_index(data_view: str) -> str:
+    """Resolve the index for native PROMQL alert queries.
+
+    Mirrors the dashboard path (``panels.py``), which bakes the configured
+    data view straight into the ``PROMQL index=`` command and only falls back
+    to ``metrics-prometheus-*`` when no data view is configured at all.
+    Previously this treated the default ``metrics-*`` as "unset" and forced
+    ``metrics-prometheus-*``, so migrated alerts queried an index that often
+    did not hold the telemetry and silently never fired (issue #181).
+    """
     index = str(data_view or "").strip()
-    if not index or index == "metrics-*":
-        return "metrics-prometheus-*"
-    return index
+    return index or "metrics-prometheus-*"
 
 
 def _grafana_unified_simple_threshold_where_clause(ir: AlertingIR) -> str:
