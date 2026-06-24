@@ -73,6 +73,21 @@ class TestQuantilePercentile:
             90,
         )
 
+    def test_topk_quantile_over_gauge_emits_two_arg_percentile(self) -> None:
+        _assert_percentile_pct(
+            _esql("topk(5, quantile(0.9, node_memory_MemAvailable_bytes))"),
+            90,
+        )
+
+    def test_join_left_quantile_over_rate_emits_two_arg_percentile(self) -> None:
+        _assert_percentile_pct(
+            _esql(
+                "quantile(0.9, rate(http_requests_total[5m])) "
+                "+ on(instance) group_left(foo) http_requests_total"
+            ),
+            90,
+        )
+
     def test_quantile_median(self) -> None:
         _assert_percentile_pct(_esql("quantile(0.5, node_memory_MemAvailable_bytes)"), 50)
 

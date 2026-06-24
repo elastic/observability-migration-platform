@@ -1160,7 +1160,7 @@ def join_family_rule(context):
             inner_expr = physical_metric
 
         outer = OUTER_AGG_MAP.get(left_frag.outer_agg or "avg", "AVG")
-        stats_expr = f"{outer}({inner_expr})"
+        stats_expr = _agg_stats_expr(outer, inner_expr, left_frag)
         by_clause = bucket + (f", {', '.join(join_labels)}" if join_labels else "")
 
         context.parser_backend = "fragment"
@@ -1341,7 +1341,11 @@ def topk_family_rule(context):
             frag,
         )
     else:
-        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({physical_metric})"
+        stats_expr = _agg_stats_expr(
+            OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
+            physical_metric,
+            frag,
+        )
     limit = int(frag.extra.get("topk_limit") or 10)
 
     context.parser_backend = "fragment"
