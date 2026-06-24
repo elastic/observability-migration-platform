@@ -251,14 +251,63 @@ def validate_payload(
     ]
 
 
+def _panel_title(api_panel: dict[str, Any]) -> str:
+    config = api_panel.get("config") if isinstance(api_panel.get("config"), dict) else {}
+    return str(config.get("title") or "")
+
+
+def validate_payload_per_panel(
+    payload: dict[str, Any],
+    *,
+    api_call: ApiCall,
+    delete_on_success: bool = True,
+) -> list[Finding]:
+    """Validate each mapped panel in its own scratch dashboard.
+
+    The typed Dashboards API reports schema paths such as ``panels.0``; on a
+    large dashboard that is not enough context for triage. Per-panel mode trades
+    speed for precise attribution.
+    """
+    panels = payload.get("panels") if isinstance(payload.get("panels"), list) else []
+    if not panels:
+        return validate_payload(payload, api_call=api_call, delete_on_success=delete_on_success)
+    findings: list[Finding] = []
+    for idx, panel in enumerate(panels):
+        title = _panel_title(panel)
+        panel_payload = {
+            "title": f"{payload.get('title') or 'vf-conformance'}-panel-{idx}",
+            "panels": [panel],
+        }
+        status, body = api_call("POST", "/api/dashboards", panel_payload)
+        if 200 <= status < 300 and isinstance(body, dict):
+            dash_id = body.get("id")
+            if delete_on_success and dash_id:
+                api_call("DELETE", f"/api/dashboards/{dash_id}", None)
+            continue
+        message = body if isinstance(body, str) else body.get("message", json.dumps(body))
+        findings.append(
+            Finding(
+                "dashboards_api_rejected",
+                "error",
+                str(payload.get("title") or ""),
+                title,
+                str(message),
+                evidence={"status": status, "panel_index": idx},
+            )
+        )
+    return findings
+
+
 def validate_report(
     report: dict[str, Any],
     *,
     api_call: ApiCall,
     delete_on_success: bool = True,
+    per_panel: bool = False,
 ) -> list[Finding]:
     payload, findings = build_dashboard_payload(report)
-    findings.extend(validate_payload(payload, api_call=api_call, delete_on_success=delete_on_success))
+    validator = validate_payload_per_panel if per_panel else validate_payload
+    findings.extend(validator(payload, api_call=api_call, delete_on_success=delete_on_success))
     return findings
 
 
@@ -324,6 +373,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-on-error", action="store_true")
     parser.add_argument("--max-unsupported", type=int)
     parser.add_argument("--min-mapped-panels", type=int)
+    parser.add_argument(
+        "--per-panel",
+        action="store_true",
+        help="Validate each mapped panel in an isolated scratch dashboard for precise failures.",
+    )
     return parser
 
 
@@ -332,9 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     report = json.loads((args.migration_out / "migration_report.json").read_text())
     payload, findings = build_dashboard_payload(report)
     mapped = mapped_panel_count(payload)
-    findings.extend(
-        validate_payload(payload, api_call=make_kibana_api_call(args.kibana_url, args.api_key))
-    )
+    validator = validate_payload_per_panel if args.per_panel else validate_payload
+    findings.extend(validator(payload, api_call=make_kibana_api_call(args.kibana_url, args.api_key)))
     findings = apply_coverage_budget(
         findings,
         mapped_panels=mapped,

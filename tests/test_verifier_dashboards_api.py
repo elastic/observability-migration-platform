@@ -149,6 +149,48 @@ class TestPayloadAndValidation:
         assert findings[0].severity == "error"
         assert "panel config rejected" in findings[0].message
 
+    def test_validate_payload_per_panel_pinpoints_rejected_panel(self) -> None:
+        calls = []
+
+        def api_call(method, path, body=None):
+            calls.append((method, path, body))
+            title = body["panels"][0]["config"].get("title") if method == "POST" else ""
+            if title == "bad":
+                return 400, {"message": "bad panel rejected"}
+            if method == "POST":
+                return 200, {"id": f"scratch-{title}"}
+            return 204, {}
+
+        good, _ = dashboards_api.api_panel_from_report_panel("D", _panel(title="good"))
+        bad, _ = dashboards_api.api_panel_from_report_panel("D", _panel(title="bad"))
+        findings = dashboards_api.validate_payload_per_panel(
+            {"title": "dash", "panels": [good, bad]}, api_call=api_call
+        )
+        assert len(findings) == 1
+        assert findings[0].category == "dashboards_api_rejected"
+        assert findings[0].panel == "bad"
+        assert findings[0].evidence["panel_index"] == 1
+        assert ("DELETE", "/api/dashboards/scratch-good", None) in calls
+        assert all(call[1] != "/api/dashboards/scratch-bad" for call in calls)
+
+    def test_validate_report_supports_per_panel_mode(self) -> None:
+        post_count = 0
+
+        def api_call(method, path, body=None):
+            nonlocal post_count
+            if method == "POST":
+                post_count += 1
+                return 200, {"id": f"scratch-{post_count}"}
+            return 204, {}
+
+        findings = dashboards_api.validate_report(
+            _report([_panel(title="a"), _panel(title="b")]),
+            api_call=api_call,
+            per_panel=True,
+        )
+        assert findings == []
+        assert post_count == 2
+
     def test_validate_report_combines_local_and_remote_findings(self) -> None:
         def api_call(method, path, body=None):
             return 200, {"id": "scratch-1"}
