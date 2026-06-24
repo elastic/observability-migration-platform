@@ -114,6 +114,13 @@ def compute_alert_delay(pending_period: str, schedule_interval: str) -> tuple[in
 
 # ---- Fidelity classification ----
 
+# Canonical automation-tier values. These strings are the shared vocabulary for
+# every breakdown (console/run summary, detailed results, comparison), so keep a
+# single source of truth to prevent drift between the places that emit them.
+AUTOMATED_TIER = "automated"
+DRAFT_REVIEW_TIER = "draft_requires_review"
+MANUAL_REQUIRED_TIER = "manual_required"
+
 AUTOMATED_KINDS = {"grafana_legacy", "datadog_metric"}
 DRAFT_REVIEW_KINDS = {"grafana_unified", "datadog_log"}
 MANUAL_ONLY_KINDS = {
@@ -152,40 +159,40 @@ def classify_automation_tier(ir: AlertingIR) -> str:
     Returns one of: "automated", "draft_requires_review", "manual_required".
     """
     if ir.kind in MANUAL_ONLY_KINDS:
-        return "manual_required"
+        return MANUAL_REQUIRED_TIER
 
     if ir.kind == "grafana_legacy":
         if _has_source_faithful_query(ir) and _has_simple_threshold_condition(ir):
-            return "automated"
-        return "manual_required"
+            return AUTOMATED_TIER
+        return MANUAL_REQUIRED_TIER
 
     if ir.kind == "grafana_unified":
         if _grafana_unified_is_strict_exact_query_subset(ir):
-            return "automated"
+            return AUTOMATED_TIER
         if _has_source_faithful_query(ir):
-            return "draft_requires_review"
-        return "manual_required"
+            return DRAFT_REVIEW_TIER
+        return MANUAL_REQUIRED_TIER
 
     if ir.kind == "datadog_metric":
         if not _has_source_faithful_query(ir):
-            return "manual_required"
+            return MANUAL_REQUIRED_TIER
         if ir.warnings:
-            return "manual_required"
+            return MANUAL_REQUIRED_TIER
         if _has_simple_threshold_condition(ir):
-            return "automated"
-        return "draft_requires_review"
+            return AUTOMATED_TIER
+        return DRAFT_REVIEW_TIER
 
     if ir.kind == "datadog_log":
         if ir.warnings:
-            return "manual_required"
+            return MANUAL_REQUIRED_TIER
         if _has_source_faithful_query(ir):
-            return "draft_requires_review"
-        return "manual_required"
+            return DRAFT_REVIEW_TIER
+        return MANUAL_REQUIRED_TIER
 
     if ir.kind in DRAFT_REVIEW_KINDS:
-        return "draft_requires_review"
+        return DRAFT_REVIEW_TIER
 
-    return "manual_required"
+    return MANUAL_REQUIRED_TIER
 
 
 def _has_simple_threshold_condition(ir: AlertingIR) -> bool:
@@ -1012,7 +1019,12 @@ def map_alert_to_kibana_payload(
     ir.target_rule_payload = {}
     ir.losses = losses
 
-    if tier == "manual_required" or not rule_type:
+    if tier == MANUAL_REQUIRED_TIER or not rule_type:
+        # When ``not rule_type`` but ``tier`` is non-manual, the block is carried
+        # by ``status`` only: ``automation_tier`` is intentionally left at its
+        # classified value and the same value is returned below, so the two tier
+        # breakdowns still agree. This is distinct from the empty-``params``
+        # downgrade further down, which must rewrite ``automation_tier``.
         ir.status = AssetStatus.MANUAL_REQUIRED
         ir.manual_required = True
         if rule_type:
@@ -1058,12 +1070,16 @@ def map_alert_to_kibana_payload(
     if not params:
         ir.status = AssetStatus.MANUAL_REQUIRED
         ir.manual_required = True
+        # Persist the downgrade on the rule record so every artifact rebuilt
+        # from it (detailed results, comparison) agrees with the console/run
+        # summary, which counts this returned tier.
+        ir.automation_tier = MANUAL_REQUIRED_TIER
         payload_status_reason = "No source-faithful target query could be produced"
         ir.payload_status = "blocked_no_source_faithful_query"
         ir.payload_status_reason = payload_status_reason
         return {
             "rule_payload": {},
-            "automation_tier": "manual_required",
+            "automation_tier": MANUAL_REQUIRED_TIER,
             "target_rule_type": "",
             "selected_target_rule_type": rule_type,
             "payload_emitted": False,
@@ -1119,7 +1135,7 @@ def map_alert_to_kibana_payload(
     ir.payload_status = "emitted"
     ir.payload_status_reason = ""
 
-    if tier == "automated":
+    if tier == AUTOMATED_TIER:
         ir.status = AssetStatus.TRANSLATED
         ir.manual_required = False
     else:
