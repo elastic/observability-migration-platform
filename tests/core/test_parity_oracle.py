@@ -349,6 +349,42 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         bound = {k: v for d in seen["params"] for k, v in d.items()}
         self.assertEqual(set(bound), {"_tstart", "_tend"})
 
+    def test_run_translated_binds_native_promql_regex_control_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host=~?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(bound["host"], ".*")
+
+    def test_run_translated_does_not_bind_negated_native_promql_regex_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host!~?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
+    def test_run_translated_does_not_bind_mixed_native_promql_regex_and_exact_params(self):
+        seen = {}
+
+        def request(method, path, body=None, content_type="application/json"):
+            seen["params"] = body.get("params") if isinstance(body, dict) else None
+            return {"columns": [], "values": []}
+
+        esql = "PROMQL index=metrics-* step=5m value=(cpu{host=~?host,job=?host})"
+        po.run_translated(request, esql, "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")
+        bound = {k: v for d in seen["params"] for k, v in d.items()}
+        self.assertEqual(set(bound), {"_tstart", "_tend"})
+
     def test_compare_panel_skips_exact_control_params_without_defaults(self):
         calls = []
 
@@ -411,6 +447,25 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         self.assertIn("exact dashboard control param", result.skipped_reason)
         self.assertIn("?job", result.skipped_reason)
         self.assertEqual(calls, [])
+
+    def test_compare_panel_runs_native_promql_regex_control_params(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body if isinstance(body, dict) else {})
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query='cpu{host=~"$host"}',
+            translated_query="PROMQL index=metrics-* step=5m value=(cpu{host=~?host})",
+            index="metrics-*", step=300,
+            start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z",
+        )
+        self.assertNotIn("exact dashboard control param", result.skipped_reason)
+        self.assertEqual(len(calls), 2)
+        translated_params = {k: v for d in calls[1]["params"] for k, v in d.items()}
+        self.assertEqual(translated_params["host"], ".*")
 
     def test_run_translated_no_extra_params_when_only_time(self):
         seen = {}

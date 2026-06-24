@@ -925,6 +925,7 @@ def _run_query(request, query: str, params: list | None = None) -> dict:
 
 _NAMED_PARAM_RE = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
 _RLIKE_PARAM_RE = re.compile(r"\bRLIKE\s+\?([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
+_PROMQL_REGEX_PARAM_RE = re.compile(r"(?<![!<>=])=~\s*\?([a-zA-Z_][a-zA-Z0-9_]*)")
 _TIME_PARAM_NAMES = frozenset({"_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend"})
 
 
@@ -948,11 +949,16 @@ def _rlike_is_negated(esql: str, rlike_start: int) -> bool:
     )
 
 
-def _positive_rlike_param_spans(esql: str) -> set[tuple[int, int]]:
+def _positive_regex_param_spans(esql: str) -> set[tuple[int, int]]:
     spans: set[tuple[int, int]] = set()
     for match in _RLIKE_PARAM_RE.finditer(esql or ""):
         name = match.group(1)
         if name in _TIME_PARAM_NAMES or _rlike_is_negated(esql, match.start()):
+            continue
+        spans.add((match.start(1) - 1, match.end(1)))
+    for match in _PROMQL_REGEX_PARAM_RE.finditer(esql or ""):
+        name = match.group(1)
+        if name in _TIME_PARAM_NAMES:
             continue
         spans.add((match.start(1) - 1, match.end(1)))
     return spans
@@ -960,11 +966,11 @@ def _positive_rlike_param_spans(esql: str) -> set[tuple[int, int]]:
 
 def _regex_control_param_names(esql: str) -> set[str]:
     occurrences = _control_param_occurrences(esql)
-    positive_rlike_spans = _positive_rlike_param_spans(esql)
+    positive_regex_spans = _positive_regex_param_spans(esql)
     bindable: set[str] = set()
     for name in {item[0] for item in occurrences}:
         spans = [span for candidate, span in occurrences if candidate == name]
-        if spans and all(span in positive_rlike_spans for span in spans):
+        if spans and all(span in positive_regex_spans for span in spans):
             bindable.add(name)
     return bindable
 
