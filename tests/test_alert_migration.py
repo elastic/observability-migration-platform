@@ -2051,7 +2051,7 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertEqual(result["automation_tier"], "automated")
         self.assertTrue(result["valid"])
         self.assertEqual(ir.translated_query_provenance, "translated_esql")
-        self.assertIn("PROMQL index=metrics-prometheus-* step=1m value=(", query)
+        self.assertIn("PROMQL index=metrics-* step=1m value=(", query)
         self.assertIn('avg by (instance) (rate(node_cpu_seconds_total{mode="user"}[5m]))', query)
         self.assertIn("| STATS value = LAST(value, step) BY instance", query)
         self.assertIn("| SORT value DESC", query)
@@ -2069,12 +2069,37 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertEqual(result["automation_tier"], "automated")
         self.assertTrue(result["valid"])
         self.assertEqual(ir.translated_query_provenance, "translated_esql")
-        self.assertIn("PROMQL index=metrics-prometheus-* step=1m value=(", query)
+        self.assertIn("PROMQL index=metrics-* step=1m value=(", query)
         self.assertIn('avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))', query)
         self.assertIn("| STATS value = LAST(value, step) BY instance", query)
         self.assertIn("| SORT value ASC", query)
         self.assertIn("| LIMIT 5", query)
         self.assertIn("| WHERE value < 0.95", query)
+
+    def test_grafana_unified_alert_esql_honors_custom_data_view(self):
+        # Regression for issue #181: the migrated alert ES|QL must target the
+        # data view the migration actually writes to, not a hardcoded
+        # ``metrics-prometheus-*``.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_topk_safe_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir, data_view="my-metrics-*")
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("PROMQL index=my-metrics-* step=1m value=(", query)
+        self.assertNotIn("metrics-prometheus-*", query)
+
+    def test_default_promql_index_resolution(self):
+        from observability_migration.core.mapping import _default_promql_index
+
+        # The default data view is preserved (issue #181), not overridden.
+        self.assertEqual(_default_promql_index("metrics-*"), "metrics-*")
+        # Custom data views pass through unchanged.
+        self.assertEqual(_default_promql_index("my-metrics-*"), "my-metrics-*")
+        # Only an unset/empty data view falls back to the Prometheus default.
+        self.assertEqual(_default_promql_index(""), "metrics-prometheus-*")
+        self.assertEqual(_default_promql_index("   "), "metrics-prometheus-*")
 
     def test_grafana_unified_loki_is_manual(self):
         ir = build_alerting_ir_from_grafana_unified(
