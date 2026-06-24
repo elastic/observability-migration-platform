@@ -45,6 +45,41 @@ class TestLensFixtures:
         assert fixture.name == "xy-line"
         assert fixture.coverage_key == "xy:line"
 
+    def test_load_raw_metric_lens_attributes(self, tmp_path: Path) -> None:
+        path = tmp_path / "metric-basic-esql.json"
+        path.write_text(json.dumps({
+            "title": "Basic Count Metric",
+            "visualizationType": "lnsMetric",
+            "state": {
+                "datasourceStates": {"textBased": {"layers": {}}},
+                "visualization": {"layerId": "layer_0"},
+            },
+        }))
+        fixture = lens_fixtures.load_fixture(path)
+        assert fixture.source_format == "raw_attributes"
+        assert fixture.chart_type == "metric"
+        assert fixture.data_source == "esql"
+        assert fixture.coverage_key == "metric"
+
+    def test_load_raw_xy_lens_attributes_infers_series_type(self, tmp_path: Path) -> None:
+        path = tmp_path / "xy-chart-bar-dataview.json"
+        path.write_text(json.dumps({
+            "title": "Events Over Time",
+            "visualizationType": "lnsXY",
+            "state": {
+                "datasourceStates": {"formBased": {"layers": {}}},
+                "visualization": {
+                    "layers": [{"seriesType": "bar"}],
+                },
+            },
+        }))
+        fixture = lens_fixtures.load_fixture(path)
+        assert fixture.source_format == "raw_attributes"
+        assert fixture.chart_type == "xy"
+        assert fixture.series_type == "bar"
+        assert fixture.data_source == "data_view"
+        assert fixture.coverage_key == "xy:bar"
+
     def test_validate_fixture_contract(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.json"
         _write_fixture(path, "bad", "", data_source="other", attributes={})
@@ -68,4 +103,23 @@ class TestLensFixtures:
         result = lens_fixtures.validate_fixture_dir(tmp_path, {"xy:line", "metric"})
         assert result["ok"]
         assert result["coverage"]["missing"] == []
+        assert result["by_source_format"] == {"wrapper": 2}
+        assert result["by_data_source"] == {"esql": 2}
+
+    def test_validate_real_generator_raw_fixture_dir_shape(self, tmp_path: Path) -> None:
+        (tmp_path / "metric-basic-esql.json").write_text(json.dumps({
+            "visualizationType": "lnsMetric",
+            "state": {"datasourceStates": {"textBased": {}}, "visualization": {}},
+        }))
+        (tmp_path / "xy-chart-esql.json").write_text(json.dumps({
+            "visualizationType": "lnsXY",
+            "state": {
+                "datasourceStates": {"textBased": {}},
+                "visualization": {"preferredSeriesType": "line"},
+            },
+        }))
+        result = lens_fixtures.validate_fixture_dir(tmp_path, {"metric", "xy:line"})
+        assert result["ok"]
+        assert result["by_source_format"] == {"raw_attributes": 2}
+        assert result["by_data_source"] == {"esql": 2}
 

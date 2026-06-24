@@ -6,7 +6,7 @@ toolchain. This module defines the *consumer-side* contract for those generated
 fixtures so mig-to-kbn can enforce coverage and schema sanity without depending
 on a Kibana checkout at test time.
 
-Expected fixture JSON shape::
+Preferred wrapper fixture JSON shape::
 
     {
       "name": "xy-line-basic",
@@ -19,6 +19,10 @@ Expected fixture JSON shape::
 The generator can be the external Docker/TS workflow; this oracle verifies that
 the output is well-formed and covers the chart families our emitter claims to
 support.
+
+The public fixture generator also writes raw Lens attributes directly. Those are
+accepted too: ``visualizationType`` and ``state.datasourceStates`` are used to
+infer chart type and data-source kind.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ class LensFixture:
     data_source: str
     attributes: dict[str, Any]
     series_type: str = ""
+    source_format: str = "wrapper"
 
     @property
     def coverage_key(self) -> str:
@@ -45,14 +50,89 @@ class LensFixture:
         return self.chart_type
 
 
+_VIS_TYPE_TO_CHART = {
+    "lnsMetric": "metric",
+    "lnsXY": "xy",
+    "lnsPie": "pie",
+    "lnsDatatable": "table",
+    "lnsGauge": "gauge",
+    "lnsHeatmap": "heatmap",
+    "lnsTagcloud": "tagcloud",
+    "lnsTreemap": "treemap",
+    "lnsMosaic": "mosaic",
+    "lnsWaffle": "waffle",
+}
+
+
+def _infer_chart_type(attributes: dict[str, Any], filename: str) -> str:
+    explicit = _VIS_TYPE_TO_CHART.get(str(attributes.get("visualizationType") or ""))
+    if explicit:
+        return explicit
+    stem = Path(filename).stem.lower()
+    if stem.startswith("xy-") or stem.startswith("xy_"):
+        return "xy"
+    for name in ("metric", "gauge", "heatmap", "tagcloud", "treemap", "mosaic", "waffle", "pie", "datatable"):
+        if stem.startswith(name):
+            return "table" if name == "datatable" else name
+    return ""
+
+
+def _infer_data_source(attributes: dict[str, Any], filename: str) -> str:
+    state = attributes.get("state") if isinstance(attributes.get("state"), dict) else {}
+    ds = state.get("datasourceStates") if isinstance(state.get("datasourceStates"), dict) else {}
+    if "textBased" in ds:
+        return "esql"
+    if "formBased" in ds:
+        return "data_view"
+    stem = Path(filename).stem.lower()
+    if stem.endswith("-esql"):
+        return "esql"
+    if stem.endswith("-dataview"):
+        return "data_view"
+    return ""
+
+
+def _infer_series_type(attributes: dict[str, Any], filename: str) -> str:
+    state = attributes.get("state") if isinstance(attributes.get("state"), dict) else {}
+    visualization = state.get("visualization") if isinstance(state.get("visualization"), dict) else {}
+    if isinstance(visualization.get("preferredSeriesType"), str):
+        return visualization["preferredSeriesType"]
+    layers = visualization.get("layers")
+    if isinstance(layers, list) and layers:
+        first = layers[0] if isinstance(layers[0], dict) else {}
+        if isinstance(first.get("seriesType"), str):
+            return first["seriesType"]
+    stem = Path(filename).stem.lower()
+    for series in ("line", "area", "bar"):
+        if series in stem:
+            return series
+    return ""
+
+
+def _raw_attributes_fixture(payload: dict[str, Any], path: Path) -> LensFixture:
+    return LensFixture(
+        name=path.stem,
+        chart_type=_infer_chart_type(payload, path.name),
+        series_type=_infer_series_type(payload, path.name),
+        data_source=_infer_data_source(payload, path.name),
+        attributes=payload,
+        source_format="raw_attributes",
+    )
+
+
 def load_fixture(path: Path) -> LensFixture:
     payload = json.loads(Path(path).read_text())
+    if not isinstance(payload, dict):
+        return LensFixture(name=Path(path).stem, chart_type="", data_source="", attributes={})
+    if "attributes" not in payload and ("visualizationType" in payload or "state" in payload):
+        return _raw_attributes_fixture(payload, Path(path))
     return LensFixture(
         name=str(payload.get("name") or Path(path).stem),
         chart_type=str(payload.get("chart_type") or ""),
         series_type=str(payload.get("series_type") or ""),
         data_source=str(payload.get("data_source") or ""),
         attributes=payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {},
+        source_format="wrapper",
     )
 
 
@@ -98,8 +178,18 @@ def validate_fixture_dir(path: Path, required: set[str]) -> dict[str, Any]:
         "fixtures": len(fixtures),
         "errors": errors,
         "coverage": coverage,
+        "by_source_format": _count_by(fixtures, lambda item: item.source_format),
+        "by_data_source": _count_by(fixtures, lambda item: item.data_source),
         "ok": not errors and coverage["ok"],
     }
+
+
+def _count_by(fixtures: list[LensFixture], key_fn) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for fixture in fixtures:
+        key = str(key_fn(fixture) or "")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _build_argparser() -> argparse.ArgumentParser:
