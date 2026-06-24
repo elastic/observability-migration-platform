@@ -207,6 +207,7 @@ def create_rule(
     actions: list[dict[str, Any]] | None = None,
     enabled: bool = False,
     tags: list[str] | None = None,
+    alert_delay: dict[str, Any] | None = None,
     api_key: str = "",
     space_id: str = "",
     timeout: int = 15,
@@ -228,6 +229,8 @@ def create_rule(
         "enabled": enabled,
         "tags": tags or ["obs-migration"],
     }
+    if alert_delay:
+        body["alert_delay"] = alert_delay
     try:
         resp = session.post(f"{base}/api/alerting/rule", json=body, timeout=timeout)
         resp.raise_for_status()
@@ -533,6 +536,7 @@ def create_rules_from_payloads(
             actions=payload.get("actions") or [],
             enabled=bool(enabled),
             tags=tags,
+            alert_delay=payload.get("alert_delay") or None,
             api_key=api_key,
             space_id=space_id,
             timeout=timeout,
@@ -756,6 +760,7 @@ def verify_emitted_rule_uploads(
                 actions=payload.get("actions") or [],
                 enabled=bool(payload.get("enabled", False)),
                 tags=[*(payload.get("tags") or []), marker],
+                alert_delay=payload.get("alert_delay") or None,
                 api_key=api_key,
                 space_id=space_id,
                 timeout=timeout,

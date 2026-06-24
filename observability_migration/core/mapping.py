@@ -10,6 +10,7 @@ losses for cases that cannot be automatically translated.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -20,6 +21,59 @@ from observability_migration.core.assets.status import AssetStatus
 ES_QUERY_RULE_TYPE = ".es-query"
 INDEX_THRESHOLD_RULE_TYPE = ".index-threshold"
 CUSTOM_THRESHOLD_RULE_TYPE = "observability.rules.custom_threshold"
+
+# Kibana enforces a minimum rule schedule of 60s; alert-delay math divides the
+# pending period by the effective check interval, so an unknown/empty schedule
+# falls back to this same floor.
+_DEFAULT_SCHEDULE_SECONDS = 60
+_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+_DURATION_TOKEN_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
+
+
+def _duration_to_seconds(value: str) -> int:
+    """Parse a Grafana/Prometheus duration to whole seconds.
+
+    Accepts compact duration strings (``"5m"``, ``"1h30m"``) and bare integers
+    (treated as seconds). Unparseable input yields ``0``.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0
+    if text.isdigit():
+        return int(text)
+    compact = re.sub(r"\s+", "", text)
+    tokens = _DURATION_TOKEN_RE.findall(compact)
+    if not tokens or "".join(f"{n}{u}" for n, u in tokens) != compact:
+        return 0
+    return sum(int(n) * _DURATION_UNIT_SECONDS[u.lower()] for n, u in tokens)
+
+
+def compute_alert_delay(pending_period: str, schedule_interval: str) -> tuple[int, bool] | None:
+    """Convert a Grafana pending period into a Kibana ``alert_delay`` count.
+
+    Grafana's pending period (the rule ``for`` field) holds the alert in a
+    ``Pending`` state until the condition has breached continuously for that
+    duration. Kibana models the same intent with "Alert delay" — fire only after
+    ``N`` consecutive matching checks — where a check happens once per rule
+    schedule. The two convert as ``N = ceil(pending / schedule)``.
+
+    Returns ``(active, rounded_up)`` where ``active`` is the consecutive-match
+    count (minimum 1), or ``None`` when the source supplied no pending period so
+    the Kibana default is left untouched. ``rounded_up`` is ``True`` when a
+    non-zero pending period shorter than one check interval was raised to a
+    single match.
+    """
+    text = str(pending_period or "").strip()
+    if not text:
+        return None
+    pending_seconds = _duration_to_seconds(text)
+    if pending_seconds <= 0:
+        # Grafana skips the Pending state for a 0 pending period: fire immediately.
+        return (1, False)
+    interval_seconds = _duration_to_seconds(schedule_interval) or _DEFAULT_SCHEDULE_SECONDS
+    active = max(1, math.ceil(pending_seconds / interval_seconds))
+    rounded_up = pending_seconds < interval_seconds
+    return (active, rounded_up)
 
 # ---- Fidelity classification ----
 
@@ -1010,6 +1064,21 @@ def map_alert_to_kibana_payload(
         "enabled": False,
         "tags": ["obs-migration", f"source:{ir.kind}", *extra_tags],
     }
+
+    # Carry over Grafana's pending period as Kibana's "Alert delay" so migrated
+    # rules fire only after a sustained breach rather than on the first check.
+    pending_period = ir.pending_period or str((ir.source_extension or {}).get("pending_for", "") or "")
+    alert_delay = compute_alert_delay(pending_period, schedule)
+    if alert_delay is not None:
+        active, rounded_up = alert_delay
+        payload["alert_delay"] = {"active": active}
+        if rounded_up:
+            note = (
+                f"Grafana pending period '{pending_period}' is shorter than the "
+                f"{schedule} check interval; alert delay rounded up to 1 consecutive match"
+            )
+            if note not in losses:
+                losses.append(note)
 
     ir.target_rule_payload = payload
     ir.target_rule_type = normalized_rule_type
