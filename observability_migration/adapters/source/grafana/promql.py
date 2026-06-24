@@ -1524,6 +1524,7 @@ def _copy_fragment_summary(target, source):
         "join_labels",
         "offset",
         "post_filter",
+        "quantile_phi",
         "start_matchers",
         "start_metric",
         "vector_matching",
@@ -2454,10 +2455,39 @@ def _apply_fragment_to_context(frag, context):
     if not context.range_window and (frag.range_window or summary.range_window):
         context.range_window = frag.range_window or summary.range_window
 
-def _build_stats_call(outer_agg, inner_func, metric_name, range_window):
+def _build_stats_call(outer_agg, inner_func, metric_name, range_window, frag=None):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
     esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
-    return f"{esql_outer}({esql_inner}({metric_name}, {range_window}))"
+    inner_expr = f"{esql_inner}({metric_name}, {range_window})"
+    return _apply_outer_agg(esql_outer, inner_expr, frag)
+
+
+def _apply_outer_agg(esql_outer, inner_expr, frag):
+    """Wrap ``inner_expr`` in the outer ES|QL aggregation.
+
+    ES|QL ``PERCENTILE`` requires the percentile as a second argument, so the
+    PromQL ``quantile(phi, …)`` fraction (captured as ``quantile_phi`` in the
+    ``[0, 1]`` range) must be emitted as ``phi * 100``. Emitting a one-argument
+    ``PERCENTILE(...)`` compiles and lints clean but fails at query time with
+    "error building [percentile]: expects exactly two arguments" (issue #213).
+    """
+    if esql_outer == "PERCENTILE":
+        phi = frag.extra.get("quantile_phi") if frag else None
+        if phi is not None:
+            return f"PERCENTILE({inner_expr}, {_format_scalar_value(float(phi) * 100)})"
+    return f"{esql_outer}({inner_expr})"
+
+
+def _esql_binary_expr(left, op, right):
+    """Render a PromQL binary arithmetic expression in ES|QL syntax.
+
+    PromQL ``^`` (power) has no ES|QL infix operator; ES|QL spells it
+    ``POW(base, exponent)``. Passing ``^`` through verbatim compiles and lints
+    clean but fails at query time with "token recognition error at: '^'".
+    """
+    if op == "^":
+        return f"POW({left}, {right})"
+    return f"({left} {op} {right})"
 
 
 def _build_esql(context):
@@ -2673,9 +2703,13 @@ def _frag_eval_expr(alias, frag):
     final_alias = f"{alias}_calc"
     if frag.extra.get("scalar_left") is not None:
         sv = _format_scalar_value(frag.extra["scalar_left"])
+        if frag.binary_op == "^":
+            return final_alias, f"POW({sv}, {alias})"
         return final_alias, f"{sv} {frag.binary_op} {alias}"
     if frag.binary_rhs and frag.binary_rhs.is_scalar:
         sv = _format_scalar_value(frag.binary_rhs.scalar_value)
+        if frag.binary_op == "^":
+            return final_alias, f"POW({alias}, {sv})"
         return final_alias, f"{alias} {frag.binary_op} {sv}"
     return alias, ""
 
@@ -3104,7 +3138,7 @@ def _build_measure_spec(
                 if counter_warning:
                     warnings.append(counter_warning)
         outer = OUTER_AGG_MAP.get(frag.outer_agg, rule_pack.default_gauge_agg.upper())
-        stats_expr = f"{outer}({inner_expr})"
+        stats_expr = _apply_outer_agg(outer, inner_expr, frag)
     elif frag.family == "range_agg":
         esql_inner = AGG_FUNCTION_MAP.get(frag.range_func)
         if not esql_inner:
@@ -3136,7 +3170,7 @@ def _build_measure_spec(
                 "when grouping TS functions by label fields"
             )
         else:
-            stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
+            stats_expr = _apply_outer_agg(outer, inner_expr, frag) if outer else inner_expr
     elif frag.family == "scaled_agg":
         esql_inner = AGG_FUNCTION_MAP.get(frag.range_func)
         if not esql_inner:
@@ -3153,7 +3187,9 @@ def _build_measure_spec(
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        stats_expr = f"{esql_outer}({esql_inner}({metric_field}, {frag.range_window}))"
+        stats_expr = _apply_outer_agg(
+            esql_outer, f"{esql_inner}({metric_field}, {frag.range_window})", frag
+        )
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
@@ -3257,6 +3293,16 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
     agg = match.group("agg")
     inner = match.group("inner").strip()
     condition = " and ".join(f"({filter_expr})" for filter_expr in filters)
+    # PERCENTILE(value_expr, phi) takes the percentile as a second, top-level
+    # argument (issue #213). Only the value expression may be wrapped in CASE;
+    # folding the whole inner would push the percentile constant inside CASE and
+    # emit an invalid 3-arg CASE. Split the trailing percentile arg off first.
+    if agg == "PERCENTILE":
+        args = _split_top_level_csv(inner)
+        if len(args) == 2:
+            value_expr, percentile = args[0].strip(), args[1].strip()
+            return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
+        return None
     ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
     if agg.endswith("_OVER_TIME") and ts_match:
         field = ts_match.group("field").strip()
@@ -4021,9 +4067,9 @@ def _build_formula_plan(
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
                     replacement = "0"
                     expr = (
-                        f"({replacement} {frag.binary_op} {plan.expr})"
+                        _esql_binary_expr(replacement, frag.binary_op, plan.expr)
                         if phantom_on_left
-                        else f"({plan.expr} {frag.binary_op} {replacement})"
+                        else _esql_binary_expr(plan.expr, frag.binary_op, replacement)
                     )
                     warning = (
                         f"Grafana variable ${var_name} used as scalar arithmetic value "
@@ -4179,7 +4225,7 @@ def _build_formula_plan(
 
         return FormulaPlan(
             specs=left_plan.specs + right_plan.specs,
-            expr=f"({left_plan.expr} {frag.binary_op} {right_plan.expr})",
+            expr=_esql_binary_expr(left_plan.expr, frag.binary_op, right_plan.expr),
             warnings=warnings,
         )
 

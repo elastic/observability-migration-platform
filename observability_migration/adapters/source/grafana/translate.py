@@ -937,8 +937,20 @@ def join_family_rule(context):
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
 
-            left_stats_call = _build_stats_call(left_info["outer_agg"], left_inner_func, left_metric_field, left_info["range_window"])
-            right_stats_call = _build_stats_call(right_info["outer_agg"], right_inner_func, right_metric_field, right_info["range_window"])
+            left_stats_call = _build_stats_call(
+                left_info["outer_agg"],
+                left_inner_func,
+                left_metric_field,
+                left_info["range_window"],
+                left_frag,
+            )
+            right_stats_call = _build_stats_call(
+                right_info["outer_agg"],
+                right_inner_func,
+                right_metric_field,
+                right_info["range_window"],
+                right_frag,
+            )
             # Apply per-side exclusive filters via CASE() so that label
             # selectors which appear on only one operand (e.g. mode="user" on
             # the numerator) are not silently dropped.
@@ -1148,7 +1160,7 @@ def join_family_rule(context):
             inner_expr = physical_metric
 
         outer = OUTER_AGG_MAP.get(left_frag.outer_agg or "avg", "AVG")
-        stats_expr = f"{outer}({inner_expr})"
+        stats_expr = _agg_stats_expr(outer, inner_expr, left_frag)
         by_clause = bucket + (f", {', '.join(join_labels)}" if join_labels else "")
 
         context.parser_backend = "fragment"
@@ -1326,9 +1338,14 @@ def topk_family_rule(context):
             inner_func,
             physical_metric,
             frag.range_window or rp.default_rate_window,
+            frag,
         )
     else:
-        stats_expr = f"{OUTER_AGG_MAP.get(frag.outer_agg or 'avg', 'AVG')}({physical_metric})"
+        stats_expr = _agg_stats_expr(
+            OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
+            physical_metric,
+            frag,
+        )
     limit = int(frag.extra.get("topk_limit") or 10)
 
     context.parser_backend = "fragment"
@@ -1568,7 +1585,7 @@ def scaled_agg_family_rule(context):
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {esql_outer}({esql_inner}({physical_metric}, {frag.range_window}))"
+    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({physical_metric}, {frag.range_window})', frag)}"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -1664,7 +1681,7 @@ def nested_agg_family_rule(context):
                 *_build_where_lines(filters),
                 f"| WHERE {physical_metric} IS NOT NULL",
                 f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {esql_outer}({inner_alias}) BY time_bucket",
+                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag)} BY time_bucket",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -1694,7 +1711,7 @@ def nested_agg_family_rule(context):
             summary_lines.append(f"| STATS {first_stats_expr} BY {', '.join(inner_group)}")
         else:
             summary_lines.append(f"| STATS {first_stats_expr}")
-        summary_lines.append(f"| STATS {result_alias} = {esql_outer}({second_stats_arg})")
+        summary_lines.append(f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag)}")
         context.esql_query = "\n".join(summary_lines)
     else:
         context.output_group_fields = ["time_bucket"]
@@ -1710,7 +1727,7 @@ def nested_agg_family_rule(context):
                 *_build_where_lines(filters),
                 *( [count_presence_filter] if count_presence_filter else [] ),
                 f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {esql_outer}({second_stats_arg}) BY time_bucket",
+                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag)} BY time_bucket",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -1980,7 +1997,7 @@ def range_agg_family_rule(context):
             "when grouping TS functions by label fields",
         )
     else:
-        stats_expr = f"{outer}({inner_expr})" if outer else inner_expr
+        stats_expr = _agg_stats_expr(outer, inner_expr, frag) if outer else inner_expr
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     group_by_parts, output_group = _grouping_parts(bucket, group_fields)

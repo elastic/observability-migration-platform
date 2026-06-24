@@ -738,6 +738,20 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertIsNone(expr)
 
+    def test_filtered_percentile_inlines_value_arg_and_keeps_percentile(self):
+        # PERCENTILE(value, phi) takes the percentile as a top-level 2nd arg;
+        # only the value expression may be wrapped in CASE so the emitted ES|QL
+        # stays a valid two-argument PERCENTILE (issue #213).
+        expr = promql._inline_filters_into_stats_expr(
+            "PERCENTILE(RATE(http_requests_total, 5m), 90)",
+            ['mode == "user"'],
+        )
+
+        self.assertEqual(
+            expr,
+            'PERCENTILE(CASE((mode == "user"), RATE(http_requests_total, 5m), NULL), 90)',
+        )
+
     def test_resolve_label_prefers_source_field_when_target_has_both(self):
         """If the target has both `instance` AND `service.instance.id`, the
         resolver must keep `instance` (source-faithful) instead of rewriting."""
