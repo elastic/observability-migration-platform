@@ -1891,6 +1891,44 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("TO_STRING(`in`)", query)
         self.assertNotIn("TO_STRING(in)", query)
 
+    def test_native_promql_three_label_legend_drives_composite_breakdown(self):
+        # Issue #189 is broader than the ArgoCD two-label case: HAProxy panels
+        # use three-label legends like ``{{code}} {{proxy}} {{server}}`` over
+        # ``by (code, proxy, server)``. On the native-PROMQL path all three
+        # labels are PROMQL output columns that never reach a STATS/KEEP stage;
+        # the composite-legend rewrite must resolve all three and break the
+        # chart down by the composite ``legend`` column rather than collapsing
+        # to the first label (``code``), which would visually merge every
+        # proxy/server sharing an HTTP code.
+        self.rule_pack.native_promql = True
+        panel = {
+            "title": "HTTP Responses by Backend",
+            "type": "timeseries",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "sum(rate(haproxy_server_http_responses_total[5m])) by (code, proxy, server)",
+                    "legendFormat": "{{code}} {{proxy}} {{server}}",
+                }
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(
+            query.startswith("PROMQL "),
+            f"Expected the native-PROMQL command form, got: {query!r}",
+        )
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "legend")
+        self.assertIn("EVAL legend = CONCAT(", query)
+        self.assertIn('COALESCE(TO_STRING(code), "")', query)
+        self.assertIn('COALESCE(TO_STRING(proxy), "")', query)
+        self.assertIn('COALESCE(TO_STRING(server), "")', query)
+        self.assertFalse(
+            any("visually merged" in w or "not on the chart" in w for w in result.reasons),
+            f"Composite legend covers all three dimensions; unexpected merge warning: {result.reasons}",
+        )
+
     def test_multi_target_post_filters_are_applied_per_series(self):
         panel = {
             "id": 99,
