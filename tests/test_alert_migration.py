@@ -1870,6 +1870,35 @@ class TestBuildRuleParams(unittest.TestCase):
         self.assertEqual(params["timeWindowSize"], 2)
         self.assertEqual(params["timeWindowUnit"], "h")
 
+    def test_es_query_params_set_time_field_timestamp(self):
+        # Kibana .es-query rules need a time field to bound each evaluation to
+        # the lookback window; PROMQL/ES|QL metrics indices default to @timestamp.
+        ir = AlertingIR(
+            evaluation_window="10m",
+            translated_query="FROM metrics-* | STATS doc_count = COUNT(*) | WHERE doc_count > 10",
+            translated_query_provenance="translated_esql",
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertEqual(params["timeField"], "@timestamp")
+
+    def test_es_query_params_set_time_field_for_grafana_prometheus(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
+        self.assertEqual(params["timeField"], "@timestamp")
+
+    def test_es_query_params_set_time_field_for_datadog(self):
+        from observability_migration.adapters.source.datadog.field_map import load_profile
+
+        field_map = load_profile("elastic_agent")
+        ir = build_alerting_ir_from_datadog(_datadog_metric_monitor(), field_map=field_map)
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params.get("esqlQuery", {}).get("esql"))
+        self.assertEqual(params["timeField"], "@timestamp")
+
     def test_grafana_histogram_quantile_alert_degrades_without_native_feature(self):
         # Regression guard: the Grafana alert path builds ES|QL via
         # build_native_promql_query (the native gate), NOT translate_promql_to_esql.
@@ -3811,8 +3840,32 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
     def test_validate_rule_payload_valid(self):
         from observability_migration.targets.kibana.alerting import validate_rule_payload
         preflight = {"rule_family_availability": {"es-query": True}}
-        result = validate_rule_payload(".es-query", {"esqlQuery": {"esql": "FROM metrics-*"}}, preflight)
+        result = validate_rule_payload(
+            ".es-query",
+            {"esqlQuery": {"esql": "FROM metrics-*"}, "timeField": "@timestamp"},
+            preflight,
+        )
         self.assertTrue(result["valid"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_validate_rule_payload_warns_when_es_query_omits_time_field(self):
+        from observability_migration.targets.kibana.alerting import validate_rule_payload
+        preflight = {"rule_family_availability": {"es-query": True}}
+        result = validate_rule_payload(".es-query", {"esqlQuery": {"esql": "FROM metrics-*"}}, preflight)
+        # Missing timeField is non-fatal but must surface as a warning.
+        self.assertTrue(result["valid"])
+        self.assertTrue(any("timeField" in w for w in result["warnings"]))
+
+    def test_validate_rule_payload_no_time_field_warning_when_present(self):
+        from observability_migration.targets.kibana.alerting import validate_rule_payload
+        preflight = {"rule_family_availability": {"es-query": True}}
+        result = validate_rule_payload(
+            ".es-query",
+            {"esqlQuery": {"esql": "FROM metrics-*"}, "timeField": "@timestamp"},
+            preflight,
+        )
+        self.assertTrue(result["valid"])
+        self.assertFalse(any("timeField" in w for w in result["warnings"]))
 
     def test_run_alerting_preflight_structure(self):
         from observability_migration.targets.kibana.alerting import run_alerting_preflight
