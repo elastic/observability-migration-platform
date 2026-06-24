@@ -3143,7 +3143,10 @@ def _apply_composite_legend_to_xy_panel(yaml_panel, *,
             column = resolved.get(segment)
             if column is None:
                 return yaml_panel
-            concat_args.append(f'COALESCE(TO_STRING({column}), "")')
+            # Quote the column reference: a Prometheus label can be a reserved
+            # ES|QL keyword (e.g. ``in``) or carry dots (``prometheus.labels.x``),
+            # both of which ES|QL rejects as a bare ``TO_STRING(...)`` argument.
+            concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(column)}), "")')
         else:
             if segment == "":
                 continue

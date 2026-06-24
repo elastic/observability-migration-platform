@@ -8326,9 +8326,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             legend_labels=["method", "path", "status"],
         )
         query = result["esql"]["query"]
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.method), "")', query)
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.path), "")', query)
-        self.assertIn('COALESCE(TO_STRING(prometheus.labels.status), "")', query)
+        # Dotted column names are invalid as a bare TO_STRING(...) argument, so
+        # they must be backtick-quoted in the composite legend expression.
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.method`), "")', query)
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.path`), "")', query)
+        self.assertIn('COALESCE(TO_STRING(`prometheus.labels.status`), "")', query)
         self.assertEqual(result["esql"]["breakdown"]["field"], "legend")
 
     def test_apply_composite_legend_no_op_when_label_missing_from_query(self):
