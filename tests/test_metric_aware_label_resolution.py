@@ -549,6 +549,55 @@ class TestBatchedCooccurrenceProbe(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 1)
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_batch_error_falls_back_to_per_candidate_probes(self, mock_post):
+        # Issue #182 regression guard: a batched STATS couples every candidate.
+        # If one lower-priority candidate makes the whole query 400 (e.g. a type
+        # conflict across dual-shipping indices), the batch returns None for the
+        # entire set. Without a fallback that would cache None for the primary
+        # candidate too and revert the label to index-global resolution —
+        # re-introducing the #163 disjoint-document-set bug. The resolver must
+        # re-probe each candidate alone so the co-occurring primary still wins.
+        batch_400 = Mock(status_code=400, json=lambda: {})
+
+        def per_candidate(*_args, **kwargs):
+            query = kwargs["json"]["query"]
+            if "COUNT(`instance`)" in query and "COUNT(`service.instance.id`)" in query:
+                # The combined batch query fails (one field is incompatible).
+                return batch_400
+            if "COUNT(`service.instance.id`)" in query:
+                return Mock(
+                    status_code=200,
+                    json=lambda: {
+                        "columns": [{"name": "c0", "type": "long"}],
+                        "values": [[7]],
+                    },
+                )
+            # The incompatible candidate, probed alone, still errors.
+            return batch_400
+
+        mock_post.side_effect = per_candidate
+        resolver = self._resolver()
+        resolved = resolver.resolve_label("instance", metric_field="metrics.redis_up")
+        # Primary candidate resolves correctly despite the poisoned batch.
+        self.assertEqual(resolved, "service.instance.id")
+        # One batched probe + one per-candidate probe each for the fallback.
+        self.assertEqual(mock_post.call_count, 3)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
+    def test_single_candidate_batch_error_does_not_re_probe(self, mock_post):
+        # With only one candidate the batch query IS the per-candidate query, so
+        # the error fallback must not issue a redundant second identical probe.
+        mock_post.return_value = Mock(status_code=400, json=lambda: {})
+        resolver = SchemaResolver(
+            RulePackConfig(), es_url="https://es", index_pattern="metrics-*"
+        )
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {"instance": {}, "metrics.foo": {}}
+        self.assertIsNone(resolver._cooccurs("metrics.foo", "instance"))
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_batch_probe_maps_results_by_column_name(self, mock_post):
         # Robust against column reordering: map COUNT aliases by name, not index.
         mock_post.return_value = Mock(

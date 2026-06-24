@@ -398,6 +398,17 @@ class SchemaResolver:
         collapsing what used to be one blocking probe per candidate. ``None``
         (probe error / unreachable) is cached too, matching the prior per-pair
         behaviour so a transient failure is not re-probed mid-run.
+
+        A batched ``STATS`` couples every candidate's fate: a single
+        incompatible field (e.g. a type conflict across dual-shipping
+        ``metrics-*`` indices → ``verification_exception``) fails the whole
+        query, which would otherwise cache ``None`` for *every* candidate and
+        silently revert the label to index-global resolution — re-introducing
+        the disjoint-document-set bug #163 was written to prevent. So on a
+        multi-candidate batch error we re-probe each candidate alone, matching
+        the pre-#182 per-pair behaviour where one bad field never suppressed the
+        others. This fan-out is the error path only; the happy path still costs
+        one probe.
         """
         result = {}
         uncached = []
@@ -409,6 +420,11 @@ class SchemaResolver:
                 uncached.append(candidate)
         if uncached:
             probed = self._probe_cooccurrence_batch(metric_field, uncached)
+            if probed is None and len(uncached) > 1:
+                probed = {}
+                for candidate in uncached:
+                    single = self._probe_cooccurrence_batch(metric_field, [candidate])
+                    probed[candidate] = None if single is None else single.get(candidate)
             for candidate in uncached:
                 value = probed.get(candidate) if probed is not None else None
                 self._cooccurrence_cache[(metric_field, candidate)] = value
