@@ -635,6 +635,40 @@ class ExecutionTests(unittest.TestCase):
                    for key, points in out.items()}
         self.assertEqual(by_host, {"a": [9.0, 8.0], "b": [7.0, 6.0]})
 
+    def test_normalize_translated_ignores_intermediate_numeric_aliases(self):
+        # A merged multi-target panel keeps the translator's intermediate STATS
+        # aliases (metric_A, metric_B) alongside the EVAL outputs (hits, misses).
+        # ignore_columns only lists the sibling EVAL output; the intermediate
+        # numeric aliases would otherwise be read as series labels, making every
+        # (instance, bucket) pair a unique key -> inflated series count and a
+        # false "series keys did not align" FAIL. With value_column pinned,
+        # numeric columns must be treated as values, not labels: one series per
+        # instance, not per (instance, bucket).
+        # "db" is a real grouping label (not scrubbed like instance/job); the
+        # numeric *_A/*_B intermediates must drop out so series key on db alone.
+        data = {
+            "columns": [
+                {"name": "time_bucket", "type": "date"},
+                {"name": "redis_hits_total_A", "type": "double"},
+                {"name": "redis_misses_total_B", "type": "double"},
+                {"name": "hits", "type": "double"},
+                {"name": "misses", "type": "double"},
+                {"name": "db", "type": "keyword"},
+            ],
+            "values": [
+                ["2026-01-01T00:00:00Z", 1.0, 9.0, 1.0, 9.0, "db0"],
+                ["2026-01-01T00:05:00Z", 2.0, 8.0, 2.0, 8.0, "db0"],
+                ["2026-01-01T00:00:00Z", 3.0, 7.0, 3.0, 7.0, "db1"],
+                ["2026-01-01T00:05:00Z", 4.0, 6.0, 4.0, 6.0, "db1"],
+            ],
+        }
+        out = po.normalize_translated(
+            data, value_column="hits", ignore_columns=frozenset({"misses"}))
+        self.assertEqual(len(out), 2)  # one series per db, not 4 (per db x bucket)
+        by_db = {dict(k.labels).get("db"): [v for _, v in pts]
+                 for k, pts in out.items()}
+        self.assertEqual(by_db, {"db0": [1.0, 2.0], "db1": [3.0, 4.0]})
+
     def test_translated_grouped_series_project_onto_global_native_sum(self):
         # Source ``sum(metric{cluster="$cluster"})`` collapses to ONE global
         # series once the oracle strips the variable matcher, while the

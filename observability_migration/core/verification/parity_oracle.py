@@ -215,6 +215,15 @@ def normalize_translated(
     for i in candidates:
         if i == metric_idx:
             continue
+        # In a multi-target per-target comparison (value_column pinned), the
+        # other targets' aggregate columns AND the translator's intermediate
+        # STATS aliases (e.g. ``metric_A``, ``metric_B`` behind ``EVAL hits=…``)
+        # are all numeric. Reading them as series labels makes every
+        # (group, bucket) pair a unique key, inflating the series count into a
+        # false "series keys did not align" FAIL. A numeric column is a value,
+        # not a grouping label, so skip it here.
+        if value_column is not None and column_types[i] in numeric:
+            continue
         canon = _canonical_label(columns[i])
         if canon not in PROMETHEUS_ONLY_LABELS:
             label_idxs.append((i, canon))
