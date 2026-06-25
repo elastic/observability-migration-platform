@@ -107,7 +107,7 @@ def test_audit_control_interactions_clean_when_controls_safe():
 def _cli_args(**over):
     import argparse
     base = dict(kibana_url="https://kb", dashboard_id="d1", space="", user_data_dir="",
-                time_from="now-1h", time_to="now", fail_on_error=True)
+                time_from="now-1h", time_to="now", fail_on_error=True, elements=False, migration_out="")
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -134,3 +134,18 @@ def test_cli_returns_0_on_render_error_without_fail_flag():
         dom_fetcher=lambda _u: "embPanel__error",
     )
     assert rc == 0
+
+
+def test_cli_elements_mode_runs_per_panel_audit(tmp_path):
+    import json as _json
+
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    # a migration report with a heatmap panel, and a DOM that rendered it as xy
+    report = {"dashboards": [{"panels": [
+        {"title": "canary heatmap", "yaml_panel": {"esql": {"type": "heatmap", "breakdown": {"field": "le"}}}},
+    ]}]}
+    (tmp_path / "migration_report.json").write_text(_json.dumps(report))
+    args = _cli_args(elements=True, migration_out=str(tmp_path), fail_on_error=False)
+    dom = 'StaticText "canary heatmap" button "a; Click: to show, x" StaticText "Chart type" StaticText ":" StaticText "line chart"'
+    rc = run_audit_cli(args, dom_fetcher=lambda _u: dom)
+    assert rc == 0  # render itself is clean; element mismatch is a warn, not a fail

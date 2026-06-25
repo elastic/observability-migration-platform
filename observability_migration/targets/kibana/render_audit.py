@@ -191,11 +191,84 @@ def check_panel_elements(
         return findings
     if expected_kind and elements.chart_kind and elements.chart_kind != expected_kind:
         findings.append(f"{elements.title}: rendered as {elements.chart_kind}, expected {expected_kind}")
-    if expects_breakdown and not elements.legend_entries:
+    # Legend is the series indicator only for xy/heatmap; partition charts show
+    # series as slices/rows and gauges/metrics are single-value, so the legend
+    # check would false-positive on them.
+    if expects_breakdown and elements.chart_kind in ("xy", "heatmap") and not elements.legend_entries:
         findings.append(f"{elements.title}: breakdown panel has no legend series")
     if not elements.has_data:
         findings.append(f"{elements.title}: rendered but shows no data")
     return findings
+
+
+def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    """Split a full dashboard snapshot into per-panel ``(title, chunk)`` pairs.
+
+    A chunk runs from a panel's title to the next found title. Titles not present
+    in the snapshot are returned separately (a panel whose title did not render —
+    worth surfacing, since it often means the panel itself did not load, though
+    some panels legitimately hide their title). Title-based and therefore
+    best-effort; the element checks degrade gracefully on a missing chunk.
+    """
+    text = str(snapshot_text or "")
+    positions: list[tuple[int, str]] = []
+    unmatched: list[str] = []
+    for title in titles:
+        if not title:
+            continue
+        idx = text.find(title)
+        if idx < 0:
+            unmatched.append(title)
+        else:
+            positions.append((idx, title))
+    positions.sort()
+    segments: list[tuple[str, str]] = []
+    for i, (start, title) in enumerate(positions):
+        end = positions[i + 1][0] if i + 1 < len(positions) else len(text)
+        segments.append((title, text[start:end]))
+    return segments, unmatched
+
+
+def audit_dashboard_elements(
+    snapshot_text: str,
+    *,
+    expected_kind_by_title: dict[str, str] | None = None,
+    breakdown_titles: Iterable[str] | None = None,
+) -> RenderVerdict:
+    """Per-panel element audit of a whole-dashboard snapshot.
+
+    Segments by the expected titles, extracts elements, and flags per-panel
+    issues (wrong chart kind, missing legend series on xy/heatmap, no data).
+    Element findings are ``warn`` (a render that drew the wrong thing or no data
+    is a review signal, not a hard ES|QL/Lens failure — those are caught by
+    classify_render). Titles whose chunk never rendered are also a warn.
+    """
+    expected_kind_by_title = expected_kind_by_title or {}
+    breakdown = set(breakdown_titles or ())
+    segments, unmatched = segment_panels(snapshot_text, expected_kind_by_title)
+    verdict = RenderVerdict()
+    reasons: list[str] = []
+    for title, chunk in segments:
+        el = extract_panel_elements(title, chunk)
+        verdict.panels.append(
+            PanelRenderResult(
+                title=title,
+                status="rendered" if el.status == "rendered" else el.status,
+                error_class="" if el.status == "rendered" else "unexpected_empty" if el.status in ("empty", "loading") else "render_error",
+                detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
+            )
+        )
+        reasons += check_panel_elements(
+            el,
+            expected_kind=expected_kind_by_title.get(title, ""),
+            expects_breakdown=title in breakdown,
+        )
+    for title in unmatched:
+        reasons.append(f"{title}: panel title did not render (panel may not have loaded)")
+    if reasons:
+        verdict.status = "warn"
+        verdict.reasons = reasons
+    return verdict
 
 
 def find_render_error_markers(snapshot_text: str) -> list[str]:
@@ -510,6 +583,29 @@ def interaction_regression(
     return [
         f"control '{control_label}': {r}" for r in diff_render_snapshots(baseline, after)
     ]
+
+
+_ESQL_TYPE_TO_KIND = {
+    "line": "xy", "bar": "xy", "area": "xy",
+    "heatmap": "heatmap", "pie": "partition", "treemap": "treemap",
+    "gauge": "gauge", "metric": "metric", "datatable": "datatable", "markdown": "markdown",
+}
+
+
+def expected_kind_by_panel(report: dict) -> dict[str, str]:
+    """Map each panel title to the normalized chart kind it was emitted as
+    (from the YAML ``esql.type``), for comparing against the live render."""
+    out: dict[str, str] = {}
+    for dashboard in report.get("dashboards", []):
+        for panel in dashboard.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
+            esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
+            etype = str((esql or {}).get("type") or "").lower()
+            if etype:
+                out[str(panel.get("title") or "")] = _ESQL_TYPE_TO_KIND.get(etype, etype)
+    return out
 
 
 def expects_data_by_panel(report: dict) -> set[str]:

@@ -47,9 +47,10 @@ DASH_ID="$(curl -fs "$KIBANA_URL/api/dashboards" -H 'kbn-xsrf: true' \
   | "$PY" -c "import sys,json; d=json.load(sys.stdin); print(next(x['id'] for x in d['dashboards'] if 'canary' in x['data']['title'].lower()))")"
 echo "   dashboard id: $DASH_ID"
 
-echo "-- render audit (headless Chrome, no SSO) --"
+echo "-- render audit (headless Chrome, no SSO) + per-panel element check --"
 "$PY" -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_URL" --dashboard-id "$DASH_ID" \
-  --time-from now-3h --time-to now --fail-on-error
+  --time-from now-3h --time-to now --fail-on-error \
+  --elements --migration-out "$WORK/out/dashboards"
 
 echo "== render audit PASSED =="

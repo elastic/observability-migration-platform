@@ -430,3 +430,55 @@ def test_check_flags_breakdown_panel_without_legend():
     el = extract_panel_elements("bar", 'StaticText "Chart type" StaticText ":" StaticText "bar chart"')
     findings = check_panel_elements(el, expected_kind="xy", expects_breakdown=True)
     assert findings == ["bar: breakdown panel has no legend series"]
+
+
+# --- Dashboard-level element audit (segmentation + aggregation) (a) ----------
+
+from observability_migration.targets.kibana.render_audit import (  # noqa: E402
+    audit_dashboard_elements,
+    expected_kind_by_panel,
+    segment_panels,
+)
+
+# Trimmed real multi-panel snapshot (titles present; gauge title-less to exercise unmatched).
+_DASH_SNAP = '''StaticText "canary timeseries"
+button "instance_1; Click: to show, x" StaticText "Chart type" StaticText ":" StaticText "line chart"
+StaticText "canary table"
+grid "canary table" columnheader "instance" gridcell "instance_2"
+StaticText "canary heatmap"
+button "1.2 - 3.4; Click: to show, x" StaticText "Chart type" StaticText ":" StaticText "Heatmap chart"'''
+
+
+def test_segment_panels_splits_and_reports_unmatched():
+    segs, unmatched = segment_panels(_DASH_SNAP, ["canary timeseries", "canary table", "canary heatmap", "canary gauge"])
+    assert [t for t, _ in segs] == ["canary timeseries", "canary table", "canary heatmap"]
+    assert unmatched == ["canary gauge"]
+    # each chunk contains its own content only
+    ts_chunk = dict(segs)["canary timeseries"]
+    assert "line chart" in ts_chunk and "Heatmap chart" not in ts_chunk
+
+
+def test_audit_dashboard_elements_passes_when_kinds_match():
+    expected = {"canary timeseries": "xy", "canary table": "datatable", "canary heatmap": "heatmap"}
+    verdict = audit_dashboard_elements(_DASH_SNAP, expected_kind_by_title=expected,
+                                       breakdown_titles={"canary timeseries", "canary heatmap"})
+    assert verdict.status == "pass"
+    assert {p.title for p in verdict.panels} == set(expected)
+
+
+def test_audit_dashboard_elements_flags_wrong_kind_and_unmatched():
+    expected = {"canary timeseries": "gauge", "canary gauge": "gauge"}  # ts is really xy; gauge title absent
+    verdict = audit_dashboard_elements(_DASH_SNAP, expected_kind_by_title=expected)
+    assert verdict.status == "warn"
+    joined = " ".join(verdict.reasons)
+    assert "rendered as xy, expected gauge" in joined
+    assert "canary gauge: panel title did not render" in joined
+
+
+def test_expected_kind_by_panel_maps_esql_type():
+    report = {"dashboards": [{"panels": [
+        {"title": "ts", "yaml_panel": {"esql": {"type": "line"}}},
+        {"title": "hm", "yaml_panel": {"esql": {"type": "heatmap"}}},
+        {"title": "pie", "yaml_panel": {"esql": {"type": "pie"}}},
+    ]}]}
+    assert expected_kind_by_panel(report) == {"ts": "xy", "hm": "heatmap", "pie": "partition"}

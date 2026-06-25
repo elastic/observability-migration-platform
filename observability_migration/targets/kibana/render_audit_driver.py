@@ -32,6 +32,7 @@ import argparse
 import json
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 
 from observability_migration.adapters.source.grafana.smoke import (
     build_dashboard_url,
@@ -39,7 +40,10 @@ from observability_migration.adapters.source.grafana.smoke import (
 )
 from observability_migration.targets.kibana.render_audit import (
     RenderVerdict,
+    audit_dashboard_elements,
+    breakdown_fields_by_panel,
     classify_render,
+    expected_kind_by_panel,
     interaction_regression,
 )
 
@@ -151,16 +155,30 @@ def audit_control_interactions(
 def run_audit_cli(args: argparse.Namespace, *, dom_fetcher: DomFetcher | None = None) -> int:
     """Core of the render-audit CLI (separated from argparse for testing).
 
-    Loads the dashboard, classifies the whole-dashboard render, prints a JSON
-    verdict, and returns an exit code (1 on fail when ``--fail-on-error``).
+    Loads the dashboard and classifies the whole-dashboard render. With
+    ``--elements`` (and ``--migration-out``) it additionally runs the per-panel
+    element audit (chart kind / legend / data vs the emitted YAML). Prints a JSON
+    verdict; exits non-zero on a render ``fail`` when ``--fail-on-error``.
     """
     url = build_dashboard_url(
         args.kibana_url, args.space, args.dashboard_id,
         time_from=args.time_from, time_to=args.time_to,
     )
     fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
-    verdict = classify_render(fetch(url))
-    print(json.dumps(verdict.to_dict(), indent=2))
+    snapshot = fetch(url)
+    verdict = classify_render(snapshot)
+    output: dict[str, object] = {"render": verdict.to_dict()}
+
+    if getattr(args, "elements", False) and getattr(args, "migration_out", ""):
+        report = json.loads((Path(args.migration_out) / "migration_report.json").read_text())
+        elements = audit_dashboard_elements(
+            snapshot,
+            expected_kind_by_title=expected_kind_by_panel(report),
+            breakdown_titles=set(breakdown_fields_by_panel(report)),
+        )
+        output["elements"] = elements.to_dict()
+
+    print(json.dumps(output, indent=2))
     if verdict.status == "fail" and args.fail_on_error:
         return 1
     return 0
@@ -181,6 +199,14 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--time-from", default="now-24h")
     parser.add_argument("--time-to", default="now")
     parser.add_argument("--fail-on-error", action="store_true")
+    parser.add_argument(
+        "--elements", action="store_true",
+        help="Also run the per-panel element audit (chart kind / legend / data).",
+    )
+    parser.add_argument(
+        "--migration-out", default="",
+        help="Migration output dir (with migration_report.json) for --elements expected kinds.",
+    )
     return parser
 
 
