@@ -8,6 +8,7 @@ Use this index when you want the shortest path to the right document.
 |---|---|
 | `../README.md` | You want the public landing page (install, scope, and pointers into docs) |
 | `command-contract.md` | You want the canonical command inventory and safe invocation examples |
+| `testing.md` | You want the test & quality infrastructure: the confidence pyramid, every gate, and how to extend them |
 | `architecture.md` | You want the repo-level architecture, boundaries, and package map |
 | `pipeline-trace.md` | You want the shared pipeline overview and cross-source audit summary |
 | `targets/kibana-alert-migration-blockers.md` | You want Kibana-side alert migration constraints and blockers |
