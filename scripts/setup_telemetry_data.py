@@ -144,9 +144,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_combinations <= 0:
         print("ERROR: --max-combinations must be greater than 0")
         return 1
-    if not es_endpoint or not api_key:
-        print("ERROR: ELASTICSEARCH_ENDPOINT and KEY must be set (or pass --es-endpoint/--api-key)")
+    if not es_endpoint:
+        print("ERROR: ELASTICSEARCH_ENDPOINT must be set (or pass --es-endpoint)")
         return 1
+    if not api_key:
+        # A security-disabled local stack (e.g. the local render-audit workflow)
+        # legitimately has no key; seed without an Authorization header.
+        print("note: no API key set — seeding without authentication (local no-auth stack)")
 
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url)
     request = make_es_request(es_endpoint, api_key)

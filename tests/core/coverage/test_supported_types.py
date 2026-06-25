@@ -28,6 +28,16 @@ def test_grafana_registry_matches_code_routing():
     assert set(panels.SKIP_PANEL_TYPES) == set(st.GRAFANA_SKIPPED_PANEL_TYPES)
 
 
+def test_datadog_introspect_discovers_status_placeholder_widgets():
+    # check_status/manage_status are routed via STATUS_PLACEHOLDER_WIDGET_TYPES
+    # (a name-based `widget_type not in <SET>`), so introspection must scan every
+    # module-level *_WIDGET_TYPES set, not only TEXT_/GROUP_.
+    from observability_migration.core.coverage import datadog_introspect as di
+
+    referenced = di.collect_planner_widget_types()
+    assert {"check_status", "manage_status"} <= referenced
+
+
 def test_datadog_registry_covers_all_planner_widget_types():
     from observability_migration.core.coverage import datadog_introspect as di
 
@@ -45,6 +55,7 @@ _DATADOG_MATRIX_EXEMPT = {
     "note", "free_text", "image", "iframe",  # text widgets
     "group", "powerpack",                       # containers
     "log_stream", "list_stream",                # log/event streams (dedicated tests)
+    "check_status", "manage_status",            # status widgets -> markdown placeholders
 }
 # Chart-bearing Datadog types not yet in the combinatorial matrix. Tracked
 # explicitly so coverage loss is visible, not silent (spec: "no silent caps").

@@ -41,10 +41,12 @@ def test_vendored_schema_is_present_and_is_dashboard_config():
     assert "dashboards" in schema.get("required", [])
 
 
-def test_emitted_corpus_yaml_validates_against_kibana_schema(grafana_corpus_dir):
+def _schema_failures(dashboards_dir: Path) -> list[str]:
+    """Validate every emitted dashboard YAML under ``dashboards_dir`` against the
+    vendored Kibana schema; return human-readable failure strings (empty == ok)."""
     validator = _validator()
-    yaml_files = sorted(glob.glob(str(grafana_corpus_dir / "yaml" / "*.yaml")))
-    assert yaml_files, f"no emitted YAML under {grafana_corpus_dir}/yaml"
+    yaml_files = sorted(glob.glob(str(dashboards_dir / "yaml" / "*.yaml")))
+    assert yaml_files, f"no emitted YAML under {dashboards_dir}/yaml"
 
     failures: list[str] = []
     for path in yaml_files:
@@ -53,8 +55,20 @@ def test_emitted_corpus_yaml_validates_against_kibana_schema(grafana_corpus_dir)
         for err in errors:
             location = "/".join(str(p) for p in err.path) or "<root>"
             failures.append(f"{Path(path).name} @ {location}: {err.message}")
+    return failures
 
+
+def test_emitted_corpus_yaml_validates_against_kibana_schema(grafana_corpus_dir):
+    failures = _schema_failures(grafana_corpus_dir)
     assert not failures, (
-        f"{len(failures)} Kibana-schema validation error(s) in emitted YAML:\n  "
+        f"{len(failures)} Kibana-schema validation error(s) in emitted Grafana YAML:\n  "
+        + "\n  ".join(failures[:20])
+    )
+
+
+def test_emitted_datadog_corpus_yaml_validates_against_kibana_schema(datadog_corpus_dir):
+    failures = _schema_failures(datadog_corpus_dir)
+    assert not failures, (
+        f"{len(failures)} Kibana-schema validation error(s) in emitted Datadog YAML:\n  "
         + "\n  ".join(failures[:20])
     )

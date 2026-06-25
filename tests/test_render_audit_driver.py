@@ -149,3 +149,61 @@ def test_cli_elements_mode_runs_per_panel_audit(tmp_path):
     dom = 'StaticText "canary heatmap" button "a; Click: to show, x" StaticText "Chart type" StaticText ":" StaticText "line chart"'
     rc = run_audit_cli(args, dom_fetcher=lambda _u: dom)
     assert rc == 0  # render itself is clean; element mismatch is a warn, not a fail
+
+
+def _field_gap_report(tmp_path):
+    """A migration report with one query-bearing panel broken down by ``method``."""
+    import json as _json
+    report = {"dashboards": [{"panels": [
+        {"title": "HTTP by method", "kibana_type": "line", "yaml_panel": {"esql": {
+            "type": "line", "query": "FROM metrics-* | STATS c=COUNT(*) BY method",
+            "breakdown": {"field": "method"}}}},
+    ]}]}
+    (tmp_path / "migration_report.json").write_text(_json.dumps(report))
+    return str(tmp_path)
+
+
+# Reviewer (PR #234, giorgi/stefans): a "Provided column name or index is invalid"
+# marker on a panel whose breakdown field is absent from the target is a
+# data-readiness field_gap (warn), NOT a translator render_error. The CLI must
+# segment panels and feed the migration metadata into classify_render_per_panel
+# so --fail-on-error does not exit 1 on that case.
+_FIELD_GAP_DOM = (
+    'StaticText "HTTP by method" StaticText "Provided column name or index is invalid"'
+)
+
+
+def test_cli_field_gap_warns_and_does_not_fail(tmp_path):
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    # target data lacks the "method" breakdown field -> field_gap (warn)
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: _FIELD_GAP_DOM,
+        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+    )
+    assert rc == 0
+
+
+def test_cli_render_error_with_present_field_still_fails(tmp_path):
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    # the breakdown field IS present -> the marker is a real render bug (fail)
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: _FIELD_GAP_DOM,
+        field_fetcher=lambda: {"@timestamp", "value", "method"},
+    )
+    assert rc == 1
+
+
+def test_cli_render_marker_fails_when_no_field_metadata(tmp_path):
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    # without target field caps a marker can't be proven a field_gap -> render_error
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: _FIELD_GAP_DOM,
+        field_fetcher=lambda: None,
+    )
+    assert rc == 1

@@ -5,9 +5,12 @@
 
 The planner dispatches on ``widget_type`` inside individual ``@register``'d
 rules rather than via one central map, so the supported set is discovered by
-scanning the planner source for the ``widget_type`` comparison literals plus the
-module-level text/group widget sets. The coverage cross-check uses this to fail
-when the planner gains a widget type the curated registry hasn't acknowledged.
+scanning the planner source for the ``widget_type`` comparison literals plus
+every module-level ``*_WIDGET_TYPES`` set (TEXT_, GROUP_, STATUS_PLACEHOLDER_,
+and any future ones — a rule that does ``widget_type not in SOME_WIDGET_TYPES``
+is otherwise invisible to the literal scan). The coverage cross-check uses this
+to fail when the planner gains a widget type the curated registry hasn't
+acknowledged.
 """
 
 from __future__ import annotations
@@ -23,6 +26,10 @@ _PATTERNS = (
     re.compile(r"widget_type\s+(?:not\s+)?in\s*\{([^}]*)\}"),
 )
 _LITERAL = re.compile(r'"([a-z_]+)"')
+# Any module-level ``<NAME>_WIDGET_TYPES = { ... }`` set, so a rule that routes
+# via ``widget_type (not) in SOME_WIDGET_TYPES`` is discovered even though the
+# literals live in the set definition, not at the comparison site.
+_WIDGET_TYPE_SET = re.compile(r"\b[A-Z_]*WIDGET_TYPES\s*=\s*\{([^}]*)\}")
 
 
 def collect_planner_widget_types(planner_path: Path | None = None) -> set[str]:
@@ -32,9 +39,7 @@ def collect_planner_widget_types(planner_path: Path | None = None) -> set[str]:
     for pat in _PATTERNS:
         for match in pat.finditer(src):
             found.update(_LITERAL.findall(match.group(0)))
-    for name in ("TEXT_WIDGET_TYPES", "GROUP_WIDGET_TYPES"):
-        block = re.search(rf"{name}\s*=\s*\{{([^}}]*)\}}", src)
-        if block:
-            found.update(_LITERAL.findall(block.group(1)))
+    for block in _WIDGET_TYPE_SET.finditer(src):
+        found.update(_LITERAL.findall(block.group(1)))
     found.discard("")
     return found

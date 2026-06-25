@@ -69,6 +69,21 @@ class TestRatchet:
         assert not ok
         assert any("PLACEHOLDER_DROPPED" in r for r in regressions)
 
+    def test_panel_coverage_drop_fails(self) -> None:
+        # A silent denominator collapse (fewer panels migrated) is a coverage
+        # regression even when error counts stay flat: 0/0 looks "clean".
+        base = scorecard.build_scorecard([], panels_total=100)
+        cur = scorecard.build_scorecard([], panels_total=80)
+        ok, regressions = scorecard.compare_to_baseline(cur, base)
+        assert not ok
+        assert any("panel coverage dropped" in r for r in regressions)
+
+    def test_panel_coverage_growth_is_ok(self) -> None:
+        base = scorecard.build_scorecard([], panels_total=100)
+        cur = scorecard.build_scorecard([], panels_total=120)
+        ok, regressions = scorecard.compare_to_baseline(cur, base)
+        assert ok and not regressions
+
 
 class TestScorecardForMigration:
     def _write_report(self, tmp_path: Path, panels: list[dict]) -> Path:

@@ -43,12 +43,48 @@ from observability_migration.targets.kibana.render_audit import (
     audit_dashboard_elements,
     breakdown_fields_by_panel,
     classify_render,
+    classify_render_per_panel,
     expected_kind_by_panel,
+    expects_data_by_panel,
     interaction_regression,
+    segment_panels,
 )
 
 # A DOM fetcher takes a URL and returns the rendered DOM HTML.
 DomFetcher = Callable[[str], str]
+# A field fetcher returns the set of field names present in the target index
+# (or None when unavailable), used to attribute render markers to field gaps.
+FieldFetcher = Callable[[], "set[str] | None"]
+
+
+def fetch_available_fields(
+    es_url: str, es_api_key: str, index_pattern: str, *, timeout: int = 10, verify: bool = True
+) -> set[str] | None:
+    """Field names present in the target index (for field_gap/data_gap attribution).
+
+    Returns ``None`` when no ES URL is configured or discovery fails — the
+    per-panel classifier then treats a render marker as a hard ``render_error``
+    (a field gap cannot be proven without knowing the target schema). Mirrors the
+    ``_field_caps`` discovery in the Grafana schema resolver.
+    """
+    if not es_url:
+        return None
+    import requests
+
+    headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else {}
+    try:
+        resp = requests.get(
+            f"{es_url.rstrip('/')}/{index_pattern}/_field_caps",
+            params={"fields": "*"},
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+        if resp.status_code == 200:
+            return set(resp.json().get("fields", {}).keys())
+    except Exception:
+        return None
+    return None
 
 
 def build_render_audit_command(
@@ -152,13 +188,27 @@ def audit_control_interactions(
     return findings
 
 
-def run_audit_cli(args: argparse.Namespace, *, dom_fetcher: DomFetcher | None = None) -> int:
+def run_audit_cli(
+    args: argparse.Namespace,
+    *,
+    dom_fetcher: DomFetcher | None = None,
+    field_fetcher: FieldFetcher | None = None,
+) -> int:
     """Core of the render-audit CLI (separated from argparse for testing).
 
-    Loads the dashboard and classifies the whole-dashboard render. With
-    ``--elements`` (and ``--migration-out``) it additionally runs the per-panel
-    element audit (chart kind / legend / data vs the emitted YAML). Prints a JSON
-    verdict; exits non-zero on a render ``fail`` when ``--fail-on-error``.
+    When ``--migration-out`` is supplied, the render is classified **per panel**
+    against the emitted migration metadata (panel segments, breakdown fields,
+    query-bearing panels) via ``classify_render_per_panel`` — so a data-readiness
+    finding (``field_gap``/``data_gap``/``unexpected_empty``) is a ``warn`` and
+    only a genuine ``render_error`` (or console/5xx error) is a hard ``fail``.
+    Field-gap attribution additionally needs the target field set, fetched from
+    ``--es-url`` (``_field_caps``) when available; without it a render marker
+    stays a ``render_error``. Without ``--migration-out`` it falls back to the
+    whole-dashboard ``classify_render``.
+
+    With ``--elements`` it also runs the per-panel element audit (chart kind /
+    legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
+    a render ``fail`` when ``--fail-on-error``.
     """
     url = build_dashboard_url(
         args.kibana_url, args.space, args.dashboard_id,
@@ -166,11 +216,39 @@ def run_audit_cli(args: argparse.Namespace, *, dom_fetcher: DomFetcher | None = 
     )
     fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
     snapshot = fetch(url)
-    verdict = classify_render(snapshot)
+
+    report: dict | None = None
+    migration_out = getattr(args, "migration_out", "")
+    if migration_out:
+        report_path = Path(migration_out) / "migration_report.json"
+        if report_path.exists():
+            report = json.loads(report_path.read_text())
+
+    if report is not None:
+        kinds = expected_kind_by_panel(report)
+        segments, _unmatched = segment_panels(snapshot, kinds.keys())
+        fetch_fields = field_fetcher or (
+            lambda: fetch_available_fields(
+                getattr(args, "es_url", "") or "",
+                getattr(args, "es_api_key", "") or "",
+                getattr(args, "es_index", "") or "metrics-*",
+                verify=not getattr(args, "insecure", False),
+            )
+        )
+        available_fields = fetch_fields()
+        verdict = classify_render_per_panel(
+            segments,
+            breakdown_by_title=breakdown_fields_by_panel(report),
+            expects_data_titles=expects_data_by_panel(report),
+            available_fields=available_fields,
+            available_metrics=available_fields,
+        )
+    else:
+        verdict = classify_render(snapshot)
+
     output: dict[str, object] = {"render": verdict.to_dict()}
 
-    if getattr(args, "elements", False) and getattr(args, "migration_out", ""):
-        report = json.loads((Path(args.migration_out) / "migration_report.json").read_text())
+    if getattr(args, "elements", False) and report is not None:
         elements = audit_dashboard_elements(
             snapshot,
             expected_kind_by_title=expected_kind_by_panel(report),
@@ -205,7 +283,22 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--migration-out", default="",
-        help="Migration output dir (with migration_report.json) for --elements expected kinds.",
+        help="Migration output dir (with migration_report.json). Enables per-panel "
+             "render classification (field_gap/data_gap warn vs render_error fail).",
+    )
+    parser.add_argument(
+        "--es-url", default="",
+        help="Elasticsearch URL for target field caps (attributes render markers to "
+             "field gaps so missing-breakdown panels warn instead of failing).",
+    )
+    parser.add_argument("--es-api-key", default="", help="API key for --es-url.")
+    parser.add_argument(
+        "--es-index", default="metrics-*",
+        help="Index pattern for --es-url field-caps discovery (default: metrics-*).",
+    )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        help="Skip TLS verification for --es-url.",
     )
     return parser
 

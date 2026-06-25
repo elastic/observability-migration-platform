@@ -59,7 +59,8 @@ for did in $ids; do
   "$PY" -m observability_migration.targets.kibana.render_audit_driver \
     --kibana-url "$KIBANA_URL" --dashboard-id "$did" \
     --time-from now-3h --time-to now --fail-on-error \
-    --elements --migration-out "$WORK/out/dashboards" || rc=1
+    --elements --migration-out "$WORK/out/dashboards" \
+    --es-url "$ES_URL" --es-index "metrics-*,logs-*" || rc=1
 done
 
 [ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }
