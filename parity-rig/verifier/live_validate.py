@@ -101,6 +101,24 @@ def classify_error(text: str) -> str:
     return "other"
 
 
+def _merge_validation_params(query: str, collectors) -> list[dict[str, Any]]:
+    """Build the ``params`` list for the default runner.
+
+    Auto-binds the query's ``?name`` placeholders (notably the Lens-injected
+    ``?_tstart``/``?_tend`` time params) and overlays the uploaded-dashboard
+    smoke bindings for dashboard control params (``RLIKE ?var`` -> ``.*``,
+    arithmetic -> ``0``) so a query mixing time params with control params binds
+    both. Order is preserved and smoke bindings win on conflicts.
+    """
+    merged: dict[str, Any] = {}
+    for entry in collectors._autoparams_for_esql(query):
+        merged.update(entry)
+    if _validation_params_for_query:
+        for entry in _validation_params_for_query(query):
+            merged.update(entry)
+    return [{name: value} for name, value in merged.items()]
+
+
 def validate_query(
     es_url: str,
     api_key: str,
@@ -114,12 +132,14 @@ def validate_query(
     if runner is None:
         from . import collectors
 
-        # Bind dashboard control params (``?job``, ``RLIKE ?var`` -> ``.*``,
-        # arithmetic params -> ``0``, etc.) the same way the uploaded-dashboard
-        # smoke path does, so a valid migrated query referencing control params
-        # is not mis-executed (and mis-classified as ``real_bug``) just because
-        # the named parameters resolve to empty strings.
-        params = _validation_params_for_query(query) if _validation_params_for_query else None
+        # Bind every ``?name`` placeholder the query references. ``run_cluster_query``
+        # only auto-binds when ``params`` is ``None``, so passing an explicit list
+        # would otherwise suppress its ``?_tstart``/``?_tend`` time autobind. Start
+        # from that autobind (covers Lens time placeholders) and overlay the
+        # uploaded-dashboard smoke bindings (``RLIKE ?var`` -> ``.*``, arithmetic
+        # -> ``0``) so a query mixing control params and time params binds both and
+        # is not mis-executed (and mis-classified as ``real_bug``).
+        params = _merge_validation_params(query, collectors)
 
         def runner(es, key, q):
             return collectors.run_cluster_query(es, key, q, params=params or None)
