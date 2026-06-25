@@ -2501,6 +2501,8 @@ def _try_collapse_same_metric_targets(translations):
     if _summary_mode_from_metadata(collapsed.metadata):
         collapsed_summary = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed_summary is None:
+        # The KEEP is dropped downstream by _strip_dotted_group_keep when a
+        # grouping field is dotted (avoids an ES|QL "Output has changed" error).
         parts.append("| KEEP " + ", ".join(dict.fromkeys(output_group_fields + metric_fields)))
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
@@ -2667,6 +2669,8 @@ def _build_multi_target_series_query(translations):
     if summary_mode and plans[0][1].specs:
         collapsed = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed is None:
+        # The KEEP is dropped downstream by _strip_dotted_group_keep when a
+        # grouping field is dotted (avoids an ES|QL "Output has changed" error).
         parts.append(
             "| KEEP "
             + ", ".join(
@@ -2969,6 +2973,38 @@ def _strip_dashboard_timestamp_range_filter(esql, time_filters=None):
     return "\n".join(lines)
 
 
+def _strip_dotted_group_keep(query):
+    """Drop a KEEP/DROP projection that follows ``STATS BY <dotted field> | EVAL``.
+
+    ES|QL's optimizer re-attributes a dotted grouping field (e.g. ``service.name``)
+    from field -> reference across such a projection, raising a
+    verification_exception "Output has changed from [..service.name{f}..] to
+    [..service.name{r}..]" that breaks the panel in Kibana. The query is valid
+    without the projection — the extra intermediate columns are ignored by the
+    Lens chart config. Bisected live against Elastic 9.5.0; see
+    tests/test_grafana_dotted_group_keep.py.
+    """
+    if not query or "STATS" not in query:
+        return query
+    lines = query.splitlines()
+    has_dotted_group = False
+    has_eval = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| STATS") and " BY " in stripped:
+            for token in stripped.split(" BY ", 1)[1].split(","):
+                name = (token.split("=", 1)[-1] if "=" in token else token).strip().strip("`")
+                if "." in name and "(" not in name:
+                    has_dotted_group = True
+        elif stripped.startswith("| EVAL"):
+            has_eval = True
+    if not (has_dotted_group and has_eval):
+        return query
+    return "\n".join(
+        line for line in lines if not line.strip().startswith(("| KEEP ", "| DROP "))
+    )
+
+
 def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
     esql_panel = yaml_panel.get("esql")
     if not isinstance(esql_panel, dict):
@@ -2981,6 +3017,7 @@ def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
         query,
         [rule_pack.from_time_filter, rule_pack.ts_time_filter],
     )
+    query = _strip_dotted_group_keep(query)
     esql_panel["query"] = _ensure_bucket_sort(query)
     yaml_panel["esql"] = esql_panel
     return yaml_panel
