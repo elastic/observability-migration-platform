@@ -18,7 +18,39 @@ from observability_migration.core.telemetry_data import (
     ingest_documents,
     plan_index_template,
     purge_foreign_streams,
+    routing_path_gap,
 )
+
+
+class RoutingPathGapTests(unittest.TestCase):
+    """Guards the --no-recreate footgun: seeding into a pre-existing stream whose
+    routing_path doesn't cover the contract's dimensions silently drops docs."""
+
+    _STREAM = {
+        "fields": {
+            "http_requests_total": {"role": "metric", "metric_kind": "counter"},
+            "method": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+            "instance": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+        }
+    }
+
+    def test_gap_lists_dimensions_missing_from_existing_stream(self):
+        gap = routing_path_gap("metrics-*", self._STREAM, existing_routing_path=["instance", "le"])
+        self.assertEqual(gap, ["method"])
+
+    def test_no_gap_when_existing_stream_covers_contract(self):
+        gap = routing_path_gap(
+            "metrics-*", self._STREAM, existing_routing_path=["instance", "method", "le"]
+        )
+        self.assertEqual(gap, [])
+
+    def test_empty_existing_routing_path_is_all_dimensions(self):
+        gap = routing_path_gap("metrics-*", self._STREAM, existing_routing_path=None)
+        self.assertEqual(sorted(gap), ["instance", "method"])
+
+    def test_non_metric_stream_has_no_routing_gap(self):
+        logs = {"fields": {"message": {"role": "metric"}, "level": {"role": "dimension"}}}
+        self.assertEqual(routing_path_gap("logs-*", logs, existing_routing_path=[]), [])
 
 
 class ValueProfileTests(unittest.TestCase):

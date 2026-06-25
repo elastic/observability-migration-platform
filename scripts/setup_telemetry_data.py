@@ -180,6 +180,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ingest error sample: {sample}")
     if summary.errors:
         print("Setup failed: bulk ingest reported errors")
+        if args.no_recreate and any(
+            "extracting routing" in str(s).lower() for s in summary.error_samples
+        ):
+            print(
+                "  hint: --no-recreate reuses the EXISTING data stream, whose "
+                "routing_path may not cover this contract's dimensions; a doc whose "
+                "only dimension is a new label is then rejected ('source didn't "
+                "contain any routing fields'). Re-run WITHOUT --no-recreate to "
+                "recreate the stream with this contract's routing_path."
+            )
         return 1
     print("Setup complete")
     return 0
