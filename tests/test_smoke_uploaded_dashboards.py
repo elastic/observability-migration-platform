@@ -283,6 +283,33 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["materialized_query"], captured["query"])
         self.assertIsNone(captured["headers"])
 
+    def test_validate_esql_sends_dashboard_control_params(self):
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse(
+                {
+                    "columns": [{"name": "value"}],
+                    "values": [[1]],
+                }
+            )
+
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            result = smoke.validate_esql(
+                "http://localhost:9200",
+                (
+                    "TS metrics-*\n"
+                    "| WHERE service.name RLIKE ?job\n"
+                    "| WHERE service.instance.id RLIKE ?instance\n"
+                    "| WHERE metric IS NOT NULL"
+                ),
+                timeout=30,
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(captured["body"]["params"], [{"job": ".*"}, {"instance": ".*"}])
+
     def test_validate_esql_sends_api_key_header(self):
         captured = {}
 

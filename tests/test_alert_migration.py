@@ -256,11 +256,67 @@ def _grafana_unified_prometheus_instant_simple_rule():
     return rule
 
 
+def _grafana_unified_prometheus_validity_step_rule():
+    """A Grafana-managed rule imported from Prometheus.
+
+    Grafana auto-inserts an ``is_number($X) || is_nan($X) || is_inf($X)`` math
+    expression — a no-op "does the query return a value?" check — between the
+    reduce and threshold steps. The query and threshold are otherwise identical
+    to ``_grafana_unified_prometheus_safe_rule``.
+    """
+    rule = _grafana_unified_prometheus_safe_rule()
+    rule["uid"] = "rule-prom-validity-1"
+    rule["title"] = "High CPU usage imported from Prometheus"
+    rule["condition"] = "D"
+    rule["data"] = [
+        copy.deepcopy(rule["data"][0]),
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {"type": "reduce", "reducer": "last", "expression": "A"},
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {
+                "type": "math",
+                "expression": "is_number($B) || is_nan($B) || is_inf($B)",
+            },
+        },
+        {
+            "refId": "D",
+            "datasourceUid": "__expr__",
+            "relativeTimeRange": {"from": 0, "to": 0},
+            "model": {"type": "threshold", "conditions": [{"evaluator": {"type": "gt", "params": [80]}}]},
+        },
+    ]
+    return rule
+
+
 def _grafana_unified_unsupported_prometheus_rule():
     rule = copy.deepcopy(_grafana_unified_prometheus_rule())
     rule["uid"] = "rule-prom-unsupported-1"
     rule["title"] = "Topk CPU usage"
     rule["data"][0]["model"]["expr"] = "topk(5, node_cpu_seconds_total)"
+    return rule
+
+
+def _grafana_unified_prometheus_no_threshold_rule():
+    """A source-faithful PromQL rule that produces no emittable payload.
+
+    The query is native-PROMQL translatable (so it classifies as
+    ``draft_requires_review``), but it carries neither an in-expression
+    comparison nor a threshold model, so payload emission yields empty params
+    and the rule is downgraded to ``manual_required`` during rule-building.
+    """
+    rule = copy.deepcopy(_grafana_unified_prometheus_rule())
+    rule["uid"] = "rule-prom-no-threshold-1"
+    rule["title"] = "CPU usage without threshold"
+    rule["condition"] = "B"
+    # Drop the threshold model so no explicit threshold is available.
+    rule["data"] = rule["data"][:2]
     return rule
 
 
@@ -1549,6 +1605,65 @@ class TestClassifyAutomationTier(unittest.TestCase):
         )
         self.assertEqual(classify_automation_tier(ir), "automated")
 
+    def test_grafana_unified_prometheus_validity_step_is_automated(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_validity_step_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "automated")
+
+    def test_grafana_unified_validity_step_emits_payload(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_validity_step_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        self.assertTrue(result["payload_emitted"])
+        self.assertEqual(result["automation_tier"], "automated")
+
+    def test_grafana_unified_validity_step_yields_same_query_as_without(self):
+        ds = {"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        with_step = map_alert_to_kibana_payload(
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_validity_step_rule(), datasource_map=ds
+            )
+        )
+        without_step = map_alert_to_kibana_payload(
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_safe_rule(), datasource_map=ds
+            )
+        )
+        self.assertEqual(
+            with_step["rule_payload"]["params"]["esqlQuery"]["esql"],
+            without_step["rule_payload"]["params"]["esqlQuery"]["esql"],
+        )
+
+    def test_grafana_unified_genuine_math_step_is_not_automated(self):
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        # A real math expression carries alerting semantics and must not be
+        # mistaken for the no-op validity check.
+        rule["data"][2]["model"]["expression"] = "$B * 2"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertNotEqual(classify_automation_tier(ir), "automated")
+
+    def test_grafana_unified_validity_step_legacy_expr_uid_is_automated(self):
+        # Grafana's expression steps carry either the modern ``__expr__`` UID or
+        # the legacy ``-100`` UID. Both must be recognized as expression steps so
+        # the validity-step rule migrates rather than being inflated into a
+        # multi-source-query rule that requires review.
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        for item in rule["data"]:
+            if item["datasourceUid"] == "__expr__":
+                item["datasourceUid"] = "-100"
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "automated")
+
     def test_grafana_legacy_prometheus_query_is_automated(self):
         ir = build_alerting_ir_from_grafana(_grafana_legacy_prometheus_alert_task())
         self.assertEqual(classify_automation_tier(ir), "automated")
@@ -1746,6 +1861,12 @@ class TestRecordSemanticLosses(unittest.TestCase):
         self.assertFalse(any("alert labels" in loss for loss in losses))
         self.assertFalse(any("Dashboard-linked" in loss for loss in losses))
 
+    def test_grafana_unified_validity_step_has_no_multi_query_loss(self):
+        rule = _grafana_unified_prometheus_validity_step_rule()
+        ir = build_alerting_ir_from_grafana_unified(rule)
+        losses = record_semantic_losses(ir)
+        self.assertFalse(any("Multi-query" in loss for loss in losses))
+
     def test_grafana_unified_multiple_source_queries_report_multi_query_loss(self):
         rule = _grafana_unified_multi_source_prometheus_rule()
         ir = build_alerting_ir_from_grafana_unified(rule)
@@ -1884,6 +2005,35 @@ class TestBuildRuleParams(unittest.TestCase):
         params = build_es_query_rule_params(ir)
         self.assertEqual(params["timeWindowSize"], 2)
         self.assertEqual(params["timeWindowUnit"], "h")
+
+    def test_es_query_params_set_time_field_timestamp(self):
+        # Kibana .es-query rules need a time field to bound each evaluation to
+        # the lookback window; PROMQL/ES|QL metrics indices default to @timestamp.
+        ir = AlertingIR(
+            evaluation_window="10m",
+            translated_query="FROM metrics-* | STATS doc_count = COUNT(*) | WHERE doc_count > 10",
+            translated_query_provenance="translated_esql",
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertEqual(params["timeField"], "@timestamp")
+
+    def test_es_query_params_set_time_field_for_grafana_prometheus(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
+        self.assertEqual(params["timeField"], "@timestamp")
+
+    def test_es_query_params_set_time_field_for_datadog(self):
+        from observability_migration.adapters.source.datadog.field_map import load_profile
+
+        field_map = load_profile("elastic_agent")
+        ir = build_alerting_ir_from_datadog(_datadog_metric_monitor(), field_map=field_map)
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params.get("esqlQuery", {}).get("esql"))
+        self.assertEqual(params["timeField"], "@timestamp")
 
     def test_grafana_histogram_quantile_alert_degrades_without_native_feature(self):
         # Regression guard: the Grafana alert path builds ES|QL via
@@ -2219,6 +2369,24 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertEqual(result["automation_tier"], "manual_required")
         self.assertFalse(result["valid"])
         self.assertEqual(result["rule_payload"], {})
+
+    def test_downgrade_to_manual_during_rule_building_updates_stored_tier(self):
+        # Classifies as draft_requires_review (source-faithful query) but
+        # produces no emittable payload, forcing a downgrade to manual_required
+        # while building the Kibana rule.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_no_threshold_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "draft_requires_review")
+
+        result = map_alert_to_kibana_payload(ir)
+
+        self.assertEqual(result["automation_tier"], "manual_required")
+        self.assertFalse(result["payload_emitted"])
+        # The tier stored on the rule record must reflect the final outcome,
+        # not the pre-downgrade classification, so every artifact agrees.
+        self.assertEqual(ir.automation_tier, "manual_required")
 
     def test_manual_composite_monitor(self):
         mon = _datadog_composite_monitor()
@@ -2641,6 +2809,33 @@ class TestMapAlertsBatch(unittest.TestCase):
         self.assertIn("draft_requires_review", result["summary"]["by_automation_tier"])
         self.assertIn("manual_required", result["summary"]["by_automation_tier"])
         self.assertTrue(len(result["summary"]["unique_semantic_losses"]) > 0)
+
+    def test_tier_breakdown_reconciles_with_rule_records(self):
+        # The breakdown the console/run summary reports (from the mapping batch)
+        # must equal the breakdown rebuilt from the rule records (the detailed
+        # results artifact), even when a rule is downgraded during rule-building.
+        from observability_migration.adapters.source.grafana.alerts import (
+            build_alert_migration_results,
+        )
+
+        dsmap = {"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        alerts = [
+            build_alerting_ir_from_grafana_unified(_grafana_unified_prometheus_safe_rule(), datasource_map=dsmap),
+            build_alerting_ir_from_grafana_unified(_grafana_unified_prometheus_rule(), datasource_map=dsmap),
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_no_threshold_rule(), datasource_map=dsmap
+            ),
+        ]
+
+        batch = map_alerts_batch(alerts)
+        results = build_alert_migration_results(alerts)
+
+        self.assertEqual(
+            batch["summary"]["by_automation_tier"],
+            results["by_automation_tier"],
+        )
+        # The downgraded rule lands in manual_required in both breakdowns.
+        self.assertEqual(batch["summary"]["by_automation_tier"].get("manual_required"), 1)
 
     def test_batch_summary_distinguishes_selected_vs_emitted_rule_types(self):
         from observability_migration.adapters.source.datadog.field_map import load_profile
@@ -3857,8 +4052,32 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
     def test_validate_rule_payload_valid(self):
         from observability_migration.targets.kibana.alerting import validate_rule_payload
         preflight = {"rule_family_availability": {"es-query": True}}
-        result = validate_rule_payload(".es-query", {"esqlQuery": {"esql": "FROM metrics-*"}}, preflight)
+        result = validate_rule_payload(
+            ".es-query",
+            {"esqlQuery": {"esql": "FROM metrics-*"}, "timeField": "@timestamp"},
+            preflight,
+        )
         self.assertTrue(result["valid"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_validate_rule_payload_warns_when_es_query_omits_time_field(self):
+        from observability_migration.targets.kibana.alerting import validate_rule_payload
+        preflight = {"rule_family_availability": {"es-query": True}}
+        result = validate_rule_payload(".es-query", {"esqlQuery": {"esql": "FROM metrics-*"}}, preflight)
+        # Missing timeField is non-fatal but must surface as a warning.
+        self.assertTrue(result["valid"])
+        self.assertTrue(any("timeField" in w for w in result["warnings"]))
+
+    def test_validate_rule_payload_no_time_field_warning_when_present(self):
+        from observability_migration.targets.kibana.alerting import validate_rule_payload
+        preflight = {"rule_family_availability": {"es-query": True}}
+        result = validate_rule_payload(
+            ".es-query",
+            {"esqlQuery": {"esql": "FROM metrics-*"}, "timeField": "@timestamp"},
+            preflight,
+        )
+        self.assertTrue(result["valid"])
+        self.assertFalse(any("timeField" in w for w in result["warnings"]))
 
     def test_run_alerting_preflight_structure(self):
         from observability_migration.targets.kibana.alerting import run_alerting_preflight

@@ -1013,6 +1013,12 @@ def validate_rule_payload(
     ):
         warnings.append("ES query rule params should contain esqlQuery, esQuery, or searchType")
 
+    if rule_type_id == ".es-query" and params and not params.get("timeField"):
+        warnings.append(
+            "ES query rule params should set timeField (expected '@timestamp') so Kibana can "
+            "bound each evaluation to the rule's lookback window"
+        )
+
     return {
         "valid": len(errors) == 0,
         "errors": errors,

@@ -48,6 +48,8 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
 6. **Review connectors/actions manually** — confirm each rule's connector exists, credentials work, destination is production-correct, escalation policy is accepted, and message templates still make sense in Kibana. The migration can create rule shells; connector/action parity is not automatically proven unless the artifacts and Kibana review show it.
 7. **Canary before bulk enablement** — enable one low-risk rule first, watch execution history for several cycles, then enable by tier/owner. Keep source alerts running during overlap.
 
+> **Time field (fallback only).** Migrated `.es-query` rules always carry `params.timeField: "@timestamp"` in the created rule — confirm with `GET /api/alerting/rule/{id}`. That persisted value is what Kibana uses to bound each evaluation to the lookback window. The rule wizard's **Select a time field** step only *displays* `@timestamp` once Kibana can resolve the rule's target index/data view; if that index is missing or empty (e.g. `Unknown index "metrics-..."`, **Test query** disabled), the wizard may show the field as unset even though the persisted value is correct — in that state, fix the target data rather than re-saving from the wizard. Only set the field manually for rules created **before** migrations included it.
+
 ## Enablement decision
 
 - **READY TO ENABLE** — comparison clean enough for owner, upload succeeded, `verify-alert-rules` passed or existing rules audit clean, connectors/actions reviewed, rollback path known.
