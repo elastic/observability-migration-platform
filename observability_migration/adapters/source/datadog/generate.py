@@ -162,6 +162,13 @@ def _build_controls_from_template_vars(
             tag = tv.name
         if not tag:
             continue
+        # A template-variable prefix can use Datadog's "@tag" facet syntax
+        # (e.g. "@host"); the facet refers to the same tag key as "host", so
+        # strip the leading "@" before mapping. Without this the control binds
+        # to a literal "@host" field that doesn't exist, leaving an empty
+        # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
+        # is a real field name in the log-query path.)
+        tag = tag.lstrip("@")
         es_field = field_map.map_tag(tag, context="metric") if field_map else tag
         control: dict[str, Any] = {
             "type": "options",

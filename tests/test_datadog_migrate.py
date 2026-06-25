@@ -2965,6 +2965,25 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(OTEL_PROFILE.map_tag("env"), "deployment.environment")
         self.assertEqual(OTEL_PROFILE.map_tag("service"), "service.name")
 
+    def test_control_strips_datadog_facet_at_prefix_before_mapping(self):
+        # Datadog's "@tag" facet syntax (template-variable prefix "@host") refers
+        # to the same tag key as "host". A control must map it to the ES field
+        # (host.name), not a literal "@host" field that doesn't exist — otherwise
+        # the dropdown is empty and can't filter. (map_tag itself must NOT strip
+        # "@" globally: "@attr" is a real field in the log-query path.)
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        tvs = [
+            TemplateVariable(name="host", prefix="@host", default="*", defaults=[]),
+            TemplateVariable(name="svc", prefix="@consul_service_id", default="*", defaults=[]),
+        ]
+        controls = _build_controls_from_template_vars(tvs, "metrics-*", OTEL_PROFILE)
+        fields = [c["field"] for c in controls]
+        self.assertEqual(fields, ["host.name", "consul_service_id"])
+
     def test_otel_tag_map_prefers_otel_kubernetes_semconv_fields(self):
         self.assertEqual(OTEL_PROFILE.map_tag("pod_name"), "k8s.pod.name")
         self.assertEqual(OTEL_PROFILE.map_tag("kube_namespace"), "k8s.namespace.name")
