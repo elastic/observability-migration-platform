@@ -355,6 +355,60 @@ def diff_render_snapshots(
     return regressions
 
 
+@dataclass
+class ControlInteraction:
+    """A dashboard control worth exercising in an interaction audit."""
+    variable_name: str
+    label: str
+    control_type: str
+    default: str = ""
+    multiple: bool = False
+
+
+def extract_controls(report: dict) -> list[ControlInteraction]:
+    """Extract the dashboard's controls (migrated template variables) from a
+    migration report / compiled dashboard dict."""
+    controls: list[ControlInteraction] = []
+    for dashboard in report.get("dashboards", []):
+        for control in dashboard.get("controls") or []:
+            if not isinstance(control, dict):
+                continue
+            name = str(control.get("variable_name") or "")
+            if not name:
+                continue
+            controls.append(
+                ControlInteraction(
+                    variable_name=name,
+                    label=str(control.get("label") or name),
+                    control_type=str(control.get("type") or ""),
+                    default=str(control.get("default") or ""),
+                    multiple=bool(control.get("multiple", False)),
+                )
+            )
+    return controls
+
+
+def build_interaction_plan(controls: Iterable[ControlInteraction]) -> list[dict[str, str]]:
+    """Plan one interaction step per control: select a non-default value and
+    re-audit. The live driver resolves concrete values from the control's
+    options; this is the deterministic 'what to exercise' list."""
+    return [
+        {"variable_name": c.variable_name, "label": c.label, "action": "select_nondefault"}
+        for c in controls
+    ]
+
+
+def interaction_regression(
+    baseline: dict[str, str], after: dict[str, str], *, control_label: str
+) -> list[str]:
+    """Render regressions caused by changing a control: a panel that rendered
+    before the control change and broke after it. Reuses diff_render_snapshots,
+    attributing each regression to the control."""
+    return [
+        f"control '{control_label}': {r}" for r in diff_render_snapshots(baseline, after)
+    ]
+
+
 def expects_data_by_panel(report: dict) -> set[str]:
     """Titles of panels that carry a query and therefore should render data.
 

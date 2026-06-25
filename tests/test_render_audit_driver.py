@@ -62,3 +62,43 @@ def test_audit_fetches_the_built_dashboard_url():
     audit_dashboard_render("https://kb", "dash-xyz", space_id="team-a", dom_fetcher=fetch)
     assert "dash-xyz" in seen["url"]
     assert "team-a" in seen["url"]
+
+
+def test_audit_control_interactions_detects_break_from_a_control():
+    from observability_migration.targets.kibana.render_audit_driver import (
+        audit_control_interactions,
+    )
+    # Selecting the 'cluster' control breaks panel_b; 'job' is harmless.
+    states = {
+        "baseline": {"panel_a": "rendered", "panel_b": "rendered"},
+        "cluster": {"panel_a": "rendered", "panel_b": "error:render_error"},
+        "job": {"panel_a": "rendered", "panel_b": "rendered"},
+    }
+    selected = {"current": "baseline"}
+
+    def capture():
+        return states[selected["current"]]
+
+    def select(name):
+        selected["current"] = name
+
+    findings = audit_control_interactions(
+        [{"variable_name": "cluster", "label": "cluster"},
+         {"variable_name": "job", "label": "job"}],
+        capture_render_snapshot=capture,
+        select_control_nondefault=select,
+    )
+    assert findings == ["control 'cluster': panel_b: rendered -> error:render_error"]
+
+
+def test_audit_control_interactions_clean_when_controls_safe():
+    from observability_migration.targets.kibana.render_audit_driver import (
+        audit_control_interactions,
+    )
+    snap = {"panel_a": "rendered"}
+    findings = audit_control_interactions(
+        [{"variable_name": "x", "label": "x"}],
+        capture_render_snapshot=lambda: snap,
+        select_control_nondefault=lambda _name: None,
+    )
+    assert findings == []

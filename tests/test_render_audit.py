@@ -320,3 +320,44 @@ def test_diff_flags_disappeared_panel():
 
 def test_diff_allows_new_panels():
     assert diff_render_snapshots({"ts": "rendered"}, {"ts": "rendered", "new": "rendered"}) == []
+
+
+# --- Interaction (controls/filters) audit (#6) -----------------------------
+
+from observability_migration.targets.kibana.render_audit import (  # noqa: E402
+    build_interaction_plan,
+    extract_controls,
+    interaction_regression,
+)
+
+
+def _report_with_controls():
+    return {"dashboards": [{"controls": [
+        {"type": "esql", "label": "cluster", "variable_name": "cluster", "default": ".*"},
+        {"type": "esql", "label": "job", "variable_name": "job", "multiple": True},
+        {"type": "esql", "label": "", "variable_name": ""},  # skipped (no name)
+    ]}]}
+
+
+def test_extract_controls_skips_nameless():
+    controls = extract_controls(_report_with_controls())
+    assert [c.variable_name for c in controls] == ["cluster", "job"]
+    assert controls[1].multiple is True
+
+
+def test_build_interaction_plan_one_step_per_control():
+    plan = build_interaction_plan(extract_controls(_report_with_controls()))
+    assert [s["variable_name"] for s in plan] == ["cluster", "job"]
+    assert all(s["action"] == "select_nondefault" for s in plan)
+
+
+def test_interaction_regression_attributes_to_control():
+    before = {"panel_a": "rendered", "panel_b": "rendered"}
+    after = {"panel_a": "rendered", "panel_b": "error:render_error"}
+    findings = interaction_regression(before, after, control_label="cluster")
+    assert findings == ["control 'cluster': panel_b: rendered -> error:render_error"]
+
+
+def test_interaction_regression_clean_when_no_change():
+    snap = {"panel_a": "rendered"}
+    assert interaction_regression(snap, snap, control_label="job") == []

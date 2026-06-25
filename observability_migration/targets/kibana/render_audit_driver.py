@@ -38,6 +38,7 @@ from observability_migration.adapters.source.grafana.smoke import (
 from observability_migration.targets.kibana.render_audit import (
     RenderVerdict,
     classify_render,
+    interaction_regression,
 )
 
 # A DOM fetcher takes a URL and returns the rendered DOM HTML.
@@ -117,3 +118,29 @@ def audit_dashboard_render(
         failed_requests=failed_requests,
         screenshot_ok=True,
     )
+
+
+def audit_control_interactions(
+    plan: list[dict[str, str]],
+    *,
+    capture_render_snapshot: Callable[[], dict[str, str]],
+    select_control_nondefault: Callable[[str], None],
+) -> list[str]:
+    """Exercise each planned control and report render regressions it causes.
+
+    Captures a baseline per-panel render snapshot, then for each control step
+    selects a non-default value and re-captures; a panel that rendered before the
+    change and broke after it is an interaction regression (attributed to the
+    control). The two callables are injected so this orchestration is unit-tested
+    offline; the live wiring backs them with the browser (set the Kibana control,
+    re-snapshot the panels).
+    """
+    baseline = capture_render_snapshot()
+    findings: list[str] = []
+    for step in plan:
+        select_control_nondefault(step["variable_name"])
+        after = capture_render_snapshot()
+        findings.extend(
+            interaction_regression(baseline, after, control_label=step.get("label", step["variable_name"]))
+        )
+    return findings
