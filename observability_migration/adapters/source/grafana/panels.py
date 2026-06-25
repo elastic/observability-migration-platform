@@ -976,7 +976,7 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False, regex_default_params=None):
+                              instant=False, regex_default_params=None, step=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1014,7 +1014,11 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     # (issues #127, #102); everything else is a range plot. ``time=?_tend`` is
     # opt-in: callers that post-process the ``step`` column (e.g. the alert
     # ``LAST(value, step)`` reduction) leave ``instant`` False to keep ``step=``.
-    selector = "time=?_tend" if instant else f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
+    # Range callers may pass an explicit ``step`` (e.g. a migrated Grafana alert
+    # honoring the source query interval, issue #209); when omitted the
+    # documented default keeps the historical resolution.
+    step_value = str(step).strip() if step else _DEFAULT_NATIVE_PROMQL_STEP
+    selector = "time=?_tend" if instant else f"step={step_value}"
 
     if kibana_type in ("metric", "gauge"):
         return f'PROMQL index={index} {selector} value=({cleaned})'

@@ -297,6 +297,10 @@ def build_alert_comparison_results(
         if not provenance and query.startswith("PROMQL "):
             provenance = "native_promql"
 
+        ir_metadata = getattr(ir, "metadata", {}) or {}
+        if not isinstance(ir_metadata, dict):
+            ir_metadata = {}
+
         source_queries = []
         if isinstance(getattr(ir, "source_extension", {}), dict):
             source_queries = list(getattr(ir, "source_extension", {}).get("source_queries", []) or [])
@@ -352,6 +356,12 @@ def build_alert_comparison_results(
                     "provenance": provenance,
                     "warnings": list(getattr(ir, "warnings", []) or []),
                     "group_by": list(getattr(ir, "group_by", []) or []),
+                    # Note whether the native PROMQL range step was taken from the
+                    # source query interval or inferred from the window /
+                    # maxDataPoints, so reviewers can spot a computed step (#209).
+                    "promql_step": str(ir_metadata.get("promql_step", "") or ""),
+                    "promql_step_provenance": str(ir_metadata.get("promql_step_provenance", "") or ""),
+                    "promql_step_note": str(ir_metadata.get("promql_step_note", "") or ""),
                 },
                 "target": {
                     "automation_tier": automation_tier,

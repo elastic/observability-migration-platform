@@ -256,6 +256,46 @@ def _grafana_unified_prometheus_instant_simple_rule():
     return rule
 
 
+def _grafana_unified_prometheus_range_interval_1s_rule():
+    """A Range alert whose query interval is 1s (``intervalMs: 1000``).
+
+    The migrated rule must walk ``step=1s`` buckets, not the hardcoded
+    ``step=1m`` (issue #209).
+    """
+    rule = _grafana_unified_prometheus_safe_rule()
+    rule["uid"] = "rule-prom-range-1s-1"
+    rule["title"] = "High CPU usage at 1s resolution"
+    rule["data"][0]["model"] = {
+        "expr": '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+        "intervalMs": 1000,
+        "maxDataPoints": 43200,
+        "range": True,
+        "instant": False,
+    }
+    rule["data"][0]["relativeTimeRange"] = {"from": 600, "to": 0}
+    return rule
+
+
+def _grafana_unified_prometheus_range_auto_interval_rule():
+    """A Range alert with no fixed interval (``intervalMs`` absent).
+
+    Grafana resolves an auto interval from the query window and
+    ``maxDataPoints``; the migrated step must reflect that resolution rather
+    than the default (issue #209). 600s window / 600 max data points => 1s.
+    """
+    rule = _grafana_unified_prometheus_safe_rule()
+    rule["uid"] = "rule-prom-range-auto-1"
+    rule["title"] = "High CPU usage at auto resolution"
+    rule["data"][0]["model"] = {
+        "expr": '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+        "maxDataPoints": 600,
+        "range": True,
+        "instant": False,
+    }
+    rule["data"][0]["relativeTimeRange"] = {"from": 600, "to": 0}
+    return rule
+
+
 def _grafana_unified_prometheus_validity_step_rule():
     """A Grafana-managed rule imported from Prometheus.
 
@@ -2272,6 +2312,87 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertIn("step=", query)
         self.assertNotIn("time=?_tend", query)
 
+    def test_grafana_unified_range_alert_honors_source_interval_step(self):
+        # Regression for issue #209: a Range alert with a 1s query interval
+        # (``intervalMs: 1000``) must migrate with ``step=1s``, not the
+        # hardcoded ``step=1m`` default.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_range_interval_1s_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("step=1s", query)
+        self.assertNotIn("step=1m", query)
+        self.assertEqual(ir.metadata.get("promql_step"), "1s")
+        self.assertEqual(ir.metadata.get("promql_step_provenance"), "source")
+        self.assertIn("intervalMs", ir.metadata.get("promql_step_note", ""))
+
+    def test_grafana_unified_range_alert_rounds_fractional_interval_up(self):
+        # Issue #209: a fractional-second interval must round up so the migrated
+        # step never under-shoots the source resolution (1500ms -> 2s).
+        rule = _grafana_unified_prometheus_range_interval_1s_rule()
+        rule["data"][0]["model"]["intervalMs"] = 1500
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("step=2s", query)
+        self.assertEqual(ir.metadata.get("promql_step"), "2s")
+        self.assertEqual(ir.metadata.get("promql_step_provenance"), "source")
+
+    def test_grafana_unified_range_alert_infers_step_from_auto_interval(self):
+        # Issue #209: with no fixed interval, the step is inferred from the
+        # query window / maxDataPoints (600s / 600 => 1s) and the provenance is
+        # recorded as inferred so reviewers know it was not taken from source.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_range_auto_interval_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("step=1s", query)
+        self.assertNotIn("step=1m", query)
+        self.assertEqual(ir.metadata.get("promql_step"), "1s")
+        self.assertEqual(ir.metadata.get("promql_step_provenance"), "inferred")
+        self.assertIn("inferred", ir.metadata.get("promql_step_note", ""))
+
+    def test_grafana_unified_range_alert_defaults_step_without_metadata(self):
+        # Issue #209: when no interval/maxDataPoints metadata is exported, the
+        # migrated alert keeps the documented default step and records no step
+        # provenance.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_safe_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("step=1m", query)
+        self.assertNotIn("promql_step", ir.metadata)
+
+    def test_grafana_unified_instant_alert_never_emits_step_with_interval(self):
+        # Issue #209 regression guard for issue #200: even when interval
+        # metadata is present, an instant alert must use the instant selector
+        # and never emit ``step=``.
+        rule = _grafana_unified_prometheus_instant_simple_rule()
+        rule["data"][0]["model"]["intervalMs"] = 1000
+        ir = build_alerting_ir_from_grafana_unified(
+            rule,
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("time=?_tend", query)
+        self.assertNotIn("step=", query)
+        self.assertNotIn("promql_step", ir.metadata)
+
     def test_grafana_unified_alert_esql_honors_custom_data_view(self):
         # Regression for issue #181: the migrated alert ES|QL must target the
         # data view the migration actually writes to, not a hardcoded
@@ -3023,6 +3144,23 @@ class TestGrafanaAlertComparisonArtifact(unittest.TestCase):
         self.assertEqual(row["translation"]["provenance"], "native_promql")
         self.assertTrue(row["translation"]["query"].startswith("PROMQL "))
         self.assertEqual(row["target"]["automation_tier"], "draft_requires_review")
+
+    def test_build_alert_comparison_results_notes_promql_step_provenance(self):
+        # Issue #209: the review-facing comparison artifact must note whether the
+        # emitted ``step=`` was taken from source or inferred.
+        from observability_migration.adapters.source.grafana.alerts import build_alert_comparison_results
+
+        raw_rule = _grafana_unified_prometheus_range_interval_1s_rule()
+        datasource_map = {"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        ir = build_alerting_ir_from_grafana_unified(raw_rule, datasource_map=datasource_map)
+        mapping_batch = map_alerts_batch([ir])
+
+        comparison = build_alert_comparison_results([raw_rule], [ir], mapping_batch)
+
+        row = comparison["alerts"][0]
+        self.assertEqual(row["translation"]["promql_step"], "1s")
+        self.assertEqual(row["translation"]["promql_step_provenance"], "source")
+        self.assertIn("intervalMs", row["translation"]["promql_step_note"])
 
     def test_build_alert_comparison_results_records_manual_block_reason(self):
         from observability_migration.adapters.source.grafana.alerts import build_alert_comparison_results
