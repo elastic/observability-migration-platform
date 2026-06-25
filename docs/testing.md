@@ -196,6 +196,27 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --baseline parity-rig/benchmark/fidelity_baseline_grafana.json --update
 ```
 
+### Running the pinned community corpus
+
+10 popular production dashboards from grafana.com are pinned (by id + revision +
+canonical-JSON sha256) in `parity-rig/benchmark/community_corpus.json`. The
+third-party JSON is **not committed** (marketplace-noise rule); fetch it on
+demand and run the gates:
+
+```bash
+.venv/bin/python scripts/fetch_community_corpus.py --output-dir /tmp/community
+.venv/bin/grafana-migrate --source files --input-dir /tmp/community \
+  --output-dir /tmp/community_out --assets dashboards
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
+  --migration-out /tmp/community_out/dashboards \
+  --baseline parity-rig/benchmark/fidelity_baseline_community.json
+```
+
+Baseline reference: 335 panels, **0 invariant ERRORs**, 10/10 schema-valid, and
+0 `real_bug` on `live_validate`. Bump pins intentionally with `--no-verify`
+(refetch) then refresh the baseline. `tests/test_community_corpus.py` guards the
+manifest offline.
+
 ### Seeding telemetry for live/render checks
 
 ```bash

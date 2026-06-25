@@ -1,0 +1,87 @@
+{
+  "_comment": "Pinned community Grafana dashboards from grafana.com for benchmark/regression runs. Re-fetch reproducibly with scripts/fetch_community_corpus.py (verifies canonical-JSON sha256). Third-party JSON is NOT committed (marketplace-noise rule, AGENTS.md); only the pin is.",
+  "source": "https://grafana.com/api/dashboards/<id>/revisions/<revision>/download",
+  "checksum": "sha256 of canonical JSON (json.dumps sort_keys, compact)",
+  "dashboards": [
+    {
+      "id": 763,
+      "revision": 6,
+      "slug": "redis-prom",
+      "title": "Redis Dashboard for Prometheus Redis Exporter 1.x",
+      "panels": 13,
+      "sha256": "8c34e52a08effbfa559b3c395fafea94750f072398d622a5329b3db6901b07b1"
+    },
+    {
+      "id": 1860,
+      "revision": 45,
+      "slug": "node-exporter-full",
+      "title": "Node Exporter Full",
+      "panels": 31,
+      "sha256": "caf87b3e95f2f122eb39aee7cdeda1b609c0d321c5ddc4b61b0eff916f2e8c28"
+    },
+    {
+      "id": 6417,
+      "revision": 1,
+      "slug": "kube-state",
+      "title": "Kubernetes Cluster (Prometheus)",
+      "panels": 35,
+      "sha256": "6694907c373d7bb0a24143a171f2751cc939f4e8da3fefb04b25b8a59aaca0ab"
+    },
+    {
+      "id": 7362,
+      "revision": 5,
+      "slug": "mysql-overview",
+      "title": "MySQL Overview",
+      "panels": 50,
+      "sha256": "6d5c16e29a314253f7c6b3b4b4b35f0e993815c1f6f4cf4b92bf443af3ad8106"
+    },
+    {
+      "id": 7589,
+      "revision": 5,
+      "slug": "kafka-exporter",
+      "title": "Kafka Exporter Overview",
+      "panels": 5,
+      "sha256": "c5d5891080aab6823f93e4dc5633b48c67ddd601b0ad4cc730224bc0446983ee"
+    },
+    {
+      "id": 9614,
+      "revision": 1,
+      "slug": "nginx-ingress",
+      "title": "NGINX Ingress controller",
+      "panels": 12,
+      "sha256": "c818408a06411560f37e6717fa10d601837167804ed89b62f2deb65b6448a558"
+    },
+    {
+      "id": 9628,
+      "revision": 8,
+      "slug": "postgresql",
+      "title": "PostgreSQL Database",
+      "panels": 35,
+      "sha256": "a3c1f7536523cc8b21f525d88766b84c3f6bb88125fcb1e0af787d3dc99ef79b"
+    },
+    {
+      "id": 11074,
+      "revision": 9,
+      "slug": "node-exporter-en",
+      "title": "Node Exporter Dashboard EN 20201010-StarsL.cn",
+      "panels": 26,
+      "sha256": "af4a633acd13fd9cc5abd63736e31d4df306d39a732cc95442a94fc3aef5b049"
+    },
+    {
+      "id": 11835,
+      "revision": 1,
+      "slug": "redis-alt",
+      "title": "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)",
+      "panels": 12,
+      "sha256": "9ad90c516c051b5592296a587f217994a9e8d6aee3e4c78ec990075c1d3e3d45"
+    },
+    {
+      "id": 12708,
+      "revision": 1,
+      "slug": "nginx",
+      "title": "NGINX exporter",
+      "panels": 6,
+      "sha256": "bb5e3318b68770846130a98a8ca2beb5e42b91d187155eef18a6542aa1f4c1e5"
+    }
+  ]
+}
