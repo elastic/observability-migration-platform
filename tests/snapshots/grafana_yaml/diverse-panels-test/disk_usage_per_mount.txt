@@ -4,6 +4,7 @@ status: migrated_with_warnings
 chart_type: bar
 dimension: mountpoint
 metrics: ['computed_value']
+axis_extent: custom [0.0, 100.0]
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
 warning: Approximated bargauge as bar chart

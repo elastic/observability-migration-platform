@@ -19,8 +19,14 @@ Three complementary test classes:
    PROMQL() function and column names are determined at runtime).
 
 3. TestGrafanaYAMLSnapshots
-   Captures a compact snapshot of each panel's YAML shape (chart type +
-   spec fields + status) for the diverse-panels-test.json dashboard.
+   Captures a compact snapshot of each panel's YAML shape for the
+   diverse-panels-test.json dashboard: chart type, spec field names, status,
+   and the visual-fidelity attributes that change how a panel *looks* even
+   when the numbers are right (stacking mode, axis title/bounds, gauge shape,
+   gauge colour range/thresholds — issue #224).
+   TestGrafanaControlsSnapshot does the same for the dashboard's controls
+   (type, resolved field, multiple), translated through the metric-aware path
+   so the snapshot freezes the fixed field (`service.instance.id`).
    Running with UPDATE_SNAPSHOTS=1 regenerates golden files; subsequent
    runs detect regressions.
 
@@ -39,6 +45,7 @@ import json
 import os
 import pathlib
 import unittest
+from types import SimpleNamespace
 from typing import Any
 
 from observability_migration.adapters.source.grafana.panels import (
@@ -209,10 +216,55 @@ def _snapshot_text(title: str, grafana_type: str, result: Any, esql_block: dict)
     if "metric" in esql_block:
         m = esql_block["metric"]
         lines.append(f"metric: {m.get('field') if isinstance(m, dict) else m}")
+    # Visual-fidelity attributes (issue #224): these change how a panel *looks*
+    # even when the numeric spec is identical, so a regression here would
+    # otherwise pass the field-name-only checks above silently.
+    if "mode" in esql_block:
+        lines.append(f"mode: {esql_block['mode']}")
+    appearance = esql_block.get("appearance")
+    if isinstance(appearance, dict):
+        if "shape" in appearance:
+            lines.append(f"gauge_shape: {appearance['shape']}")
+        axis = appearance.get("y_left_axis")
+        if isinstance(axis, dict):
+            if "title" in axis:
+                lines.append(f"axis_title: {axis['title']}")
+            extent = axis.get("extent")
+            if isinstance(extent, dict):
+                lines.append(
+                    f"axis_extent: {extent.get('mode')} "
+                    f"[{extent.get('min')}, {extent.get('max')}]"
+                )
+    color = esql_block.get("color")
+    if isinstance(color, dict):
+        if "range_min" in color or "range_max" in color:
+            lines.append(f"gauge_range: [{color.get('range_min')}, {color.get('range_max')}]")
+        thresholds = color.get("thresholds")
+        if thresholds:
+            rendered = ", ".join(
+                f"{t.get('up_to')}:{t.get('color')}" for t in thresholds
+            )
+            lines.append(f"gauge_thresholds: {rendered}")
     if result.kibana_type == "markdown":
         lines.append("chart_type: markdown")
     for w in getattr(result, "reasons", []):
         lines.append(f"warning: {w}")
+    return "\n".join(lines) + "\n"
+
+
+def _controls_snapshot_text(controls: list[dict]) -> str:
+    """Render a compact snapshot of a dashboard's controls (issue #224).
+
+    One line per control capturing its ``type``, resolved ``field``, and
+    ``multiple`` flag — the dropdown/variable fidelity the per-panel snapshots
+    don't see.
+    """
+    if not controls:
+        return "(no controls)\n"
+    lines = [
+        f"control: type={c.get('type')} field={c.get('field')} multiple={c.get('multiple')}"
+        for c in controls
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -398,6 +450,93 @@ class TestInstantSingleValuePanels(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Test class 2c: snapshot extractor renders visual-fidelity attributes (#224)
+# ---------------------------------------------------------------------------
+
+def _fake_result(status="migrated", kibana_type="lens", reasons=()):
+    return SimpleNamespace(status=status, kibana_type=kibana_type, reasons=list(reasons))
+
+
+class TestSnapshotExtractorVisualFidelity(unittest.TestCase):
+    """`_snapshot_text` must capture attributes that change how a panel *looks*
+    even when the numbers are right (issue #224): stacking mode, axis title and
+    bounds, gauge shape, and gauge colour range + thresholds.
+    """
+
+    def test_stacking_mode_is_captured(self):
+        block = {"type": "bar", "mode": "stacked"}
+        text = _snapshot_text("Bar", "barchart", _fake_result(), block)
+        self.assertIn("mode: stacked", text)
+
+    def test_axis_title_is_captured(self):
+        block = {"type": "line", "appearance": {"y_left_axis": {"title": "CPU %"}}}
+        text = _snapshot_text("Line", "timeseries", _fake_result(), block)
+        self.assertIn("axis_title: CPU %", text)
+
+    def test_axis_bounds_are_captured(self):
+        block = {
+            "type": "line",
+            "appearance": {"y_left_axis": {"extent": {"mode": "custom", "min": 0.0, "max": 100.0}}},
+        }
+        text = _snapshot_text("Line", "timeseries", _fake_result(), block)
+        self.assertIn("axis_extent: custom [0.0, 100.0]", text)
+
+    def test_gauge_shape_is_captured(self):
+        block = {"type": "gauge", "appearance": {"shape": "arc"}}
+        text = _snapshot_text("Gauge", "gauge", _fake_result(), block)
+        self.assertIn("gauge_shape: arc", text)
+
+    def test_gauge_color_range_is_captured(self):
+        block = {"type": "gauge", "color": {"range_min": 0, "range_max": 100}}
+        text = _snapshot_text("Gauge", "gauge", _fake_result(), block)
+        self.assertIn("gauge_range: [0, 100]", text)
+
+    def test_gauge_color_thresholds_are_captured(self):
+        block = {
+            "type": "gauge",
+            "color": {
+                "thresholds": [
+                    {"up_to": 70, "color": "#54B399"},
+                    {"up_to": 90, "color": "#D6BF57"},
+                ]
+            },
+        }
+        text = _snapshot_text("Gauge", "gauge", _fake_result(), block)
+        self.assertIn("gauge_thresholds: 70:#54B399, 90:#D6BF57", text)
+
+    def test_absent_attributes_emit_no_lines(self):
+        block = {"type": "datatable", "metrics": [{"field": "ALERTS"}]}
+        text = _snapshot_text("Table", "table", _fake_result(), block)
+        for key in ("mode:", "axis_title:", "axis_extent:", "gauge_shape:", "gauge_range:", "gauge_thresholds:"):
+            self.assertNotIn(key, text)
+
+
+# ---------------------------------------------------------------------------
+# Test class 2d: controls snapshot extractor (#224)
+# ---------------------------------------------------------------------------
+
+class TestControlsSnapshotExtractor(unittest.TestCase):
+    """`_controls_snapshot_text` freezes each dashboard control's type, resolved
+    field, and multiple flag (issue #224) — the dropdowns the panel snapshots
+    don't cover."""
+
+    def test_renders_type_field_and_multiple_per_control(self):
+        controls = [
+            {"type": "options", "field": "service.instance.id", "multiple": True},
+            {"type": "options", "field": "service.name", "multiple": False},
+        ]
+        text = _controls_snapshot_text(controls)
+        self.assertEqual(
+            text,
+            "control: type=options field=service.instance.id multiple=True\n"
+            "control: type=options field=service.name multiple=False\n",
+        )
+
+    def test_empty_controls_render_marker(self):
+        self.assertEqual(_controls_snapshot_text([]), "(no controls)\n")
+
+
+# ---------------------------------------------------------------------------
 # Test class 3: YAML shape snapshots for diverse-panels-test.json
 # ---------------------------------------------------------------------------
 
@@ -475,3 +614,91 @@ _SNAPSHOT_PANELS = [
 
 for _title in _SNAPSHOT_PANELS:
     setattr(TestGrafanaYAMLSnapshots, f"test_{_title.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')}", _make_snapshot_test(_title))
+
+
+# ---------------------------------------------------------------------------
+# Test class 4: dashboard controls snapshot for diverse-panels-test.json (#224)
+# ---------------------------------------------------------------------------
+
+def _metric_aware_resolver():
+    """A seeded resolver (no network) that maps the `up` metric's `instance`
+    label to its co-occurring OTel field `service.instance.id`.
+
+    This is the metric-aware path from issue #163: without it, the control's
+    field falls back to the index-global `instance`, which selects a disjoint
+    document set from the scoped metric and empties the dropdown. The controls
+    snapshot must freeze the *fixed* field, so it is translated through this
+    resolver rather than the bare fallback.
+    """
+    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    rp = RulePackConfig()
+    resolver = SchemaResolver(rp, es_url="https://es", index_pattern="metrics-*")
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {
+        "instance": {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}},
+        "service.instance.id": {
+            "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+        },
+        "up": {"double": {"type": "double", "aggregatable": True}},
+    }
+    resolver._cooccurrence_cache = {
+        ("up", "instance"): False,
+        ("up", "service.instance.id"): True,
+    }
+    resolver.resolve_metric_field = lambda name, **kw: "up"
+    return rp, resolver
+
+
+class TestGrafanaControlsSnapshot(unittest.TestCase):
+    """Snapshot of diverse-panels-test.json dashboard controls (issue #224).
+
+    Controls are translated through the metric-aware path so the snapshot
+    freezes the *fixed* field (`service.instance.id`), not the pre-fix
+    `instance` fallback.
+
+    To regenerate:
+        UPDATE_SNAPSHOTS=1 python -m pytest tests/test_grafana_yaml_generation.py::TestGrafanaControlsSnapshot -v
+    """
+
+    def test_controls_snapshot(self):
+        from observability_migration.adapters.source.grafana.panels import translate_variables
+
+        dash = _load_dashboard(_DIVERSE_PANELS_PATH)
+        template_list = dash.get("templating", {}).get("list", [])
+        rule_pack, resolver = _metric_aware_resolver()
+        controls = translate_variables(
+            template_list,
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        # Behavioural guard: the metric-aware path must have fixed the field.
+        fields = [c.get("field") for c in controls]
+        self.assertIn("service.instance.id", fields)
+        self.assertNotIn("instance", fields)
+
+        actual = _controls_snapshot_text(controls)
+        snap_dir = _SNAPSHOT_DIR / "diverse-panels-test"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap_path = snap_dir / "_controls.txt"
+
+        if UPDATE_SNAPSHOTS or not snap_path.exists():
+            snap_path.write_text(actual, encoding="utf-8")
+            if not UPDATE_SNAPSHOTS:
+                self.fail(
+                    "Created new controls snapshot. "
+                    "Run again (or with UPDATE_SNAPSHOTS=1) to pass."
+                )
+            return
+
+        expected = snap_path.read_text(encoding="utf-8")
+        if actual != expected:
+            self.fail(
+                "Controls snapshot mismatch.\n"
+                "To update: UPDATE_SNAPSHOTS=1 pytest tests/test_grafana_yaml_generation.py\n"
+                f"\n{_diff(expected, actual)}"
+            )
