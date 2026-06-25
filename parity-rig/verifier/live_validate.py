@@ -31,6 +31,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Reuse the package's dashboard-control-param binding when importable so the
+# live oracle agrees with the uploaded-dashboard smoke path; otherwise the
+# verifier stays runnable standalone and simply binds no extra params.
+try:  # pragma: no cover - exercised implicitly when the package is installed
+    from observability_migration.adapters.source.grafana.esql_validate import (
+        _validation_params_for_query,
+    )
+except Exception:  # pragma: no cover
+    _validation_params_for_query = None
+
 # A runner takes (es_url, api_key, esql) and returns (status_code, body).
 QueryRunner = Callable[[str, str, str], "tuple[int, dict[str, Any] | str]"]
 
@@ -104,7 +114,16 @@ def validate_query(
     if runner is None:
         from . import collectors
 
-        runner = collectors.run_cluster_query
+        # Bind dashboard control params (``?job``, ``RLIKE ?var`` -> ``.*``,
+        # arithmetic params -> ``0``, etc.) the same way the uploaded-dashboard
+        # smoke path does, so a valid migrated query referencing control params
+        # is not mis-executed (and mis-classified as ``real_bug``) just because
+        # the named parameters resolve to empty strings.
+        params = _validation_params_for_query(query) if _validation_params_for_query else None
+
+        def runner(es, key, q):
+            return collectors.run_cluster_query(es, key, q, params=params or None)
+
     status, body = runner(es_url, api_key, query)
     if status == 200 and isinstance(body, dict):
         columns = [c.get("name", "") for c in (body.get("columns") or [])]

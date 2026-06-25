@@ -99,6 +99,25 @@ class TestValidateQuery:
         r = live_validate.validate_query("es", "k", "FROM x", runner=self._runner(400, _UNKNOWN_COLUMN))
         assert r.classification == "data_gap"
 
+    def test_default_runner_binds_control_params(self, monkeypatch) -> None:
+        # Without an injected runner, dashboard control params must be bound the
+        # same way the smoke path binds them (``RLIKE ?var`` -> ``.*``), not left
+        # to default to empty strings, so a valid query is not mis-run/-classified.
+        from verifier import collectors
+
+        captured: dict = {}
+
+        def fake_run(es, key, q, params=None, timeout=0):
+            captured["params"] = params
+            return 200, {"columns": [], "values": []}
+
+        monkeypatch.setattr(collectors, "run_cluster_query", fake_run)
+
+        query = 'FROM metrics-* | WHERE host RLIKE ?var | STATS c = COUNT(*)'
+        r = live_validate.validate_query("es", "k", query)
+        assert r.classification == "ok"
+        assert captured["params"] == [{"var": ".*"}]
+
 
 class TestDriverAndExtraction:
     def test_validate_queries_dedups(self) -> None:
