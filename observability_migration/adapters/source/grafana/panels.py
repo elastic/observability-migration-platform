@@ -1199,6 +1199,16 @@ def _translate_panel_native_promql(
                 "Native PROMQL skipped: target does not support PromQL label matcher params yet",
             )
         return None
+    # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
+    # would be emitted as a named param *inside* the opaque PROMQL command
+    # string (``{instance=~?instance}``). Kibana dashboard controls only bind
+    # ``?param`` references they can see in native ES|QL, so a param trapped in
+    # the PROMQL command stays unbound and the panel fails at render with
+    # "Parameter [?instance] value not found". Fall through to ES|QL
+    # translation, which surfaces the binding as a visible ``WHERE … RLIKE
+    # ?var`` clause the control can bind (issue #230).
+    if _promql_label_matcher_has_template_variable(expr):
+        return None
     # Pre-flight type check: if the source PromQL applies a counter-style
     # range function (``rate``/``irate``/``increase``) to a metric that
     # the target index has typed as gauge, the native PROMQL command will
@@ -1421,6 +1431,11 @@ def _translate_multi_target_native_promql(
                     panel_notes,
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
+            return None
+        # Control-bound label-matcher variables can't bind inside the opaque
+        # PROMQL command string; fall through to ES|QL so the control binds via
+        # a visible ``WHERE … RLIKE ?var`` clause (issue #230).
+        if _promql_label_matcher_has_template_variable(expr):
             return None
         cleaned, bare = _clean_promql_for_native_with_state(
             expr,
