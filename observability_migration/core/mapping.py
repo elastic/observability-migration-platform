@@ -516,6 +516,93 @@ def _grafana_unified_source_is_instant_like(ir: AlertingIR) -> bool:
     return bool(model.get("instant")) or ("range" in model and model.get("range") is False)
 
 
+def _seconds_to_step_duration(seconds: float) -> str:
+    """Render a step in seconds as the most compact Prometheus-style duration."""
+    total = max(1, int(seconds))
+    if total % 3600 == 0:
+        return f"{total // 3600}h"
+    if total % 60 == 0:
+        return f"{total // 60}m"
+    return f"{total}s"
+
+
+def _grafana_unified_primary_range_seconds(ir: AlertingIR) -> float | None:
+    """Lookback window (seconds) of the primary Grafana query, if exported."""
+    ext = ir.source_extension or {}
+    data_list = ext.get("data")
+    if not isinstance(data_list, list):
+        return None
+    for item in data_list:
+        if not isinstance(item, dict):
+            continue
+        datasource_uid = str(item.get("datasourceUid", "") or "").strip()
+        if not datasource_uid or datasource_uid in {"__expr__", "-100"}:
+            continue
+        raw_range = item.get("relativeTimeRange")
+        rng = raw_range if isinstance(raw_range, dict) else {}
+        from_seconds = _coerce_float(rng.get("from"))
+        return from_seconds if from_seconds and from_seconds > 0 else None
+    return None
+
+
+def _grafana_unified_promql_step(ir: AlertingIR) -> tuple[str, str] | None:
+    """Derive the migrated PROMQL range step from Grafana alert metadata.
+
+    Grafana range alert queries carry the operator's chosen resolution as
+    ``intervalMs`` (the step) and, for auto interval, ``maxDataPoints`` over the
+    query window (``relativeTimeRange.from``). A migrated range alert must walk
+    ``step=`` buckets at that same resolution, otherwise a rule evaluated every
+    second in Grafana silently becomes a 1-minute rule in Kibana (issue #209).
+
+    Returns ``(step, provenance)`` where ``provenance`` is ``"source"`` when the
+    step comes straight from ``intervalMs`` and ``"inferred"`` when it is
+    computed from the window and ``maxDataPoints`` (Grafana's auto resolution).
+    Returns ``None`` when no resolution metadata is present so the caller keeps
+    the documented default step.
+    """
+    if ir.kind != "grafana_unified":
+        return None
+    model = _grafana_unified_primary_source_model(ir)
+    if not model:
+        return None
+
+    interval_ms = _coerce_float(model.get("intervalMs"))
+    if interval_ms is not None and interval_ms > 0:
+        # Round up sub-second / fractional-second intervals so the migrated step
+        # never under-shoots the source resolution (the native step is in whole
+        # seconds at minimum); e.g. 1500ms -> 2s, 500ms -> 1s.
+        return _seconds_to_step_duration(max(1, math.ceil(interval_ms / 1000.0))), "source"
+
+    max_data_points = _coerce_float(model.get("maxDataPoints"))
+    range_seconds = _grafana_unified_primary_range_seconds(ir)
+    if (
+        max_data_points is not None
+        and max_data_points > 0
+        and range_seconds is not None
+        and range_seconds > 0
+    ):
+        step_seconds = max(1, math.ceil(range_seconds / max_data_points))
+        return _seconds_to_step_duration(step_seconds), "inferred"
+
+    return None
+
+
+def _record_promql_step_provenance(ir: AlertingIR, step: str, provenance: str) -> None:
+    """Note on the IR whether the emitted ``step=`` was sourced or inferred."""
+    ir.metadata["promql_step"] = step
+    ir.metadata["promql_step_provenance"] = provenance
+    if provenance == "inferred":
+        ir.metadata["promql_step_note"] = (
+            f"PROMQL range step={step} was inferred from the source query window "
+            "and maxDataPoints (Grafana auto interval); confirm it matches the "
+            "intended evaluation resolution."
+        )
+    else:
+        ir.metadata["promql_step_note"] = (
+            f"PROMQL range step={step} taken from the source query interval (intervalMs)."
+        )
+
+
 def _promql_rank_limit(expr: str, agg_name: str) -> int | None:
     match = re.match(
         rf"^\s*{re.escape(agg_name)}(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(\s*(\d+)\s*,",
@@ -929,12 +1016,20 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
     # value that already recovered still over-fires (issue #200). ``?_tend`` is
     # bound by Kibana's es-query rule executor to the evaluation window end, i.e.
     # "now" at runtime.
+    instant = _grafana_unified_source_is_instant_like(ir)
+    # Range alerts must keep the source query's resolution: derive ``step=`` from
+    # the exported interval metadata and only fall back to the default when none
+    # is present (issue #209). Instant alerts never emit ``step=`` (issue #200).
+    step_info = None if instant else _grafana_unified_promql_step(ir)
     query = build_native_promql_query(
         expr,
         index=_default_promql_index(data_view),
         kibana_type="metric",
-        instant=_grafana_unified_source_is_instant_like(ir),
+        instant=instant,
+        step=step_info[0] if step_info else None,
     )
+    if step_info:
+        _record_promql_step_provenance(ir, step_info[0], step_info[1])
 
     if _promql_expr_has_comparison(expr):
         return query
