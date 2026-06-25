@@ -11290,6 +11290,39 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             f"regression has returned.",
         )
 
+    def test_kibana_native_layout_compacts_stale_collapsed_row_gap(self):
+        """A *collapsed* Grafana row stores its child panels with their
+        last-expanded absolute gridPos, so the first visible row can sit
+        hundreds of rows above the rest (eg. node-exporter-full: CPU/Memory at
+        y=21, Network Traffic at y=433). The faithful transform would preserve
+        that ~400-row gap as a huge blank stripe. Such an artifact gap must be
+        compacted away while small deliberate gaps (see the test above) stay.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "CPU", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 21, "_grafana_row_x": 0, "_grafana_w": 12, "_grafana_h": 12},
+            {"title": "Memory", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 21, "_grafana_row_x": 12, "_grafana_w": 12, "_grafana_h": 12},
+            # Stale coordinates: Grafana left these ~400 rows below.
+            {"title": "Net", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 433, "_grafana_row_x": 0, "_grafana_w": 12, "_grafana_h": 12},
+            {"title": "Disk", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 433, "_grafana_row_x": 12, "_grafana_w": 12, "_grafana_h": 12},
+        ]
+        _apply_kibana_native_layout(panels)
+        by = {p["title"]: p for p in panels}
+        cpu_bottom = by["CPU"]["position"]["y"] + by["CPU"]["size"]["h"]
+        net_top = by["Net"]["position"]["y"]
+        gap = net_top - cpu_bottom
+        self.assertLessEqual(
+            gap, 2,
+            f"stale collapsed-row gap should be compacted to near-contiguous "
+            f"(got {gap} empty rows between the CPU/Memory row and Net/Disk row)",
+        )
+        # The second row must still sit below the first (order preserved).
+        self.assertGreaterEqual(net_top, cpu_bottom)
 
     def test_fill_simple_row_bails_when_all_panels_at_hard_min(self):
         """When every panel in the row is already at HARD_MIN_W and the

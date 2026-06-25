@@ -4964,7 +4964,72 @@ def _apply_kibana_native_layout(yaml_panels):
     # intent) over the readability floor.
     _apply_collision_aware_minimums(yaml_panels)
 
+    # L1.5 (gap compaction): strip stale vertical dead-space left by collapsed
+    # Grafana rows (their children keep last-expanded absolute y, so the first
+    # visible row can sit hundreds of rows above the rest). Runs after the
+    # minimums so it operates on final heights.
+    _compact_vertical_gaps(yaml_panels)
+
     return yaml_panels
+
+
+# An empty horizontal band taller than this many Kibana rows is treated as a
+# stale-coordinate artifact (collapsed-row children keep last-expanded absolute
+# gridPos) rather than deliberate spacing, and is removed. Deliberate author
+# gaps are at most a panel height or two; collapsed-row artifacts span hundreds
+# of rows, so the two are cleanly separable. Kept well above the ~9-row gaps the
+# faithful transform is designed to preserve.
+MAX_INTRA_SECTION_GAP = 24
+
+
+def _compact_vertical_gaps(yaml_panels: list[dict]) -> None:
+    """Remove stale vertical dead-space within a single section's panels.
+
+    Finds every fully-empty horizontal band (a contiguous range of Kibana rows
+    occupied by no panel) taller than :data:`MAX_INTRA_SECTION_GAP` and shifts
+    everything below it up so the band collapses to nothing — matching how
+    Grafana re-flows a collapsed row's children contiguously on expand. Relative
+    order, x positions, sizes, and smaller deliberate gaps are all preserved,
+    and because only empty rows are removed no overlap can be introduced.
+    """
+    if len(yaml_panels) < 2:
+        return
+    spans = []
+    max_bottom = 0
+    for panel in yaml_panels:
+        _x, y, _w, h = _rect(panel)
+        if h <= 0:
+            continue
+        spans.append((panel, y))
+        max_bottom = max(max_bottom, y + h)
+    if not spans or max_bottom <= 0:
+        return
+
+    occupied = bytearray(max_bottom)
+    for panel, _y in spans:
+        _x, y, _w, h = _rect(panel)
+        for row in range(max(0, y), min(max_bottom, y + h)):
+            occupied[row] = 1
+
+    # Collect empty bands taller than the threshold as (first_row_below, rows_removed).
+    cuts: list[tuple[int, int]] = []
+    run_start = None
+    for row in range(max_bottom):
+        if not occupied[row]:
+            if run_start is None:
+                run_start = row
+        elif run_start is not None:
+            if row - run_start > MAX_INTRA_SECTION_GAP:
+                cuts.append((row, row - run_start))
+            run_start = None
+    if not cuts:
+        return
+
+    for panel, y in spans:
+        delta = sum(amount for first_row, amount in cuts if y >= first_row)
+        if delta:
+            position = panel.setdefault("position", {})
+            position["y"] = y - delta
 
 
 def _rect(panel: dict) -> tuple[int, int, int, int]:
