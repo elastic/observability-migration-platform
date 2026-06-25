@@ -2449,6 +2449,17 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(panel["size"]["w"], 48)
         self.assertEqual(panel["size"]["h"], 12)
 
+    def test_single_stat_tile_does_not_balloon_to_full_width(self):
+        # A lone query_value (stat) tile at x>0 takes the proportional layout
+        # branch. Span-based scaling would stretch a 3/12-wide source tile to
+        # all 48 columns (one number across the whole dashboard). A metric tile
+        # must instead keep the single-metric width the ordered/heuristic branch
+        # already uses (24); charts/tables still expand (see the test above).
+        widget = self._make_metric_widget("1", "Uptime", "query_value", {"x": 2, "y": 0, "width": 3, "height": 2})
+        dash = self._render_dashboard([widget])
+        panel = dash["panels"][0]
+        self.assertEqual(panel["size"]["w"], 24)
+
     def test_consecutive_singleton_charts_repack_two_up(self):
         widgets = [
             self._make_metric_widget("1", "A", "timeseries", {"x": 0, "y": 0, "width": 4, "height": 2}),

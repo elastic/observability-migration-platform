@@ -682,6 +682,31 @@ def _apply_proportional_layout(rows: list[list[dict[str, Any]]]) -> None:
     """
     y_cursor = 0
     for row_panels in rows:
+        # A lone stat/metric tile must not balloon to the full grid: span-based
+        # scaling derives col_scale from the panel's own extent, so a 3/12-wide
+        # query_value would stretch to all 48 columns (one number across the
+        # whole dashboard). Give it the single-metric width the heuristic branch
+        # already uses (_plan_row_widths -> 24); charts/tables still expand.
+        if len(row_panels) == 1 and _panel_family(row_panels[0]) == "metric":
+            panel = row_panels[0]
+            w = _plan_row_widths(row_panels)[0]
+            # Advance the y-cursor by the height the tile will actually have
+            # AFTER _normalize_tile_sizes floors it to the type min_h. Using the
+            # raw preferred height here would desync the cursor (a query_value's
+            # preferred 5 vs metric min_h 6), placing the next row one row too
+            # high and leaving _resolve_overlaps to split it.
+            h = _preferred_panel_height(panel, w)
+            constraints = PANEL_SIZE_CONSTRAINTS.get(_kibana_panel_type(panel))
+            if constraints is not None:
+                _min_h, _max_h = constraints[1], constraints[2]
+                h = max(h, _min_h)
+                if _max_h is not None:
+                    h = min(h, _max_h)
+            panel["size"] = {"w": w, "h": h}
+            panel["position"] = {"x": 0, "y": y_cursor}
+            y_cursor += h
+            continue
+
         xs = [int(p.get("_dd_x", 0) or 0) for p in row_panels]
         ws = [int(p.get("_dd_w", 1) or 1) for p in row_panels]
         source_min_x = min(xs) if xs else 0
