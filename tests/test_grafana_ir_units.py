@@ -134,3 +134,34 @@ class TestDashboardLineage:
             lineage = DashboardLineage()
             lineage.transition(state)
             assert lineage.rollout_state == state
+
+
+class TestHeatmapEmitter:
+    def _heatmap_panel(self, expr):
+        return {
+            "id": 1, "type": "heatmap", "title": "H",
+            "targets": [{"expr": expr, "refId": "A"}],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        }
+
+    def _translate(self, expr):
+        rp = RulePackConfig()
+        from observability_migration.adapters.source.grafana import panels
+        from observability_migration.adapters.source.grafana import schema as gschema
+        resolver = gschema.SchemaResolver(rp)
+        return panels.translate_panel(self._heatmap_panel(expr), datasource_index="metrics-*",
+                                      esql_index="metrics-*", rule_pack=rp, resolver=resolver)
+
+    def test_histogram_bucket_heatmap_emits_heatmap_type(self):
+        yaml_panel, result = self._translate("sum(rate(http_request_duration_seconds_bucket[5m])) by (le)")
+        esql = yaml_panel["esql"]
+        assert esql["type"] == "heatmap"
+        assert esql["y_axis"]["field"] == "le"
+        assert "x_axis" in esql and "metric" in esql
+        assert result.status in ("migrated", "migrated_with_warnings")
+
+    def test_heatmap_without_breakdown_degrades_to_line(self):
+        # No second dimension -> cannot be a heatmap -> line/metric fallback, with a warning.
+        yaml_panel, _ = self._translate("sum(rate(http_requests_total[5m]))")
+        assert yaml_panel["esql"]["type"] in ("line", "metric")

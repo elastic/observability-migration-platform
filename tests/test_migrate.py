@@ -9280,7 +9280,9 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Head chunks count")
 
-    def test_heatmap_panel_falls_back_to_line(self):
+    def test_heatmap_panel_emits_native_heatmap(self):
+        # A histogram-bucket heatmap (BY time, le) maps to a native Kibana
+        # heatmap: x=time, y=le, color=metric (previously fell back to a line).
         panel = {
             "id": 3,
             "type": "heatmap",
@@ -9292,13 +9294,24 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         yaml_panel, result = self.translate_panel(panel)
         self.assertIsNotNone(yaml_panel)
         self.assertEqual(result.grafana_type, "heatmap")
-        self.assertEqual(result.kibana_type, "heatmap")
-        esql_type = yaml_panel.get("esql", {}).get("type", "")
-        self.assertEqual(esql_type, "line", "heatmap should fall back to line chart via fallback rule")
-        self.assertTrue(
-            any("Approximated" in r or "no direct" in r for r in result.reasons),
-            f"Expected fallback warning, got {result.reasons}",
-        )
+        esql = yaml_panel.get("esql", {})
+        self.assertEqual(esql.get("type", ""), "heatmap")
+        self.assertEqual((esql.get("y_axis") or {}).get("field"), "le")
+        self.assertIn("x_axis", esql)
+        self.assertIn("metric", esql)
+
+    def test_heatmap_without_second_dimension_degrades_to_line(self):
+        # Without a y-axis bucket a heatmap is undefined; degrade to line/metric.
+        panel = {
+            "id": 4,
+            "type": "heatmap",
+            "title": "Bare Heatmap",
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "sum(rate(http_requests_total[5m]))", "refId": "A"}],
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        self.assertIn(yaml_panel.get("esql", {}).get("type", ""), ("line", "metric"))
 
     def test_piechart_panel_maps_to_pie(self):
         panel = {

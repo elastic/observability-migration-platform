@@ -634,6 +634,10 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
+    if kibana_type == "heatmap":
+        return _build_esql_heatmap_panel(
+            query, metric_col=metric_col, by_cols=xy_by_cols, time_fields=time_fields,
+        )
     if kibana_type == "datatable":
         if metric_fields and len(metric_fields) > 1:
             return _build_esql_datatable_panel(query, metric_fields=metric_fields, by_cols=table_by_cols)
@@ -1820,6 +1824,60 @@ def pie_panel_rule(context):
         )
     context.handled = True
     return f"mapped to {(context.yaml_panel.get('esql') or {}).get('type', 'pie')} panel"
+
+
+def _build_esql_heatmap_panel(esql, metric_col=None, by_cols=None, time_fields=None, warnings=None):
+    """Build a native Kibana heatmap (x=time, y=bucket, color=metric).
+
+    A Grafana heatmap of histogram ``le`` buckets over time maps cleanly:
+    ``STATS metric BY time_bucket, le`` -> x_axis=time_bucket, y_axis=le,
+    metric=value. When the query lacks either a time axis or a second
+    (y-axis) dimension, a heatmap is not well-defined, so degrade to the XY
+    builder (which itself drops to a metric for single-value queries).
+    """
+    esql = _ensure_bucket_sort(esql)
+    shape = _extract_esql_shape(esql)
+    extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
+    if metric_col is None:
+        metric_col = extracted_metric_col
+    if by_cols is None:
+        by_cols = extracted_by_cols
+    if time_fields is None:
+        time_fields = shape.time_fields
+    dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    if dimension_field is None or not breakdown_field:
+        _append_unique(
+            warnings if warnings is not None else [],
+            "Approximated heatmap as line chart (needs both a time axis and a bucket dimension)",
+        )
+        return _build_esql_xy_panel(
+            esql, "line", metric_col=metric_col, by_cols=by_cols,
+            time_fields=time_fields, warnings=warnings,
+        )
+    return {
+        "type": "heatmap",
+        "query": esql,
+        "x_axis": _dimension_field(dimension_field),
+        "y_axis": {"field": breakdown_field},
+        "metric": {"field": metric_col},
+    }
+
+
+@PANEL_TRANSLATORS.register("heatmap_panel", priority=45)
+def heatmap_panel_rule(context):
+    if context.kibana_type != "heatmap":
+        return None
+    context.yaml_panel["esql"] = _build_esql_heatmap_panel(
+        context.translation.esql_query,
+        metric_col=context.translation.output_metric_field or None,
+        by_cols=context.translation.output_group_fields,
+        warnings=context.translation.warnings,
+    )
+    emitted = (context.yaml_panel.get("esql") or {}).get("type", "heatmap")
+    if emitted != "heatmap":
+        context.kibana_type = emitted  # keep result type consistent with what was emitted
+    context.handled = True
+    return f"mapped to {emitted} panel"
 
 
 @PANEL_TRANSLATORS.register("fallback_line_panel", priority=90)
