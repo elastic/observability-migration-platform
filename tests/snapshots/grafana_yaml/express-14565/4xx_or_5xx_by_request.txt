@@ -1,0 +1,12 @@
+title: 4xx or 5xx by request
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: legend
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Dropped variable-driven label filters during migration
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Rewrote PromQL set-or between same metric as a unified WHERE OR clause
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['status'] are in the query but not on the chart, so series differing only by those are visually merged

@@ -1,0 +1,10 @@
+{
+  "_comment": "Seeded schema profile for the Express Prometheus Middleware dashboard (Grafana 14565). Both query controls are metric-scoped on the 'instance' label: 'instance' = label_values(nodejs_version_info, instance) and 'node_exporter' = label_values(node_uname_info, instance). Both must resolve to service.instance.id because that is the field co-occurring with the scoped metric (issue #163 / ISSUE-006), not the raw 'instance' field.",
+  "fields": ["instance", "service.instance.id", "nodejs_version_info", "node_uname_info"],
+  "cooccurrence": [
+    ["nodejs_version_info", "instance", false],
+    ["nodejs_version_info", "service.instance.id", true],
+    ["node_uname_info", "instance", false],
+    ["node_uname_info", "service.instance.id", true]
+  ]
+}

@@ -1,0 +1,7 @@
+title: Count by class
+grafana_type: gauge
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: vector() requires manual redesign
+warning: label_replace() requires manual redesign

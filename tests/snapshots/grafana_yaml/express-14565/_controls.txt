@@ -1,0 +1,8 @@
+control: Instance:
+  type: options
+  field: service.instance.id
+  multiple: False
+control: Node Exporter:
+  type: options
+  field: service.instance.id
+  multiple: False
