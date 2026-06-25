@@ -83,6 +83,33 @@ def test_missing_screenshot_warns_when_otherwise_clean():
     assert "screenshot missing or empty" in verdict.reasons
 
 
+def test_csp_and_404_console_noise_does_not_fail():
+    # Regression: a CSP violation referencing kibana.estccdn.com and a 404
+    # resource load are benign platform noise, not render failures. (The old
+    # broad "kibana" keyword filter wrongly failed on the CSP message.)
+    verdict = classify_render(
+        _CLEAN_SNAPSHOT,
+        console_errors=[
+            "Executing inline script violates the following Content Security "
+            "Policy directive 'script-src 'self' kibana.estccdn.com'.",
+            "Failed to load resource: the server responded with a status of 404 ()",
+        ],
+    )
+    assert verdict.status == "pass"
+    assert verdict.console_errors == []
+
+
+def test_bare_invalid_column_console_error_fails():
+    # Regression: the real render error "Provided column name or index is invalid"
+    # fires in the console without the words kibana/esql/lens; it must still fail.
+    verdict = classify_render(
+        "clean dom no markers",
+        console_errors=["Error: Provided column name or index is invalid: abc-123"],
+    )
+    assert verdict.status == "fail"
+    assert verdict.console_errors
+
+
 def test_find_render_error_markers_lists_distinct_patterns():
     markers = find_render_error_markers(
         "dashboardPanelError and embPanel__error both present"

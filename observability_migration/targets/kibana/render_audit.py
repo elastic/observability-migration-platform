@@ -27,10 +27,23 @@ from dataclasses import dataclass, field
 # render gate and the smoke audit never drift apart.
 from observability_migration.adapters.source.grafana.smoke import BROWSER_ERROR_PATTERNS
 
-# Console messages worth failing on (mirrors datadog browser_audit keywords).
-_CONSOLE_ERROR_KEYWORDS = ("kibana", "esql", "es|ql", "lens")
-
 _ERROR_RE = [re.compile(p, re.IGNORECASE) for p in BROWSER_ERROR_PATTERNS]
+
+# Console signatures that indicate a panel/query/render failure — specific enough
+# to exclude benign platform noise. A bare "kibana" keyword is intentionally NOT
+# used: it matches CSP violations referencing ``kibana.estccdn.com`` and other
+# non-render noise (false positives), while missing render errors like the bare
+# "Provided column name or index is invalid" (false negative). We instead reuse
+# the DOM render-error markers plus explicit ES|QL / Lens error signatures.
+_CONSOLE_ERROR_SIGNATURES = (
+    *BROWSER_ERROR_PATTERNS,
+    r"\[ES\|QL\]",
+    r"\bES\|QL\b[^\n]*error",
+    r"verification_exception",
+    r"parsing_exception",
+    r"Lens[^\n]*(?:error|failed)",
+)
+_CONSOLE_ERROR_RE = [re.compile(p, re.IGNORECASE) for p in _CONSOLE_ERROR_SIGNATURES]
 
 
 @dataclass
@@ -64,7 +77,7 @@ def find_render_error_markers(snapshot_text: str) -> list[str]:
 def _filter_console(console_errors: Iterable[str]) -> list[str]:
     return [
         c for c in console_errors
-        if any(k in str(c).lower() for k in _CONSOLE_ERROR_KEYWORDS)
+        if any(rx.search(str(c)) for rx in _CONSOLE_ERROR_RE)
     ]
 
 

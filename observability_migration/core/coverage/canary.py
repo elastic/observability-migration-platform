@@ -23,13 +23,21 @@ from __future__ import annotations
 from typing import Any
 
 # (panel type, kibana target, representative PromQL). ``None`` expr = no query.
+#
+# Breakdown labels MUST exist in the standard seeded telemetry
+# (scripts/setup_telemetry_data.py) so the canary is a deterministic render
+# positive-control: ``instance`` and ``le`` are present, whereas a label the
+# target data lacks (e.g. ``method``) makes the PROMQL command emit no column
+# for it, and Lens then errors "Provided column name or index is invalid" on the
+# splitAccessor. That is a field-mapping/data-readiness gap, not a translation
+# bug — the render audit is what surfaces it.
 _CANARY_PANELS: list[tuple[str, str, str | None]] = [
-    ("timeseries", "line", "sum(rate(http_requests_total[5m])) by (method)"),
-    ("barchart", "bar", "sum(rate(http_requests_total[5m])) by (method)"),
+    ("timeseries", "line", "sum(rate(http_requests_total[5m])) by (instance)"),
+    ("barchart", "bar", "sum(rate(http_requests_total[5m])) by (instance)"),
     ("gauge", "gauge", "avg(node_memory_MemAvailable_bytes)"),
     ("stat", "metric", "sum(rate(http_requests_total[5m]))"),
     ("table", "datatable", "avg(node_cpu_seconds_total) by (instance)"),
-    ("piechart", "pie", "sum(rate(http_requests_total[5m])) by (method)"),
+    ("piechart", "pie", "sum(rate(http_requests_total[5m])) by (instance)"),
     ("heatmap", "heatmap", "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)"),
     ("text", "markdown", None),
 ]
