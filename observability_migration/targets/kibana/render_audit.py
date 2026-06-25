@@ -94,6 +94,109 @@ class RenderVerdict:
 
 _EMPTY_STATE_RE = re.compile(r"No results found|No results|^\s*N/?A\s*$", re.IGNORECASE)
 
+# Element extraction patterns (from the Kibana dashboard a11y snapshot). Kibana
+# renders the type as a standalone "<word> chart" token ("line chart",
+# "sunburst chart", "Bullet chart"); "Chart type" sits on a separate a11y line,
+# so match the value token directly via an allowlist.
+_CHART_TYPE_RE = re.compile(
+    r"\b(line|bar|area|sunburst|pie|donut|treemap|mosaic|waffle|heatmap|heat map|bullet)\s+chart\b",
+    re.IGNORECASE,
+)
+# Legend items render as "<name>; Click: to show, ... + Click: to hide".
+_LEGEND_ITEM_RE = re.compile(r'"?([^";]+?); Click: to show')
+_LOADING_RE = re.compile(r'progressbar "Loading"', re.IGNORECASE)
+_GRID_RE = re.compile(r'grid "|columnheader |gridcell ', re.IGNORECASE)
+# A metric value renders as a quoted number StaticText, e.g. ``"6.983"``.
+_QUOTED_NUMBER_RE = re.compile(r'"\s*[-+]?[\d,]+(?:\.\d+)?\s*%?\s*"')
+
+# Map the rendered chart-type word to a normalized kind.
+_CHART_KIND = {
+    "line": "xy", "bar": "xy", "area": "xy",
+    "bullet": "gauge", "gauge": "gauge",
+    "sunburst": "partition", "pie": "partition", "donut": "partition",
+    "treemap": "treemap", "mosaic": "mosaic", "waffle": "waffle",
+    "heat": "heatmap", "heatmap": "heatmap",
+}
+
+
+@dataclass
+class PanelElements:
+    """Observable rendered elements of one panel, extracted from the a11y/DOM
+    snapshot. Lets the audit assert *how* a panel drew, not just that it didn't
+    error: chart kind, legend series, whether data is present, still loading."""
+    title: str
+    status: str  # rendered | error | empty | loading
+    chart_type: str = ""        # rendered word: line/bar/sunburst/bullet/...
+    chart_kind: str = ""        # normalized: xy/gauge/partition/heatmap/metric/datatable/...
+    legend_entries: list[str] = field(default_factory=list)
+    has_data: bool = False
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "title": self.title, "status": self.status, "chart_type": self.chart_type,
+            "chart_kind": self.chart_kind, "legend_entries": self.legend_entries,
+            "has_data": self.has_data, "detail": self.detail,
+        }
+
+
+def extract_panel_elements(title: str, panel_text: str) -> PanelElements:
+    """Parse one panel's rendered region into its observable elements."""
+    text = str(panel_text or "")
+    markers = find_render_error_markers(text)
+    if markers:
+        return PanelElements(title=title, status="error", detail=markers[0])
+    if _LOADING_RE.search(text) and not _CHART_TYPE_RE.search(text):
+        return PanelElements(title=title, status="loading", detail="still loading")
+
+    legend = list(dict.fromkeys(m.strip() for m in _LEGEND_ITEM_RE.findall(text) if m.strip()))
+    chart_word = ""
+    m = _CHART_TYPE_RE.search(text)
+    if m:
+        chart_word = m.group(1).strip().lower().replace(" ", "")  # "heat map" -> "heatmap"
+    kind = _CHART_KIND.get(chart_word, "")
+
+    is_grid = bool(_GRID_RE.search(text))
+    has_metric_value = bool(_QUOTED_NUMBER_RE.search(text))
+
+    if _EMPTY_STATE_RE.search(text.strip()) and not (legend or is_grid or chart_word):
+        return PanelElements(title=title, status="empty", detail="no data")
+
+    if not kind:
+        if is_grid:
+            kind, chart_word = "datatable", "table"
+        elif has_metric_value:
+            kind, chart_word = "metric", "metric"
+    has_data = bool(legend) or is_grid or has_metric_value or kind in ("xy", "partition", "heatmap", "gauge")
+    return PanelElements(
+        title=title, status="rendered", chart_type=chart_word, chart_kind=kind,
+        legend_entries=legend, has_data=has_data,
+    )
+
+
+def check_panel_elements(
+    elements: PanelElements,
+    *,
+    expected_kind: str = "",
+    expects_breakdown: bool = False,
+) -> list[str]:
+    """Element-level findings for one panel (empty == all elements correct).
+
+    Flags: not rendered; rendered chart kind != expected; a breakdown panel with
+    no legend series; a chart that rendered no data.
+    """
+    findings: list[str] = []
+    if elements.status != "rendered":
+        findings.append(f"{elements.title}: {elements.status}" + (f" ({elements.detail})" if elements.detail else ""))
+        return findings
+    if expected_kind and elements.chart_kind and elements.chart_kind != expected_kind:
+        findings.append(f"{elements.title}: rendered as {elements.chart_kind}, expected {expected_kind}")
+    if expects_breakdown and not elements.legend_entries:
+        findings.append(f"{elements.title}: breakdown panel has no legend series")
+    if not elements.has_data:
+        findings.append(f"{elements.title}: rendered but shows no data")
+    return findings
+
 
 def find_render_error_markers(snapshot_text: str) -> list[str]:
     """Return the distinct DOM error markers present in a rendered snapshot."""

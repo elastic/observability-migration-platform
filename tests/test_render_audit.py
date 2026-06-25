@@ -361,3 +361,72 @@ def test_interaction_regression_attributes_to_control():
 def test_interaction_regression_clean_when_no_change():
     snap = {"panel_a": "rendered"}
     assert interaction_regression(snap, snap, control_label="job") == []
+
+
+# --- Element-level extraction (legends / chart type / data) -----------------
+
+from observability_migration.targets.kibana.render_audit import (  # noqa: E402
+    check_panel_elements,
+    extract_panel_elements,
+)
+
+# Real a11y chunks captured from a live Kibana 9.5.0 canary render.
+_TS_CHUNK = '''button "instance_2; Click: to show, ⌘ + Click: to hide"
+button "instance_3; Click: to show, ⌘ + Click: to hide"
+button "instance_1; Click: to show, ⌘ + Click: to hide"
+StaticText "Chart type" StaticText ":" StaticText "line chart"'''
+_PIE_CHUNK = 'StaticText "sunburst chart" row StaticText "instance_2" StaticText "2.327" StaticText "33%"'
+_GAUGE_CHUNK = 'graphics-document StaticText "Chart type" StaticText ":" StaticText "Bullet chart"'
+_METRIC_CHUNK = 'heading "canary stat" StaticText "6.983"'
+_TABLE_CHUNK = 'grid "canary table" columnheader "instance" gridcell "instance_2" gridcell "35,258.0"'
+_HEATMAP_CHUNK = 'button "le_1; Click: to show, ⌘ + Click: to hide" StaticText "Chart type" StaticText ":" StaticText "line chart"'
+
+
+def test_extract_line_chart_with_legend():
+    el = extract_panel_elements("ts", _TS_CHUNK)
+    assert el.status == "rendered"
+    assert el.chart_kind == "xy"
+    assert el.legend_entries == ["instance_2", "instance_3", "instance_1"]
+    assert el.has_data is True
+
+
+def test_extract_pie_sunburst():
+    el = extract_panel_elements("pie", _PIE_CHUNK)
+    assert el.chart_kind == "partition"
+    assert el.has_data is True
+
+
+def test_extract_gauge_bullet():
+    el = extract_panel_elements("gauge", _GAUGE_CHUNK)
+    assert el.chart_kind == "gauge"
+
+
+def test_extract_metric_value():
+    el = extract_panel_elements("stat", _METRIC_CHUNK)
+    assert el.chart_kind == "metric"
+    assert el.has_data is True
+
+
+def test_extract_table_grid():
+    el = extract_panel_elements("table", _TABLE_CHUNK)
+    assert el.chart_kind == "datatable"
+    assert el.has_data is True
+
+
+def test_extract_error_and_empty_and_loading():
+    assert extract_panel_elements("e", "Provided column name or index is invalid: x").status == "error"
+    assert extract_panel_elements("m", "No results found").status == "empty"
+    assert extract_panel_elements("l", 'progressbar "Loading"').status == "loading"
+
+
+def test_check_flags_wrong_chart_kind_and_missing_legend():
+    el = extract_panel_elements("ts", _TS_CHUNK)
+    assert check_panel_elements(el, expected_kind="xy", expects_breakdown=True) == []
+    # expected a gauge but rendered xy
+    assert check_panel_elements(el, expected_kind="gauge") == ["ts: rendered as xy, expected gauge"]
+
+
+def test_check_flags_breakdown_panel_without_legend():
+    el = extract_panel_elements("bar", 'StaticText "Chart type" StaticText ":" StaticText "bar chart"')
+    findings = check_panel_elements(el, expected_kind="xy", expects_breakdown=True)
+    assert findings == ["bar: breakdown panel has no legend series"]
