@@ -241,6 +241,21 @@ def _grafana_unified_prometheus_bottomk_safe_rule():
     return rule
 
 
+def _grafana_unified_prometheus_instant_simple_rule():
+    """A simple (non-advanced) ``Type: Instant`` threshold alert (issue #200)."""
+    rule = _grafana_unified_prometheus_safe_rule()
+    rule["uid"] = "rule-prom-instant-simple-1"
+    rule["title"] = "Available memory below 1 GB"
+    rule["annotations"] = {"summary": "Available memory is below 1 GB"}
+    rule["data"][0]["model"] = {
+        "expr": "node_memory_MemAvailable_bytes",
+        "instant": True,
+        "range": False,
+    }
+    rule["data"][2]["model"]["conditions"][0]["evaluator"] = {"type": "lt", "params": [1e9]}
+    return rule
+
+
 def _grafana_unified_prometheus_validity_step_rule():
     """A Grafana-managed rule imported from Prometheus.
 
@@ -2225,6 +2240,37 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertIn("| SORT value ASC", query)
         self.assertIn("| LIMIT 5", query)
         self.assertIn("| WHERE value < 0.95", query)
+
+    def test_grafana_unified_instant_simple_alert_uses_instant_selector(self):
+        # Regression for issue #200: a simple ``Type: Instant`` threshold alert
+        # must evaluate only the latest value via the ``time=?_tend`` instant
+        # selector, not the ``step=`` range form (which over-fires on stale,
+        # already-recovered points).
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_instant_simple_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertTrue(result["valid"])
+        self.assertIn("PROMQL index=metrics-* time=?_tend value=(", query)
+        self.assertNotIn("step=", query)
+        self.assertIn("node_memory_MemAvailable_bytes", query)
+        self.assertIn("| WHERE value < 1000000000.0", query)
+
+    def test_grafana_unified_range_simple_alert_keeps_range_selector(self):
+        # The instant fix must not change range-typed alerts: a query without
+        # ``instant``/``range: false`` still emits the ``step=`` range form.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_safe_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        query = result["rule_payload"]["params"]["esqlQuery"]["esql"]
+
+        self.assertIn("step=", query)
+        self.assertNotIn("time=?_tend", query)
 
     def test_grafana_unified_alert_esql_honors_custom_data_view(self):
         # Regression for issue #181: the migrated alert ES|QL must target the
