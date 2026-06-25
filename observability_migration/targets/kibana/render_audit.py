@@ -27,7 +27,18 @@ from dataclasses import dataclass, field
 # render gate and the smoke audit never drift apart.
 from observability_migration.adapters.source.grafana.smoke import BROWSER_ERROR_PATTERNS
 
-_ERROR_RE = [re.compile(p, re.IGNORECASE) for p in BROWSER_ERROR_PATTERNS]
+# In-panel render-error markers: the smoke validator's set plus the
+# Elasticsearch/ES|QL error surfaces a live Kibana panel shows inline (observed
+# on real community dashboards: schema-output drift, unimplemented PromQL
+# functions, generic ES verification errors).
+_RENDER_ERROR_PATTERNS = (
+    *BROWSER_ERROR_PATTERNS,
+    r"Unexpected error from Elasticsearch",
+    r"verification_exception",
+    r"is not yet implemented",
+    r"Output has changed from",
+)
+_ERROR_RE = [re.compile(p, re.IGNORECASE) for p in _RENDER_ERROR_PATTERNS]
 
 # Console signatures that indicate a panel/query/render failure — specific enough
 # to exclude benign platform noise. A bare "kibana" keyword is intentionally NOT
@@ -275,7 +286,7 @@ def find_render_error_markers(snapshot_text: str) -> list[str]:
     """Return the distinct DOM error markers present in a rendered snapshot."""
     text = str(snapshot_text or "")
     hits: list[str] = []
-    for pattern, compiled in zip(BROWSER_ERROR_PATTERNS, _ERROR_RE, strict=True):
+    for pattern, compiled in zip(_RENDER_ERROR_PATTERNS, _ERROR_RE, strict=True):
         if compiled.search(text):
             hits.append(pattern)
     return hits
@@ -593,16 +604,21 @@ _ESQL_TYPE_TO_KIND = {
 
 
 def expected_kind_by_panel(report: dict) -> dict[str, str]:
-    """Map each panel title to the normalized chart kind it was emitted as
-    (from the YAML ``esql.type``), for comparing against the live render."""
+    """Map each panel title to the normalized chart kind to expect in the render.
+
+    Prefers the report's ``kibana_type`` (always present), falling back to the
+    emitted YAML ``esql.type`` when a report doesn't carry it. Skipped panels are
+    excluded."""
     out: dict[str, str] = {}
     for dashboard in report.get("dashboards", []):
         for panel in dashboard.get("panels", []):
-            if not isinstance(panel, dict):
+            if not isinstance(panel, dict) or panel.get("status") == "skipped":
                 continue
-            yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
-            esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
-            etype = str((esql or {}).get("type") or "").lower()
+            etype = str(panel.get("kibana_type") or "").lower()
+            if not etype:
+                yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
+                esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
+                etype = str((esql or {}).get("type") or "").lower()
             if etype:
                 out[str(panel.get("title") or "")] = _ESQL_TYPE_TO_KIND.get(etype, etype)
     return out

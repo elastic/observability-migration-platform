@@ -217,6 +217,26 @@ Baseline reference: 335 panels, **0 invariant ERRORs**, 10/10 schema-valid, and
 (refetch) then refresh the baseline. `tests/test_community_corpus.py` guards the
 manifest offline.
 
+### Element-checking a whole corpus
+
+`render_audit_driver --elements --migration-out <dir>` adds a per-panel element
+audit (chart kind vs the emitted type, legend series on xy/heatmap, data
+present, and titles that didn't render) on top of the whole-dashboard render
+check. To run it across a corpus on the local no-SSO stack, point the render
+script at an input dir — it migrates, uploads, seeds, and element-checks every
+dashboard:
+
+```bash
+.venv/bin/python scripts/fetch_community_corpus.py --output-dir /tmp/community
+INPUT_DIR=/tmp/community bash scripts/run_render_audit_local.sh
+```
+
+Caveat: a community dashboard renders cleanly only when its metrics are seeded
+and its template-variable controls resolve against the seeded label values;
+otherwise the element audit honestly reports the resulting empties / data gaps.
+It also surfaces real Kibana render errors (e.g. `verification_exception`,
+`label_replace is not yet implemented`) that ES|QL execution alone does not show.
+
 ### Seeding telemetry for live/render checks
 
 ```bash

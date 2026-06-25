@@ -29,28 +29,37 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "== render-audit (local, no SSO): ES=$ES_URL KIBANA=$KIBANA_URL =="
 
-echo "-- generate kitchen-sink canary --"
+# INPUT_DIR: a dir of Grafana dashboard JSON to migrate+render. Default: the
+# generated kitchen-sink canary. Point it at a community corpus (e.g. one
+# materialized by scripts/fetch_community_corpus.py) to render the whole set.
 mkdir -p "$WORK/in"
-"$PY" -c "import json; from observability_migration.core.coverage.canary import build_grafana_canary; json.dump(build_grafana_canary(), open('$WORK/in/canary.json','w'))"
+if [ -n "${INPUT_DIR:-}" ]; then
+  cp "$INPUT_DIR"/*.json "$WORK/in/"
+  echo "-- using INPUT_DIR=$INPUT_DIR ($(ls "$WORK/in" | wc -l) dashboards) --"
+else
+  echo "-- generate kitchen-sink canary --"
+  "$PY" -c "import json; from observability_migration.core.coverage.canary import build_grafana_canary; json.dump(build_grafana_canary(), open('$WORK/in/canary.json','w'))"
+fi
 
-echo "-- migrate + upload canary to local Kibana (security disabled, no key) --"
+echo "-- migrate + upload to local Kibana (security disabled, no key) --"
 "$PY" -m observability_migration.adapters.source.grafana.cli \
   --source files --input-dir "$WORK/in" --output-dir "$WORK/out" --assets dashboards \
   --es-url "$ES_URL" --kibana-url "$KIBANA_URL" --upload --ensure-data-views
 
-echo "-- seed canary telemetry --"
+echo "-- seed telemetry (fresh, so instant panels populate up to now) --"
 "$PY" scripts/setup_telemetry_data.py "$WORK/out/dashboards" \
   --es-endpoint "$ES_URL" --api-key "" --data-hours 3 --interval-sec 60
 
-echo "-- resolve uploaded dashboard id --"
-DASH_ID="$(curl -fs "$KIBANA_URL/api/dashboards" -H 'kbn-xsrf: true' \
-  | "$PY" -c "import sys,json; d=json.load(sys.stdin); print(next(x['id'] for x in d['dashboards'] if 'canary' in x['data']['title'].lower()))")"
-echo "   dashboard id: $DASH_ID"
+echo "-- render audit + per-panel element check for every uploaded dashboard --"
+rc=0
+ids="$(curl -fs "$KIBANA_URL/api/dashboards?perPage=200" -H 'kbn-xsrf: true' \
+  | "$PY" -c "import sys,json; [print(x['id']) for x in json.load(sys.stdin)['dashboards']]")"
+for did in $ids; do
+  echo "  -- dashboard $did --"
+  "$PY" -m observability_migration.targets.kibana.render_audit_driver \
+    --kibana-url "$KIBANA_URL" --dashboard-id "$did" \
+    --time-from now-3h --time-to now --fail-on-error \
+    --elements --migration-out "$WORK/out/dashboards" || rc=1
+done
 
-echo "-- render audit (headless Chrome, no SSO) + per-panel element check --"
-"$PY" -m observability_migration.targets.kibana.render_audit_driver \
-  --kibana-url "$KIBANA_URL" --dashboard-id "$DASH_ID" \
-  --time-from now-3h --time-to now --fail-on-error \
-  --elements --migration-out "$WORK/out/dashboards"
-
-echo "== render audit PASSED =="
+[ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }

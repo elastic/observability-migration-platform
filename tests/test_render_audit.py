@@ -482,3 +482,14 @@ def test_expected_kind_by_panel_maps_esql_type():
         {"title": "pie", "yaml_panel": {"esql": {"type": "pie"}}},
     ]}]}
     assert expected_kind_by_panel(report) == {"ts": "xy", "hm": "heatmap", "pie": "partition"}
+
+
+def test_extended_es_error_markers_are_caught():
+    # Real community-dashboard render errors must be detected (motivated by the
+    # Node Exporter EN live render).
+    for marker in [
+        "Unexpected error from Elasticsearch: verification_exception",
+        "Function [label_replace] is not yet implemented",
+        "Output has changed from [[a]] to [[b]]",
+    ]:
+        assert classify_render(marker).status == "fail", marker
