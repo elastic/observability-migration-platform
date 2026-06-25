@@ -153,6 +153,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print("=== Common Telemetry Data Setup ===")
     print(f"Artifact dirs: {', '.join(str(path) for path in artifact_dirs)}")
+    if args.no_recreate:
+        print(
+            "  note: --no-recreate keeps the existing stream's field mappings, so "
+            "counter typing (time_series_metric: counter) is NOT reapplied. If a "
+            "_total metric was previously mapped as a plain double, migrated "
+            "RATE()/IRATE() panels will fail at QUERY time ('must be [counter...], "
+            "found ... [double]'). Re-run WITHOUT --no-recreate to recreate the "
+            "stream with counter typing."
+        )
     try:
         summary = seed_sample_data(
             artifact_dirs,

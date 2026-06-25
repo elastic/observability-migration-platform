@@ -130,6 +130,35 @@ def routing_path_gap(
     return [dim for dim in needed if dim not in existing]
 
 
+def metric_type_gap(
+    index_pattern: str,
+    stream: dict[str, Any],
+    existing_counter_fields: Iterable[str] | None,
+) -> list[str]:
+    """Counter metrics this contract needs that an existing stream hasn't typed
+    as counters.
+
+    The contract types ``_total``-style metrics with ``time_series_metric:
+    counter`` so ``RATE()`` works. Seeding into a pre-existing stream (e.g. via
+    ``--no-recreate``) keeps the stream's existing field mappings; a counter
+    metric that was dynamically mapped as a plain ``double`` there makes a
+    migrated ``RATE(metric)`` panel fail at query time with "first argument of
+    [RATE(...)] must be [counter...], found ... type [double]". Returns the
+    counter metrics not already counter-typed in the target (empty when
+    compatible or the contract is non-metric). Recreating the stream fixes it.
+    """
+    template = plan_index_template(index_pattern, stream)
+    if template["template"]["settings"]["index"].get("mode") != "time_series":
+        return []
+    props = template["template"]["mappings"]["properties"]
+    existing = set(existing_counter_fields or [])
+    return [
+        name
+        for name, mapping in sorted(props.items())
+        if mapping.get("time_series_metric") == "counter" and name not in existing
+    ]
+
+
 def _seed_metric_fields(
     doc: dict[str, Any],
     metric_fields: dict[str, dict[str, Any]],

@@ -16,6 +16,7 @@ from observability_migration.core.telemetry_data import (
     concrete_stream_name,
     generate_documents,
     ingest_documents,
+    metric_type_gap,
     plan_index_template,
     purge_foreign_streams,
     routing_path_gap,
@@ -1277,3 +1278,30 @@ class IngestAccountingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetricTypeGapTests(unittest.TestCase):
+    """Guards the --no-recreate counter footgun: a _total metric dynamically
+    mapped as double in a reused stream makes RATE() fail at query time."""
+
+    _STREAM = {
+        "fields": {
+            "node_disk_read_bytes_total": {"role": "metric", "metric_kind": "counter"},
+            "node_memory_MemTotal_bytes": {"role": "metric", "metric_kind": "gauge"},
+            "instance": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+        }
+    }
+
+    def test_gap_lists_counters_not_yet_counter_typed(self):
+        gap = metric_type_gap("metrics-*", self._STREAM, existing_counter_fields=[])
+        self.assertEqual(gap, ["node_disk_read_bytes_total"])
+
+    def test_no_gap_when_counter_already_typed(self):
+        gap = metric_type_gap(
+            "metrics-*", self._STREAM, existing_counter_fields=["node_disk_read_bytes_total"]
+        )
+        self.assertEqual(gap, [])
+
+    def test_gauge_metric_is_not_in_gap(self):
+        gap = metric_type_gap("metrics-*", self._STREAM, existing_counter_fields=[])
+        self.assertNotIn("node_memory_MemTotal_bytes", gap)
