@@ -102,3 +102,35 @@ def test_audit_control_interactions_clean_when_controls_safe():
         select_control_nondefault=lambda _name: None,
     )
     assert findings == []
+
+
+def _cli_args(**over):
+    import argparse
+    base = dict(kibana_url="https://kb", dashboard_id="d1", space="", user_data_dir="",
+                time_from="now-1h", time_to="now", fail_on_error=True)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_cli_returns_0_on_clean_render():
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    rc = run_audit_cli(_cli_args(), dom_fetcher=lambda _u: "line chart instance_1 rendered")
+    assert rc == 0
+
+
+def test_cli_returns_1_on_render_error_when_fail_on_error():
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    rc = run_audit_cli(
+        _cli_args(fail_on_error=True),
+        dom_fetcher=lambda _u: "embPanel__error An error occurred while loading this panel",
+    )
+    assert rc == 1
+
+
+def test_cli_returns_0_on_render_error_without_fail_flag():
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    rc = run_audit_cli(
+        _cli_args(fail_on_error=False),
+        dom_fetcher=lambda _u: "embPanel__error",
+    )
+    assert rc == 0

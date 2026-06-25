@@ -28,6 +28,8 @@ this module only adds the browser plumbing (injectable for tests).
 
 from __future__ import annotations
 
+import argparse
+import json
 import subprocess
 from collections.abc import Callable
 
@@ -144,3 +146,47 @@ def audit_control_interactions(
             interaction_regression(baseline, after, control_label=step.get("label", step["variable_name"]))
         )
     return findings
+
+
+def run_audit_cli(args: argparse.Namespace, *, dom_fetcher: DomFetcher | None = None) -> int:
+    """Core of the render-audit CLI (separated from argparse for testing).
+
+    Loads the dashboard, classifies the whole-dashboard render, prints a JSON
+    verdict, and returns an exit code (1 on fail when ``--fail-on-error``).
+    """
+    url = build_dashboard_url(
+        args.kibana_url, args.space, args.dashboard_id,
+        time_from=args.time_from, time_to=args.time_to,
+    )
+    fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
+    verdict = classify_render(fetch(url))
+    print(json.dumps(verdict.to_dict(), indent=2))
+    if verdict.status == "fail" and args.fail_on_error:
+        return 1
+    return 0
+
+
+def _build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="render_audit_driver",
+        description="Render-audit a Kibana dashboard in headless Chrome.",
+    )
+    parser.add_argument("--kibana-url", required=True)
+    parser.add_argument("--dashboard-id", required=True)
+    parser.add_argument("--space", default="")
+    parser.add_argument(
+        "--user-data-dir", default="",
+        help="Persistent Chrome profile (for SSO targets). Omit for local no-SSO Kibana.",
+    )
+    parser.add_argument("--time-from", default="now-24h")
+    parser.add_argument("--time-to", default="now")
+    parser.add_argument("--fail-on-error", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_audit_cli(_build_argparser().parse_args(argv))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
