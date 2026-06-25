@@ -274,3 +274,49 @@ def test_expects_data_by_panel_excludes_markdown():
     ]}]}
     titles = expects_data_by_panel(report)
     assert titles == {"ts"}
+
+
+# --- Render-verdict regression ratchet (#5) --------------------------------
+
+from observability_migration.targets.kibana.render_audit import (  # noqa: E402
+    PanelRenderResult,
+    diff_render_snapshots,
+    render_snapshot,
+)
+
+
+def test_render_snapshot_serializes_state_with_error_class():
+    panels = [
+        PanelRenderResult("ts", "rendered"),
+        PanelRenderResult("bar", "error", "render_error"),
+        PanelRenderResult("gauge", "empty", "unexpected_empty"),
+    ]
+    snap = render_snapshot(panels)
+    assert snap == {"ts": "rendered", "bar": "error:render_error", "gauge": "empty:unexpected_empty"}
+
+
+def test_diff_no_regression_when_stable_or_improved():
+    base = {"ts": "rendered", "bar": "error:render_error"}
+    current = {"ts": "rendered", "bar": "rendered"}  # bar improved
+    assert diff_render_snapshots(base, current) == []
+
+
+def test_diff_flags_rendered_to_error_regression():
+    base = {"ts": "rendered"}
+    current = {"ts": "error:render_error"}
+    regressions = diff_render_snapshots(base, current)
+    assert regressions == ["ts: rendered -> error:render_error"]
+
+
+def test_diff_flags_rendered_to_empty_regression():
+    regressions = diff_render_snapshots({"ts": "rendered"}, {"ts": "empty:unexpected_empty"})
+    assert regressions == ["ts: rendered -> empty:unexpected_empty"]
+
+
+def test_diff_flags_disappeared_panel():
+    regressions = diff_render_snapshots({"ts": "rendered", "x": "rendered"}, {"ts": "rendered"})
+    assert regressions == ["x: panel disappeared (was rendered)"]
+
+
+def test_diff_allows_new_panels():
+    assert diff_render_snapshots({"ts": "rendered"}, {"ts": "rendered", "new": "rendered"}) == []

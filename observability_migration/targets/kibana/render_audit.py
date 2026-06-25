@@ -313,6 +313,48 @@ def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
     return out
 
 
+_RENDER_RANK = {"rendered": 3, "empty": 2, "error": 1}
+
+
+def render_snapshot(panels: Iterable[PanelRenderResult]) -> dict[str, str]:
+    """Serialize per-panel verdicts to a committable baseline: title -> state.
+
+    The state is ``status`` plus the ``error_class`` qualifier (e.g.
+    ``error:render_error``, ``empty:unexpected_empty``, ``rendered``) so a
+    baseline captures not just pass/fail but the kind of finding.
+    """
+    out: dict[str, str] = {}
+    for panel in panels:
+        state = panel.status
+        if panel.error_class:
+            state = f"{panel.status}:{panel.error_class}"
+        out[panel.title] = state
+    return out
+
+
+def diff_render_snapshots(
+    baseline: dict[str, str], current: dict[str, str]
+) -> list[str]:
+    """Render-regression ratchet: report panels that got worse vs ``baseline``.
+
+    A regression is a panel that rendered before and now errors/empties, a panel
+    whose state degraded (rendered > empty > error), or a panel that vanished.
+    Improvements (error -> rendered) and brand-new panels are allowed. Returns a
+    list of human-readable regression strings (empty == no regression).
+    """
+    regressions: list[str] = []
+    for title, base_state in sorted(baseline.items()):
+        if title not in current:
+            regressions.append(f"{title}: panel disappeared (was {base_state})")
+            continue
+        cur_state = current[title]
+        base_rank = _RENDER_RANK.get(base_state.split(":", 1)[0], 0)
+        cur_rank = _RENDER_RANK.get(cur_state.split(":", 1)[0], 0)
+        if cur_rank < base_rank:
+            regressions.append(f"{title}: {base_state} -> {cur_state}")
+    return regressions
+
+
 def expects_data_by_panel(report: dict) -> set[str]:
     """Titles of panels that carry a query and therefore should render data.
 
