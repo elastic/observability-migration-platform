@@ -108,14 +108,22 @@ def _merge_validation_params(query: str, collectors) -> list[dict[str, Any]]:
     ``?_tstart``/``?_tend`` time params) and overlays the uploaded-dashboard
     smoke bindings for dashboard control params (``RLIKE ?var`` -> ``.*``,
     arithmetic -> ``0``) so a query mixing time params with control params binds
-    both. Order is preserved and smoke bindings win on conflicts.
+    both. Order is preserved and smoke bindings win on conflicts -- *except* for
+    the collector-recognized time aliases (``?_tstart``/``?_tend`` and their
+    ``?_t_start``/``?_t_end``/``?tstart``/``?tend`` spellings), whose ISO-date
+    autobind must survive: the smoke helper only date-binds ``_tstart``/``_tend``
+    and would otherwise wildcard those aliases to ``.*`` and fail at runtime.
     """
+    time_aliases = getattr(collectors, "_TIME_PARAM_ALIASES", frozenset())
     merged: dict[str, Any] = {}
     for entry in collectors._autoparams_for_esql(query):
         merged.update(entry)
     if _validation_params_for_query:
         for entry in _validation_params_for_query(query):
-            merged.update(entry)
+            for name, value in entry.items():
+                if name in time_aliases and name in merged:
+                    continue
+                merged[name] = value
     return [{name: value} for name, value in merged.items()]
 
 

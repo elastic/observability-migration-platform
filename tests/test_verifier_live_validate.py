@@ -146,6 +146,33 @@ class TestValidateQuery:
         assert params.get("_tstart")
         assert params.get("_tend")
 
+    def test_default_runner_preserves_time_alias_date_binds(self, monkeypatch) -> None:
+        # The collector auto-binds every time-alias spelling (``?_t_start``/
+        # ``?_t_end``/``?tstart``/``?tend``) to an ISO date, but the smoke helper
+        # only date-binds ``_tstart``/``_tend`` and wildcards the rest to ``.*``.
+        # The smoke overlay must NOT clobber the alias date binds, or those
+        # queries fail at runtime and get mis-classified as real_bug.
+        from verifier import collectors
+
+        captured: dict = {}
+
+        def fake_run(es, key, q, params=None, timeout=0):
+            captured["params"] = params
+            return 200, {"columns": [], "values": []}
+
+        monkeypatch.setattr(collectors, "run_cluster_query", fake_run)
+
+        query = (
+            "FROM metrics-* | STATS c = COUNT(*) "
+            "BY b = BUCKET(@timestamp, ?_t_start, ?_t_end)"
+        )
+        r = live_validate.validate_query("es", "k", query)
+        assert r.classification == "ok"
+        params = {k: v for entry in (captured["params"] or []) for k, v in entry.items()}
+        # Alias time params must keep their concrete date binds, not ``.*``.
+        assert params.get("_t_start") and params["_t_start"] != ".*"
+        assert params.get("_t_end") and params["_t_end"] != ".*"
+
 
 class TestDriverAndExtraction:
     def test_validate_queries_dedups(self) -> None:
