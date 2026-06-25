@@ -6692,6 +6692,34 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"~\"))", yaml_panel["esql"]["query"])
         self.assertIn("Approximated bargauge as bar chart", result.reasons)
 
+    def test_single_value_bargauge_becomes_horizontal_bullet_gauge(self):
+        # A single-value Grafana bargauge is the snapshot of one metric against a
+        # scale -- the faithful Kibana equivalent is a bullet gauge, not a plain
+        # number tile. Horizontal orientation -> horizontal_bullet shape.
+        panel = {
+            "title": "CPU Busy",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "options": {"orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}},
+            "fieldConfig": {"defaults": {"max": 100, "unit": "percent"}},
+            "targets": [{"refId": "A", "expr": "node_load1", "instant": True, "legendFormat": "Load"}],
+        }
+        yaml_panel, _ = self.translate_panel(panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "gauge")
+        self.assertEqual(yaml_panel["esql"]["appearance"]["shape"], "horizontal_bullet")
+
+    def test_single_value_vertical_bargauge_becomes_vertical_bullet_gauge(self):
+        panel = {
+            "title": "CPU Busy",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "options": {"orientation": "vertical"},
+            "targets": [{"refId": "A", "expr": "node_load1", "instant": True}],
+        }
+        yaml_panel, _ = self.translate_panel(panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "gauge")
+        self.assertEqual(yaml_panel["esql"]["appearance"]["shape"], "vertical_bullet")
+
     def test_narrow_xy_panel_defaults_legend_to_bottom(self):
         panel = {
             "title": "CPU Usage",

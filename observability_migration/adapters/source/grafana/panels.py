@@ -1719,12 +1719,17 @@ def bargauge_panel_rule(context):
         context.kibana_type = "bar"
         _append_unique(context.translation.warnings, "Approximated bargauge as bar chart")
     else:
-        context.yaml_panel["esql"] = _build_esql_metric_panel(
+        # A single-value bargauge is a value shown against a scale: the faithful
+        # Kibana equivalent is a bullet gauge (horizontal/vertical per the source
+        # orientation), not a plain number tile.
+        context.yaml_panel["esql"] = _build_esql_gauge_panel(
             primary.esql_query,
             metric_col=primary.output_metric_field or None,
+            panel=context.panel,
+            shape=_bargauge_bullet_shape(context.panel),
         )
-        context.kibana_type = "metric"
-        _append_unique(context.translation.warnings, "Approximated bargauge as metric")
+        context.kibana_type = "gauge"
+        _append_unique(context.translation.warnings, "Approximated bargauge as a bullet gauge")
     context.handled = True
     return "approximated bargauge panel"
 
@@ -3570,7 +3575,18 @@ def _series_override_alias_matches(alias: str, candidates: set[str]) -> bool:
     return alias in candidates
 
 
-def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
+def _bargauge_bullet_shape(panel):
+    """Map a Grafana bargauge's orientation to a Kibana gauge bullet shape.
+
+    A bargauge renders a value as a bar against a scale; the faithful Kibana
+    gauge shape is a bullet. Grafana's ``orientation`` is ``horizontal`` (the
+    common default) or ``vertical``; anything else falls back to horizontal.
+    """
+    orientation = str(((panel or {}).get("options") or {}).get("orientation", "")).lower()
+    return "vertical_bullet" if orientation == "vertical" else "horizontal_bullet"
+
+
+def _build_esql_gauge_panel(esql, metric_col=None, panel=None, shape=None):
     if not metric_col:
         metric_col, _ = _extract_esql_columns(esql)
     defaults = _panel_field_defaults(panel)
@@ -3597,8 +3613,8 @@ def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
         "query": _ensure_bucket_sort(_append_esql_constants(esql, constants)),
         "metric": {"field": metric_col},
     }
-    if panel:
-        gauge["appearance"] = {"shape": "arc"}
+    if panel or shape:
+        gauge["appearance"] = {"shape": shape or "arc"}
     if minimum is not None:
         gauge["minimum"] = {"field": "_gauge_min"}
     if maximum is not None:
