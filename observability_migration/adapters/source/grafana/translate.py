@@ -105,6 +105,27 @@ _MATH_FN_ESQL = {
 }
 
 
+# ES|QL TS functions that REQUIRE a counter argument. Every other range
+# function (MAX_OVER_TIME, MIN_OVER_TIME, SUM_OVER_TIME, AVG_OVER_TIME,
+# COUNT_OVER_TIME, DELTA, DERIV, PERCENTILE_OVER_TIME, …) rejects counter input
+# ("argument of [...] must be [... except counter types]").
+_COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+
+
+def _counter_safe_metric_arg(esql_func: str, metric_expr: str, is_counter: bool) -> str:
+    """Cast a known-counter metric to double for ES|QL functions that reject
+    counters, so the emitted query executes instead of failing at runtime.
+
+    Only applies when the field is a confirmed counter AND the function is not
+    counter-consuming (RATE/IRATE/INCREASE keep the raw counter). Gauges
+    (``is_counter`` False) are returned unchanged, so no extra cast is emitted
+    for the common gauge ``*_over_time`` downsample path.
+    """
+    if is_counter and (esql_func or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+        return f"TO_DOUBLE({metric_expr})"
+    return metric_expr
+
+
 def _default_instance_field(rp):
     return "instance" if rp.native_promql else "service.instance.id"
 
@@ -1153,7 +1174,7 @@ def join_family_rule(context):
             )
             if counter_warning:
                 _append_unique(context.warnings, counter_warning)
-            inner_expr = f"{esql_inner}({physical_metric}, {w})"
+            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter)}, {w})"
         elif is_counter:
             inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
@@ -1585,7 +1606,7 @@ def scaled_agg_family_rule(context):
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({physical_metric}, {frag.range_window})', frag)}"
+    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter)}, {frag.range_window})', frag)}"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -1667,7 +1688,7 @@ def nested_agg_family_rule(context):
             _append_unique(context.warnings, counter_warning)
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({physical_metric}, {frag.range_window}))"
+        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter)}, {frag.range_window}))"
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
@@ -1987,7 +2008,7 @@ def range_agg_family_rule(context):
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({physical_metric}, {frag.range_window})"
+    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter)}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"

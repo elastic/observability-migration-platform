@@ -2867,6 +2867,27 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertTrue(frag.extra.get("has_round"))
         self.assertEqual(frag.extra.get("round_precision"), 2.0)
 
+    def test_counter_in_noncounter_range_fn_is_cast_to_double(self):
+        # ES|QL rejects a counter field passed to MAX_OVER_TIME/DELTA/etc.
+        # ("argument ... must be [... except counter types]"). A confirmed
+        # counter used in a non-counter function must be cast to double so the
+        # query executes; RATE/IRATE/INCREASE keep the raw counter; gauges are
+        # left unchanged (no needless cast / snapshot churn).
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        # http_requests_total -> inferred counter
+        mot = translate_promql_to_esql("max_over_time(http_requests_total[1h])").esql_query
+        self.assertIn("MAX_OVER_TIME(TO_DOUBLE(http_requests_total)", mot)
+        # rate() consumes the counter directly: no cast
+        rate = translate_promql_to_esql("rate(http_requests_total[5m])").esql_query
+        self.assertIn("RATE(http_requests_total,", rate)
+        self.assertNotIn("RATE(TO_DOUBLE", rate)
+        # gauge: no cast, no churn
+        gauge = translate_promql_to_esql("max_over_time(node_load1[1h])").esql_query
+        self.assertIn("MAX_OVER_TIME(node_load1,", gauge)
+        self.assertNotIn("TO_DOUBLE", gauge)
+
     def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
         # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
         # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so
