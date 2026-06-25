@@ -655,13 +655,33 @@ def _is_ordered_layout(source_rows: list[list[dict[str, Any]]]) -> bool:
     )
 
 
+def _effective_panel_height(panel: dict[str, Any], width: int | None = None) -> int:
+    """Preferred height clamped to the panel type's (min_h, max_h).
+
+    The layout y-cursor must advance by the height a tile will ACTUALLY have
+    after ``_normalize_tile_sizes`` floors it to min_h (and caps at max_h). Using
+    the raw preferred height desyncs the cursor (e.g. a query_value's preferred 5
+    vs metric min_h 6), so the next row lands a row too high; ``_resolve_overlaps``
+    then pushes only the panels that overlap the row above, splitting the row and
+    leaving an overlap that ``_fill_simple_row`` can widen into a real collision.
+    """
+    h = _preferred_panel_height(panel, width)
+    constraints = PANEL_SIZE_CONSTRAINTS.get(_kibana_panel_type(panel))
+    if constraints is not None:
+        _min_w, min_h, max_h = constraints
+        h = max(h, min_h)
+        if max_h is not None:
+            h = min(h, max_h)
+    return h
+
+
 def _apply_heuristic_layout(rows: list[list[dict[str, Any]]]) -> None:
     """Layout using family-based width heuristics (for ordered/stacked dashboards)."""
     y_cursor = 0
     for row_panels in rows:
         widths = _plan_row_widths(row_panels)
         heights = [
-            _preferred_panel_height(panel, width)
+            _effective_panel_height(panel, width)
             for panel, width in zip(row_panels, widths)
         ]
         row_height = max(heights) if heights else KIBANA_DEFAULT_HEIGHT
@@ -690,18 +710,7 @@ def _apply_proportional_layout(rows: list[list[dict[str, Any]]]) -> None:
         if len(row_panels) == 1 and _panel_family(row_panels[0]) == "metric":
             panel = row_panels[0]
             w = _plan_row_widths(row_panels)[0]
-            # Advance the y-cursor by the height the tile will actually have
-            # AFTER _normalize_tile_sizes floors it to the type min_h. Using the
-            # raw preferred height here would desync the cursor (a query_value's
-            # preferred 5 vs metric min_h 6), placing the next row one row too
-            # high and leaving _resolve_overlaps to split it.
-            h = _preferred_panel_height(panel, w)
-            constraints = PANEL_SIZE_CONSTRAINTS.get(_kibana_panel_type(panel))
-            if constraints is not None:
-                _min_h, _max_h = constraints[1], constraints[2]
-                h = max(h, _min_h)
-                if _max_h is not None:
-                    h = min(h, _max_h)
+            h = _effective_panel_height(panel, w)
             panel["size"] = {"w": w, "h": h}
             panel["position"] = {"x": 0, "y": y_cursor}
             y_cursor += h
@@ -717,7 +726,7 @@ def _apply_proportional_layout(rows: list[list[dict[str, Any]]]) -> None:
         for panel, dd_x, dd_w in zip(row_panels, xs, ws):
             w = max(MIN_PANEL_WIDTH, round(dd_w * col_scale))
             x = round((dd_x - source_min_x) * col_scale)
-            h = _preferred_panel_height(panel, w)
+            h = _effective_panel_height(panel, w)
             panel["size"] = {"w": w, "h": h}
             panel["position"] = {"x": x, "y": y_cursor}
 

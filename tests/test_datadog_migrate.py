@@ -2543,6 +2543,52 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(table_panel["size"]["w"], 48)
         self.assertGreater(broken_panel["position"]["y"], table_panel["position"]["y"])
 
+    def test_effective_panel_height_clamps_to_type_minimum(self):
+        # The layout y-cursor must advance by the height a tile will actually
+        # have after _normalize_tile_sizes floors it. A query_value's preferred
+        # height (5) is below the metric min_h (6); _effective_panel_height must
+        # return 6 so the cursor doesn't drift and split the next row.
+        from observability_migration.adapters.source.datadog.generate import (
+            _effective_panel_height,
+            _preferred_panel_height,
+        )
+        metric = {"esql": {"type": "metric"}, "_dd_type": "query_value"}
+        self.assertEqual(_preferred_panel_height(metric, 24), 5)
+        self.assertEqual(_effective_panel_height(metric, 24), 6)
+
+    def test_metric_row_then_chart_row_with_table_has_no_overlap(self):
+        # Regression for the Datadog "S3 summary"-style layout: a metric row
+        # (one tile degrading to a placeholder) above a chart row that mixes
+        # charts and a table. The preferred-vs-min_h height desync used to land
+        # the placeholder a row too high; _resolve_overlaps then pushed only the
+        # charts overlapping it, splitting the row, and _fill_simple_row widened
+        # the gap into a real overlap with the un-pushed table.
+        broken = NormalizedWidget(
+            id="1", widget_type="query_value", title="Cost",
+            queries=[WidgetQuery(name="q1", data_source="metrics", raw_query="x", query_type="metric_unparsed")],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        widgets = [
+            self._make_metric_widget("2", "Total Storage", "query_value", {"x": 0, "y": 0, "width": 4, "height": 2}),
+            self._make_metric_widget("3", "Total Objects", "query_value", {"x": 4, "y": 0, "width": 4, "height": 2}),
+            broken,
+            self._make_metric_widget("4", "Storage by Bucket", "timeseries", {"x": 0, "y": 2, "width": 4, "height": 3}),
+            self._make_metric_widget("5", "Objects by Bucket", "timeseries", {"x": 4, "y": 2, "width": 4, "height": 3}),
+            self._make_metric_widget("6", "Storage by Tier", "toplist", {"x": 8, "y": 2, "width": 4, "height": 3}),
+        ]
+        dash = self._render_dashboard(widgets)
+        rects = [
+            (p["title"], p["position"]["x"], p["position"]["y"], p["size"]["w"], p["size"]["h"])
+            for p in dash["panels"]
+        ]
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                (_, ax, ay, aw, ah), (_, bx, by, bw, bh) = rects[i], rects[j]
+                overlap = ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+                self.assertFalse(
+                    overlap, f"panels overlap: {rects[i]} vs {rects[j]}"
+                )
+
     def test_duplicate_request_formula_labels_use_metric_names(self):
         raw = {
             "title": "Labels",
