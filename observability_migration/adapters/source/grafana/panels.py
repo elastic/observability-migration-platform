@@ -3405,7 +3405,13 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
     if metric_col is None:
         metric_col = extracted_metric_col
-    if by_cols is None:
+    # Recover group columns from the query when the caller passes nothing OR an
+    # empty list. A multi-target translation (eg. node-exporter-full "CPU", a
+    # group_left target) can hand us empty group_fields even though the combined
+    # ES|QL groups BY time_bucket; trusting that empty list would wrongly degrade
+    # a time-series graph to a single-value metric. The query is the source of
+    # truth — if it genuinely has no dimension, extraction is empty too.
+    if not by_cols:
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields
@@ -3455,7 +3461,10 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     _, extracted_by_cols = _extract_esql_columns(esql)
-    if by_cols is None:
+    # Recover group columns from the query on an empty/None caller value (see
+    # _build_esql_xy_panel) so a grouped multi-series query is not mistaken for a
+    # dimensionless one and degraded to a summary table.
+    if not by_cols:
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields

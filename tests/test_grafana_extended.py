@@ -1774,6 +1774,28 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         # ``out`` is not reserved, so it stays bare.
         self.assertIn("TO_STRING(out)", esql["query"])
 
+    def test_xy_panel_recovers_dimension_when_by_cols_empty(self):
+        # A multi-target panel (eg. node-exporter-full "CPU": eight not_feasible
+        # sum(rate())/scalar() targets plus one feasible group_left target) can
+        # reach the XY builder with EMPTY group_fields even though the combined
+        # ES|QL clearly groups BY time_bucket. The builder must recover the
+        # dimension from the query and emit a time-series chart, not silently
+        # degrade a graph into a single-value metric tile.
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS v = SUM(RATE(node_cpu_seconds_total, 5m)) "
+                "BY time_bucket = TBUCKET(5 minute), service.instance.id\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="v",
+            by_cols=[],
+        )
+        self.assertEqual(panel["type"], "line")
+        self.assertEqual(panel["dimension"]["field"], "time_bucket")
+        self.assertEqual(panel["breakdown"]["field"], "service.instance.id")
+
     def test_composite_legend_escapes_dotted_label(self):
         # When a legend label resolves to a Fleet-style ``prometheus.labels.x``
         # output column, that dotted name is invalid as a bare TO_STRING(...)
