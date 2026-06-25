@@ -33,11 +33,24 @@ this repo as the single source of truth for it. (See the Naming note in
 - For dashboard-regression work, use the layered verifier gates documented in
   `docs/command-contract.md`: `verifier.live_validate` for runtime ES|QL errors,
   `verifier.dashboards_api` for typed Kibana UI-contract validation,
-  `obs-migrate compare` plus `verifier.corpus_gate` for semantic parity, and
-  `verifier.benchmark_gate` for PM benchmark-history regressions. Do not rely
+  `obs-migrate compare` plus `verifier.corpus_gate` for semantic parity,
+  `verifier.benchmark_gate` for PM benchmark-history regressions,
+  `verifier.scorecard` for the Layer-9 fidelity ratchet, and
+  `render_audit_driver` for whether panels actually render in Kibana. Do not rely
   on a single migrated/clean percentage; also watch denominator drops
   (`panels_total`, `dashboards`, `verification_total`) and filtered datasource
   slices.
+- The render audit is the only gate that catches Lens accessor / "invalid
+  column" / empty-state failures (which ES|QL execution and the schema gate
+  miss). It is per-panel and classifies `render_error` (real bug, fail) vs
+  `field_gap`/`data_gap`/`unexpected_empty` (data-readiness, warn). A breakdown
+  panel that errors because its label is absent from target data is a field/data
+  gap, NOT a translator bug — confirm via seeded data before filing a bug.
+- Coverage of supported panel/widget types is machine-enforced
+  (`tests/core/coverage/`, the panel matrices, and the kitchen-sink canary). Add
+  a type → update `core/coverage/supported_types.py` + a matrix cell, or CI fails.
+  Refresh `parity-rig/benchmark/fidelity_baseline_*.json` only for intentional
+  changes, never to mask a regression.
 - When growing benchmark coverage, prefer pinned stratified manifests from
   `verifier.corpus_manifest` (top dashboards + long-tail + datasource quotas +
   bug seeds) over an unpinned "top N today" sample. Use small deterministic PR

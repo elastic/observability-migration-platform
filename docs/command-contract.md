@@ -649,9 +649,21 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `obs-migrate compare` | `verification_packets.json` + seeded data | Native PromQL and translated ES|QL are numerically close | no `FAIL`/`ERROR`; bounded `SHAPE_PASS` |
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
+| `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
+| `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
+
+Offline coverage gates (no cluster, every PR) live in the unit suite, not
+`verifier/`: `tests/core/coverage/test_supported_types.py` cross-checks the
+supported-type registry (`observability_migration/core/coverage/supported_types.py`)
+against the code's routing both ways; `tests/test_panel_matrix.py` (Grafana) and
+`tests/test_datadog_panel_matrix.py` (Datadog) lint every panel/widget type
+through the real pipeline; `tests/test_canary.py` validates the registry-driven
+kitchen-sink canary against `docs/dashboards/schema.json`. The fidelity ratchet
+runs as an e2e gate (`tests/e2e/test_fidelity_ratchet.py`) against committed
+baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
 
 Examples:
 
@@ -704,6 +716,31 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
   --datasource-quota loki=50 \
   --bug-seed 1860 \
   --output corpus.manifest.json
+```
+
+Fidelity ratchet and render audit:
+
+```bash
+# Fidelity ratchet: Layer-9 invariant ERROR counts must not regress vs the
+# committed baseline. Refresh a baseline (only after an intentional change) with
+# --update; CI runs it without --update via tests/e2e/test_fidelity_ratchet.py.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
+  --migration-out migration_output/dashboards \
+  --baseline parity-rig/benchmark/fidelity_baseline_grafana.json
+
+# Render audit: prove panels actually render in Kibana (catches Lens accessor /
+# "invalid column" errors that live_validate and the schema gate cannot see).
+# Serverless needs a one-time SSO login into a persistent Chrome profile
+# (--user-data-dir); a local no-SSO Kibana needs no profile.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
+
+# Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
+# migrate+upload the canary, seed, and render-audit it.
+STACK_VERSION=9.1.0 docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+bash scripts/run_render_audit_local.sh
+docker compose -f parity-rig/docker-compose.render-audit.yml down -v
 ```
 
 `benchmark_gate` exits non-zero when no comparison was made (empty history, no
