@@ -10950,11 +10950,12 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         # bar's L2 min_w=8 *would* bump Pressure's right edge to
         # x=8, but CPU Busy sits at x=6..12 -- collision-aware L2
         # keeps Pressure at w=6 to preserve the side-by-side layout
-        # the author chose. Height bumps are independent: gauge h=6
-        # has no vertical neighbour to collide with so it bumps to
-        # L2 gauge min_h=8.
+        # the author chose. The gauge's L2 min_h=8 *would* grow it to 8,
+        # but the row-uniformity guard caps it at the tallest source
+        # row-mate (the bar at h=6), so the side-by-side row stays a
+        # consistent height instead of going ragged.
         self.assertEqual(panels[0]["size"], {"w": 6, "h": 6}, "bar w stays at 6 (collision with CPU Busy)")
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge h bumps to L2 min_h=8")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 6}, "gauge h capped at row-mate height (6), not min_h=8")
         # Both panels share Grafana y=1 -> they're the topmost, so
         # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -11323,6 +11324,47 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         )
         # The second row must still sit below the first (order preserved).
         self.assertGreaterEqual(net_top, cpu_bottom)
+
+    def test_collision_minimums_keep_uniform_source_row_uniform(self):
+        """A row that was uniform-height in Grafana must stay uniform in Kibana.
+
+        node-exporter-full "Quick CPU / Mem / Disk" puts a bargauge ("Pressure")
+        next to five gauges, all at gridPos h=4 (-> h=6 after the 1.5x scale).
+        The gauge per-type readability floor (min_h=8) used to bump only the
+        gauges to 8 while the bar stayed at 6, making the row look ragged. A
+        panel must not be grown taller than its tallest source row-mate.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Pressure", "esql": {"type": "bar"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 3, "_grafana_h": 4},
+            {"title": "CPU Busy", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 3, "_grafana_w": 3, "_grafana_h": 4},
+            {"title": "Sys Load", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 6, "_grafana_w": 3, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        heights = {p["title"]: p["size"]["h"] for p in panels}
+        self.assertEqual(
+            len(set(heights.values())), 1,
+            f"a source-uniform row must stay uniform height, got {heights}",
+        )
+        self.assertEqual(heights["CPU Busy"], 6, heights)
+
+    def test_collision_minimums_still_bump_standalone_short_panel(self):
+        """The row-uniformity cap must not block the readability floor for a
+        panel that stands alone at its y (no row-mate to stay consistent with).
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Lonely gauge", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 6, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        # 4 * 1.5 = 6, below the gauge min_h of 8; with no row-mate it bumps to 8.
+        self.assertEqual(panels[0]["size"]["h"], 8)
 
     def test_fill_simple_row_bails_when_all_panels_at_hard_min(self):
         """When every panel in the row is already at HARD_MIN_W and the

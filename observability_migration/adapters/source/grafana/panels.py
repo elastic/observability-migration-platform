@@ -5080,7 +5080,24 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
 
     ``max_h`` clamps always apply because shrinking a panel cannot
     create new overlaps.
+
+    Row-uniformity guard: a panel is never grown taller than the tallest
+    *source* panel sharing its top edge (its row). Grafana scoreboards put
+    several short tiles of different Kibana types in one row (eg. a bargauge
+    next to gauges, all at gridPos h=4); without this cap the gauge ``min_h``
+    of 8 would bump only the gauges, leaving the bar at 6 and the row ragged.
+    A panel alone at its y has no row-mates and still bumps freely.
     """
+    # Tallest source (pre-bump) height per occupied top edge, for rows of >1.
+    row_height_cap: dict[int, int] = {}
+    rows_by_y: dict[int, list[int]] = {}
+    for panel in yaml_panels:
+        _x, py, _w, ph = _rect(panel)
+        rows_by_y.setdefault(py, []).append(ph)
+    for py, heights in rows_by_y.items():
+        if len(heights) > 1:
+            row_height_cap[py] = max(heights)
+
     for idx, panel in enumerate(yaml_panels):
         kibana_type = _kibana_panel_type(panel)
         esql_cfg = panel.get("esql")
@@ -5119,15 +5136,20 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             if not collides:
                 w = min_w
 
-        # Try to bump height to min_h. Same collision check.
-        if h < min_h:
-            candidate = (x, y, w, min_h)
+        # Try to bump height to min_h, but never taller than the tallest
+        # source panel in this row (keeps a source-uniform row uniform).
+        target_h = min_h
+        cap = row_height_cap.get(y)
+        if cap is not None:
+            target_h = min(target_h, cap)
+        if h < target_h:
+            candidate = (x, y, w, target_h)
             collides = any(
                 i != idx and _rects_overlap(candidate, _rect(other))
                 for i, other in enumerate(yaml_panels)
             )
             if not collides:
-                h = min_h
+                h = target_h
 
         panel["size"] = {"w": w, "h": h}
         # Re-apply the legacy x-clamp + grid-overflow guard.
