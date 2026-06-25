@@ -37,6 +37,7 @@ from observability_migration.core.assets.status import AssetStatus
 from observability_migration.core.mapping import (
     ES_QUERY_RULE_TYPE,
     MANUAL_ONLY_KINDS,
+    _grafana_unified_simple_threshold_where_clause,
     build_custom_threshold_rule_params,
     build_es_query_rule_params,
     build_index_threshold_rule_params,
@@ -2037,7 +2038,9 @@ class TestBuildRuleParams(unittest.TestCase):
         params = build_es_query_rule_params(ir)
 
         self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
-        self.assertIn("| WHERE value >= 20.0 AND value <= 80.0", params["esqlQuery"]["esql"])
+        # Grafana classic ``within_range`` is exclusive (``Lower < v && v < Upper``),
+        # matching the unified threshold path (issue #204).
+        self.assertIn("| WHERE value > 20.0 AND value < 80.0", params["esqlQuery"]["esql"])
 
     def test_es_query_params_use_outside_band_clause_for_grafana_legacy_outside_range(self):
         ir = build_alerting_ir_from_grafana(
@@ -2065,6 +2068,104 @@ class TestBuildRuleParams(unittest.TestCase):
         ir = AlertingIR(group_by=["service.name", "host.name"])
         params = build_custom_threshold_rule_params(ir)
         self.assertEqual(params["groupBy"], ["service.name", "host.name"])
+
+
+# All 10 standard Grafana threshold operators (issue #204), with the exact
+# evaluator ``type`` strings and firing semantics taken verbatim from Grafana
+# ``pkg/expr/threshold.go``. Each tuple is (evaluator_type, params,
+# expected_esql_where_clause).
+_GRAFANA_THRESHOLD_OPERATOR_CASES = [
+    ("gt", [50], "value > 50.0"),
+    ("lt", [50], "value < 50.0"),
+    ("eq", [50], "value == 50.0"),
+    ("ne", [50], "value != 50.0"),
+    ("gte", [50], "value >= 50.0"),
+    ("lte", [50], "value <= 50.0"),
+    ("within_range", [20, 80], "value > 20.0 AND value < 80.0"),
+    ("outside_range", [20, 80], "value < 20.0 OR value > 80.0"),
+    ("within_range_included", [20, 80], "value >= 20.0 AND value <= 80.0"),
+    ("outside_range_included", [20, 80], "value <= 20.0 OR value >= 80.0"),
+]
+
+
+def _grafana_unified_threshold_rule(evaluator_type, params):
+    """A Prometheus-backed unified rule whose threshold uses ``evaluator_type``."""
+    rule = copy.deepcopy(_grafana_unified_prometheus_rule())
+    rule["data"][2]["model"]["conditions"][0]["evaluator"] = {
+        "type": evaluator_type,
+        "params": list(params),
+    }
+    return rule
+
+
+def _grafana_threshold_predicate(evaluator_type, params):
+    """Grafana's ground-truth firing predicate (pkg/expr/threshold.go)."""
+    p = [float(x) for x in params]
+    predicates = {
+        "gt": lambda v: v > p[0],
+        "lt": lambda v: v < p[0],
+        "eq": lambda v: v == p[0],
+        "ne": lambda v: v != p[0],
+        "gte": lambda v: v >= p[0],
+        "lte": lambda v: v <= p[0],
+        "within_range": lambda v: v > p[0] and v < p[1],
+        "outside_range": lambda v: v < p[0] or v > p[1],
+        "within_range_included": lambda v: v >= p[0] and v <= p[1],
+        "outside_range_included": lambda v: v <= p[0] or v >= p[1],
+    }
+    return predicates[evaluator_type]
+
+
+def _esql_where_clause_fires(clause, value):
+    """Evaluate a generated ES|QL ``WHERE`` clause for a single metric value."""
+    expr = clause.replace(" AND ", " and ").replace(" OR ", " or ")
+    return bool(eval(expr, {"__builtins__": {}}, {"value": value}))
+
+
+class TestGrafanaUnifiedThresholdOperators(unittest.TestCase):
+    """Issue #204 — all 10 standard Grafana threshold operators translate."""
+
+    def _where_clause_for(self, evaluator_type, params):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_threshold_rule(evaluator_type, params),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        return _grafana_unified_simple_threshold_where_clause(ir)
+
+    def test_all_ten_operators_produce_expected_where_clause(self):
+        for evaluator_type, params, expected in _GRAFANA_THRESHOLD_OPERATOR_CASES:
+            with self.subTest(operator=evaluator_type):
+                self.assertEqual(self._where_clause_for(evaluator_type, params), expected)
+
+    def test_all_ten_operators_fire_on_same_values_as_grafana(self):
+        sample_values = [-10, 0, 19.999, 20, 20.001, 49.999, 50, 50.001, 79.999, 80, 80.001, 100]
+        for evaluator_type, params, _expected in _GRAFANA_THRESHOLD_OPERATOR_CASES:
+            clause = self._where_clause_for(evaluator_type, params)
+            predicate = _grafana_threshold_predicate(evaluator_type, params)
+            for value in sample_values:
+                with self.subTest(operator=evaluator_type, value=value):
+                    self.assertEqual(
+                        _esql_where_clause_fires(clause, value),
+                        predicate(value),
+                    )
+
+    def test_new_range_operator_reaches_es_query_rule_payload(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_threshold_rule("within_range", [20, 80]),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
+        self.assertIn("| WHERE value > 20.0 AND value < 80.0", params["esqlQuery"]["esql"])
+
+    def test_new_equality_operator_reaches_es_query_rule_payload(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_threshold_rule("eq", [50]),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
+        self.assertIn("| WHERE value == 50.0", params["esqlQuery"]["esql"])
 
 
 class TestMapAlertToKibanaPayload(unittest.TestCase):
