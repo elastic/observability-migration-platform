@@ -249,6 +249,23 @@ def _grafana_unified_unsupported_prometheus_rule():
     return rule
 
 
+def _grafana_unified_prometheus_no_threshold_rule():
+    """A source-faithful PromQL rule that produces no emittable payload.
+
+    The query is native-PROMQL translatable (so it classifies as
+    ``draft_requires_review``), but it carries neither an in-expression
+    comparison nor a threshold model, so payload emission yields empty params
+    and the rule is downgraded to ``manual_required`` during rule-building.
+    """
+    rule = copy.deepcopy(_grafana_unified_prometheus_rule())
+    rule["uid"] = "rule-prom-no-threshold-1"
+    rule["title"] = "CPU usage without threshold"
+    rule["condition"] = "B"
+    # Drop the threshold model so no explicit threshold is available.
+    rule["data"] = rule["data"][:2]
+    return rule
+
+
 def _grafana_unified_multi_source_prometheus_rule():
     rule = copy.deepcopy(_grafana_unified_prometheus_rule())
     rule["uid"] = "rule-prom-multi-source-1"
@@ -2174,6 +2191,24 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertEqual(result["rule_payload"], {})
 
+    def test_downgrade_to_manual_during_rule_building_updates_stored_tier(self):
+        # Classifies as draft_requires_review (source-faithful query) but
+        # produces no emittable payload, forcing a downgrade to manual_required
+        # while building the Kibana rule.
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_no_threshold_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        self.assertEqual(classify_automation_tier(ir), "draft_requires_review")
+
+        result = map_alert_to_kibana_payload(ir)
+
+        self.assertEqual(result["automation_tier"], "manual_required")
+        self.assertFalse(result["payload_emitted"])
+        # The tier stored on the rule record must reflect the final outcome,
+        # not the pre-downgrade classification, so every artifact agrees.
+        self.assertEqual(ir.automation_tier, "manual_required")
+
     def test_manual_composite_monitor(self):
         mon = _datadog_composite_monitor()
         ir = build_alerting_ir_from_datadog(mon)
@@ -2595,6 +2630,33 @@ class TestMapAlertsBatch(unittest.TestCase):
         self.assertIn("draft_requires_review", result["summary"]["by_automation_tier"])
         self.assertIn("manual_required", result["summary"]["by_automation_tier"])
         self.assertTrue(len(result["summary"]["unique_semantic_losses"]) > 0)
+
+    def test_tier_breakdown_reconciles_with_rule_records(self):
+        # The breakdown the console/run summary reports (from the mapping batch)
+        # must equal the breakdown rebuilt from the rule records (the detailed
+        # results artifact), even when a rule is downgraded during rule-building.
+        from observability_migration.adapters.source.grafana.alerts import (
+            build_alert_migration_results,
+        )
+
+        dsmap = {"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        alerts = [
+            build_alerting_ir_from_grafana_unified(_grafana_unified_prometheus_safe_rule(), datasource_map=dsmap),
+            build_alerting_ir_from_grafana_unified(_grafana_unified_prometheus_rule(), datasource_map=dsmap),
+            build_alerting_ir_from_grafana_unified(
+                _grafana_unified_prometheus_no_threshold_rule(), datasource_map=dsmap
+            ),
+        ]
+
+        batch = map_alerts_batch(alerts)
+        results = build_alert_migration_results(alerts)
+
+        self.assertEqual(
+            batch["summary"]["by_automation_tier"],
+            results["by_automation_tier"],
+        )
+        # The downgraded rule lands in manual_required in both breakdowns.
+        self.assertEqual(batch["summary"]["by_automation_tier"].get("manual_required"), 1)
 
     def test_batch_summary_distinguishes_selected_vs_emitted_rule_types(self):
         from observability_migration.adapters.source.datadog.field_map import load_profile
