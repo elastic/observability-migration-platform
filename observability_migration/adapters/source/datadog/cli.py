@@ -1509,9 +1509,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Create emitted Kibana alerting rules for alert-capable asset "
             "selection (--assets alerts, --assets all, or the deprecated "
-            "--fetch-monitors alias). Rules are created disabled by default "
-            "and tagged 'obs-migration'. Requires alert-capable asset "
-            "selection, --kibana-url, and --kibana-api-key."
+            "--fetch-monitors alias). Both fully-automated and draft "
+            "(review-required) translations are created disabled and tagged "
+            "'obs-migration'; draft rules also get 'obs-migration-review' so "
+            "they are easy to find and enable after inspection. Pass "
+            "--no-draft-alert-rules to create only fully-automated rules. "
+            "Requires alert-capable asset selection, --kibana-url, and "
+            "--kibana-api-key."
+        ),
+    )
+    parser.add_argument(
+        "--no-draft-alert-rules", action="store_true",
+        help=(
+            "With --create-alert-rules, skip draft (review-required) "
+            "translations and create only fully-automated rules. Draft rules "
+            "are created by default."
         ),
     )
     parser.add_argument(

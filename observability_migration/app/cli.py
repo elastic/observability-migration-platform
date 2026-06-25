@@ -139,12 +139,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Create emitted Kibana alerting rules for alert-capable asset "
             "selection (--assets alerts, --assets all, or the deprecated "
-            "--fetch-alerts alias). Rules are created disabled by default, "
-            "tagged 'obs-migration'. Requires alert-capable asset selection, "
-            "--kibana-url, and --kibana-api-key. Writes "
-            "alert_rule_upload_results.json (Grafana) or "
-            "monitor_rule_upload_results.json (Datadog) to the output "
+            "--fetch-alerts alias). Both fully-automated and draft "
+            "(review-required) translations are created disabled and tagged "
+            "'obs-migration'; draft rules also get 'obs-migration-review' so "
+            "they are easy to find and enable after inspection. Pass "
+            "--no-draft-alert-rules to create only fully-automated rules. "
+            "Requires alert-capable asset selection, --kibana-url, and "
+            "--kibana-api-key. Writes alert_rule_upload_results.json (Grafana) "
+            "or monitor_rule_upload_results.json (Datadog) to the output "
             "directory."
+        ),
+    )
+    migrate.add_argument(
+        "--no-draft-alert-rules", action="store_true",
+        help=(
+            "With --create-alert-rules, skip draft (review-required) "
+            "translations and create only fully-automated rules. Draft rules "
+            "are created by default."
         ),
     )
     migrate.add_argument("--grafana-token", default="",
@@ -786,6 +797,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--smoke-report", args.smoke_report])
     if getattr(args, "create_alert_rules", False):
         legacy_argv.append("--create-alert-rules")
+    if getattr(args, "no_draft_alert_rules", False):
+        legacy_argv.append("--no-draft-alert-rules")
     if getattr(args, "grafana_token", ""):
         legacy_argv.extend(["--grafana-token", args.grafana_token])
     if getattr(args, "grafana_url", ""):
@@ -873,6 +886,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--space-id", args.space_id])
     if getattr(args, "create_alert_rules", False):
         legacy_argv.append("--create-alert-rules")
+    if getattr(args, "no_draft_alert_rules", False):
+        legacy_argv.append("--no-draft-alert-rules")
     if getattr(args, "monitor_ids", ""):
         legacy_argv.extend(["--monitor-ids", args.monitor_ids])
     if getattr(args, "monitor_query", ""):

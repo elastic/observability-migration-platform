@@ -3807,8 +3807,147 @@ class TestDatadogAlertPipeline(unittest.TestCase):
         mock_create.assert_called_once()
         self.assertEqual(mock_create.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 
+    def test_create_rules_default_creates_draft_tier(self):
+        # Without --no-draft-alert-rules the pipeline must not restrict the
+        # creatable tiers, so the engine default (automated + draft) applies.
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 0},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ) as mock_create:
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_called_once()
+        self.assertIsNone(mock_create.call_args.kwargs.get("creatable_tiers"))
+
+    def test_create_rules_opts_out_of_draft_tier(self):
+        # --no-draft-alert-rules restricts creation to the automated tier only.
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            no_draft_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 0},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ) as mock_create:
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_called_once()
+        self.assertEqual(
+            mock_create.call_args.kwargs.get("creatable_tiers"),
+            frozenset({"automated"}),
+        )
+
 
 class TestGrafanaAlertPipeline(unittest.TestCase):
+    def test_create_rules_opts_out_of_draft_tier(self):
+        # --no-draft-alert-rules restricts creation to the automated tier only.
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            no_draft_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 0},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ) as mock_create:
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_called_once()
+        self.assertEqual(
+            mock_create.call_args.kwargs.get("creatable_tiers"),
+            frozenset({"automated"}),
+        )
+
+    def test_create_rules_default_creates_draft_tier(self):
+        # Without the opt-out flag the engine default (automated + draft) applies.
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="space-a",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 0},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ) as mock_create:
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_called_once()
+        self.assertIsNone(mock_create.call_args.kwargs.get("creatable_tiers"))
+
     def test_run_alert_pipeline_writes_alert_artifacts_to_output_dir(self):
         from observability_migration.adapters.source.grafana.alert_pipeline import (
             run_alert_pipeline,
@@ -3953,6 +4092,61 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
             result = alert_pipeline.load_unified_alerting_resources(args)
 
         self.assertEqual(len(result["alert_rules"]), 2)
+
+    def test_create_rules_if_requested_creates_draft_tier_rules(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        created: list[dict[str, Any]] = []
+
+        def _fake_create_rule(kibana_url, **kwargs):
+            created.append(kwargs)
+            return {"id": f"rule-{len(created)}", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+        mapping_batch = {
+            "results": [
+                {
+                    "alert_id": "draft-1",
+                    "name": "draft alert",
+                    "kind": "grafana_legacy",
+                    "mapping": {
+                        "payload_emitted": True,
+                        "automation_tier": "draft_requires_review",
+                        "rule_payload": {
+                            "rule_type_id": ".es-query",
+                            "name": "draft alert",
+                            "params": {},
+                        },
+                    },
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.targets.kibana.alerting.create_rule",
+            side_effect=_fake_create_rule,
+        ):
+            alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch=mapping_batch,
+                payload_preflight={},
+            )
+
+        # A draft (review-required) translation reaches Kibana end-to-end,
+        # created disabled and tagged for review (issue #206).
+        self.assertEqual(len(created), 1)
+        self.assertFalse(created[0]["enabled"])
+        self.assertIn("obs-migration", created[0]["tags"])
+        self.assertIn("obs-migration-review", created[0]["tags"])
 
 
 # =====================================================================
@@ -4117,7 +4311,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertIn("obs-migration", created_call["tags"])
         self.assertIn("legacy-grafana", created_call["tags"])
 
-    def test_create_rules_from_payloads_from_mapping_shape_skips_non_automated(self):
+    def test_create_rules_from_payloads_from_mapping_shape_skips_manual_required(self):
         from observability_migration.targets.kibana.alerting import (
             create_rules_from_payloads,
         )
@@ -4145,14 +4339,14 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             },
             {
                 "alert_id": "a2",
-                "name": "draft",
-                "kind": "grafana_legacy",
+                "name": "manual",
+                "kind": "datadog_composite",
                 "mapping": {
                     "payload_emitted": True,
-                    "automation_tier": "draft_requires_review",
+                    "automation_tier": "manual_required",
                     "rule_payload": {
                         "rule_type_id": ".es-query",
-                        "name": "draft",
+                        "name": "manual",
                         "params": {},
                     },
                 },
@@ -4180,7 +4374,154 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertEqual(result["summary"]["created"], 1)
         self.assertEqual(result["summary"]["skipped"], 1)
         self.assertEqual(result["skipped"][0]["alert_id"], "a2")
-        self.assertIn("draft_requires_review", result["skipped"][0]["reason"])
+        self.assertIn("manual_required", result["skipped"][0]["reason"])
+
+    def test_create_rules_from_payloads_creates_draft_tier_tagged_for_review(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_create(kibana_url, **kwargs):
+            calls.append(kwargs)
+            return {"id": f"rule-{len(calls)}", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        items = [
+            {
+                "alert_id": "auto-1",
+                "name": "auto",
+                "kind": "grafana_legacy",
+                "mapping": {
+                    "payload_emitted": True,
+                    "automation_tier": "automated",
+                    "rule_payload": {"rule_type_id": ".es-query", "name": "auto", "params": {}},
+                },
+            },
+            {
+                "alert_id": "draft-1",
+                "name": "draft",
+                "kind": "grafana_legacy",
+                "mapping": {
+                    "payload_emitted": True,
+                    "automation_tier": "draft_requires_review",
+                    "rule_payload": {"rule_type_id": ".es-query", "name": "draft", "params": {}},
+                },
+            },
+            {
+                "alert_id": "manual-1",
+                "name": "manual",
+                "kind": "datadog_composite",
+                "mapping": {
+                    "payload_emitted": True,
+                    "automation_tier": "manual_required",
+                    "rule_payload": {"rule_type_id": ".es-query", "name": "manual", "params": {}},
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+        )
+
+        # By default both automated and draft-requires-review tiers are created;
+        # only manual_required is still skipped. A successful translation should
+        # always land a rule the user can inspect.
+        self.assertEqual(result["summary"]["created"], 2)
+        self.assertEqual(result["summary"]["skipped"], 1)
+        self.assertEqual(result["skipped"][0]["alert_id"], "manual-1")
+
+        by_name = {call["name"]: call for call in calls}
+        draft_call = by_name["[migrated] draft"]
+        auto_call = by_name["[migrated] auto"]
+
+        # Draft rule is created disabled and clearly tagged for review.
+        self.assertFalse(draft_call["enabled"], "draft rules must be created disabled")
+        self.assertIn("obs-migration", draft_call["tags"])
+        self.assertIn("obs-migration-review", draft_call["tags"])
+
+        # Automated rules are not flagged for review.
+        self.assertIn("obs-migration", auto_call["tags"])
+        self.assertNotIn("obs-migration-review", auto_call["tags"])
+
+    def test_create_rules_from_payloads_review_tag_generalizes_to_new_tiers(self):
+        # Review tagging is decoupled from a hardcoded draft check: any created
+        # tier that is not positively `automated` is flagged for review, so a
+        # newly-added creatable tier can never land an unflagged rule that an
+        # operator might enable thinking it was fully automated (issue #206).
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_create(kibana_url, **kwargs):
+            calls.append(kwargs)
+            return {"id": f"rule-{len(calls)}", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        items = [
+            {
+                "alert_id": "future-1",
+                "name": "future",
+                "kind": "grafana_legacy",
+                "mapping": {
+                    "payload_emitted": True,
+                    "automation_tier": "some_future_tier",
+                    "rule_payload": {"rule_type_id": ".es-query", "name": "future", "params": {}},
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            # A hypothetical future tier opted into creation.
+            creatable_tiers=frozenset({"automated", "some_future_tier"}),
+            create_rule_fn=_fake_create,
+        )
+
+        self.assertEqual(result["summary"]["created"], 1)
+        self.assertIn("obs-migration", calls[0]["tags"])
+        self.assertIn("obs-migration-review", calls[0]["tags"])
+
+    def test_create_rules_from_payloads_tierless_items_flagged_for_review(self):
+        # Raw emitted-payload items carry no automation_tier. They are still
+        # created (documented passthrough), but because their classification is
+        # unknown they are conservatively flagged for review rather than being
+        # silently treated as fully automated (issue #206 fail-safe).
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_create(kibana_url, **kwargs):
+            calls.append(kwargs)
+            return {"id": f"rule-{len(calls)}", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        items = [
+            {
+                "alert_id": "raw-1",
+                "name": "raw",
+                "kind": "grafana_unified",
+                "payload": {"rule_type_id": ".es-query", "name": "raw", "params": {}},
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+        )
+
+        self.assertEqual(result["summary"]["created"], 1)
+        self.assertIn("obs-migration", calls[0]["tags"])
+        self.assertIn("obs-migration-review", calls[0]["tags"])
 
     def test_create_rules_from_payloads_records_failures(self):
         from observability_migration.targets.kibana.alerting import (

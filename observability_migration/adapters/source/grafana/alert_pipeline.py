@@ -15,7 +15,7 @@ from observability_migration.core.assets.alerting import (
     build_alerting_ir_from_grafana_unified,
 )
 from observability_migration.core.http import resolve_tls
-from observability_migration.core.mapping import map_alerts_batch
+from observability_migration.core.mapping import AUTOMATED_TIER, map_alerts_batch
 from observability_migration.core.selection import (
     apply_cli_selection,
     criteria_from_args,
@@ -317,6 +317,13 @@ def create_rules_if_requested(
         return
 
     print("\n  Creating Kibana alerting rules (disabled by default)...")
+    # --no-draft-alert-rules restricts creation to the fully-automated tier;
+    # otherwise leave it None so the engine default (automated + draft) applies.
+    creatable_tiers = (
+        frozenset({AUTOMATED_TIER})
+        if getattr(args, "no_draft_alert_rules", False)
+        else None
+    )
     rule_upload = create_rules_from_payloads(
         args.kibana_url,
         mapping_batch.get("results", []),
@@ -324,6 +331,7 @@ def create_rules_if_requested(
         space_id=_selected_space_id(args),
         preflight=payload_preflight,
         enabled=False,
+        creatable_tiers=creatable_tiers,
         verify=_verify_from_args(args),
     )
     rule_upload_path = output_dir / "alert_rule_upload_results.json"
