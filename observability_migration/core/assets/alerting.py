@@ -527,7 +527,12 @@ def _grafana_source_queries(
         if not isinstance(item, dict):
             continue
         datasource_uid = str(item.get("datasourceUid", "") or "")
-        if not datasource_uid or datasource_uid == "__expr__":
+        # ``__expr__`` and the legacy ``-100`` are both Grafana's server-side
+        # expression datasource (reduce/math/threshold steps), not real source
+        # queries. mapping.py treats the pair the same way; keep the
+        # source-query inventory consistent so an expression-step UID never
+        # inflates ``single_source_query``.
+        if not datasource_uid or datasource_uid in {"__expr__", "-100"}:
             continue
         model = item.get("model") if isinstance(item.get("model"), dict) else {}
         expr = str(model.get("expr", "") or "")
