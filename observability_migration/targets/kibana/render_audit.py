@@ -167,13 +167,24 @@ def classify_panel(
     *,
     breakdown_fields: Iterable[str] = (),
     available_fields: Iterable[str] | None = None,
+    expects_data: bool = False,
+    referenced_metrics: Iterable[str] = (),
+    available_metrics: Iterable[str] | None = None,
 ) -> PanelRenderResult:
     """Classify a single panel's rendered region.
 
-    When ``available_fields`` is provided (e.g. from the target's field-caps) and
-    the panel carries a render-error marker, a breakdown/group field absent from
-    that set explains the error as a ``field_gap`` (data-readiness), not a real
-    ``render_error``.
+    Render error markers are attributed (``field_gap`` when a breakdown field is
+    absent from ``available_fields``, else ``render_error``).
+
+    Empty states ("No results"/"N/A") are split three ways so a query panel that
+    silently shows nothing is not mistaken for a benign blank:
+
+    * ``data_gap`` — the panel references a metric absent from ``available_metrics``
+      (expected empty; remediate data/mapping).
+    * ``unexpected_empty`` — ``expects_data`` (the panel has a query) but it
+      rendered nothing despite no known metric gap (a finding: verify
+      data/time-window; could be a broken query).
+    * benign ``empty`` — no query (e.g. a markdown panel) / no data expected.
     """
     text = str(panel_text or "")
     markers = find_render_error_markers(text)
@@ -191,8 +202,30 @@ def classify_panel(
             title=title, status="error", error_class="render_error", detail=markers[0]
         )
     if _EMPTY_STATE_RE.search(text.strip()):
-        return PanelRenderResult(title=title, status="empty", detail="no data in current window")
+        if referenced_metrics and available_metrics is not None:
+            missing_metrics = [
+                m for m in referenced_metrics if m and m not in set(available_metrics)
+            ]
+            if missing_metrics:
+                return PanelRenderResult(
+                    title=title, status="empty", error_class="data_gap",
+                    missing_fields=list(dict.fromkeys(missing_metrics)),
+                    detail=f"empty: referenced metric(s) absent from target: {missing_metrics}",
+                )
+        if expects_data:
+            return PanelRenderResult(
+                title=title, status="empty", error_class="unexpected_empty",
+                detail="query panel rendered no data (verify data/time window or query)",
+            )
+        return PanelRenderResult(
+            title=title, status="empty", detail="empty (no query / no data expected)"
+        )
     return PanelRenderResult(title=title, status="rendered")
+
+
+# Per-panel finding classes that warrant a "warn" (not a hard "fail"): they are
+# data-readiness / verify-me signals, not translator render bugs.
+_WARN_CLASSES = ("field_gap", "data_gap", "unexpected_empty")
 
 
 def classify_render_per_panel(
@@ -200,29 +233,36 @@ def classify_render_per_panel(
     *,
     breakdown_by_title: dict[str, list[str]] | None = None,
     available_fields: Iterable[str] | None = None,
+    expects_data_titles: Iterable[str] | None = None,
+    metrics_by_title: dict[str, list[str]] | None = None,
+    available_metrics: Iterable[str] | None = None,
     console_errors: Iterable[str] = (),
     failed_requests: Iterable[str] = (),
 ) -> RenderVerdict:
     """Per-panel render audit.
 
     ``panels`` is a list of ``(title, rendered_text)`` segments. Aggregation
-    follows live_validate's philosophy: an unexplained ``render_error`` is a hard
-    ``fail``; a ``field_gap`` (panel blocked by a missing target field) is a
-    ``warn`` (data-readiness, not a translator bug). Console 5xx / render-error
-    console messages also fail.
+    follows live_validate's philosophy: an unexplained ``render_error`` (or a
+    render-error console message / 5xx) is a hard ``fail``; data-readiness
+    findings — ``field_gap``, ``data_gap``, ``unexpected_empty`` — are ``warn``.
     """
     breakdown_by_title = breakdown_by_title or {}
+    metrics_by_title = metrics_by_title or {}
+    expects = set(expects_data_titles or ())
     verdict = RenderVerdict()
     for title, text in panels:
         result = classify_panel(
             title, text,
             breakdown_fields=breakdown_by_title.get(title, []),
             available_fields=available_fields,
+            expects_data=title in expects,
+            referenced_metrics=metrics_by_title.get(title, []),
+            available_metrics=available_metrics,
         )
         verdict.panels.append(result)
 
-    hard = [p for p in verdict.panels if p.status == "error" and p.error_class != "field_gap"]
-    gaps = [p for p in verdict.panels if p.status == "error" and p.error_class == "field_gap"]
+    hard = [p for p in verdict.panels if p.status == "error" and p.error_class == "render_error"]
+    warns = [p for p in verdict.panels if p.error_class in _WARN_CLASSES]
 
     verdict.console_errors = _filter_console(console_errors)
     verdict.server_errors = _server_5xx(failed_requests)
@@ -237,11 +277,11 @@ def classify_render_per_panel(
             verdict.reasons.append(f"console errors: {len(verdict.console_errors)}")
         if verdict.server_errors:
             verdict.reasons.append(f"server 5xx: {verdict.server_errors}")
-    elif gaps:
+    elif warns:
         verdict.status = "warn"
         verdict.reasons.append(
-            "field/data gaps (panel blocked by missing target field, not a "
-            f"translation bug): {[(p.title, p.missing_fields) for p in gaps]}"
+            "data-readiness findings (not translator render bugs): "
+            + str([(p.title, p.error_class, p.missing_fields) for p in warns])
         )
 
     return verdict
@@ -271,3 +311,24 @@ def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
             if fields:
                 out[title] = list(dict.fromkeys(fields))
     return out
+
+
+def expects_data_by_panel(report: dict) -> set[str]:
+    """Titles of panels that carry a query and therefore should render data.
+
+    A query-bearing panel that renders empty is a finding (``unexpected_empty``);
+    a markdown/control panel rendering "empty" is benign. Detection is robust: a
+    non-empty ``esql.query`` whose Kibana type is not markdown.
+    """
+    titles: set[str] = set()
+    for dashboard in report.get("dashboards", []):
+        for panel in dashboard.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            yaml_panel = panel.get("yaml_panel") if isinstance(panel.get("yaml_panel"), dict) else {}
+            esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
+            query = str((esql or {}).get("query") or panel.get("esql_query") or "").strip()
+            kibana_type = str(panel.get("kibana_type") or (esql or {}).get("type") or "").lower()
+            if query and kibana_type != "markdown":
+                titles.add(str(panel.get("title") or ""))
+    return titles

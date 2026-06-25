@@ -214,3 +214,63 @@ def test_breakdown_fields_by_panel_extracts_breakdown_only():
     assert out["ts"] == ["method"]          # value/step excluded
     assert out["tbl"] == ["instance", "mode"]
     assert "stat" not in out                 # no breakdown -> not listed
+
+
+# --- Empty-state classification (#3) ---------------------------------------
+
+def test_empty_panel_with_query_is_unexpected_empty():
+    r = classify_panel("ts", "No results found", expects_data=True)
+    assert r.status == "empty"
+    assert r.error_class == "unexpected_empty"
+
+
+def test_empty_panel_without_query_is_benign():
+    r = classify_panel("markdown", "No results found", expects_data=False)
+    assert r.status == "empty"
+    assert r.error_class == ""
+
+
+def test_empty_panel_with_missing_metric_is_data_gap():
+    r = classify_panel(
+        "ts", "No results found", expects_data=True,
+        referenced_metrics=["nonexistent_metric"], available_metrics=["http_requests_total"],
+    )
+    assert r.status == "empty"
+    assert r.error_class == "data_gap"
+    assert r.missing_fields == ["nonexistent_metric"]
+
+
+def test_empty_panel_with_present_metric_is_unexpected_empty():
+    r = classify_panel(
+        "ts", "N/A", expects_data=True,
+        referenced_metrics=["http_requests_total"], available_metrics=["http_requests_total"],
+    )
+    assert r.error_class == "unexpected_empty"
+
+
+def test_per_panel_unexpected_empty_warns():
+    verdict = classify_render_per_panel(
+        [("ts", "No results found"), ("md", "Kitchen-sink")],
+        expects_data_titles={"ts"},
+    )
+    assert verdict.status == "warn"
+    assert [p.error_class for p in verdict.panels if p.title == "ts"] == ["unexpected_empty"]
+
+
+def test_per_panel_benign_empty_does_not_warn():
+    verdict = classify_render_per_panel(
+        [("md", "No results found")],  # no query -> benign
+        expects_data_titles=set(),
+    )
+    assert verdict.status == "pass"
+
+
+def test_expects_data_by_panel_excludes_markdown():
+    from observability_migration.targets.kibana.render_audit import expects_data_by_panel
+    report = {"dashboards": [{"panels": [
+        {"title": "ts", "kibana_type": "line", "yaml_panel": {"esql": {"query": "TS metrics-* | STATS x=COUNT()"}}},
+        {"title": "md", "kibana_type": "markdown", "yaml_panel": {"esql": {"query": ""}}},
+        {"title": "txt", "yaml_panel": {"esql": {"type": "markdown", "query": "# hi"}}},
+    ]}]}
+    titles = expects_data_by_panel(report)
+    assert titles == {"ts"}
