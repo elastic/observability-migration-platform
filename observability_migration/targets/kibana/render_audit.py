@@ -212,6 +212,26 @@ def check_panel_elements(
     return findings
 
 
+_CONTROL_WARNING_RE = re.compile(
+    r'combobox "([^"]+)"[^\n]*?Incompatible selections \((\d+)\)', re.IGNORECASE
+)
+
+
+def detect_control_warnings(snapshot_text: str) -> list[str]:
+    """Detect dashboard controls that render an "Incompatible selections" warning.
+
+    A migrated template-variable control whose options query returns nothing
+    matching the current selection shows ``Incompatible selections (N)`` in
+    Kibana — the panels it filters then silently return no data. The render audit
+    flags these as data-readiness warnings (field-mapping / unseeded label
+    values), distinct from a panel render error.
+    """
+    out: list[str] = []
+    for name, count in _CONTROL_WARNING_RE.findall(str(snapshot_text or "")):
+        out.append(f"control '{name}': incompatible selections ({count})")
+    return out
+
+
 def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tuple[str, str]], list[str]]:
     """Split a full dashboard snapshot into per-panel ``(title, chunk)`` pairs.
 
@@ -276,6 +296,7 @@ def audit_dashboard_elements(
         )
     for title in unmatched:
         reasons.append(f"{title}: panel title did not render (panel may not have loaded)")
+    reasons += detect_control_warnings(snapshot_text)
     if reasons:
         verdict.status = "warn"
         verdict.reasons = reasons

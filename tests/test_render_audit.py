@@ -493,3 +493,29 @@ def test_extended_es_error_markers_are_caught():
         "Output has changed from [[a]] to [[b]]",
     ]:
         assert classify_render(marker).status == "fail", marker
+
+
+def test_detect_control_warnings_flags_incompatible_selections():
+    from observability_migration.targets.kibana.render_audit import detect_control_warnings
+    snap = (
+        'combobox "Instance" expandable haspopup="listbox" value=".* Incompatible selections (0) 1"\n'
+        'combobox "JOB" value=".* Incompatible selections (2) 1"\n'
+        'combobox "maxmount" value=".* 1"'  # healthy control, no warning
+    )
+    warnings = detect_control_warnings(snap)
+    assert warnings == [
+        "control 'Instance': incompatible selections (0)",
+        "control 'JOB': incompatible selections (2)",
+    ]
+
+
+def test_audit_dashboard_elements_includes_control_warnings():
+    from observability_migration.targets.kibana.render_audit import audit_dashboard_elements
+    snap = (
+        'StaticText "p1" StaticText "Chart type" StaticText ":" StaticText "line chart" '
+        'button "a; Click: to show, x"\n'
+        'combobox "Instance" value=".* Incompatible selections (0) 1"'
+    )
+    v = audit_dashboard_elements(snap, expected_kind_by_title={"p1": "xy"}, breakdown_titles={"p1"})
+    assert v.status == "warn"
+    assert any("incompatible selections" in r for r in v.reasons)
