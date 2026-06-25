@@ -47,12 +47,39 @@ _CONSOLE_ERROR_RE = [re.compile(p, re.IGNORECASE) for p in _CONSOLE_ERROR_SIGNAT
 
 
 @dataclass
+class PanelRenderResult:
+    """Per-panel render verdict.
+
+    ``status``: ``rendered`` | ``error`` | ``empty``.
+    ``error_class`` (when status==error): ``field_gap`` (the panel references a
+    breakdown/group field absent from the target data — a data/field-mapping
+    readiness gap, NOT a translation bug, mirroring live_validate's data_gap) vs
+    ``render_error`` (an unexplained Lens/ES|QL failure — a real bug).
+    """
+    title: str
+    status: str
+    error_class: str = ""
+    missing_fields: list[str] = field(default_factory=list)
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "title": self.title,
+            "status": self.status,
+            "error_class": self.error_class,
+            "missing_fields": self.missing_fields,
+            "detail": self.detail,
+        }
+
+
+@dataclass
 class RenderVerdict:
     status: str = "pass"  # "pass" | "warn" | "fail"
     rendered_error_markers: list[str] = field(default_factory=list)
     console_errors: list[str] = field(default_factory=list)
     server_errors: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    panels: list[PanelRenderResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -61,7 +88,11 @@ class RenderVerdict:
             "console_errors": self.console_errors,
             "server_errors": self.server_errors,
             "reasons": self.reasons,
+            "panels": [p.to_dict() for p in self.panels],
         }
+
+
+_EMPTY_STATE_RE = re.compile(r"No results found|No results|^\s*N/?A\s*$", re.IGNORECASE)
 
 
 def find_render_error_markers(snapshot_text: str) -> list[str]:
@@ -128,3 +159,115 @@ def classify_render(
             verdict.reasons.append("screenshot missing or empty")
 
     return verdict
+
+
+def classify_panel(
+    title: str,
+    panel_text: str,
+    *,
+    breakdown_fields: Iterable[str] = (),
+    available_fields: Iterable[str] | None = None,
+) -> PanelRenderResult:
+    """Classify a single panel's rendered region.
+
+    When ``available_fields`` is provided (e.g. from the target's field-caps) and
+    the panel carries a render-error marker, a breakdown/group field absent from
+    that set explains the error as a ``field_gap`` (data-readiness), not a real
+    ``render_error``.
+    """
+    text = str(panel_text or "")
+    markers = find_render_error_markers(text)
+    if markers:
+        if available_fields is not None:
+            avail = set(available_fields)
+            missing = [f for f in breakdown_fields if f and f not in avail]
+            if missing:
+                return PanelRenderResult(
+                    title=title, status="error", error_class="field_gap",
+                    missing_fields=list(dict.fromkeys(missing)),
+                    detail=f"{markers[0]}; breakdown field(s) absent from target: {missing}",
+                )
+        return PanelRenderResult(
+            title=title, status="error", error_class="render_error", detail=markers[0]
+        )
+    if _EMPTY_STATE_RE.search(text.strip()):
+        return PanelRenderResult(title=title, status="empty", detail="no data in current window")
+    return PanelRenderResult(title=title, status="rendered")
+
+
+def classify_render_per_panel(
+    panels: Iterable[tuple[str, str]],
+    *,
+    breakdown_by_title: dict[str, list[str]] | None = None,
+    available_fields: Iterable[str] | None = None,
+    console_errors: Iterable[str] = (),
+    failed_requests: Iterable[str] = (),
+) -> RenderVerdict:
+    """Per-panel render audit.
+
+    ``panels`` is a list of ``(title, rendered_text)`` segments. Aggregation
+    follows live_validate's philosophy: an unexplained ``render_error`` is a hard
+    ``fail``; a ``field_gap`` (panel blocked by a missing target field) is a
+    ``warn`` (data-readiness, not a translator bug). Console 5xx / render-error
+    console messages also fail.
+    """
+    breakdown_by_title = breakdown_by_title or {}
+    verdict = RenderVerdict()
+    for title, text in panels:
+        result = classify_panel(
+            title, text,
+            breakdown_fields=breakdown_by_title.get(title, []),
+            available_fields=available_fields,
+        )
+        verdict.panels.append(result)
+
+    hard = [p for p in verdict.panels if p.status == "error" and p.error_class != "field_gap"]
+    gaps = [p for p in verdict.panels if p.status == "error" and p.error_class == "field_gap"]
+
+    verdict.console_errors = _filter_console(console_errors)
+    verdict.server_errors = _server_5xx(failed_requests)
+
+    if hard or verdict.console_errors or verdict.server_errors:
+        verdict.status = "fail"
+        if hard:
+            verdict.reasons.append(
+                f"{len(hard)} panel(s) with render errors: {[p.title for p in hard]}"
+            )
+        if verdict.console_errors:
+            verdict.reasons.append(f"console errors: {len(verdict.console_errors)}")
+        if verdict.server_errors:
+            verdict.reasons.append(f"server 5xx: {verdict.server_errors}")
+    elif gaps:
+        verdict.status = "warn"
+        verdict.reasons.append(
+            "field/data gaps (panel blocked by missing target field, not a "
+            f"translation bug): {[(p.title, p.missing_fields) for p in gaps]}"
+        )
+
+    return verdict
+
+
+def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
+    """Extract each panel's breakdown/group source fields from a migration_report.
+
+    These are the data labels (e.g. ``method``, ``instance``) that must exist in
+    the target; synthetic output columns (``value``, ``step``, ``time_bucket``)
+    are not data fields and are excluded.
+    """
+    out: dict[str, list[str]] = {}
+    for dashboard in report.get("dashboards", []):
+        for panel in dashboard.get("panels", []):
+            if not isinstance(panel, dict):
+                continue
+            title = str(panel.get("title") or "")
+            esql = (panel.get("yaml_panel") or {}).get("esql") if isinstance(panel.get("yaml_panel"), dict) else {}
+            esql = esql if isinstance(esql, dict) else {}
+            fields: list[str] = []
+            breakdown = esql.get("breakdown")
+            if isinstance(breakdown, dict) and breakdown.get("field"):
+                fields.append(str(breakdown["field"]))
+            elif isinstance(breakdown, list):
+                fields.extend(str(b.get("field")) for b in breakdown if isinstance(b, dict) and b.get("field"))
+            if fields:
+                out[title] = list(dict.fromkeys(fields))
+    return out

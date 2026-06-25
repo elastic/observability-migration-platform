@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 from observability_migration.targets.kibana.render_audit import (
+    breakdown_fields_by_panel,
+    classify_panel,
     classify_render,
+    classify_render_per_panel,
     find_render_error_markers,
 )
 
@@ -116,3 +119,98 @@ def test_find_render_error_markers_lists_distinct_patterns():
     )
     assert "dashboardPanelError" in markers
     assert "embPanel__error" in markers
+
+
+# --- Per-panel verdicts + field-gap classification -------------------------
+
+_INVALID_COLUMN = "Provided column name or index is invalid: f4b867ee"
+
+
+def test_classify_panel_rendered():
+    r = classify_panel("canary table", "instance_2 35,258.0 grid rows")
+    assert r.status == "rendered"
+    assert r.error_class == ""
+
+
+def test_classify_panel_empty():
+    r = classify_panel("canary gauge", "No results found")
+    assert r.status == "empty"
+
+
+def test_classify_panel_render_error_without_field_context():
+    # No available_fields supplied -> cannot attribute to a field gap -> hard error.
+    r = classify_panel("canary timeseries", _INVALID_COLUMN)
+    assert r.status == "error"
+    assert r.error_class == "render_error"
+
+
+def test_classify_panel_field_gap_when_breakdown_field_missing():
+    # Today's real scenario: panel breaks down by `method`, which the target
+    # data lacks -> field_gap (data-readiness), not a render bug.
+    r = classify_panel(
+        "canary timeseries", _INVALID_COLUMN,
+        breakdown_fields=["method"], available_fields=["instance", "handler", "le"],
+    )
+    assert r.status == "error"
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["method"]
+
+
+def test_classify_panel_render_error_when_breakdown_field_present():
+    # Breakdown field exists but Lens still errors -> a real render bug.
+    r = classify_panel(
+        "canary timeseries", _INVALID_COLUMN,
+        breakdown_fields=["instance"], available_fields=["instance", "handler"],
+    )
+    assert r.status == "error"
+    assert r.error_class == "render_error"
+
+
+def test_per_panel_field_gap_warns_not_fails():
+    verdict = classify_render_per_panel(
+        [("canary timeseries", _INVALID_COLUMN), ("canary table", "instance_2 rows")],
+        breakdown_by_title={"canary timeseries": ["method"]},
+        available_fields=["instance"],
+    )
+    assert verdict.status == "warn"
+    assert any(p.error_class == "field_gap" for p in verdict.panels)
+
+
+def test_per_panel_unexplained_render_error_fails():
+    verdict = classify_render_per_panel(
+        [("canary timeseries", _INVALID_COLUMN)],
+        breakdown_by_title={"canary timeseries": ["instance"]},
+        available_fields=["instance"],
+    )
+    assert verdict.status == "fail"
+
+
+def test_per_panel_all_clean_passes():
+    verdict = classify_render_per_panel(
+        [("a", "line chart instance_1"), ("b", "Kitchen-sink markdown")],
+        available_fields=["instance"],
+    )
+    assert verdict.status == "pass"
+    assert [p.status for p in verdict.panels] == ["rendered", "rendered"]
+
+
+def test_breakdown_fields_by_panel_extracts_breakdown_only():
+    report = {
+        "dashboards": [{
+            "panels": [
+                {"title": "ts", "yaml_panel": {"esql": {
+                    "dimension": {"field": "step"},
+                    "metrics": [{"field": "value"}],
+                    "breakdown": {"field": "method"},
+                }}},
+                {"title": "tbl", "yaml_panel": {"esql": {
+                    "breakdown": [{"field": "instance"}, {"field": "mode"}],
+                }}},
+                {"title": "stat", "yaml_panel": {"esql": {"metrics": [{"field": "value"}]}}},
+            ],
+        }],
+    }
+    out = breakdown_fields_by_panel(report)
+    assert out["ts"] == ["method"]          # value/step excluded
+    assert out["tbl"] == ["instance", "mode"]
+    assert "stat" not in out                 # no breakdown -> not listed
