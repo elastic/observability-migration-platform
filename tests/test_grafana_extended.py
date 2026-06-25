@@ -2867,6 +2867,21 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertTrue(frag.extra.get("has_round"))
         self.assertEqual(frag.extra.get("round_precision"), 2.0)
 
+    def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
+        # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
+        # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so
+        # ROUND(v, 0.001) is an invalid query ("second argument ... must be
+        # [whole number ...], found ... [double]"). Emit ROUND(v / 0.001) * 0.001
+        # which reproduces the PromQL semantics and is valid ES|QL.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        q = translate_promql_to_esql(
+            "round(sum(rate(http_requests_total[5m])), 0.001)"
+        ).esql_query
+        self.assertIn("/ 0.001) * 0.001", q)
+        self.assertNotIn(", 0.001)", q)
+
     def test_round_strips_outer_call_no_precision(self):
         ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])))")
         frag = ctx.fragment

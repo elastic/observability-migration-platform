@@ -2716,16 +2716,27 @@ def value_wrapper_transforms_rule(context):
             len(lines),
         )
 
-    # round() → EVAL value = ROUND(value, N)
+    # round() → faithful round-to-nearest-multiple.
+    # PromQL round(v, to_nearest) rounds v to the nearest multiple of
+    # `to_nearest` (default 1). ES|QL ROUND(v, decimals) is different: its
+    # second argument is a *whole number of decimal places*, so a fractional
+    # step like 0.001 makes ROUND(v, 0.001) an invalid query
+    # ("second argument ... must be [whole number ...], found ... [double]").
+    # Emit ROUND(v / step) * step, which reproduces PromQL's semantics for any
+    # step (integer or fractional) and is always valid ES|QL.
     if frag.extra.get("has_round"):
         precision = frag.extra.get("round_precision")
-        if precision is not None:
-            prec_arg = int(precision) if precision == int(precision) else precision
-            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field}, {prec_arg})"
-        else:
+        if precision is None or precision == 1:
             eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
+            round_warning = "round() approximated with ES|QL ROUND()"
+        else:
+            step = int(precision) if precision == int(precision) else precision
+            eval_clause = (
+                f"| EVAL {metric_field} = ROUND({metric_field} / {step}) * {step}"
+            )
+            round_warning = "round(v, step) emitted as ROUND(v / step) * step"
         lines.insert(_eval_insert_idx(lines), eval_clause)
-        _append_unique(context.warnings, "round() approximated with ES|QL ROUND()")
+        _append_unique(context.warnings, round_warning)
         applied.append("round")
 
     # clamp_min() → EVAL value = GREATEST(value, min)
