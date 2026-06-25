@@ -27,7 +27,13 @@ import requests
 ApiCall = Callable[[str, str, dict[str, Any] | None], tuple[int, dict[str, Any] | str]]
 
 _XY_TYPES = {"line", "area", "bar"}
-_SUPPORTED_ESQL_TYPES = _XY_TYPES | {"metric"}
+# ES|QL-backed config shapes confirmed accepted by the native Dashboards API on
+# Elastic 9.5.0 (discovered via server-side validation against a live cluster):
+#   gauge -> config{type:gauge, data_source:esql, metric:{column}}
+#   pie   -> config{type:pie,   data_source:esql, metrics:[{column}], group_by?:[{column}]}
+# data_table has no ES|QL variant in 9.5.0 (its branches require a data_view
+# source), so it stays unmapped until that lands / the data_view path is added.
+_SUPPORTED_ESQL_TYPES = _XY_TYPES | {"metric", "gauge", "pie"}
 
 
 def _is_time_like(field: str) -> bool:
@@ -176,6 +182,31 @@ def _api_panel_from_esql(
         }, []
 
     metric_col = (_metric_fields(config) or ["value"])[0]
+
+    if chart_type == "gauge":
+        return {
+            "grid": grid,
+            "type": "vis",
+            "config": {
+                "type": "gauge",
+                "title": title,
+                "data_source": {"type": "esql", "query": query},
+                "metric": {"column": metric_col},
+            },
+        }, []
+
+    if chart_type == "pie":
+        pie_config: dict[str, Any] = {
+            "type": "pie",
+            "title": title,
+            "data_source": {"type": "esql", "query": query},
+            "metrics": [{"column": metric_col}],
+        }
+        breakdown = _field(config.get("breakdown"))
+        if breakdown:
+            pie_config["group_by"] = [{"column": breakdown}]
+        return {"grid": grid, "type": "vis", "config": pie_config}, []
+
     return {
         "grid": grid,
         "type": "vis",
