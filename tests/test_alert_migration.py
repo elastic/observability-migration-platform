@@ -2103,6 +2103,35 @@ class TestBuildRuleParams(unittest.TestCase):
         self.assertNotIn("histogram_quantile", str(params))
         self.assertFalse(params.get("esqlQuery", {}).get("esql", ""))
 
+    def test_grafana_alert_with_control_bound_label_matcher_degrades(self):
+        # Issue #230: a control-bound label-matcher variable (``$instance``)
+        # would be emitted as a named param trapped inside the opaque PROMQL
+        # command string (``{instance=~?instance}``). Alert rules have no
+        # dashboard control to bind it, so the param stays unbound and the rule
+        # fails at evaluation with "Parameter [?instance] value not found". The
+        # alert path must degrade to no ES|QL params rather than emit such a
+        # query (mirrors the panel path's fall-through to native ES|QL).
+        rule = {
+            "uid": "ctl-rule", "title": "Redis commands/sec", "ruleGroup": "g",
+            "folderUID": "f", "condition": "C", "for": "5m",
+            "noDataState": "NoData", "execErrState": "Error",
+            "isPaused": False, "labels": {}, "annotations": {},
+            "data": [
+                {"refId": "A", "datasourceUid": "prometheus",
+                 "relativeTimeRange": {"from": 300, "to": 0},
+                 "model": {"expr": 'rate(redis_commands_processed_total{instance=~"$instance"}[1m])'}},
+                {"refId": "C", "datasourceUid": "__expr__",
+                 "relativeTimeRange": {"from": 0, "to": 0},
+                 "model": {"type": "threshold", "conditions": [{"evaluator": {"type": "gt", "params": [0.5]}}]}},
+            ],
+        }
+        ir = build_alerting_ir_from_grafana_unified(
+            rule, datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}}
+        )
+        params = build_es_query_rule_params(ir)
+        self.assertNotIn("?instance", str(params))
+        self.assertFalse(params.get("esqlQuery", {}).get("esql", ""))
+
     def test_es_query_params_use_native_promql_for_supported_grafana_prometheus_rules(self):
         ir = build_alerting_ir_from_grafana_unified(
             _grafana_unified_prometheus_rule(),

@@ -457,6 +457,43 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
 
+    def test_panel_with_control_bound_label_matcher_routes_to_native_esql(self):
+        """Issue #230: Kibana dashboard controls cannot bind a ``?param`` that
+        lives inside the opaque PROMQL command string, so a panel whose label
+        matcher carries a control-bound template variable must route to native
+        ES|QL — where the control binds via a visible ``... RLIKE ?var`` — and
+        NOT the PROMQL command (``{instance=~?instance}``), which renders
+        ``Parameter [?instance] value not found``."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        self.rule_pack.native_promql = True
+        panel = {
+            "title": "Commands Executed / sec",
+            "type": "graph",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'rate(redis_commands_processed_total{instance=~"$instance"}[1m])',
+                }
+            ],
+        }
+
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        # The control binding must survive the migration...
+        self.assertIn("?instance", query)
+        # ...as a native ES|QL clause Kibana can actually bind, NOT trapped
+        # inside the opaque PROMQL command string (where it stays unbound).
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("RLIKE ?instance", query)
+
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
 
@@ -600,7 +637,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("controls:", rendered)
         self.assertNotIn("?host", rendered)
 
-    def test_panel_template_label_matcher_uses_native_when_runtime_feature_supported(self):
+    def test_panel_template_label_matcher_binds_via_native_esql_when_feature_supported(self):
+        """Issue #230: with the param-binding feature supported, a control-bound
+        label matcher must route to native ES|QL so the control binds via a
+        visible ``WHERE host == ?host`` clause — even when ``native_promql`` is
+        enabled. It must NOT emit a PROMQL command with ``?host`` trapped in its
+        opaque string, where Kibana's controls can't bind it."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
         )
@@ -614,18 +656,20 @@ class TranslatorRegressionTests(unittest.TestCase):
             native_promql=True,
             runtime_features={PROMQL_LABEL_MATCHER_PARAMS: True},
         )
+        resolver = migrate.SchemaResolver(rule_pack)
 
         yaml_panel, result = panels.translate_panel(
             panel,
             esql_index="metrics-*",
             datasource_index="metrics-*",
             rule_pack=rule_pack,
-            resolver=self.resolver,
+            resolver=resolver,
         )
 
         self.assertEqual(result.status, "migrated")
-        self.assertIn("PROMQL", yaml_panel["esql"]["query"])
-        self.assertIn("cpu{host=?host}", yaml_panel["esql"]["query"])
+        query = yaml_panel["esql"]["query"]
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("== ?host", query)
 
     def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
         self.seed_field_caps({
@@ -5391,9 +5435,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(all(c.get("type") == "esql" for c in controls if c.get("label") == "Host"))
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
-        """End-to-end native PROMQL: a ``{label="$var"}`` equality matcher whose
-        variable is includeAll must render as ``label=~?var`` so the control's
-        ".*" default selects every series on first load (PR #133)."""
+        """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
+        includeAll must bind a regex match (``RLIKE ?var``) so the control's
+        ".*" default selects every series on first load (PR #133).
+
+        Even with ``native_promql`` enabled, a control-bound label matcher must
+        route to native ES|QL — where the control binds — instead of the PROMQL
+        command, which would trap ``?var`` in its opaque string and leave it
+        unbound (issue #230). The includeAll loosening (regex, not exact) is
+        preserved on the ES|QL path: ``RLIKE ?var`` rather than ``== ?var``."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -5441,8 +5491,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
 
         rendered = yaml.dump(doc)
-        self.assertIn("host=~?host", rendered)
-        self.assertNotIn("host=?host", rendered)
+        # Bound via native ES|QL (control binds), not trapped in a PROMQL command.
+        self.assertNotIn("PROMQL", rendered)
+        # includeAll -> regex match so the ".*" default selects every series.
+        self.assertIn("RLIKE ?host", rendered)
+        self.assertNotIn("== ?host", rendered)
 
     def test_dashboard_equality_matcher_on_concrete_var_keeps_exact_match(self):
         """A variable with a concrete ``current`` value defaults its control to

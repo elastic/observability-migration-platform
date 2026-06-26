@@ -1015,6 +1015,26 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
     if ir.kind not in {"grafana_unified", "grafana_legacy"} or not _has_source_faithful_query(ir):
         return ""
 
+    # Issue #230: a control-bound label-matcher variable (``{instance=~"$instance"}``)
+    # would be emitted as a named param trapped *inside* the opaque PROMQL command
+    # string (``{instance=~?instance}``). A dashboard panel falls through to native
+    # ES|QL where a control binds the param as a visible ``... RLIKE ?var`` clause,
+    # but an alert rule has no control to bind it — the param stays unbound and the
+    # rule fails at evaluation with "Parameter [?instance] value not found". Degrade
+    # to no source-faithful query instead. (``can_use_native_promql`` already
+    # rejects these today because the alert path passes no runtime features; this
+    # keeps the decision explicit and durable if that ever changes.)
+    try:
+        from observability_migration.adapters.source.grafana.panels import (
+            _promql_label_matcher_has_template_variable,
+        )
+        primary_expr = str(_primary_source_query(ir).get("expr", "") or "")
+        has_control_bound_matcher = _promql_label_matcher_has_template_variable(primary_expr)
+    except ImportError:
+        has_control_bound_matcher = False
+    if has_control_bound_matcher:
+        return ""
+
     exact_rank_spec = _grafana_unified_exact_topk_bottomk_spec(ir)
     if exact_rank_spec:
         try:
