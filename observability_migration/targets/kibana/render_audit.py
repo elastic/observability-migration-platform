@@ -292,7 +292,7 @@ def audit_dashboard_elements(
             PanelRenderResult(
                 title=title,
                 status="rendered" if el.status == "rendered" else el.status,
-                error_class="" if el.status == "rendered" else "unexpected_empty",
+                error_class="" if el.status == "rendered" else "render_error" if el.status == "error" else "unexpected_empty",
                 detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
             )
         )
@@ -318,6 +318,18 @@ def find_render_error_markers(snapshot_text: str) -> list[str]:
         if compiled.search(text):
             hits.append(pattern)
     return hits
+
+
+def count_render_error_markers(snapshot_text: str) -> int:
+    """Count render-error marker occurrences in a snapshot.
+
+    ``find_render_error_markers`` intentionally returns distinct pattern names
+    for compact reporting. The CLI also needs occurrence counts so a hidden
+    broken panel with the same generic marker as a visible field-gap panel cannot
+    be swallowed by per-panel attribution.
+    """
+    text = str(snapshot_text or "")
+    return sum(len(list(compiled.finditer(text))) for compiled in _ERROR_RE)
 
 
 def _filter_console(console_errors: Iterable[str]) -> list[str]:

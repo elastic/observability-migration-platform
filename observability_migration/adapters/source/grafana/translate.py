@@ -3022,12 +3022,13 @@ def live_metric_fields_exist_rule(context):
             missing.append(metric)
     if not missing:
         return None
-    context.feasibility = "not_feasible"
-    context.confidence = 0.0
     for metric in missing:
         resolved = _resolve_metric_field(resolver, metric, prefer="gauge") or metric
-        _append_unique(context.warnings, f"Target field {resolved} is missing from live schema discovery")
-    return "missing live metric fields"
+        _append_unique(
+            context.warnings,
+            f"Target field {resolved} is missing from live schema discovery (data readiness, not translation infeasibility)",
+        )
+    return "missing live metric fields (data readiness warning)"
 
 
 _logger = logging.getLogger(__name__)

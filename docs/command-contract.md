@@ -738,7 +738,7 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 
 # Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
 # migrate+upload the canary, seed, and render-audit it.
-STACK_VERSION=9.1.0 docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
 bash scripts/run_render_audit_local.sh
 docker compose -f parity-rig/docker-compose.render-audit.yml down -v
 ```

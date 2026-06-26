@@ -161,7 +161,7 @@ can't pass. Two options:
    ```
 2. **Local no-SSO Kibana** (CI default — fully automatable):
    ```bash
-   STACK_VERSION=9.1.0 docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+   STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
    bash scripts/run_render_audit_local.sh
    docker compose -f parity-rig/docker-compose.render-audit.yml down -v
    ```

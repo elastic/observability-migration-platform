@@ -4976,7 +4976,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
-    def test_live_missing_metric_field_is_not_marked_migrated(self):
+    def test_live_missing_metric_field_is_data_readiness_not_not_feasible(self):
         self.seed_field_caps({
             "some_other_metric": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
         })
@@ -4984,8 +4984,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         translated = self.translate("missing_metric_total")
 
-        self.assertEqual(translated.feasibility, "not_feasible")
-        self.assertIn("Target field missing_metric_total is missing from live schema discovery", translated.warnings)
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn(
+            "Target field missing_metric_total is missing from live schema discovery (data readiness, not translation infeasibility)",
+            translated.warnings,
+        )
 
     def test_template_variable_metric_name_is_not_marked_migrated(self):
         translated = self.translate("$metric")
@@ -7228,7 +7231,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
             payload = yaml.safe_load(yaml_path.read_text())
         panels = payload["dashboards"][0]["panels"]
-        self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.1.0")
+        self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.5.0")
         self.assertEqual(
             payload["dashboards"][0]["filters"],
             [{"field": "data_stream.dataset", "equals": "prometheus"}],

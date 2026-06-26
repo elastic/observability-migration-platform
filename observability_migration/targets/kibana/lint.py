@@ -33,6 +33,7 @@ DEFAULT_WARNING_ALLOWLIST = frozenset(
         "panel-height-for-content",
         "gauge-goal-without-max",
         "esql-field-escaping",
+        "esql-ts-metrics-min-version",
     }
 )
 

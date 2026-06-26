@@ -45,6 +45,7 @@ from observability_migration.targets.kibana.render_audit import (
     breakdown_fields_by_panel,
     classify_render,
     classify_render_per_panel,
+    count_render_error_markers,
     expected_kind_by_panel,
     expects_data_by_panel,
     interaction_regression,
@@ -242,8 +243,12 @@ def run_audit_cli(
         unsegmented_hard_error = (
             whole_verdict.status == "fail"
             and whole_verdict.rendered_error_markers
-            and set(whole_verdict.rendered_error_markers)
-            - set(segmented_verdict.rendered_error_markers)
+            and (
+                set(whole_verdict.rendered_error_markers)
+                - set(segmented_verdict.rendered_error_markers)
+                or count_render_error_markers(snapshot)
+                > sum(1 for panel in verdict.panels if panel.status == "error")
+            )
         )
         if unsegmented_hard_error:
             verdict.status = "fail"

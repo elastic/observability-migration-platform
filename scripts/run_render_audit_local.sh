@@ -10,7 +10,7 @@
 # dashboard with no auth wall.
 #
 # Usage (stack must already be up and healthy):
-#   STACK_VERSION=9.1.0 docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+#   STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
 #   bash scripts/run_render_audit_local.sh
 #
 # Env overrides: ES_URL (default http://localhost:9200), KIBANA_URL
@@ -52,19 +52,39 @@ echo "-- seed telemetry (fresh, so instant panels populate up to now) --"
 
 echo "-- render audit + per-panel element check for every uploaded dashboard --"
 rc=0
-ids="$(curl -fs "$KIBANA_URL/api/saved_objects/_find?type=dashboard&per_page=200" -H 'kbn-xsrf: true' \
-  | "$PY" -c "import sys,json,pathlib; payload=json.load(sys.stdin); report=json.loads(pathlib.Path('$WORK/out/dashboards/migration_report.json').read_text()); titles={str(d.get('title') or d.get('dashboard_title') or '') for d in report.get('dashboards', [])}; [print(x['id']) for x in payload.get('saved_objects', []) if str((x.get('attributes') or {}).get('title') or '') in titles]")"
-if [ -z "$ids" ]; then
+dashboard_rows="$(curl -fs "$KIBANA_URL/api/saved_objects/_find?type=dashboard&per_page=200" -H 'kbn-xsrf: true' \
+  | "$PY" -c "import sys,json,pathlib; payload=json.load(sys.stdin); report=json.loads(pathlib.Path('$WORK/out/dashboards/migration_report.json').read_text()); titles={str(d.get('title') or d.get('dashboard_title') or '') for d in report.get('dashboards', [])}; [print(str(x['id']) + '\t' + str((x.get('attributes') or {}).get('title') or '')) for x in payload.get('saved_objects', []) if str((x.get('attributes') or {}).get('title') or '') in titles]")"
+if [ -z "$dashboard_rows" ]; then
   echo "No uploaded dashboard ids matched this run's migration_report.json" >&2
   exit 1
 fi
-for did in $ids; do
-  echo "  -- dashboard $did --"
+mkdir -p "$WORK/audit_reports"
+while IFS=$'\t' read -r did dtitle; do
+  safe_id="$(printf '%s' "$did" | tr -c 'A-Za-z0-9_.-' '_')"
+  report_dir="$WORK/audit_reports/$safe_id"
+  mkdir -p "$report_dir"
+  "$PY" - "$WORK/out/dashboards/migration_report.json" "$dtitle" "$report_dir/migration_report.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+title = sys.argv[2]
+target = Path(sys.argv[3])
+report = json.loads(source.read_text())
+report["dashboards"] = [
+    dashboard
+    for dashboard in report.get("dashboards", [])
+    if str(dashboard.get("title") or dashboard.get("dashboard_title") or "") == title
+]
+target.write_text(json.dumps(report))
+PY
+  echo "  -- dashboard $did ($dtitle) --"
   "$PY" -m observability_migration.targets.kibana.render_audit_driver \
     --kibana-url "$KIBANA_URL" --dashboard-id "$did" \
     --time-from now-3h --time-to now --fail-on-error \
-    --elements --migration-out "$WORK/out/dashboards" \
+    --elements --migration-out "$report_dir" \
     --es-url "$ES_URL" --es-index "metrics-*,logs-*" || rc=1
-done
+done <<< "$dashboard_rows"
 
 [ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }

@@ -49,9 +49,18 @@ _WIDGETS = (
 _AGGS = ("avg", "sum", "min", "max")
 _BY: tuple[tuple[str, ...], ...] = ((), ("host",), ("host", "service"))
 
-# Planner statuses that mean "honestly not translated" — excluded from the
-# ERROR gate but still surfaced in the standalone triage table.
-_NON_ERROR_STATUSES = {"not_feasible", "requires_manual", "skipped"}
+# Explicitly deferred chart-bearing shapes. These are not counted as translated
+# support; keeping them enumerated prevents the matrix from silently treating
+# broad ``requires_manual`` / ``not_feasible`` statuses as covered.
+_DEFERRED_CELLS = {
+    # Geomap has no native automatic map translation yet.
+    *(f"geomap::{agg}::by{arity}" for agg in _AGGS for arity in (0, 1, 2)),
+    # Partition-style widgets need at least one grouping dimension.
+    *(f"{widget}::{agg}::by0" for widget in ("pie", "treemap", "sunburst") for agg in _AGGS),
+    # Heatmap needs a bucket/category dimension.
+    *(f"heatmap::{agg}::by0" for agg in _AGGS),
+}
+_NON_TRANSLATED_STATUSES = {"not_feasible", "requires_manual", "skipped"}
 
 
 def _widget(wtype: str, agg: str, by: tuple[str, ...], idx: int) -> dict[str, Any]:
@@ -122,7 +131,21 @@ def _gated_errors(
 ) -> list[tuple[str, invariants.Finding]]:
     out: list[tuple[str, invariants.Finding]] = []
     for case_id, status, findings in results:
-        if status in _NON_ERROR_STATUSES:
+        if status in _NON_TRANSLATED_STATUSES:
+            if case_id in _DEFERRED_CELLS:
+                continue
+            out.append(
+                (
+                    case_id,
+                    invariants.Finding(
+                        invariants.InvariantCategory.VISUAL_SEMANTIC_DRIFT,
+                        Severity.ERROR,
+                        case_id,
+                        "dd-matrix",
+                        f"supported matrix cell returned non-translated status {status}",
+                    ),
+                )
+            )
             continue
         for finding in findings:
             if finding.severity is Severity.ERROR:

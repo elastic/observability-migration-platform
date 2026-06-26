@@ -37,7 +37,7 @@ from .models import (
 )
 
 GRID_COLUMNS = 48
-KIBANA_MIN_VERSION = "9.1.0"
+KIBANA_MIN_VERSION = "9.5.0"
 MIN_PANEL_WIDTH = 8
 
 CHART_TYPE_MAP: dict[str, str] = {

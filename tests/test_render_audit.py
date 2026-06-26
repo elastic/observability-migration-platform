@@ -505,6 +505,17 @@ def test_audit_dashboard_elements_flags_wrong_kind_and_unmatched():
     assert "canary gauge: panel title did not render" in joined
 
 
+def test_audit_dashboard_elements_labels_error_as_render_error():
+    verdict = audit_dashboard_elements(
+        'StaticText "broken" Provided column name or index is invalid',
+        expected_kind_by_title={"broken": "xy"},
+    )
+
+    assert verdict.status == "warn"
+    assert verdict.panels[0].status == "error"
+    assert verdict.panels[0].error_class == "render_error"
+
+
 def test_expected_kind_by_panel_maps_esql_type():
     report = {"dashboards": [{"panels": [
         {"title": "ts", "yaml_panel": {"esql": {"type": "line"}}},

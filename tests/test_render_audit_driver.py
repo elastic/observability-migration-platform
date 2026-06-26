@@ -228,3 +228,21 @@ def test_cli_unsegmented_render_error_still_fails(tmp_path):
     )
 
     assert rc == 1
+
+
+def test_cli_extra_hidden_marker_is_not_swallowed_by_visible_field_gap(tmp_path):
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    dom = (
+        'StaticText "HTTP by method" StaticText "Provided column name or index is invalid" '
+        'Hidden untitled panel Provided column name or index is invalid'
+    )
+
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: dom,
+        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+    )
+
+    assert rc == 1

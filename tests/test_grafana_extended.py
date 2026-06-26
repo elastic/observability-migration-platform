@@ -1287,18 +1287,22 @@ class TestCounterLongAggregationWarning(unittest.TestCase):
         ctx = _translate("count(trace_http_request_hits > 0)", resolver=resolver)
         self.assertNotEqual(ctx.feasibility, "not_feasible")
 
-    def test_live_absent_field_is_not_feasible_without_counter_warning(self):
-        # Caps available but the field is absent: the existing live-schema rule
-        # marks the panel not_feasible; we defer to it and do not add the
-        # (now moot) counter uncertainty warning.
+    def test_live_absent_field_is_data_readiness_without_counter_warning(self):
+        # Caps available but the field is absent: this is a target data-readiness
+        # issue, not translation infeasibility. Do not add a counter uncertainty
+        # warning on top of the readiness warning.
         resolver = self._live_resolver(
             {"some_other_field": {"double": {"type": "double", "time_series_metric": "gauge"}}}
         )
         ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertTrue(
+            any("data readiness" in w for w in ctx.warnings),
+            f"expected data-readiness warning, got: {ctx.warnings}",
+        )
         self.assertFalse(
             any("counter_long" in w for w in ctx.warnings),
-            f"did not expect the counter uncertainty warning when not_feasible: {ctx.warnings}",
+            f"did not expect the counter uncertainty warning for missing target data: {ctx.warnings}",
         )
 
 

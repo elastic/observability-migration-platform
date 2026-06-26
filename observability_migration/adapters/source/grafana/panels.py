@@ -128,7 +128,7 @@ GRAFANA_GRID_COLS = 24
 KIBANA_GRID_COLS = 48
 GRAFANA_ROW_HEIGHT_PX = 30
 KIBANA_ROW_HEIGHT_PX = 20
-MINIMUM_KIBANA_VERSION = "9.1.0"
+MINIMUM_KIBANA_VERSION = "9.5.0"
 # Floor required by panels that pass histogram_quantile through the native
 # PROMQL path (Elasticsearch >= 9.5; elastic/elasticsearch#150578). Only the
 # native path keeps the literal ``histogram_quantile(`` in the emitted ES|QL —

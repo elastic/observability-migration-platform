@@ -1958,7 +1958,7 @@ class TestYAMLGeneration(unittest.TestCase):
         rendered_dash = payload["dashboards"][0]
         rendered_panel = rendered_dash["panels"][0]
 
-        self.assertEqual(rendered_dash["minimum_kibana_version"], "9.1.0")
+        self.assertEqual(rendered_dash["minimum_kibana_version"], "9.5.0")
         self.assertEqual(rendered_panel["title"], result.yaml_panel["title"])
         self.assertEqual(rendered_panel["esql"]["query"], result.yaml_panel["esql"]["query"])
         self.assertEqual(rendered_panel["size"], result.yaml_panel["size"])
