@@ -340,8 +340,12 @@ def _filter_console(console_errors: Iterable[str]) -> list[str]:
 
 
 def _server_5xx(failed_requests: Iterable[str]) -> list[str]:
-    # Failed-request strings carry the status code, e.g. "GET /api/... 503".
-    return [r for r in failed_requests if re.search(r"\b5\d\d\b", str(r))]
+    # Failed-request strings carry the status code as a whitespace-delimited
+    # token, e.g. "POST /api/dashboards 503 Service Unavailable". Match a 5xx
+    # only in that status position (surrounded by whitespace / line edges) so a
+    # 500-599 substring embedded in a URL path, dashboard id, or port is not
+    # misread as a server error (PR #234 review).
+    return [r for r in failed_requests if re.search(r"(?:^|\s)5\d\d(?:\s|$)", str(r))]
 
 
 def classify_render(

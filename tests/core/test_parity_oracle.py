@@ -691,6 +691,39 @@ class ExecutionTests(unittest.TestCase):
                  for k, pts in out.items()}
         self.assertEqual(by_db, {"db0": [1.0, 2.0], "db1": [3.0, 4.0]})
 
+    def test_translated_group_columns_extracts_terminal_by_labels(self):
+        # PR #234: the genuine grouping labels are the terminal STATS BY columns
+        # (excluding the time bucket / bucket-expression assignments).
+        esql = (
+            "TS metrics-* "
+            "| STATS m_A = SUM(RATE(http_requests_total, 5m)), m_B = SUM(RATE(http_errors_total, 5m)) "
+            "BY time_bucket = TBUCKET(5 minute), code "
+            "| EVAL A = m_A | EVAL B = m_B | KEEP time_bucket, code, A, B"
+        )
+        self.assertEqual(po._translated_group_columns(esql), frozenset({"code"}))
+
+    def test_normalize_translated_keeps_numeric_by_label(self):
+        # PR #234: a NUMERIC BY grouping label (code/status_code) must stay a
+        # series label even when value_column is pinned, so a multi-target
+        # compare keeps the dimension (instead of collapsing to one empty-key
+        # series -> false PASS/FAIL). The sibling value column B is still ignored.
+        data = {
+            "columns": [{"name": "time_bucket", "type": "date"},
+                        {"name": "code", "type": "long"},
+                        {"name": "A", "type": "double"},
+                        {"name": "B", "type": "double"}],
+            "values": [["2026-01-01T00:00:00Z", 200, 40.0, 1.0],
+                       ["2026-01-01T00:05:00Z", 200, 41.0, 1.0],
+                       ["2026-01-01T00:00:00Z", 500, 60.0, 2.0],
+                       ["2026-01-01T00:05:00Z", 500, 61.0, 2.0]],
+        }
+        out = po.normalize_translated(
+            data, value_column="A", ignore_columns=frozenset({"B"}),
+            group_columns=frozenset({"code"}))
+        self.assertEqual(len(out), 2)
+        by_code = {dict(k.labels).get("code"): [v for _, v in pts] for k, pts in out.items()}
+        self.assertEqual(by_code, {"200": [40.0, 41.0], "500": [60.0, 61.0]})
+
     def test_translated_grouped_series_project_onto_global_native_sum(self):
         # Source ``sum(metric{cluster="$cluster"})`` collapses to ONE global
         # series once the oracle strips the variable matcher, while the

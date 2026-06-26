@@ -397,26 +397,6 @@ def audit_control_interactions(
     return findings
 
 
-def _attributed_segment_text(segments) -> str:
-    """Concatenate recognized-panel chunks, truncating each at an untitled/hidden
-    panel boundary.
-
-    ``segment_panels`` extends the LAST recognized panel's chunk to end-of-
-    snapshot, which can absorb a trailing *untitled* (unrecognized) panel. Its
-    error markers would then look attributed to the last recognized panel.
-    Truncating at the untitled-panel boundary keeps those markers OUT of the
-    attributed text so the unsegmented-marker count catches an extra hidden
-    broken panel, while a marker merely duplicated inside ONE recognized
-    field-gap panel (no untitled boundary) stays attributed and is not promoted
-    to a hard failure (PR #234).
-    """
-    parts = []
-    for _title, chunk in segments:
-        cut = chunk.lower().find("untitled panel")
-        parts.append(chunk[:cut] if cut >= 0 else chunk)
-    return "\n".join(parts)
-
-
 def run_audit_cli(
     args: argparse.Namespace,
     *,
@@ -481,27 +461,35 @@ def run_audit_cli(
             available_metrics=available_fields,
         )
         whole_verdict = classify_render(snapshot)
-        attributed_text = _attributed_segment_text(segments)
-        attributed_verdict = classify_render(attributed_text)
-        # Markers OUTSIDE every recognized panel's attributed text are genuinely
-        # unattributed broken panels the per-panel classifier never saw. The old
-        # guard compared a whole-snapshot occurrence count to the number of error
-        # panels (PR #234), which conflated the same error string appearing twice
-        # inside ONE segmented field-gap panel (nested DOM nodes) with an extra
-        # unsegmented broken panel — promoting a proven field_gap to a hard
-        # failure. Subtracting the attributed occurrences counts only truly
-        # unattributed markers (incl. a trailing untitled panel the last segment
-        # absorbed, which _attributed_segment_text truncates away).
-        unsegmented_marker_count = count_render_error_markers(
+        segmented_text = "\n".join(chunk for _title, chunk in segments)
+        segmented_verdict = classify_render(segmented_text)
+        # Markers OUTSIDE every recognized panel segment are genuinely
+        # unattributed: they belong to no titled panel (dashboard chrome, or a
+        # panel that rendered before the first recognized title). Markers INSIDE
+        # a recognized panel are already attributed by classify_render_per_panel
+        # (field_gap/data_gap -> warn; a real render error -> the per-panel
+        # "error" status already drives verdict.status). The original guard
+        # compared a whole-snapshot occurrence count to the number of error
+        # panels, which false-failed an in-panel DUPLICATE marker, and a later
+        # string-truncation heuristic was fragile (false-failed a panel whose
+        # DOM merely contained "untitled panel"). So escalate only on a NEW
+        # marker TYPE outside the segments or an occurrence in the unsegmented
+        # region (PR #234 review).
+        #
+        # Known limitation: a trailing *untitled* panel absorbed into the last
+        # (EOF-extended) recognized segment cannot be reliably attributed from
+        # a11y text, so it is not hard-failed here; its data-readiness still
+        # surfaces as a per-panel warn.
+        unattributed_markers = count_render_error_markers(
             snapshot
-        ) - count_render_error_markers(attributed_text)
+        ) - count_render_error_markers(segmented_text)
         unsegmented_hard_error = (
             whole_verdict.status == "fail"
             and whole_verdict.rendered_error_markers
             and (
                 set(whole_verdict.rendered_error_markers)
-                - set(attributed_verdict.rendered_error_markers)
-                or unsegmented_marker_count > 0
+                - set(segmented_verdict.rendered_error_markers)
+                or unattributed_markers > 0
             )
         )
         if unsegmented_hard_error:

@@ -1444,7 +1444,7 @@ def topk_family_rule(context):
                 f"| WHERE {physical_metric} IS NOT NULL",
                 f"| STATS _bucket_value = {stats_expr} BY {bucket}",
                 "| SORT time_bucket ASC",
-                "| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value)",
+                "| STATS value = LAST(_bucket_value, time_bucket)",
                 "| SORT value DESC",
                 f"| LIMIT {limit}",
             ]
@@ -1466,7 +1466,7 @@ def topk_family_rule(context):
             f"| WHERE {physical_metric} IS NOT NULL",
             f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
             "| SORT time_bucket ASC",
-            f"| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value) BY {', '.join(group_fields)}",
+            f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
             f"| KEEP {', '.join(group_fields + ['value'])}",
             "| SORT value DESC",
             f"| LIMIT {limit}",

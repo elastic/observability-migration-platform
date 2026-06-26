@@ -158,13 +158,17 @@ def normalize_translated(
     data: dict,
     value_column: str | None = None,
     ignore_columns: frozenset[str] = frozenset(),
+    group_columns: frozenset[str] = frozenset(),
 ) -> dict[SeriesKey, list[tuple[float, float]]]:
     """Parse translated ES|QL output: metric col + time_bucket + label cols.
 
     ``value_column`` pins the metric column by name (per-target comparison of
     a merged multi-target panel); ``ignore_columns`` excludes the sibling
     targets' value columns so they are neither picked as the metric nor
-    misread as series labels."""
+    misread as series labels. ``group_columns`` names the genuine terminal
+    ``STATS ... BY`` grouping labels (from ``_translated_group_columns``) so a
+    NUMERIC grouping dimension (e.g. ``code`` / ``status_code``) is kept as a
+    series label instead of being dropped as a value column (PR #234)."""
     columns = [c["name"] for c in data.get("columns", [])]
     column_types = [c.get("type", "") for c in data.get("columns", [])]
     rows = data.get("values", [])
@@ -228,7 +232,12 @@ def normalize_translated(
         # (group, bucket) pair a unique key, inflating the series count into a
         # false "series keys did not align" FAIL. A numeric column is a value,
         # not a grouping label, so skip it here.
-        if value_column is not None and column_types[i] in numeric and columns[i] not in _HISTOGRAM_DIM_COLS:
+        if (
+            value_column is not None
+            and column_types[i] in numeric
+            and columns[i] not in _HISTOGRAM_DIM_COLS
+            and columns[i] not in group_columns
+        ):
             continue
         canon = _canonical_label(columns[i])
         if canon not in PROMETHEUS_ONLY_LABELS:
@@ -766,6 +775,37 @@ _SCALAR_ASSIGN_RE = re.compile(
 )
 
 
+def _translated_group_columns(esql: str) -> frozenset[str]:
+    """Plain column names in the TERMINAL ``STATS ... BY`` clause — the genuine
+    grouping dimensions — excluding the time bucket and any ``name = expr``
+    bucket assignment. These are real series labels even when numeric (e.g.
+    ``code`` / ``status_code``), so ``normalize_translated`` must keep them as
+    labels rather than mistaking them for value columns when a value column is
+    pinned (PR #234)."""
+    stages = [s.strip() for s in (esql or "").split("|")]
+    stats = [s for s in stages if re.match(r"(?i)^STATS\b", s)]
+    if not stats:
+        return frozenset()
+    match = _STATS_BY_RE.match(stats[-1])
+    if not match:
+        return frozenset()
+    by_parts = re.split(r"(?i)\bBY\b", match.group("body"), maxsplit=1)
+    if len(by_parts) < 2:
+        return frozenset()
+    cols: set[str] = set()
+    for part in _split_top_level_commas(by_parts[1]):
+        token = part.strip()
+        # ``name = expr`` (time_bucket = TBUCKET(...)) is the bucket key, and a
+        # function call is an expression, not a bare grouping label — skip both.
+        if not token or "=" in token or "(" in token:
+            continue
+        name = token.strip("`")
+        if name.lower() == "time_bucket":
+            continue
+        cols.add(name)
+    return frozenset(cols)
+
+
 def _terminal_scalar_reduction(esql: str) -> dict[str, str] | None:
     """Parse a terminal stat reduction the oracle can mirror on the native side.
 
@@ -1128,6 +1168,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             translated_raw,
             value_column=translated_value_column,
             ignore_columns=translated_ignore_columns,
+            group_columns=_translated_group_columns(cmp_.esql),
         )
     translated, blob_decoded = _align_blob_label_keys(translated, native_raw)
     if blob_decoded:

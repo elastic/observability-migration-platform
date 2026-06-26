@@ -52,11 +52,13 @@ def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
     query prefix so panels that lack the marker (e.g. older traces) are still
     classified correctly.
 
-    A ``not_feasible`` panel is always a placeholder, even if a stale query
-    string is present, because it ships a markdown placeholder rather than the
-    query.
+    A ``not_feasible`` / ``requires_manual`` / ``skipped`` panel is always a
+    placeholder, even if a stale query string is present, because each ships a
+    markdown placeholder (or no live query) rather than an executable ES|QL
+    query — counting them as "ES|QL translated" overstates the migrated surface
+    (PR #234 review).
     """
-    if status == "not_feasible":
+    if status in ("not_feasible", "requires_manual", "skipped"):
         return PanelProvenance.PLACEHOLDER
     family = ""
     if isinstance(query_ir, dict):

@@ -980,8 +980,10 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
-        self.assertIn("STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value) BY service.name", translated.esql_query)
-        self.assertNotIn("LAST(_bucket_value, time_bucket)", translated.esql_query)
+        # latest-bucket reducer (matches the warning, the docs, and the Datadog
+        # sibling) -- NOT a range-wide MAX, which reports a stale peak (PR #234).
+        self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
+        self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
         self.assertIn("LIMIT 5", translated.esql_query)
         self.assertIn("Translated grouped topk() as latest-bucket ES|QL top N", translated.warnings)
 

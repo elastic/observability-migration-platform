@@ -1375,7 +1375,15 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
         # degrades that panel to ES|QL. The closure is cached by query because
         # the panel-level gate may re-check identical queries; the per-panel
         # stats live on ``rule_pack.native_validation_stats`` (issue #158).
-        if es_url:
+        #
+        # Exception: an explicit ``--translation-mode native`` is a deliberate
+        # "emit native PROMQL even if it errors at render time" request (the flag
+        # already warns when the command is confirmed absent). Attaching the
+        # degrading validator there would silently rewrite those panels to ES|QL,
+        # contradicting the flag's contract — so skip it for forced native
+        # (PR #234 review).
+        forced_native = (getattr(args, "translation_mode", "auto") or "auto").lower() == "native"
+        if es_url and not forced_native:
             rule_pack.native_validation_stats = {"checked": 0, "degraded": 0, "kept": 0}
             _attach_native_promql_validator(rule_pack, args, verify=verify)
     else:

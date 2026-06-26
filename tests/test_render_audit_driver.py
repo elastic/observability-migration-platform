@@ -251,13 +251,17 @@ def test_cli_unsegmented_render_error_still_fails(tmp_path):
     assert rc == 1
 
 
-def test_cli_extra_hidden_marker_is_not_swallowed_by_visible_field_gap(tmp_path):
+def test_cli_extra_unattributed_marker_is_not_swallowed_by_visible_field_gap(tmp_path):
+    # An error marker OUTSIDE every recognized panel (here a hidden/untitled
+    # panel rendered before the only titled panel -> the unsegmented prefix
+    # region) is genuinely unattributed and must hard-fail, even though the
+    # recognized "HTTP by method" panel is itself only a field_gap (warn).
     from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
 
     args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
     dom = (
-        'StaticText "HTTP by method" StaticText "Provided column name or index is invalid" '
-        'Hidden untitled panel Provided column name or index is invalid'
+        'Hidden untitled panel Provided column name or index is invalid '
+        'StaticText "HTTP by method" StaticText "Provided column name or index is invalid"'
     )
 
     rc = run_audit_cli(
@@ -267,3 +271,22 @@ def test_cli_extra_hidden_marker_is_not_swallowed_by_visible_field_gap(tmp_path)
     )
 
     assert rc == 1
+
+
+def test_cli_untitled_panel_text_inside_field_gap_does_not_fail(tmp_path):
+    # PR #234 review: the previous string-truncation heuristic false-FAILED a
+    # field_gap panel whose own DOM merely contained the words "untitled panel".
+    # Markers inside a recognized panel are attributed -> stay a warn.
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    dom = (
+        'StaticText "HTTP by method" StaticText "untitled panel" '
+        'StaticText "Provided column name or index is invalid"'
+    )
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: dom,
+        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+    )
+    assert rc == 0

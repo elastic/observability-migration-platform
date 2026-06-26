@@ -86,8 +86,19 @@ _REAL_BUG = re.compile(
     re.IGNORECASE,
 )
 
+# The cluster refused to run the query for an access / capacity reason — auth,
+# security, circuit-breaker, or rate/shard limits. The query may be perfectly
+# valid; the run simply could not be validated, so it must NOT count as a pass
+# (PR #234 review). Checked before data_gap/real_bug.
+_BLOCKED = re.compile(
+    r"security_exception|unauthorized|not authorized|unable to authenticate|"
+    r"authentication_exception|missing authentication|circuit_breaking_exception|"
+    r"too many shards|too_many_requests|\b429\b",
+    re.IGNORECASE,
+)
+
 # Acceptance-gate classification buckets, in stable display order.
-_BUCKETS = ("ok", "real_bug", "data_gap", "other", "unreachable")
+_BUCKETS = ("ok", "real_bug", "data_gap", "blocked", "other", "unreachable")
 
 
 def classify_validation(ok: bool | None, error: str) -> str:
@@ -106,6 +117,8 @@ def classify_validation(ok: bool | None, error: str) -> str:
     text = error or ""
     if not text:
         return "other"
+    if _BLOCKED.search(text):
+        return "blocked"
     if _DATA_GAP.search(text):
         return "data_gap"
     if _REAL_BUG.search(text):
@@ -321,11 +334,16 @@ def build_report(
     real_bugs = int(counts.get("real_bug", 0))
     data_gaps = int(counts.get("data_gap", 0))
     others = int(counts.get("other", 0))
+    blocked = int(counts.get("blocked", 0))
     unreachable = bool(acceptance.get("unreachable"))
     compare_fails = _compare_fail_count(compare)
 
     if unreachable:
         verdict = "UNREACHABLE"
+    elif blocked:
+        # The cluster refused to run queries (auth/security/quota); the run
+        # could not be validated, so it is NOT a pass (exit code carries it).
+        verdict = "BLOCKED"
     elif real_bugs or compare_fails:
         # Genuine failure signal, but we still surface the full scorecard;
         # call it ATTENTION (exit code carries the hard fail).
@@ -345,6 +363,7 @@ def build_report(
             "emitted_queries": acceptance.get("total", 0),
             "real_bugs": real_bugs,
             "data_gaps": data_gaps,
+            "blocked": blocked,
             "other_errors": others,
             "compare_failures": compare_fails,
             "unreachable": unreachable,
@@ -355,7 +374,11 @@ def build_report(
 def exit_code_for(report: dict[str, Any]) -> int:
     """Map a report to a process exit code (2 unreachable, 1 fail, 0 clean)."""
     summary = report.get("summary") or {}
-    if summary.get("unreachable") or report.get("verdict") == "UNREACHABLE":
+    if (
+        summary.get("unreachable")
+        or report.get("verdict") in ("UNREACHABLE", "BLOCKED")
+        or int(summary.get("blocked", 0))
+    ):
         return 2
     if int(summary.get("real_bugs", 0)) or int(summary.get("compare_failures", 0)):
         return 1
