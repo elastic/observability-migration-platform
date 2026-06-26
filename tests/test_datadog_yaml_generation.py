@@ -287,6 +287,34 @@ class TestDatadogYAMLShapeInvariants(unittest.TestCase):
             self.fail(f"{path.name}: {len(failures)} shape invariant issue(s):\n" + "\n".join(failures))
 
 
+class TestDatadogYAMLRenderAuditKeys(unittest.TestCase):
+    def _check_dashboard(self, path: pathlib.Path) -> None:
+        _dashboard, results, rendered = _render_dashboard(path)
+        panels = _iter_leaf_panels(rendered.get("panels") or [])
+        titles = [str(panel.get("title") or "") for panel in panels]
+        blank_titles = [idx for idx, title in enumerate(titles) if not title]
+        duplicate_titles = sorted(
+            title for title in set(titles) if title and titles.count(title) > 1
+        )
+        result_titles = [str(result.title or "") for result in results if result.kibana_type != "group"]
+
+        self.assertEqual(
+            blank_titles,
+            [],
+            f"{path.name}: render audit cannot segment blank-titled panels",
+        )
+        self.assertEqual(
+            duplicate_titles,
+            [],
+            f"{path.name}: render audit title keys must be unique",
+        )
+        self.assertEqual(
+            sorted(titles),
+            sorted(result_titles),
+            f"{path.name}: migration_report titles must match emitted YAML titles",
+        )
+
+
 class TestDatadogYAMLLensContracts(unittest.TestCase):
     def _check_dashboard(self, path: pathlib.Path) -> None:
         _dashboard, _results, rendered = _render_dashboard(path)
@@ -367,5 +395,6 @@ for _dashboard_path in DASHBOARD_FILES:
     setattr(TestDatadogYAMLStructure, _test_name, _make_structure_test(_dashboard_path))
     setattr(TestDatadogYAMLFieldContracts, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLShapeInvariants, _test_name, _make_contract_test(_dashboard_path))
+    setattr(TestDatadogYAMLRenderAuditKeys, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLLensContracts, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLSnapshots, _test_name, _make_snapshot_test(_dashboard_path))

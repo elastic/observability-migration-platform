@@ -111,7 +111,10 @@ PANEL_TYPE_MAP = {
     "stat": "metric",
     "singlestat": "metric",
     "gauge": "gauge",
-    "bargauge": "bar",
+    # Default/single-value mapping only. ``bargauge_panel_rule`` routes a
+    # grouped or multi-value bargauge to a bar chart (``kibana_type="bar"``) at
+    # translation time; a single-value bargauge stays a bullet gauge.
+    "bargauge": "gauge",
     "table": "datatable",
     "table-old": "datatable",
     "text": "markdown",
@@ -128,7 +131,7 @@ GRAFANA_GRID_COLS = 24
 KIBANA_GRID_COLS = 48
 GRAFANA_ROW_HEIGHT_PX = 30
 KIBANA_ROW_HEIGHT_PX = 20
-MINIMUM_KIBANA_VERSION = "9.1.0"
+MINIMUM_KIBANA_VERSION = "9.5.0"
 # Floor required by panels that pass histogram_quantile through the native
 # PROMQL path (Elasticsearch >= 9.5; elastic/elasticsearch#150578). Only the
 # native path keeps the literal ``histogram_quantile(`` in the emitted ES|QL —
@@ -574,7 +577,8 @@ _select_xy_dimension_fields = _select_xy_dimension_fields_canonical
 
 def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
                             override_group_cols=None, mode=None,
-                            legend_format_template=None, legend_labels=None):
+                            legend_format_template=None, legend_labels=None,
+                            warnings=None):
     metric_col = None
     metric_fields = None
     xy_by_cols = None
@@ -634,6 +638,11 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
+    if kibana_type == "heatmap":
+        return _build_esql_heatmap_panel(
+            query, metric_col=metric_col, by_cols=xy_by_cols, time_fields=time_fields,
+            warnings=warnings,
+        )
     if kibana_type == "datatable":
         if metric_fields and len(metric_fields) > 1:
             return _build_esql_datatable_panel(query, metric_fields=metric_fields, by_cols=table_by_cols)
@@ -650,7 +659,7 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
 _PROMQL_UNSUPPORTED_RE = re.compile(
     r"""
       @\s*\d                                      # @ timestamp modifier
-    | \[\d+[smhd]:\d+[smhd]\]                    # subquery [range:step] syntax
+    | \[\s*\d+[smhd]\s*:\s*(?:\d+[smhd]\s*)?\]   # subquery [range:step] or default-step [range:]
     | \btopk\s*\(                                 # topk not supported by ES PROMQL bridge
     | \bbottomk\s*\(                              # bottomk not supported
     | \bchanges\s*\(                              # changes() not supported
@@ -847,6 +856,28 @@ def _promql_has_unsupported_comparison(expr):
             continue
         i += 1
     return False
+
+
+# A range selector ``[<range>]`` (no resolution colon) immediately following a
+# closing paren is applied to an aggregation/function result, e.g.
+# ``irate(sum by (job)(metric)[5m])``. This is invalid PromQL — ranges may only
+# follow a vector selector — and the ES native PROMQL engine rejects it at parse
+# time ("ranges only allowed for vector selectors"). A *valid* range follows a
+# selector (``metric[5m]``); a *valid* range over an expression is a subquery
+# with a colon (``(...)[5m:]``), which is blocked separately by
+# ``_PROMQL_UNSUPPORTED_RE``. So a colon-less ``)[...]`` is unambiguously the
+# malformed shape.
+_PROMQL_RANGE_ON_NONSELECTOR_RE = re.compile(r"\)\s*\[[^\]:]*\]")
+
+
+def _promql_has_range_on_nonselector(expr):
+    """True when a range selector is applied to a non-selector (a closing
+    paren), e.g. ``irate(sum(metric)[5m])`` — invalid PromQL that the native
+    PROMQL engine rejects at parse time. Such panels must degrade via the ES|QL
+    translator (which marks the shape not_feasible) instead of emitting a native
+    query that hard-errors in Kibana."""
+    stripped = _strip_promql_string_literals(expr)
+    return bool(_PROMQL_RANGE_ON_NONSELECTOR_RE.search(stripped))
 
 
 def _promql_has_known_server_bug(expr):
@@ -1090,6 +1121,8 @@ def can_use_native_promql(promql_expr, runtime_features=None):
         return False
     if _promql_has_known_server_bug(promql_expr):
         return False
+    if _promql_has_range_on_nonselector(promql_expr):
+        return False
     return True
 
 
@@ -1166,6 +1199,77 @@ def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
         kind = getattr(cap, "time_series_metric_kind", None)
         if kind and kind != "counter":
             return True
+    return False
+
+
+# Substrings that mark a target-side *parse* rejection of a native PROMQL query
+# — the cluster cannot even understand the query syntax, so degrading to ES|QL
+# is the right call. Field/index gaps ("Unknown column", "Unknown index",
+# "verification_exception") are data-readiness conditions, NOT parse errors: the
+# native query is structurally valid and self-heals once telemetry lands, so we
+# keep it native (issue #158 / #154).
+_NATIVE_PARSE_REJECTION_SIGNALS = (
+    "mismatched input",
+    "parsing_exception",
+    "parse_exception",
+    "extraneous input",
+    "no viable alternative",
+    "syntax error",
+    "invalid date format",
+    "input mismatch",
+    "token recognition error",
+    "cannot parse",
+)
+
+
+def _native_query_parse_rejected(err) -> bool:
+    """Return True only when *err* describes a target *parse* rejection.
+
+    A parse rejection means the native PROMQL query is malformed for this target
+    and must degrade to ES|QL. Empty errors and data/field gaps return False so
+    the native path is preserved.
+    """
+    text = str(err or "").lower()
+    if not text:
+        return False
+    return any(signal in text for signal in _NATIVE_PARSE_REJECTION_SIGNALS)
+
+
+def _native_promql_query_survives_validation(rule_pack, query) -> bool:
+    """Run the rule pack's optional live native-PROMQL validator against a built
+    native query.
+
+    Returns False only when the validator is present AND the query is rejected at
+    parse time, signalling the caller to degrade to ES|QL. An absent validator
+    (offline) or a non-parse error (data/field gap, flaky transport) keeps the
+    native path.
+
+    Records per-panel decisions on ``rule_pack.native_validation_stats`` so the
+    migrate CLI can print an observable summary. The validator may be cached by
+    query upstream, but this gate runs once per panel, so counts reflect
+    panel-level decisions.
+    """
+    validator = getattr(rule_pack, "native_promql_validator", None)
+    if validator is None:
+        return True
+    stats = getattr(rule_pack, "native_validation_stats", None)
+    if not isinstance(stats, dict):
+        stats = {"checked": 0, "degraded": 0, "kept": 0}
+        try:
+            rule_pack.native_validation_stats = stats
+        except Exception:
+            pass
+    stats["checked"] = stats.get("checked", 0) + 1
+    try:
+        ok, err = validator(query)
+    except Exception:
+        # A flaky/unavailable validator must never block migration; keep native.
+        stats["kept"] = stats.get("kept", 0) + 1
+        return True
+    if ok or not _native_query_parse_rejected(err):
+        stats["kept"] = stats.get("kept", 0) + 1
+        return True
+    stats["degraded"] = stats.get("degraded", 0) + 1
     return False
 
 
@@ -1315,6 +1419,16 @@ def _translate_panel_native_promql(
                                              runtime_features=runtime_features,
                                              instant=instant,
                                              regex_default_params=regex_default_params)
+    # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
+    # and the target rejects this query at parse time, degrade to ES|QL (return
+    # None so the caller falls through to the ES|QL translator). A data/field gap
+    # keeps the native path (issue #158).
+    if not _native_promql_query_survives_validation(rule_pack, promql_query):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL degraded to ES|QL: target rejected the query at parse time",
+        )
+        return None
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1464,6 +1578,14 @@ def _translate_multi_target_native_promql(
     step = _DEFAULT_NATIVE_PROMQL_STEP
     promql_query = f"PROMQL index={index} step={step} value=({combined_expr})"
 
+    # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
+    # ES|QL translation; a data/field gap keeps native (issue #158).
+    if not _native_promql_query_survives_validation(rule_pack, promql_query):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL degraded to ES|QL: target rejected the query at parse time",
+        )
+        return None
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
@@ -1734,12 +1856,17 @@ def bargauge_panel_rule(context):
         context.kibana_type = "bar"
         _append_unique(context.translation.warnings, "Approximated bargauge as bar chart")
     else:
-        context.yaml_panel["esql"] = _build_esql_metric_panel(
+        # A single-value bargauge is a value shown against a scale: the faithful
+        # Kibana equivalent is a bullet gauge (horizontal/vertical per the source
+        # orientation), not a plain number tile.
+        context.yaml_panel["esql"] = _build_esql_gauge_panel(
             primary.esql_query,
             metric_col=primary.output_metric_field or None,
+            panel=context.panel,
+            shape=_bargauge_bullet_shape(context.panel),
         )
-        context.kibana_type = "metric"
-        _append_unique(context.translation.warnings, "Approximated bargauge as metric")
+        context.kibana_type = "gauge"
+        _append_unique(context.translation.warnings, "Approximated bargauge as a bullet gauge")
     context.handled = True
     return "approximated bargauge panel"
 
@@ -1839,6 +1966,60 @@ def pie_panel_rule(context):
         )
     context.handled = True
     return f"mapped to {(context.yaml_panel.get('esql') or {}).get('type', 'pie')} panel"
+
+
+def _build_esql_heatmap_panel(esql, metric_col=None, by_cols=None, time_fields=None, warnings=None):
+    """Build a native Kibana heatmap (x=time, y=bucket, color=metric).
+
+    A Grafana heatmap of histogram ``le`` buckets over time maps cleanly:
+    ``STATS metric BY time_bucket, le`` -> x_axis=time_bucket, y_axis=le,
+    metric=value. When the query lacks either a time axis or a second
+    (y-axis) dimension, a heatmap is not well-defined, so degrade to the XY
+    builder (which itself drops to a metric for single-value queries).
+    """
+    esql = _ensure_bucket_sort(esql)
+    shape = _extract_esql_shape(esql)
+    extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
+    if metric_col is None:
+        metric_col = extracted_metric_col
+    if not by_cols:
+        by_cols = extracted_by_cols
+    if time_fields is None:
+        time_fields = shape.time_fields
+    dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
+    if dimension_field is None or not breakdown_field:
+        _append_unique(
+            warnings if warnings is not None else [],
+            "Approximated heatmap as line chart (needs both a time axis and a bucket dimension)",
+        )
+        return _build_esql_xy_panel(
+            esql, "line", metric_col=metric_col, by_cols=by_cols,
+            time_fields=time_fields, warnings=warnings,
+        )
+    return {
+        "type": "heatmap",
+        "query": esql,
+        "x_axis": _dimension_field(dimension_field),
+        "y_axis": {"field": breakdown_field},
+        "metric": {"field": metric_col},
+    }
+
+
+@PANEL_TRANSLATORS.register("heatmap_panel", priority=45)
+def heatmap_panel_rule(context):
+    if context.kibana_type != "heatmap":
+        return None
+    context.yaml_panel["esql"] = _build_esql_heatmap_panel(
+        context.translation.esql_query,
+        metric_col=context.translation.output_metric_field or None,
+        by_cols=context.translation.output_group_fields,
+        warnings=context.translation.warnings,
+    )
+    emitted = (context.yaml_panel.get("esql") or {}).get("type", "heatmap")
+    if emitted != "heatmap":
+        context.kibana_type = emitted  # keep result type consistent with what was emitted
+    context.handled = True
+    return f"mapped to {emitted} panel"
 
 
 @PANEL_TRANSLATORS.register("fallback_line_panel", priority=90)
@@ -1985,11 +2166,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if query_language == "esql" and len(visible_targets) == 1:
         native_query = visible_targets[0][1]
         esql_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
-        native_panel = _native_esql_panel_spec(native_query, kibana_type, mode=esql_mode)
+        native_warnings = []
+        native_panel = _native_esql_panel_spec(native_query, kibana_type, mode=esql_mode, warnings=native_warnings)
         if native_panel:
             native_shape = _extract_esql_shape(native_query)
             native_panel_type = str(native_panel.get("type") or "")
-            native_warnings = []
             if kibana_type == "pie" and native_panel_type != "pie":
                 native_warnings.append(
                     "Approximated pie chart as bar chart because no categorical breakdown was available"
@@ -2462,6 +2643,8 @@ def _try_collapse_same_metric_targets(translations):
     if _summary_mode_from_metadata(collapsed.metadata):
         collapsed_summary = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed_summary is None:
+        # The KEEP is dropped downstream by _strip_dotted_group_keep when a
+        # grouping field is dotted (avoids an ES|QL "Output has changed" error).
         parts.append("| KEEP " + ", ".join(dict.fromkeys(output_group_fields + metric_fields)))
         if "time_bucket" in output_group_fields:
             parts.append("| SORT time_bucket ASC")
@@ -2628,6 +2811,8 @@ def _build_multi_target_series_query(translations):
     if summary_mode and plans[0][1].specs:
         collapsed = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
     if collapsed is None:
+        # The KEEP is dropped downstream by _strip_dotted_group_keep when a
+        # grouping field is dotted (avoids an ES|QL "Output has changed" error).
         parts.append(
             "| KEEP "
             + ", ".join(
@@ -2930,6 +3115,38 @@ def _strip_dashboard_timestamp_range_filter(esql, time_filters=None):
     return "\n".join(lines)
 
 
+def _strip_dotted_group_keep(query):
+    """Drop a KEEP/DROP projection that follows ``STATS BY <dotted field> | EVAL``.
+
+    ES|QL's optimizer re-attributes a dotted grouping field (e.g. ``service.name``)
+    from field -> reference across such a projection, raising a
+    verification_exception "Output has changed from [..service.name{f}..] to
+    [..service.name{r}..]" that breaks the panel in Kibana. The query is valid
+    without the projection — the extra intermediate columns are ignored by the
+    Lens chart config. Bisected live against Elastic 9.5.0; see
+    tests/test_grafana_dotted_group_keep.py.
+    """
+    if not query or "STATS" not in query:
+        return query
+    lines = query.splitlines()
+    has_dotted_group = False
+    has_eval = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| STATS") and " BY " in stripped:
+            for token in stripped.split(" BY ", 1)[1].split(","):
+                name = (token.split("=", 1)[-1] if "=" in token else token).strip().strip("`")
+                if "." in name and "(" not in name:
+                    has_dotted_group = True
+        elif stripped.startswith("| EVAL"):
+            has_eval = True
+    if not (has_dotted_group and has_eval):
+        return query
+    return "\n".join(
+        line for line in lines if not line.strip().startswith(("| KEEP ", "| DROP "))
+    )
+
+
 def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
     esql_panel = yaml_panel.get("esql")
     if not isinstance(esql_panel, dict):
@@ -2942,6 +3159,7 @@ def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
         query,
         [rule_pack.from_time_filter, rule_pack.ts_time_filter],
     )
+    query = _strip_dotted_group_keep(query)
     esql_panel["query"] = _ensure_bucket_sort(query)
     yaml_panel["esql"] = esql_panel
     return yaml_panel
@@ -3329,7 +3547,13 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
     if metric_col is None:
         metric_col = extracted_metric_col
-    if by_cols is None:
+    # Recover group columns from the query when the caller passes nothing OR an
+    # empty list. A multi-target translation (eg. node-exporter-full "CPU", a
+    # group_left target) can hand us empty group_fields even though the combined
+    # ES|QL groups BY time_bucket; trusting that empty list would wrongly degrade
+    # a time-series graph to a single-value metric. The query is the source of
+    # truth — if it genuinely has no dimension, extraction is empty too.
+    if not by_cols:
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields
@@ -3379,7 +3603,10 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     _, extracted_by_cols = _extract_esql_columns(esql)
-    if by_cols is None:
+    # Recover group columns from the query on an empty/None caller value (see
+    # _build_esql_xy_panel) so a grouped multi-series query is not mistaken for a
+    # dimensionless one and degraded to a summary table.
+    if not by_cols:
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields
@@ -3485,7 +3712,18 @@ def _series_override_alias_matches(alias: str, candidates: set[str]) -> bool:
     return alias in candidates
 
 
-def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
+def _bargauge_bullet_shape(panel):
+    """Map a Grafana bargauge's orientation to a Kibana gauge bullet shape.
+
+    A bargauge renders a value as a bar against a scale; the faithful Kibana
+    gauge shape is a bullet. Grafana's ``orientation`` is ``horizontal`` (the
+    common default) or ``vertical``; anything else falls back to horizontal.
+    """
+    orientation = str(((panel or {}).get("options") or {}).get("orientation", "")).lower()
+    return "vertical_bullet" if orientation == "vertical" else "horizontal_bullet"
+
+
+def _build_esql_gauge_panel(esql, metric_col=None, panel=None, shape=None):
     if not metric_col:
         metric_col, _ = _extract_esql_columns(esql)
     defaults = _panel_field_defaults(panel)
@@ -3512,8 +3750,8 @@ def _build_esql_gauge_panel(esql, metric_col=None, panel=None):
         "query": _ensure_bucket_sort(_append_esql_constants(esql, constants)),
         "metric": {"field": metric_col},
     }
-    if panel:
-        gauge["appearance"] = {"shape": "arc"}
+    if panel or shape:
+        gauge["appearance"] = {"shape": shape or "arc"}
     if minimum is not None:
         gauge["minimum"] = {"field": "_gauge_min"}
     if maximum is not None:
@@ -4888,7 +5126,72 @@ def _apply_kibana_native_layout(yaml_panels):
     # intent) over the readability floor.
     _apply_collision_aware_minimums(yaml_panels)
 
+    # L1.5 (gap compaction): strip stale vertical dead-space left by collapsed
+    # Grafana rows (their children keep last-expanded absolute y, so the first
+    # visible row can sit hundreds of rows above the rest). Runs after the
+    # minimums so it operates on final heights.
+    _compact_vertical_gaps(yaml_panels)
+
     return yaml_panels
+
+
+# An empty horizontal band taller than this many Kibana rows is treated as a
+# stale-coordinate artifact (collapsed-row children keep last-expanded absolute
+# gridPos) rather than deliberate spacing, and is removed. Deliberate author
+# gaps are at most a panel height or two; collapsed-row artifacts span hundreds
+# of rows, so the two are cleanly separable. Kept well above the ~9-row gaps the
+# faithful transform is designed to preserve.
+MAX_INTRA_SECTION_GAP = 24
+
+
+def _compact_vertical_gaps(yaml_panels: list[dict]) -> None:
+    """Remove stale vertical dead-space within a single section's panels.
+
+    Finds every fully-empty horizontal band (a contiguous range of Kibana rows
+    occupied by no panel) taller than :data:`MAX_INTRA_SECTION_GAP` and shifts
+    everything below it up so the band collapses to nothing — matching how
+    Grafana re-flows a collapsed row's children contiguously on expand. Relative
+    order, x positions, sizes, and smaller deliberate gaps are all preserved,
+    and because only empty rows are removed no overlap can be introduced.
+    """
+    if len(yaml_panels) < 2:
+        return
+    spans = []
+    max_bottom = 0
+    for panel in yaml_panels:
+        _x, y, _w, h = _rect(panel)
+        if h <= 0:
+            continue
+        spans.append((panel, y))
+        max_bottom = max(max_bottom, y + h)
+    if not spans or max_bottom <= 0:
+        return
+
+    occupied = bytearray(max_bottom)
+    for panel, _y in spans:
+        _x, y, _w, h = _rect(panel)
+        for row in range(max(0, y), min(max_bottom, y + h)):
+            occupied[row] = 1
+
+    # Collect empty bands taller than the threshold as (first_row_below, rows_removed).
+    cuts: list[tuple[int, int]] = []
+    run_start = None
+    for row in range(max_bottom):
+        if not occupied[row]:
+            if run_start is None:
+                run_start = row
+        elif run_start is not None:
+            if row - run_start > MAX_INTRA_SECTION_GAP:
+                cuts.append((row, row - run_start))
+            run_start = None
+    if not cuts:
+        return
+
+    for panel, y in spans:
+        delta = sum(amount for first_row, amount in cuts if y >= first_row)
+        if delta:
+            position = panel.setdefault("position", {})
+            position["y"] = y - delta
 
 
 def _rect(panel: dict) -> tuple[int, int, int, int]:
@@ -4930,7 +5233,44 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
 
     ``max_h`` clamps always apply because shrinking a panel cannot
     create new overlaps.
+
+    Row-uniformity guard: a panel is never grown taller than the tallest
+    *source* panel sharing its top edge (its row). Grafana scoreboards put
+    several short tiles of different Kibana types in one row (eg. a bargauge
+    next to gauges, all at gridPos h=4); without this cap the gauge ``min_h``
+    of 8 would bump only the gauges, leaving the bar at 6 and the row ragged.
+    A panel alone at its y has no row-mates and still bumps freely.
     """
+    # Tallest source (pre-bump) height per occupied top edge, for rows of >1.
+    row_height_cap: dict[int, int] = {}
+    rows_by_y: dict[int, list[int]] = {}
+    for panel in yaml_panels:
+        _x, py, _w, ph = _rect(panel)
+        rows_by_y.setdefault(py, []).append(ph)
+    for py, heights in rows_by_y.items():
+        if len(heights) > 1:
+            row_height_cap[py] = max(heights)
+
+    # Lift each capped row's target to the highest type-specific legibility
+    # floor among all panels in that row. A gauge (min_h=8) beside a bar
+    # (min_h=6) raises the whole row to 8 so every panel reaches legibility
+    # AND the row stays height-uniform.
+    for panel in yaml_panels:
+        esql_cfg = panel.get("esql")
+        if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+            _etype = str(esql_cfg["type"])
+        elif "markdown" in panel:
+            _etype = "markdown"
+        else:
+            _etype = str(_kibana_panel_type(panel) or "")
+        _constraints = _TYPE_SIZE_CONSTRAINTS.get(_etype)
+        if _constraints is None:
+            continue
+        _, _type_min_h, _ = _constraints
+        _x, _py, _w, _ph = _rect(panel)
+        if _py in row_height_cap:
+            row_height_cap[_py] = max(row_height_cap[_py], _type_min_h)
+
     for idx, panel in enumerate(yaml_panels):
         kibana_type = _kibana_panel_type(panel)
         esql_cfg = panel.get("esql")
@@ -4969,15 +5309,21 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             if not collides:
                 w = min_w
 
-        # Try to bump height to min_h. Same collision check.
-        if h < min_h:
-            candidate = (x, y, w, min_h)
+        # Grow to the row's target height: at least the type's legibility floor
+        # (min_h), or higher if the row cap (already lifted to the max type
+        # floor in the row) demands it. Capped by the type's max_h.
+        cap = row_height_cap.get(y)
+        target_h = max(min_h, cap) if cap is not None else min_h
+        if max_h is not None:
+            target_h = min(target_h, max_h)
+        if h < target_h:
+            candidate = (x, y, w, target_h)
             collides = any(
                 i != idx and _rects_overlap(candidate, _rect(other))
                 for i, other in enumerate(yaml_panels)
             )
             if not collides:
-                h = min_h
+                h = target_h
 
         panel["size"] = {"w": w, "h": h}
         # Re-apply the legacy x-clamp + grid-overflow guard.

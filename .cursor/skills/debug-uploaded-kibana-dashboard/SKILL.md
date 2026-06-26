@@ -128,6 +128,19 @@ KIBANA_URL=https://<cluster>.kb.us-central1.gcp.staging.elastic.cloud \
 
 The bootstrap script launches Chrome headed, waits for you to SAML through once, then snapshots the auth state to `~/.agent-browser/state/mig-to-kbn-verifier.json`. From then on every verifier loop reuses it without SAML.
 
+**Persistent profile + cookie reuse.** Bootstrap uses a persistent Chrome profile at `~/.agent-browser/profiles/mig-to-kbn-verifier` (`--profile`). The SAML cookies live in that profile and **persist even when the `state save` step fails** — so if the headless render-audit later hits a login wall, re-running `bootstrap.sh` (or any `--profile <that dir>` headed open) is usually enough to re-warm the session; you rarely need to nuke the profile.
+
+> **Wrong-tab / Gemini "glic" gotcha (read this when login-detection or URL checks misbehave).** An `agent-browser` session frequently has **multiple tabs/targets** open — Kibana dashboard tabs **plus** unrelated ones like Chrome's Gemini "glic" side-panel (`https://gemini.google.com/glic`, a `webview` target), `staging.found.no`, or an Elastic SSO interstitial (`/internal/security/capture-url`, `auth_provider_hint`). The **active** target is often the *wrong* one, so `agent-browser get url` returns the gemini URL and login-detection/URL checks read the wrong page — even after you completed SAML in the Kibana tab. Don't trust the active tab:
+>
+> ```bash
+> agent-browser tab list           # see every tab: [t1] <title> - <url>, ...
+> #   [t1] Elastic - https://<cluster>.kb.../app/dashboards#/view/<id>   <- Kibana
+> #   [t5] Google Gemini - https://gemini.google.com/glic                <- ignore
+> agent-browser tab t1             # switch to the Kibana tab (by id or label)
+> ```
+>
+> Pick the tab whose URL is on the **Kibana host** and carries the **dashboard id** (ignore gemini-glic / found.no / capture-url / auth_provider_hint tabs), switch to it, *then* snapshot/screenshot/`get url`. The render-audit driver automates exactly this — `select_kibana_page_url(...)` in `observability_migration/targets/kibana/render_audit_driver.py` is the pure selection rule, and `--agent-browser` makes the driver enumerate `tab list --json` and activate the right tab before capturing the DOM. `bootstrap.sh` likewise scans **all** tabs for a Kibana `/app/*` URL instead of only the active one.
+
 ### E1: capture every `/_query` Lens dispatches during a dashboard load
 
 ```bash

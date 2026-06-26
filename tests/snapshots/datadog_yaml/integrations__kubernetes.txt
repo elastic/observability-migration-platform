@@ -5,8 +5,8 @@ panels: 47
 controls: 9
 filters: 0
 statuses: {'not_feasible': 2, 'ok': 17, 'requires_manual': 4, 'skipped': 10, 'warning': 24}
-- title=''; kind=markdown
-- title=''; kind=markdown
+- title='Datadog note 24'; kind=markdown
+- title='Datadog note 6152894268304392'; kind=markdown
 - title='Clusters'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Nodes'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Namespaces'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
@@ -29,16 +29,16 @@ statuses: {'not_feasible': 2, 'ok': 17, 'requires_manual': 4, 'skipped': 10, 'wa
 - title='Pods ready'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_daemonset_ready']; primary=
 - title='Desired'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Pods desired'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_daemonset_desired']; primary=
-- title='Pods desired'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Pods desired'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_desired']; primary=
+- title='Pods desired (widget 6)'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Pods desired (widget 7)'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_desired']; primary=
 - title='Pods available'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Pods available'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_available']; primary=
+- title='Pods available (widget 5)'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_available']; primary=
 - title='Pods unavailable'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Pods unavailable'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_unavailable']; primary=
-- title='Ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Ready'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_replicaset_replicas_ready']; primary=
+- title='Pods unavailable (widget 9)'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_deployment_replicas_unavailable']; primary=
+- title='Ready (widget 38)'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
+- title='Ready (widget 30)'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_state_replicaset_replicas_ready']; primary=
 - title='Not ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Not ready'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2']; breakdowns=[]; primary=; metric=
+- title='Not ready (widget 31)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2']; breakdowns=[]; primary=; metric=
 - title='Container states'; kind=esql; type=line; dimension=time_bucket; metrics=['running', 'waiting', 'terminated', 'ready']; breakdowns=[]; primary=; metric=
 - title='CPU utilization per node'; kind=markdown
 - title='Sum Kubernetes CPU requests per node'; kind=lens; type=line; dimension=@timestamp; metrics=['kubernetes_cpu_requests']; primary=

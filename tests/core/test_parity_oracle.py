@@ -150,6 +150,28 @@ class NormalizeAndDiffTests(unittest.TestCase):
             "max",
         )
 
+    def test_translated_reducer_uses_terminal_stats_not_first(self):
+        # PR #234 (stefans): with multiple STATS stages the reducer must be the
+        # TERMINAL/outer aggregation, not the first one search() happens to hit.
+        # An inner SUM collapsed under an outer AVG must report "avg" so native
+        # series projection uses the right reducer.
+        self.assertEqual(
+            po._translated_reducer(
+                "TS m | WHERE @timestamp >= ?_tstart "
+                "| STATS inner = SUM(v) BY time_bucket, host "
+                "| STATS value = AVG(inner) BY time_bucket"
+            ),
+            "avg",
+        )
+        # Outer MAX over an inner SUM.
+        self.assertEqual(
+            po._translated_reducer(
+                "TS m | STATS a = SUM(v) BY time_bucket, dc "
+                "| STATS value = MAX(a) BY time_bucket"
+            ),
+            "max",
+        )
+
     def test_normalize_translated_canonicalizes_otel_labels(self):
         data = {
             "columns": [
@@ -634,6 +656,73 @@ class ExecutionTests(unittest.TestCase):
         by_host = {dict(key.labels).get("host"): [v for _, v in points]
                    for key, points in out.items()}
         self.assertEqual(by_host, {"a": [9.0, 8.0], "b": [7.0, 6.0]})
+
+    def test_normalize_translated_ignores_intermediate_numeric_aliases(self):
+        # A merged multi-target panel keeps the translator's intermediate STATS
+        # aliases (metric_A, metric_B) alongside the EVAL outputs (hits, misses).
+        # ignore_columns only lists the sibling EVAL output; the intermediate
+        # numeric aliases would otherwise be read as series labels, making every
+        # (instance, bucket) pair a unique key -> inflated series count and a
+        # false "series keys did not align" FAIL. With value_column pinned,
+        # numeric columns must be treated as values, not labels: one series per
+        # instance, not per (instance, bucket).
+        # "db" is a real grouping label (not scrubbed like instance/job); the
+        # numeric *_A/*_B intermediates must drop out so series key on db alone.
+        data = {
+            "columns": [
+                {"name": "time_bucket", "type": "date"},
+                {"name": "redis_hits_total_A", "type": "double"},
+                {"name": "redis_misses_total_B", "type": "double"},
+                {"name": "hits", "type": "double"},
+                {"name": "misses", "type": "double"},
+                {"name": "db", "type": "keyword"},
+            ],
+            "values": [
+                ["2026-01-01T00:00:00Z", 1.0, 9.0, 1.0, 9.0, "db0"],
+                ["2026-01-01T00:05:00Z", 2.0, 8.0, 2.0, 8.0, "db0"],
+                ["2026-01-01T00:00:00Z", 3.0, 7.0, 3.0, 7.0, "db1"],
+                ["2026-01-01T00:05:00Z", 4.0, 6.0, 4.0, 6.0, "db1"],
+            ],
+        }
+        out = po.normalize_translated(
+            data, value_column="hits", ignore_columns=frozenset({"misses"}))
+        self.assertEqual(len(out), 2)  # one series per db, not 4 (per db x bucket)
+        by_db = {dict(k.labels).get("db"): [v for _, v in pts]
+                 for k, pts in out.items()}
+        self.assertEqual(by_db, {"db0": [1.0, 2.0], "db1": [3.0, 4.0]})
+
+    def test_translated_group_columns_extracts_terminal_by_labels(self):
+        # PR #234: the genuine grouping labels are the terminal STATS BY columns
+        # (excluding the time bucket / bucket-expression assignments).
+        esql = (
+            "TS metrics-* "
+            "| STATS m_A = SUM(RATE(http_requests_total, 5m)), m_B = SUM(RATE(http_errors_total, 5m)) "
+            "BY time_bucket = TBUCKET(5 minute), code "
+            "| EVAL A = m_A | EVAL B = m_B | KEEP time_bucket, code, A, B"
+        )
+        self.assertEqual(po._translated_group_columns(esql), frozenset({"code"}))
+
+    def test_normalize_translated_keeps_numeric_by_label(self):
+        # PR #234: a NUMERIC BY grouping label (code/status_code) must stay a
+        # series label even when value_column is pinned, so a multi-target
+        # compare keeps the dimension (instead of collapsing to one empty-key
+        # series -> false PASS/FAIL). The sibling value column B is still ignored.
+        data = {
+            "columns": [{"name": "time_bucket", "type": "date"},
+                        {"name": "code", "type": "long"},
+                        {"name": "A", "type": "double"},
+                        {"name": "B", "type": "double"}],
+            "values": [["2026-01-01T00:00:00Z", 200, 40.0, 1.0],
+                       ["2026-01-01T00:05:00Z", 200, 41.0, 1.0],
+                       ["2026-01-01T00:00:00Z", 500, 60.0, 2.0],
+                       ["2026-01-01T00:05:00Z", 500, 61.0, 2.0]],
+        }
+        out = po.normalize_translated(
+            data, value_column="A", ignore_columns=frozenset({"B"}),
+            group_columns=frozenset({"code"}))
+        self.assertEqual(len(out), 2)
+        by_code = {dict(k.labels).get("code"): [v for _, v in pts] for k, pts in out.items()}
+        self.assertEqual(by_code, {"200": [40.0, 41.0], "500": [60.0, 61.0]})
 
     def test_translated_grouped_series_project_onto_global_native_sum(self):
         # Source ``sum(metric{cluster="$cluster"})`` collapses to ONE global

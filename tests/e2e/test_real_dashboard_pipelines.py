@@ -188,9 +188,13 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         self.assertEqual(result.total_panels, 11)
         self.assertEqual(len(controls), 1)
 
+        # A Grafana heatmap now emits a native Kibana heatmap (x=time bucket,
+        # y=le, color=metric) rather than degrading to a line chart.
         heatmap = panels["Request Latency Heatmap"]["esql"]
-        self.assertEqual(heatmap["type"], "line")
-        self.assertEqual(heatmap["appearance"]["y_left_axis"]["scale"], "log")
+        self.assertEqual(heatmap["type"], "heatmap")
+        self.assertEqual(heatmap["x_axis"]["field"], "time_bucket")
+        self.assertEqual(heatmap["y_axis"]["field"], "le")
+        self.assertEqual(heatmap["metric"]["field"], "http_request_duration_seconds_bucket")
 
         traffic = panels["Traffic Distribution"]["esql"]
         self.assertEqual(traffic["type"], "pie")

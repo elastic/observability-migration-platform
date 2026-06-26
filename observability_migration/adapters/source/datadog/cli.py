@@ -140,6 +140,13 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  Source: {args.source}")
     print(f"  Field profile: {args.field_profile}")
     print(f"  Output: {args.output_dir}\n")
+    if str(getattr(args, "translation_mode", "auto") or "auto").lower() != "auto":
+        # Datadog has no native-PROMQL path; --translation-mode is accepted for
+        # CLI symmetry with grafana-migrate but does not change behavior.
+        print(
+            f"  Note: --translation-mode {args.translation_mode} is a no-op for "
+            "Datadog (no native PROMQL); using the ES|QL translator\n"
+        )
     if auto_enabled_upload:
         print("  Smoke requested: auto-enabling upload step\n")
     if selection.dashboards and args.upload and not args.compile:
@@ -1419,6 +1426,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--validate", action="store_true",
         help="Validate emitted ES|QL against Elasticsearch before compile/upload",
+    )
+    parser.add_argument(
+        "--translation-mode",
+        dest="translation_mode",
+        choices=["auto", "native", "esql"],
+        default="auto",
+        help=(
+            "Accepted for symmetry with grafana-migrate (issue #158). No-op for "
+            "Datadog: there is no native-PROMQL path, so every widget always "
+            "uses the ES|QL translator regardless of this value. The flag is "
+            "validated so scripts can pass a uniform --translation-mode."
+        ),
     )
     parser.add_argument(
         "--source-execution", action="store_true",

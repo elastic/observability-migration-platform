@@ -1,0 +1,129 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+# Nightly live-cluster gates (Tier 4 of the migration confidence pyramid).
+#
+# The offline PR gates (matrices, ratchet, schema gate) prove structure; this
+# proves migrated dashboards against a REAL Elastic target — the only authority,
+# since the offline schema is a proxy for an abandoned compiler. It migrates both
+# corpora, seeds synthetic telemetry, then runs:
+#   * verifier.live_validate  --fail-on-bug   (Elasticsearch is the real ES|QL
+#     parser; a real_bug = the translator emitted ES|QL that ES rejects)
+#   * verifier.dashboards_api --fail-on-error (Kibana's native typed Dashboards
+#     API accepts the mapped panels server-side)
+#
+# Required repo secrets (skips gracefully if any is missing):
+#   ELASTICSEARCH_ENDPOINT, KIBANA_ENDPOINT, ELASTIC_API_KEY
+# One API key works for both ES and Kibana on Elastic Serverless.
+
+name: Nightly live gates
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # 06:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-gates:
+    name: Live cluster gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ES_URL: ${{ secrets.ELASTICSEARCH_ENDPOINT }}
+      KB_URL: ${{ secrets.KIBANA_ENDPOINT }}
+      ES_KEY: ${{ secrets.ELASTIC_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Check credentials are configured
+        id: guard
+        run: |
+          if [ -n "$ES_URL" ] && [ -n "$KB_URL" ] && [ -n "$ES_KEY" ]; then
+            echo "has_creds=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_creds=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Live-gate secrets not set; skipping. Configure ELASTICSEARCH_ENDPOINT, KIBANA_ENDPOINT, ELASTIC_API_KEY."
+          fi
+
+      - name: Set up uv
+        if: steps.guard.outputs.has_creds == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        if: steps.guard.outputs.has_creds == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync locked environment
+        if: steps.guard.outputs.has_creds == 'true'
+        run: UV_PROJECT_ENVIRONMENT=.venv uv sync --locked --python 3.12 --all-extras
+
+      - name: Build flat corpus input dirs (committed dashboards only)
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          mkdir -p run/g_in run/dd_in
+          for f in $(git ls-files 'infra/grafana/dashboards/*.json'); do cp "$f" run/g_in/; done
+          for f in $(git ls-files 'infra/datadog/dashboards/*.json'); do cp "$f" run/dd_in/; done
+          echo "grafana dashboards: $(ls run/g_in | wc -l) | datadog: $(ls run/dd_in | wc -l)"
+
+      - name: Migrate Grafana corpus (live field discovery)
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          .venv/bin/python -m observability_migration.adapters.source.grafana.cli \
+            --source files --input-dir run/g_in --output-dir run/g_out \
+            --assets dashboards --es-url "$ES_URL" --es-api-key "$ES_KEY"
+
+      - name: Migrate Datadog corpus
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          .venv/bin/python -m observability_migration.adapters.source.datadog.cli \
+            --input-dir run/dd_in --output-dir run/dd_out
+
+      - name: Seed synthetic telemetry (non-fatal)
+        if: steps.guard.outputs.has_creds == 'true'
+        continue-on-error: true
+        run: |
+          .venv/bin/python scripts/setup_telemetry_data.py run/g_out/dashboards run/dd_out/dashboards \
+            --es-endpoint "$ES_URL" --api-key "$ES_KEY" --data-hours 3 --interval-sec 60
+
+      - name: Live ES|QL validation — Grafana (fail on real translator bug)
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
+            --migration-out run/g_out/dashboards --es-url "$ES_URL" --api-key "$ES_KEY" \
+            --fail-on-bug --output run/live_validate_grafana.json
+
+      - name: Live ES|QL validation — Datadog (fail on real translator bug)
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
+            --migration-out run/dd_out/dashboards --es-url "$ES_URL" --api-key "$ES_KEY" \
+            --fail-on-bug --output run/live_validate_datadog.json
+
+      - name: Native Dashboards API conformance — Grafana
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          PYTHONPATH=parity-rig .venv/bin/python -m verifier.dashboards_api \
+            --migration-out run/g_out/dashboards --kibana-url "$KB_URL" --api-key "$ES_KEY" \
+            --per-panel --fail-on-error --output run/dashboards_api_grafana.json
+
+      - name: Native Dashboards API conformance — Datadog
+        if: steps.guard.outputs.has_creds == 'true'
+        run: |
+          PYTHONPATH=parity-rig .venv/bin/python -m verifier.dashboards_api \
+            --migration-out run/dd_out/dashboards --kibana-url "$KB_URL" --api-key "$ES_KEY" \
+            --per-panel --fail-on-error --output run/dashboards_api_datadog.json
+
+      - name: Upload live-gate reports
+        if: steps.guard.outputs.has_creds == 'true' && (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-gate-reports
+          path: run/*.json
+          if-no-files-found: warn
+          retention-days: 30

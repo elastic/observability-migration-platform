@@ -75,6 +75,50 @@ class TestPanelMapping:
         assert api_panel["type"] == "markdown"
         assert api_panel["config"]["content"] == "hello"
 
+    def test_gauge_panel_maps_to_gauge_payload(self) -> None:
+        # Shape confirmed accepted by the native Dashboards API on 9.5.0:
+        # config{type:gauge, data_source:esql, metric:{column}}.
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(chart_type="gauge")
+        )
+        assert findings == []
+        assert api_panel is not None
+        cfg = api_panel["config"]
+        assert cfg["type"] == "gauge"
+        assert cfg["data_source"]["type"] == "esql"
+        assert cfg["metric"] == {"column": "value"}
+
+    def test_pie_panel_maps_to_pie_payload_with_group_by(self) -> None:
+        # config{type:pie, data_source:esql, metrics:[{column}], group_by:[{column}]}.
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(chart_type="pie")
+        )
+        assert findings == []
+        assert api_panel is not None
+        cfg = api_panel["config"]
+        assert cfg["type"] == "pie"
+        assert cfg["data_source"]["type"] == "esql"
+        assert cfg["metrics"] == [{"column": "value"}]
+        assert cfg["group_by"] == [{"column": "service.name"}]
+
+    def test_pie_without_breakdown_omits_group_by(self) -> None:
+        panel = _panel(chart_type="pie")
+        panel["visual_ir"]["presentation"]["config"].pop("breakdown", None)
+        api_panel, findings = dashboards_api.api_panel_from_report_panel("D", panel)
+        assert findings == []
+        assert api_panel is not None
+        assert "group_by" not in api_panel["config"]
+
+    def test_datatable_remains_unmapped_on_9_5(self) -> None:
+        # The native Dashboards API on 9.5.0 has no ES|QL data_table variant
+        # (its branches require a data_view source), so it stays an honest gap.
+        api_panel, findings = dashboards_api.api_panel_from_report_panel(
+            "D", _panel(chart_type="datatable")
+        )
+        assert api_panel is None
+        assert len(findings) == 1
+        assert findings[0].category == "unsupported_by_api_oracle"
+
     def test_datadog_esql_query_panel_maps_without_visual_ir(self) -> None:
         api_panel, findings = dashboards_api.api_panel_from_report_panel(
             "D",
@@ -252,4 +296,27 @@ class TestPayloadAndValidation:
         )
         assert [f.category for f in findings] == ["unsupported_by_api_oracle"]
         assert dashboards_api.summarize(findings)["errors"] == 0
+
+    def test_make_kibana_api_call_omits_authorization_for_empty_key(self, monkeypatch) -> None:
+        seen = {}
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "scratch"}
+
+        def fake_request(method, url, *, headers, json, timeout):
+            seen["headers"] = headers
+            return Response()
+
+        monkeypatch.setattr(dashboards_api.requests, "request", fake_request)
+
+        call = dashboards_api.make_kibana_api_call("http://localhost:5601", "")
+        status, _body = call("POST", "/api/dashboards", {"title": "t"})
+
+        assert status == 200
+        assert "Authorization" not in seen["headers"]
+        assert seen["headers"]["kbn-xsrf"] == "true"
 

@@ -29,6 +29,13 @@ LOG = logging.getLogger(__name__)
 _REQUEST_TIMEOUT = 30
 
 
+def _auth_headers(api_key: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra or {})
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    return headers
+
+
 # --------------------------------------------------------------------- #
 # T0 + T1  — migration_report.json (source PromQL + translator output)
 # --------------------------------------------------------------------- #
@@ -228,7 +235,7 @@ def fetch_cluster_dashboard(
         f"{kibana_url.rstrip('/')}/s/{space}/api/saved_objects/dashboard/"
         f"{dashboard_id}"
     )
-    headers = {"Authorization": f"ApiKey {api_key}", "kbn-xsrf": "verifier"}
+    headers = _auth_headers(api_key, {"kbn-xsrf": "verifier"})
     r = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
     if r.status_code == 404:
         return {}
@@ -279,10 +286,7 @@ def run_cluster_query(
     (Lens injects them at runtime) and ``params`` is ``None``, we
     auto-supply a 1-hour window ending now.
     """
-    headers = {
-        "Authorization": f"ApiKey {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = _auth_headers(api_key, {"Content-Type": "application/json"})
     body: dict[str, Any] = {"query": esql}
     if params is None:
         params = _autoparams_for_esql(esql)

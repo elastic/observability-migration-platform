@@ -500,7 +500,8 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertEqual(ctx.feasibility, "feasible")
         self.assertIn("SUM(RATE(http_requests_total, 5m))", ctx.esql_query)
         self.assertIn("BY time_bucket = TBUCKET(5 minute), handler", ctx.esql_query)
-        self.assertIn("LAST(_bucket_value, time_bucket) BY handler", ctx.esql_query)
+        self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY handler", ctx.esql_query)
+        self.assertNotIn("value = MAX(_bucket_value)", ctx.esql_query)
         self.assertIn("| SORT value DESC", ctx.esql_query)
         self.assertIn("| LIMIT 10", ctx.esql_query)
         self.assertEqual(ctx.output_group_fields, ["handler"])
@@ -1286,18 +1287,22 @@ class TestCounterLongAggregationWarning(unittest.TestCase):
         ctx = _translate("count(trace_http_request_hits > 0)", resolver=resolver)
         self.assertNotEqual(ctx.feasibility, "not_feasible")
 
-    def test_live_absent_field_is_not_feasible_without_counter_warning(self):
-        # Caps available but the field is absent: the existing live-schema rule
-        # marks the panel not_feasible; we defer to it and do not add the
-        # (now moot) counter uncertainty warning.
+    def test_live_absent_field_is_data_readiness_without_counter_warning(self):
+        # Caps available but the field is absent: this is a target data-readiness
+        # issue, not translation infeasibility. Do not add a counter uncertainty
+        # warning on top of the readiness warning.
         resolver = self._live_resolver(
             {"some_other_field": {"double": {"type": "double", "time_series_metric": "gauge"}}}
         )
         ctx = _translate("sum(trace_http_request_hits)", resolver=resolver)
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertTrue(
+            any("data readiness" in w for w in ctx.warnings),
+            f"expected data-readiness warning, got: {ctx.warnings}",
+        )
         self.assertFalse(
             any("counter_long" in w for w in ctx.warnings),
-            f"did not expect the counter uncertainty warning when not_feasible: {ctx.warnings}",
+            f"did not expect the counter uncertainty warning for missing target data: {ctx.warnings}",
         )
 
 
@@ -1773,6 +1778,28 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("TO_STRING(in)", esql["query"])
         # ``out`` is not reserved, so it stays bare.
         self.assertIn("TO_STRING(out)", esql["query"])
+
+    def test_xy_panel_recovers_dimension_when_by_cols_empty(self):
+        # A multi-target panel (eg. node-exporter-full "CPU": eight not_feasible
+        # sum(rate())/scalar() targets plus one feasible group_left target) can
+        # reach the XY builder with EMPTY group_fields even though the combined
+        # ES|QL clearly groups BY time_bucket. The builder must recover the
+        # dimension from the query and emit a time-series chart, not silently
+        # degrade a graph into a single-value metric tile.
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS v = SUM(RATE(node_cpu_seconds_total, 5m)) "
+                "BY time_bucket = TBUCKET(5 minute), service.instance.id\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="v",
+            by_cols=[],
+        )
+        self.assertEqual(panel["type"], "line")
+        self.assertEqual(panel["dimension"]["field"], "time_bucket")
+        self.assertEqual(panel["breakdown"]["field"], "service.instance.id")
 
     def test_composite_legend_escapes_dotted_label(self):
         # When a legend label resolves to a Fleet-style ``prometheus.labels.x``
@@ -2845,6 +2872,141 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertTrue(frag.extra.get("has_round"))
         self.assertEqual(frag.extra.get("round_precision"), 2.0)
 
+    def test_counter_in_noncounter_range_fn_is_cast_to_double(self):
+        # ES|QL rejects a counter field passed to MAX_OVER_TIME/DELTA/etc.
+        # ("argument ... must be [... except counter types]"). A confirmed
+        # counter used in a non-counter function must be cast to double so the
+        # query executes; RATE/IRATE/INCREASE keep the raw counter; gauges are
+        # left unchanged (no needless cast / snapshot churn).
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        # http_requests_total -> inferred counter
+        mot = translate_promql_to_esql("max_over_time(http_requests_total[1h])").esql_query
+        self.assertIn("MAX_OVER_TIME(TO_DOUBLE(http_requests_total)", mot)
+        # rate() consumes the counter directly: no cast
+        rate = translate_promql_to_esql("rate(http_requests_total[5m])").esql_query
+        self.assertIn("RATE(http_requests_total,", rate)
+        self.assertNotIn("RATE(TO_DOUBLE", rate)
+        # gauge: no cast, no churn
+        gauge = translate_promql_to_esql("max_over_time(node_load1[1h])").esql_query
+        self.assertIn("MAX_OVER_TIME(node_load1,", gauge)
+        self.assertNotIn("TO_DOUBLE", gauge)
+
+    def test_increase_degraded_to_gauge_fn_still_casts_to_double(self):
+        # Regression for the MySQL "Network Usage Hourly" runtime failure:
+        # increase() over a counter whose name carries no _total suffix
+        # (e.g. mysql_global_status_bytes_received) is classified gauge by the
+        # offline suffix heuristic, so increase() degrades to MAX_OVER_TIME.
+        # But the telemetry contract/seeder type any increase()-wrapped metric
+        # as a counter, so the stored field is counter_double and ES|QL rejects
+        # MAX_OVER_TIME(<counter>). The counter-style *source* function is the
+        # authoritative signal: the degraded gauge analogue must still wrap the
+        # metric in TO_DOUBLE so the emitted query executes.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        result = translate_promql_to_esql(
+            "increase(mysql_global_status_bytes_received[1h])"
+        )
+        esql = result.esql_query
+        self.assertIn("MAX_OVER_TIME(", esql)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(mysql_global_status_bytes_received)",
+            esql,
+            msg=f"increase()-degraded gauge fallback must cast counter to double: {esql}",
+        )
+
+    def test_binary_wrapped_increase_still_casts_to_double(self):
+        # PR #234 review: the degraded increase() cast must also apply when the
+        # call is composed inside a binary expression. Under unknown field caps
+        # increase(weird_unknown_metric[5m]) degrades to MAX_OVER_TIME, but the
+        # stored field may be counter_double, so the binary measure-spec path must
+        # still wrap the metric in TO_DOUBLE or the query fails at runtime.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        esql = translate_promql_to_esql(
+            "increase(weird_unknown_metric[5m]) * 2"
+        ).esql_query
+        self.assertIn("MAX_OVER_TIME(", esql)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            esql,
+            msg=f"binary-wrapped increase() must keep the counter-safe cast: {esql}",
+        )
+
+    def test_join_ratio_increase_still_casts_to_double(self):
+        # PR #234 review: the join-ratio _build_stats_call path emitted bare
+        # SUM(MAX_OVER_TIME(metric, ...)) with no cast. Both operands of a
+        # group_left ratio over degraded increase() must keep TO_DOUBLE.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        esql = translate_promql_to_esql(
+            "sum(increase(weird_unknown_metric[5m])) / on(job) group_left "
+            "sum(increase(other_unknown_metric[5m]))"
+        ).esql_query
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            esql,
+            msg=f"join-ratio numerator increase() must cast counter to double: {esql}",
+        )
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(other_unknown_metric)",
+            esql,
+            msg=f"join-ratio denominator increase() must cast counter to double: {esql}",
+        )
+
+    def test_scaled_agg_measure_spec_increase_casts_to_double(self):
+        # PR #234 (stefans): _build_measure_spec's scaled_agg branch must keep
+        # the counter-safe cast like the adjacent range_agg branch. A formula-plan
+        # panel such as sum(increase(non_total[5m])) * 100 otherwise emits
+        # SUM(MAX_OVER_TIME(metric, …)) against a counter-typed TSDS field and
+        # fails 9.5 runtime validation.
+        from observability_migration.adapters.source.grafana import promql, rules, schema
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = rules.RulePackConfig()
+        res = schema.SchemaResolver(rp)
+        frag = translate_promql_to_esql(
+            "sum(increase(weird_unknown_metric[5m])) * 100",
+            esql_index="metrics-*", rule_pack=rp, resolver=res,
+        ).fragment
+        self.assertEqual(frag.family, "scaled_agg")
+        spec = promql._build_measure_spec(frag, res, rp)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            spec.stats_expr,
+            msg=f"scaled_agg measure-spec must cast counter to double: {spec.stats_expr}",
+        )
+
+    def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
+        # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
+        # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so
+        # ROUND(v, 0.001) is an invalid query ("second argument ... must be
+        # [whole number ...], found ... [double]"). Emit ROUND(v / 0.001) * 0.001
+        # which reproduces the PromQL semantics and is valid ES|QL.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        q = translate_promql_to_esql(
+            "round(sum(rate(http_requests_total[5m])), 0.001)"
+        ).esql_query
+        self.assertIn("/ 0.001) * 0.001", q)
+        self.assertNotIn(", 0.001)", q)
+
+    def test_round_zero_step_does_not_emit_divide_by_zero(self):
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        q = translate_promql_to_esql(
+            "round(sum(rate(http_requests_total[5m])), 0)"
+        ).esql_query
+        self.assertIn("ROUND(", q)
+        self.assertNotIn("/ 0", q)
+
     def test_round_strips_outer_call_no_precision(self):
         ctx = self._translate("round(sum by (job) (rate(http_requests_total[5m])))")
         frag = ctx.fragment
@@ -2912,19 +3074,20 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         )
 
     def test_bare_gauge_default_uses_ts_and_preserves_series(self):
-        # Migration default: a bare gauge assumes TSDS and uses TS, which preserves
-        # per-series rows natively (STATS field = field BY TBUCKET). No collapse, so
-        # no loss warning.
+        # Migration default: a bare gauge assumes TSDS and uses TS. ES|QL still
+        # requires an aggregate expression in STATS, so use LAST_OVER_TIME rather
+        # than the invalid raw ``STATS field = field`` shape.
         ctx = self._translate("node_xyz_metric")
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = node_xyz_metric", ctx.esql_query)
+        self.assertIn("STATS node_xyz_metric = MAX(LAST_OVER_TIME(node_xyz_metric))", ctx.esql_query)
+        self.assertNotIn("node_xyz_metric = node_xyz_metric", ctx.esql_query)
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
 
     def test_bare_gauge_with_labels_has_no_loss_warning(self):
         # Issue #99: a bare gauge with a legendFormat label and no explicit outer
-        # aggregation uses the direct TS gauge path. ES|QL TS mode splits series
-        # by TSID with BY TBUCKET alone, so the legend label is NOT added to BY
-        # (adding it would force a distorting outer AVG). No collapse loss either.
+        # aggregation uses the TS gauge path. ES|QL TS mode splits series by TSID
+        # with BY TBUCKET alone, so the legend label is NOT added to BY (adding it
+        # would force a distorting outer AVG). No collapse loss either.
         ctx = self._translate(
             "node_xyz_metric",
             hints={
@@ -2934,13 +3097,14 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         )
         self.assertFalse(any("Collapsed all series" in w for w in ctx.warnings))
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS node_xyz_metric = node_xyz_metric BY time_bucket", ctx.esql_query)
+        self.assertIn("STATS node_xyz_metric = MAX(LAST_OVER_TIME(node_xyz_metric)) BY time_bucket", ctx.esql_query)
+        self.assertNotIn("node_xyz_metric = node_xyz_metric", ctx.esql_query)
         self.assertNotIn("instance", ctx.esql_query)
         self.assertNotIn("AVG(", ctx.esql_query)
 
     def test_bare_gauge_legend_label_no_outer_agg_omits_label_from_by(self):
         # Issue #99 Case A: go_goroutines{...} with legendFormat={{instance}}.
-        # No explicit PromQL outer aggregation -> direct TS gauge, no outer AVG,
+        # No explicit PromQL outer aggregation -> TS gauge path, no outer AVG,
         # legend label kept out of BY, and no warning (promoted to `migrated`).
         ctx = self._translate(
             'go_goroutines{job="prod"}',
@@ -2950,7 +3114,8 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
             },
         )
         self.assertEqual(ctx.source_type, "TS")
-        self.assertIn("STATS go_goroutines = go_goroutines BY time_bucket", ctx.esql_query)
+        self.assertIn("STATS go_goroutines = MAX(LAST_OVER_TIME(go_goroutines)) BY time_bucket", ctx.esql_query)
+        self.assertNotIn("go_goroutines = go_goroutines", ctx.esql_query)
         self.assertNotIn("AVG(", ctx.esql_query)
         self.assertNotIn(", instance", ctx.esql_query)
         self.assertEqual(ctx.warnings, [])
@@ -3311,6 +3476,55 @@ class TestCounterOnlyRangeFuncTrustsSource(unittest.TestCase):
             any("rendered as AVG_OVER_TIME" in w for w in ctx.warnings),
             f"expected the degrade warning, got: {ctx.warnings}",
         )
+
+
+class TestNativePromqlLiveValidationFallback(unittest.TestCase):
+    """B: per-panel live native-PROMQL validation backstop.
+
+    When a target cluster is configured (``--es-url``) a native-PROMQL validator
+    is attached to the rule pack. A panel whose emitted native query the cluster
+    rejects at *parse* time must degrade to the ES|QL path instead of shipping a
+    query that hard-errors in Kibana. Data gaps (unknown column/index, no data)
+    must NOT degrade a structurally-valid native query. With no validator
+    (offline), behavior is unchanged.
+    """
+
+    def _native_query(self, rp):
+        _yaml, pr = _translate_panel(
+            _make_panel(1, "rate(http_requests_total[5m])"), rule_pack=rp
+        )
+        return getattr(pr, "esql_query", "") or ""
+
+    def test_no_validator_keeps_native_offline(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_validator_ok_keeps_native(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (True, "")
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_parse_rejected_native_query_falls_back_to_esql(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (
+            False,
+            '{"type":"parsing_exception","reason":"line 1:40: no viable alternative at input"}',
+        )
+        query = self._native_query(rp)
+        self.assertFalse(
+            query.startswith("PROMQL "),
+            f"parse-rejected native query should degrade to ES|QL, got: {query!r}",
+        )
+
+    def test_data_gap_error_does_not_degrade(self):
+        # Unknown column / index means the query is valid but the data is absent
+        # (or the seed is missing a field). A valid native query must be kept.
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (
+            False,
+            '{"type":"verification_exception","reason":"line 1:54: Unknown column [host]"}',
+        )
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
 
 
 if __name__ == "__main__":

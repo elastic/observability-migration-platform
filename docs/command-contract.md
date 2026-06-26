@@ -636,6 +636,69 @@ then clean up:
   --confirm
 ```
 
+### Verify (one-command package-native scorecard)
+
+`obs-migrate verify` is a thin orchestrator that runs the **package-native**
+correctness gates over an already-migrated artifact dir and prints ONE
+consolidated scorecard. It exists so users don't have to assemble the
+individual gates by hand. It is read-only on the cluster.
+
+```bash
+.venv/bin/obs-migrate verify \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --report-out verify_report.json
+
+# Add numeric parity (runs obs-migrate compare in-process over the same dir):
+.venv/bin/obs-migrate verify \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" --api-key "$KEY" \
+  --compare
+```
+
+What it runs:
+
+1. **Emitted-query acceptance gate** — reads each panel's emitted ES|QL from
+   `verification_packets.json` (`packets[].translated_query`) and/or
+   `migration_report.json` (`dashboards[].panels[].esql_query`), dedupes
+   identical queries, runs each against Elasticsearch via the package-native
+   `esql_validate.validate_esql`, and classifies the result as `ok` /
+   `real_bug` (a genuine parse/type/argument/function error in the emitted
+   ES|QL) / `data_gap` (well-formed query, telemetry absent — unknown
+   column/index) / `other`. Data-gap signals win over real-bug signals when
+   both appear.
+2. **Numeric parity gate (opt-in, `--compare`)** — invokes the existing
+   `obs-migrate compare` implementation in-process over the same artifact dir
+   and surfaces its STRICT/FUZZY/SHAPE/STRUCTURAL/FAIL/ERROR counts. If compare
+   can't run (no data / unreachable), the scorecard says so rather than failing.
+
+`--artifact-dir` is required (a single migrated dashboard artifact dir).
+`--es-url`/`--api-key` default to `ELASTICSEARCH_ENDPOINT`/`ES_URL` and `KEY`.
+`--index` (default `metrics-*`) is the pattern used to validate queries and to
+seed the compare native-PROMQL oracle. `--report-out` (default
+`verify_report.json`) writes the consolidated JSON report. `--kibana-url` is
+accepted for parity with sibling commands but is not required by the
+package-native gates. Honors `--ca-cert` / `--insecure`.
+
+**Coverage honesty.** `verify` is intentionally NOT exhaustive. The scorecard
+always lists the deeper gates it does NOT run, with the exact command for each
+— these live in `parity-rig/` and are not importable from the installed
+package:
+
+- `verifier.dashboards_api` — Kibana typed UI-contract validation (accessor
+  wiring, column refs).
+- render audit (`parity-rig/render_audit_driver.py`) — the only gate that
+  catches Lens accessor / "invalid column" / empty-state render failures that
+  ES|QL execution and the schema gate miss.
+- `obs-migrate verify-panels` — the full 5-tier panel verifier (delegates to
+  `parity-rig/verifier`).
+
+Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
+(missing artifact dir, missing credentials, no emitted queries), `1` on any
+`real_bug` or compare `FAIL`/`ERROR`, and `0` otherwise (`data_gap`/`other`
+are warnings, not failures).
+
 ### Verification And Benchmark Gates
 
 The `parity-rig/verifier/` tools are repo-oriented correctness gates used by
@@ -649,9 +712,21 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `obs-migrate compare` | `verification_packets.json` + seeded data | Native PromQL and translated ES|QL are numerically close | no `FAIL`/`ERROR`; bounded `SHAPE_PASS` |
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
+| `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
+| `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
+
+Offline coverage gates (no cluster, every PR) live in the unit suite, not
+`verifier/`: `tests/core/coverage/test_supported_types.py` cross-checks the
+supported-type registry (`observability_migration/core/coverage/supported_types.py`)
+against the code's routing both ways; `tests/test_panel_matrix.py` (Grafana) and
+`tests/test_datadog_panel_matrix.py` (Datadog) lint every panel/widget type
+through the real pipeline; `tests/test_canary.py` validates the registry-driven
+kitchen-sink canary against `docs/dashboards/schema.json`. The fidelity ratchet
+runs as an e2e gate (`tests/e2e/test_fidelity_ratchet.py`) against committed
+baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
 
 Examples:
 
@@ -704,6 +779,52 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
   --datasource-quota loki=50 \
   --bug-seed 1860 \
   --output corpus.manifest.json
+```
+
+Fidelity ratchet and render audit:
+
+```bash
+# Fidelity ratchet: Layer-9 invariant ERROR counts must not regress vs the
+# committed baseline. Refresh a baseline (only after an intentional change) with
+# --update; CI runs it without --update via tests/e2e/test_fidelity_ratchet.py.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
+  --migration-out migration_output/dashboards \
+  --baseline parity-rig/benchmark/fidelity_baseline_grafana.json
+
+# Render audit: prove panels actually render in Kibana (catches Lens accessor /
+# "invalid column" errors that live_validate and the schema gate cannot see).
+# Serverless needs a one-time SSO login into a persistent Chrome profile
+# (--user-data-dir); a local no-SSO Kibana needs no profile.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
+
+# Focusing the right tab in a live agent-browser session (--agent-browser):
+# bootstrap.sh logs in once and keeps a persistent profile
+# (~/.agent-browser/profiles/mig-to-kbn-verifier) + saved state. A live session
+# often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
+# (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
+# (/internal/security/capture-url, auth_provider_hint). --agent-browser is a
+# tab-selection helper: it enumerates `tab list --json` and activates the Kibana
+# /app/* tab matching the host + dashboard id (ignoring the stray tabs) so the
+# session isn't left on the wrong tab. DOM capture ALWAYS uses the headless
+# dump_dom path (it reads HTML, so CSS-class render markers like embPanel__error
+# are visible, and it navigates to the exact target URL), so you still pass a
+# logged-in --user-data-dir profile. The pure selection rule is
+# select_kibana_page_url() in render_audit_driver.py.
+# Manual equivalent: `agent-browser tab list` then `agent-browser tab t<N>` for
+# the Kibana tab whose URL matches the cluster host + dashboard id.
+KIBANA_URL="$KIBANA_ENDPOINT" bash parity-rig/verifier/bootstrap.sh   # one-time SSO
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile \
+  --agent-browser --fail-on-error
+
+# Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
+# migrate+upload the canary, seed, and render-audit it.
+STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+bash scripts/run_render_audit_local.sh
+docker compose -f parity-rig/docker-compose.render-audit.yml down -v
 ```
 
 `benchmark_gate` exits non-zero when no comparison was made (empty history, no

@@ -250,6 +250,51 @@ def _gauge_fallback_for_counter_range_func(range_func):
 # ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
 # conservative heuristic-driven degradation.
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
+_COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+# Source PromQL range functions that are counter-only by Prometheus convention.
+# When a panel wraps a metric in one of these, the telemetry contract / seeder
+# type that field as a counter, so even a heuristic "gauge" guess that degraded
+# the call to a gauge analogue (increase -> MAX_OVER_TIME) still queries a
+# counter-typed stored field and must cast.
+_COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
+
+
+def _counter_safe_metric_arg(
+    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False
+):
+    """Cast a counter metric to double for ES|QL functions that reject counters.
+
+    Casts when EITHER the field is a confirmed counter, OR the panel's *source*
+    PromQL used a counter-only range function (rate/irate/increase) and the
+    target has not authoritatively refuted the counter classification — mirroring
+    the telemetry contract / seeder. RATE/IRATE/INCREASE consume the raw counter
+    directly, so they are never cast; an authoritative gauge (``counter_refuted``)
+    is left unchanged to avoid needless cast / snapshot churn.
+
+    This is the shared counter-safe helper used by both the direct/topk family
+    rules (via the translate.py import) and the composed binary measure-spec /
+    join-ratio paths below, so degraded-range casting stays consistent.
+    """
+    if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
+        return metric_expr
+    counter_source = (
+        (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
+        and not counter_refuted
+    )
+    if is_counter or counter_source:
+        return f"TO_DOUBLE({metric_expr})"
+    return metric_expr
+
+
+def _counter_refuted(resolver, metric):
+    """True when the target authoritatively says ``metric`` is NOT a counter
+    (explicit rule-pack ``gauge`` pin or live gauge field-caps). Silent (False)
+    when offline or the field is unknown, so a counter-style source function can
+    still drive the counter-safe cast."""
+    if resolver is None or not metric:
+        return False
+    refutes = getattr(resolver, "refutes_counter", None)
+    return bool(refutes(metric)) if callable(refutes) else False
 
 
 # Outer aggregations ES|QL rejects directly on counter_long/counter_double
@@ -2455,10 +2500,23 @@ def _apply_fragment_to_context(frag, context):
     if not context.range_window and (frag.range_window or summary.range_window):
         context.range_window = frag.range_window or summary.range_window
 
-def _build_stats_call(outer_agg, inner_func, metric_name, range_window, frag=None):
+def _build_stats_call(
+    outer_agg, inner_func, metric_name, range_window, frag=None,
+    *, is_counter=False, resolver=None,
+):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
     esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
-    inner_expr = f"{esql_inner}({metric_name}, {range_window})"
+    # Keep the counter-safe cast on composed (join-ratio) operands: a degraded
+    # increase()/rate() over an unknown-caps counter must still wrap the metric
+    # in TO_DOUBLE, exactly like the standalone/measure-spec paths (PR #234).
+    metric_arg = _counter_safe_metric_arg(
+        esql_inner,
+        metric_name,
+        is_counter,
+        frag.range_func if frag else None,
+        counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
+    )
+    inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
     return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
@@ -3086,7 +3144,7 @@ def _build_measure_spec(
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = metric_field
+            stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
@@ -3161,7 +3219,14 @@ def _build_measure_spec(
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        inner_expr = f"{esql_inner}({metric_field}, {frag.range_window})"
+        inner_arg = _counter_safe_metric_arg(
+            esql_inner,
+            metric_field,
+            is_counter,
+            frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+        )
+        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -3187,8 +3252,15 @@ def _build_measure_spec(
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        inner_arg = _counter_safe_metric_arg(
+            esql_inner,
+            metric_field,
+            is_counter,
+            frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+        )
         stats_expr = _apply_outer_agg(
-            esql_outer, f"{esql_inner}({metric_field}, {frag.range_window})", frag
+            esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
@@ -3304,10 +3376,27 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
             return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
         return None
     ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
-    if agg.endswith("_OVER_TIME") and ts_match:
+    # A top-level windowed time-series function (the *_OVER_TIME family AND the
+    # counter range functions RATE/IRATE/INCREASE/DELTA/DERIV) takes the window
+    # as its own trailing argument. Only the value (field) may be wrapped in
+    # CASE; folding the whole inner would push the window literal into the CASE
+    # and emit an invalid 4-arg CASE (issue: bare RATE + per-operand filter).
+    if (
+        agg.endswith("_OVER_TIME")
+        or agg in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}
+    ) and ts_match:
         field = ts_match.group("field").strip()
         window = ts_match.group("window").strip()
         return f"{agg}(CASE({condition}, {field}, NULL), {window})"
+    nested_ts = re.fullmatch(
+        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
+        inner,
+    )
+    if nested_ts:
+        func = nested_ts.group("func")
+        field = nested_ts.group("field").strip()
+        window = nested_ts.group("window").strip()
+        return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
     if re.fullmatch(r"LAST_OVER_TIME\(.+\)", inner):
         return None
     if inner == "*":

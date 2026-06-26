@@ -37,7 +37,7 @@ from .models import (
 )
 
 GRID_COLUMNS = 48
-KIBANA_MIN_VERSION = "9.1.0"
+KIBANA_MIN_VERSION = "9.5.0"
 MIN_PANEL_WIDTH = 8
 
 CHART_TYPE_MAP: dict[str, str] = {
@@ -62,6 +62,16 @@ KIBANA_TYPE_HEIGHT: dict[str, int] = {
     "markdown": 6,
 }
 KIBANA_DEFAULT_HEIGHT = 8
+_DATADOG_PRIVATE_PANEL_KEYS = (
+    "_dd_y",
+    "_dd_x",
+    "_dd_w",
+    "_dd_h",
+    "_dd_type",
+    "_dd_display_type",
+    "_dd_widget_id",
+    "_markdown_role",
+)
 
 
 def generate_dashboard_yaml(
@@ -93,20 +103,18 @@ def generate_dashboard_yaml(
         if panel:
             panels.append(panel)
 
+    _ensure_unique_leaf_panel_titles(panels, result_map)
+
     non_section = [p for p in panels if "section" not in p]
     _apply_row_layout(non_section)
-    for p in non_section:
-        for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-            p.pop(key, None)
 
     for p in panels:
         if "section" in p:
-            for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-                p.pop(key, None)
             p.pop("size", None)
             p.pop("position", None)
 
     _resolve_overlaps(non_section)
+    _strip_datadog_private_keys(panels)
 
     doc: dict[str, Any] = {
         "dashboards": [
@@ -141,6 +149,71 @@ def generate_dashboard_yaml(
     return yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
+def _iter_leaf_panels(panels: list[dict[str, Any]]):
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            yield from _iter_leaf_panels(section.get("panels") or [])
+        else:
+            yield panel
+
+
+def _fallback_panel_title(panel: dict[str, Any], result: TranslationResult | None) -> str:
+    source_type = str(
+        panel.get("_dd_display_type")
+        or panel.get("_dd_type")
+        or (result.dd_widget_type if result else "")
+        or "widget"
+    ).replace("_", " ")
+    widget_id = str(panel.get("_dd_widget_id") or (result.widget_id if result else "") or "").strip()
+    suffix = f" {widget_id}" if widget_id else ""
+    return f"Datadog {source_type}{suffix}".strip()
+
+
+def _ensure_unique_leaf_panel_titles(
+    panels: list[dict[str, Any]],
+    result_map: dict[str, TranslationResult],
+) -> None:
+    """Keep emitted Datadog panel titles usable as render-audit keys.
+
+    Datadog integration dashboards frequently omit widget titles or repeat the
+    same short title across several tiles. Kibana can render that, but the
+    migration report and render audit key panel metadata by title, so blanks or
+    duplicates collapse per-panel verdicts. Assign stable emitted titles and keep
+    the matching TranslationResult title in sync for the report.
+    """
+    used: set[str] = set()
+    for ordinal, panel in enumerate(_iter_leaf_panels(panels), start=1):
+        widget_id = str(panel.get("_dd_widget_id") or "")
+        result = result_map.get(widget_id)
+        base = str((result.title if result else "") or panel.get("title") or "").strip()
+        if not base:
+            base = _fallback_panel_title(panel, result)
+
+        title = base
+        if title in used:
+            suffix = f"widget {widget_id}" if widget_id else str(ordinal)
+            title = f"{base} ({suffix})"
+            counter = 2
+            while title in used:
+                title = f"{base} ({suffix}-{counter})"
+                counter += 1
+
+        used.add(title)
+        panel["title"] = title
+        if result is not None:
+            result.title = title
+
+
+def _strip_datadog_private_keys(panels: list[dict[str, Any]]) -> None:
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            _strip_datadog_private_keys(section.get("panels") or [])
+        for key in _DATADOG_PRIVATE_PANEL_KEYS:
+            panel.pop(key, None)
+
+
 def _build_controls_from_template_vars(
     template_vars: list[TemplateVariable],
     data_view: str,
@@ -162,6 +235,13 @@ def _build_controls_from_template_vars(
             tag = tv.name
         if not tag:
             continue
+        # A template-variable prefix can use Datadog's "@tag" facet syntax
+        # (e.g. "@host"); the facet refers to the same tag key as "host", so
+        # strip the leading "@" before mapping. Without this the control binds
+        # to a literal "@host" field that doesn't exist, leaving an empty
+        # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
+        # is a real field name in the log-query path.)
+        tag = tag.lstrip("@")
         es_field = field_map.map_tag(tag, context="metric") if field_map else tag
         control: dict[str, Any] = {
             "type": "options",
@@ -282,6 +362,7 @@ def _build_yaml_panel(
     panel["_dd_h"] = int(layout.get("height", 2) or 2)
     panel["_dd_type"] = widget.widget_type
     panel["_dd_display_type"] = widget.display_type
+    panel["_dd_widget_id"] = widget.id
     return panel
 
 
@@ -550,10 +631,6 @@ def _build_group_panel(
     _apply_row_layout(child_panels)
     _resolve_overlaps(child_panels)
 
-    for p in child_panels:
-        for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-            p.pop(key, None)
-
     return {
         "title": widget.title or "Section",
         "section": {
@@ -655,13 +732,33 @@ def _is_ordered_layout(source_rows: list[list[dict[str, Any]]]) -> bool:
     )
 
 
+def _effective_panel_height(panel: dict[str, Any], width: int | None = None) -> int:
+    """Preferred height clamped to the panel type's (min_h, max_h).
+
+    The layout y-cursor must advance by the height a tile will ACTUALLY have
+    after ``_normalize_tile_sizes`` floors it to min_h (and caps at max_h). Using
+    the raw preferred height desyncs the cursor (e.g. a query_value's preferred 5
+    vs metric min_h 6), so the next row lands a row too high; ``_resolve_overlaps``
+    then pushes only the panels that overlap the row above, splitting the row and
+    leaving an overlap that ``_fill_simple_row`` can widen into a real collision.
+    """
+    h = _preferred_panel_height(panel, width)
+    constraints = PANEL_SIZE_CONSTRAINTS.get(_kibana_panel_type(panel))
+    if constraints is not None:
+        _min_w, min_h, max_h = constraints
+        h = max(h, min_h)
+        if max_h is not None:
+            h = min(h, max_h)
+    return h
+
+
 def _apply_heuristic_layout(rows: list[list[dict[str, Any]]]) -> None:
     """Layout using family-based width heuristics (for ordered/stacked dashboards)."""
     y_cursor = 0
     for row_panels in rows:
         widths = _plan_row_widths(row_panels)
         heights = [
-            _preferred_panel_height(panel, width)
+            _effective_panel_height(panel, width)
             for panel, width in zip(row_panels, widths)
         ]
         row_height = max(heights) if heights else KIBANA_DEFAULT_HEIGHT
@@ -682,6 +779,20 @@ def _apply_proportional_layout(rows: list[list[dict[str, Any]]]) -> None:
     """
     y_cursor = 0
     for row_panels in rows:
+        # A lone stat/metric tile must not balloon to the full grid: span-based
+        # scaling derives col_scale from the panel's own extent, so a 3/12-wide
+        # query_value would stretch to all 48 columns (one number across the
+        # whole dashboard). Give it the single-metric width the heuristic branch
+        # already uses (_plan_row_widths -> 24); charts/tables still expand.
+        if len(row_panels) == 1 and _panel_family(row_panels[0]) == "metric":
+            panel = row_panels[0]
+            w = _plan_row_widths(row_panels)[0]
+            h = _effective_panel_height(panel, w)
+            panel["size"] = {"w": w, "h": h}
+            panel["position"] = {"x": 0, "y": y_cursor}
+            y_cursor += h
+            continue
+
         xs = [int(p.get("_dd_x", 0) or 0) for p in row_panels]
         ws = [int(p.get("_dd_w", 1) or 1) for p in row_panels]
         source_min_x = min(xs) if xs else 0
@@ -692,7 +803,7 @@ def _apply_proportional_layout(rows: list[list[dict[str, Any]]]) -> None:
         for panel, dd_x, dd_w in zip(row_panels, xs, ws):
             w = max(MIN_PANEL_WIDTH, round(dd_w * col_scale))
             x = round((dd_x - source_min_x) * col_scale)
-            h = _preferred_panel_height(panel, w)
+            h = _effective_panel_height(panel, w)
             panel["size"] = {"w": w, "h": h}
             panel["position"] = {"x": x, "y": y_cursor}
 

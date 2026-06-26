@@ -502,11 +502,23 @@ class TestLogParser(unittest.TestCase):
         esql = log_ast_to_esql_where(lq.ast)
         self.assertIn("==", esql)
 
-    def test_grouped_numeric_attribute_filter(self):
+    def test_grouped_numeric_attribute_filter_unknown_caps_is_type_tolerant(self):
+        # Regression for the NGINX "Error logs" runtime failure: without target
+        # field caps, a numeric-looking facet equality (@http.status_code:(404
+        # OR 500)) used to emit `http.status_code == 404` (integer). But log
+        # facets such as http.status_code are commonly mapped as keyword in the
+        # target (the synthetic seeder maps them so), and ES|QL rejects
+        # `<keyword> == <integer>` ("first argument is [keyword] so second
+        # argument must also be [keyword]"). When the field type is unknown, an
+        # equality must be type-tolerant: TO_STRING(field) == "404" runs against
+        # both keyword and numeric mappings.
         lq = parse_log_query("@http.status_code:(404 OR 500)")
         esql = log_ast_to_esql_where(lq.ast)
-        self.assertIn("http.status_code == 404", esql)
+        self.assertIn('TO_STRING(http.status_code) == "404"', esql)
+        self.assertIn('TO_STRING(http.status_code) == "500"', esql)
         self.assertIn("OR", esql)
+        # The raw integer comparison that ES|QL rejects on keyword fields is gone.
+        self.assertNotIn("== 404", esql)
 
     def test_grouped_numeric_attribute_filter_quotes_keyword_fields(self):
         profile = FieldMapProfile(
@@ -1958,7 +1970,7 @@ class TestYAMLGeneration(unittest.TestCase):
         rendered_dash = payload["dashboards"][0]
         rendered_panel = rendered_dash["panels"][0]
 
-        self.assertEqual(rendered_dash["minimum_kibana_version"], "9.1.0")
+        self.assertEqual(rendered_dash["minimum_kibana_version"], "9.5.0")
         self.assertEqual(rendered_panel["title"], result.yaml_panel["title"])
         self.assertEqual(rendered_panel["esql"]["query"], result.yaml_panel["esql"]["query"])
         self.assertEqual(rendered_panel["size"], result.yaml_panel["size"])
@@ -2449,6 +2461,17 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(panel["size"]["w"], 48)
         self.assertEqual(panel["size"]["h"], 12)
 
+    def test_single_stat_tile_does_not_balloon_to_full_width(self):
+        # A lone query_value (stat) tile at x>0 takes the proportional layout
+        # branch. Span-based scaling would stretch a 3/12-wide source tile to
+        # all 48 columns (one number across the whole dashboard). A metric tile
+        # must instead keep the single-metric width the ordered/heuristic branch
+        # already uses (24); charts/tables still expand (see the test above).
+        widget = self._make_metric_widget("1", "Uptime", "query_value", {"x": 2, "y": 0, "width": 3, "height": 2})
+        dash = self._render_dashboard([widget])
+        panel = dash["panels"][0]
+        self.assertEqual(panel["size"]["w"], 24)
+
     def test_consecutive_singleton_charts_repack_two_up(self):
         widgets = [
             self._make_metric_widget("1", "A", "timeseries", {"x": 0, "y": 0, "width": 4, "height": 2}),
@@ -2531,6 +2554,52 @@ class TestYAMLGeneration(unittest.TestCase):
         table_panel = next(panel for panel in dash["panels"] if panel["title"] == "Table")
         self.assertEqual(table_panel["size"]["w"], 48)
         self.assertGreater(broken_panel["position"]["y"], table_panel["position"]["y"])
+
+    def test_effective_panel_height_clamps_to_type_minimum(self):
+        # The layout y-cursor must advance by the height a tile will actually
+        # have after _normalize_tile_sizes floors it. A query_value's preferred
+        # height (5) is below the metric min_h (6); _effective_panel_height must
+        # return 6 so the cursor doesn't drift and split the next row.
+        from observability_migration.adapters.source.datadog.generate import (
+            _effective_panel_height,
+            _preferred_panel_height,
+        )
+        metric = {"esql": {"type": "metric"}, "_dd_type": "query_value"}
+        self.assertEqual(_preferred_panel_height(metric, 24), 5)
+        self.assertEqual(_effective_panel_height(metric, 24), 6)
+
+    def test_metric_row_then_chart_row_with_table_has_no_overlap(self):
+        # Regression for the Datadog "S3 summary"-style layout: a metric row
+        # (one tile degrading to a placeholder) above a chart row that mixes
+        # charts and a table. The preferred-vs-min_h height desync used to land
+        # the placeholder a row too high; _resolve_overlaps then pushed only the
+        # charts overlapping it, splitting the row, and _fill_simple_row widened
+        # the gap into a real overlap with the un-pushed table.
+        broken = NormalizedWidget(
+            id="1", widget_type="query_value", title="Cost",
+            queries=[WidgetQuery(name="q1", data_source="metrics", raw_query="x", query_type="metric_unparsed")],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        widgets = [
+            self._make_metric_widget("2", "Total Storage", "query_value", {"x": 0, "y": 0, "width": 4, "height": 2}),
+            self._make_metric_widget("3", "Total Objects", "query_value", {"x": 4, "y": 0, "width": 4, "height": 2}),
+            broken,
+            self._make_metric_widget("4", "Storage by Bucket", "timeseries", {"x": 0, "y": 2, "width": 4, "height": 3}),
+            self._make_metric_widget("5", "Objects by Bucket", "timeseries", {"x": 4, "y": 2, "width": 4, "height": 3}),
+            self._make_metric_widget("6", "Storage by Tier", "toplist", {"x": 8, "y": 2, "width": 4, "height": 3}),
+        ]
+        dash = self._render_dashboard(widgets)
+        rects = [
+            (p["title"], p["position"]["x"], p["position"]["y"], p["size"]["w"], p["size"]["h"])
+            for p in dash["panels"]
+        ]
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                (_, ax, ay, aw, ah), (_, bx, by, bw, bh) = rects[i], rects[j]
+                overlap = ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+                self.assertFalse(
+                    overlap, f"panels overlap: {rects[i]} vs {rects[j]}"
+                )
 
     def test_duplicate_request_formula_labels_use_metric_names(self):
         raw = {
@@ -2907,6 +2976,25 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(OTEL_PROFILE.map_tag("host"), "host.name")
         self.assertEqual(OTEL_PROFILE.map_tag("env"), "deployment.environment")
         self.assertEqual(OTEL_PROFILE.map_tag("service"), "service.name")
+
+    def test_control_strips_datadog_facet_at_prefix_before_mapping(self):
+        # Datadog's "@tag" facet syntax (template-variable prefix "@host") refers
+        # to the same tag key as "host". A control must map it to the ES field
+        # (host.name), not a literal "@host" field that doesn't exist — otherwise
+        # the dropdown is empty and can't filter. (map_tag itself must NOT strip
+        # "@" globally: "@attr" is a real field in the log-query path.)
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        tvs = [
+            TemplateVariable(name="host", prefix="@host", default="*", defaults=[]),
+            TemplateVariable(name="svc", prefix="@consul_service_id", default="*", defaults=[]),
+        ]
+        controls = _build_controls_from_template_vars(tvs, "metrics-*", OTEL_PROFILE)
+        fields = [c["field"] for c in controls]
+        self.assertEqual(fields, ["host.name", "consul_service_id"])
 
     def test_otel_tag_map_prefers_otel_kubernetes_semconv_fields(self):
         self.assertEqual(OTEL_PROFILE.map_tag("pod_name"), "k8s.pod.name")

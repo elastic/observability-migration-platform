@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "totals": {
+    "panels": 223,
+    "findings": 66,
+    "errors": 0
+  },
+  "by_category": {
+    "ACCESSOR_BROKEN": {
+      "total": 0,
+      "errors": 0
+    },
+    "BREAKDOWN_LEGEND_MISMATCH": {
+      "total": 0,
+      "errors": 0
+    },
+    "VISUAL_SEMANTIC_DRIFT": {
+      "total": 66,
+      "errors": 0
+    },
+    "PLACEHOLDER_DROPPED": {
+      "total": 0,
+      "errors": 0
+    }
+  }
+}

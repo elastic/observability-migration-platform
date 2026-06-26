@@ -144,15 +144,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_combinations <= 0:
         print("ERROR: --max-combinations must be greater than 0")
         return 1
-    if not es_endpoint or not api_key:
-        print("ERROR: ELASTICSEARCH_ENDPOINT and KEY must be set (or pass --es-endpoint/--api-key)")
+    if not es_endpoint:
+        print("ERROR: ELASTICSEARCH_ENDPOINT must be set (or pass --es-endpoint)")
         return 1
+    if not api_key:
+        # A security-disabled local stack (e.g. the local render-audit workflow)
+        # legitimately has no key; seed without an Authorization header.
+        print("note: no API key set — seeding without authentication (local no-auth stack)")
 
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url)
     request = make_es_request(es_endpoint, api_key)
 
     print("=== Common Telemetry Data Setup ===")
     print(f"Artifact dirs: {', '.join(str(path) for path in artifact_dirs)}")
+    if args.no_recreate:
+        print(
+            "  note: --no-recreate keeps the existing stream's field mappings, so "
+            "counter typing (time_series_metric: counter) is NOT reapplied. If a "
+            "_total metric was previously mapped as a plain double, migrated "
+            "RATE()/IRATE() panels will fail at QUERY time ('must be [counter...], "
+            "found ... [double]'). Re-run WITHOUT --no-recreate to recreate the "
+            "stream with counter typing."
+        )
     try:
         summary = seed_sample_data(
             artifact_dirs,
@@ -180,6 +193,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ingest error sample: {sample}")
     if summary.errors:
         print("Setup failed: bulk ingest reported errors")
+        if args.no_recreate and any(
+            "extracting routing" in str(s).lower() for s in summary.error_samples
+        ):
+            print(
+                "  hint: --no-recreate reuses the EXISTING data stream, whose "
+                "routing_path may not cover this contract's dimensions; a doc whose "
+                "only dimension is a new label is then rejected ('source didn't "
+                "contain any routing fields'). Re-run WITHOUT --no-recreate to "
+                "recreate the stream with this contract's routing_path."
+            )
         return 1
     print("Setup complete")
     return 0

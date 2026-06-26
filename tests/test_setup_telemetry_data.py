@@ -264,6 +264,58 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("does not exist", output)
 
+    def test_main_accepts_empty_api_key_for_local_no_auth_stack(self):
+        # The local render-audit workflow seeds a security-disabled stack and
+        # passes --api-key "". An empty key must be accepted (not rejected as
+        # missing) and threaded through to make_es_request verbatim.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump({"dashboards": [{"panels": [{"esql": {
+                    "query": "FROM logs-*\n| STATS count = COUNT(*) BY service.name"}}]}]}),
+                encoding="utf-8",
+            )
+
+            captured: dict[str, str] = {}
+
+            def fake_make_es_request(es_url, api_key, **_kw):
+                captured["api_key"] = api_key
+
+                def request(method, path, body=None, content_type="application/json"):
+                    if path == "/_bulk":
+                        docs = [line for line in body.decode().splitlines() if line.startswith('{"create"')]
+                        return {"items": [{"create": {}} for _ in docs]}
+                    return {"acknowledged": True}
+
+                return request
+
+            with mock.patch.object(
+                setup_telemetry_data, "make_es_request", side_effect=fake_make_es_request
+            ):
+                exit_code = setup_telemetry_data.main(
+                    [
+                        str(artifact_dir),
+                        "--es-endpoint", "http://localhost:9200",
+                        "--api-key", "",
+                        "--data-hours", "1",
+                        "--interval-sec", "3600",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(captured["api_key"], "")
+
+    def test_main_rejects_missing_es_endpoint(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = setup_telemetry_data.main(
+                ["/tmp", "--es-endpoint", "", "--api-key", "secret"]
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("ELASTICSEARCH_ENDPOINT", stdout.getvalue())
+
     def test_main_rejects_invalid_data_hours_or_interval(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):

@@ -1,8 +1,5 @@
 title: Request Latency Heatmap
 grafana_type: heatmap
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['http_request_duration_seconds_bucket']
-breakdown: le
-warning: Approximated as line chart (no direct heatmap mapping)
+status: migrated
+chart_type: heatmap
+metric: http_request_duration_seconds_bucket

@@ -71,10 +71,13 @@ def scorecard_for_migration(
 def compare_to_baseline(
     current: dict[str, Any], baseline: dict[str, Any]
 ) -> tuple[bool, list[str]]:
-    """Ratchet check: ``current`` errors must not exceed ``baseline`` errors.
+    """Ratchet check: ``current`` errors must not exceed ``baseline`` errors,
+    and panel coverage (the denominator) must not silently shrink.
 
-    Returns ``(ok, regressions)``. Improvements (fewer errors, or fewer panels
-    affected) are always allowed.
+    Returns ``(ok, regressions)``. Improvements (fewer errors, more panels) are
+    always allowed. A drop in ``totals.panels`` is a regression: a collapsing
+    denominator makes an error-only ratchet look "clean" (0/0) while coverage
+    silently erodes. Intentional corpus shrinks re-baseline with ``--update``.
     """
     regressions: list[str] = []
     cur_total = current.get("totals", {}).get("errors", 0)
@@ -82,6 +85,12 @@ def compare_to_baseline(
     if cur_total > base_total:
         regressions.append(
             f"total errors increased: {base_total} -> {cur_total}"
+        )
+    cur_panels = current.get("totals", {}).get("panels", 0)
+    base_panels = baseline.get("totals", {}).get("panels", 0)
+    if cur_panels < base_panels:
+        regressions.append(
+            f"panel coverage dropped: {base_panels} -> {cur_panels}"
         )
     cur_cats = current.get("by_category", {})
     base_cats = baseline.get("by_category", {})

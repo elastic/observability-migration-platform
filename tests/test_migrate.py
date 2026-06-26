@@ -773,6 +773,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
         )
 
+    def test_filtered_outer_agg_wraps_case_inside_nested_ts_function(self):
+        expr = promql._inline_filters_into_stats_expr(
+            "SUM(RATE(node_cpu_seconds_total, 5m))",
+            ['mode == "system"'],
+        )
+
+        self.assertEqual(
+            expr,
+            'SUM(RATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m))',
+        )
+        self.assertNotIn("CASE((mode == \"system\"), RATE(", expr)
+
     def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM(LAST_OVER_TIME(kube_pod_container_resource_requests))",
@@ -921,7 +933,10 @@ class TranslatorRegressionTests(unittest.TestCase):
             '/ on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance="$node",job="$job"}[1m])))'
         )
 
-        self.assertIn("IRATE(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn(
+            'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
+            translated.esql_query,
+        )
         self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
@@ -1009,9 +1024,51 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
+        # latest-bucket reducer (matches the warning, the docs, and the Datadog
+        # sibling) -- NOT a range-wide MAX, which reports a stale peak (PR #234).
         self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
+        self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
         self.assertIn("LIMIT 5", translated.esql_query)
         self.assertIn("Translated grouped topk() as latest-bucket ES|QL top N", translated.warnings)
+
+    def test_topk_delta_counter_casts_metric_before_delta(self):
+        self.seed_field_caps(
+            {
+                "kafka_topic_partition_current_offset": {
+                    "counter_double": {
+                        "type": "counter_double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "topic": {"keyword": {"type": "keyword", "searchable": True, "aggregatable": True}},
+            }
+        )
+
+        translated = self.translate(
+            "topk(5, sum(delta(kafka_topic_partition_current_offset[5m])) by (topic))"
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn(
+            "DELTA(TO_DOUBLE(kafka_topic_partition_current_offset), 5m)",
+            translated.esql_query,
+        )
+
+    def test_topk_value_filter_runs_after_terminal_value_stats(self):
+        translated = self.translate(
+            "topk(5, sum(rate(http_requests_total[5m]) > 0) by (handler))"
+        )
+
+        lines = translated.esql_query.splitlines()
+        value_stats_idx = next(
+            i for i, line in enumerate(lines)
+            if line.startswith("| STATS") and "value =" in line
+        )
+        value_filter_idx = next(i for i, line in enumerate(lines) if line == "| WHERE value > 0")
+
+        self.assertGreater(value_filter_idx, value_stats_idx)
 
     def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
         translated = self.translate(
@@ -1534,12 +1591,19 @@ class TranslatorRegressionTests(unittest.TestCase):
         """increase() is NOT forced to counter the way rate()/irate() are: it can
         be misused on a real gauge, and ES|QL INCREASE() also requires counter
         typing. With no counter suffix and no target proof, keep the conservative
-        gauge degradation (consistent with the contract's soft-counter treatment
-        of increase())."""
+        gauge *function* degradation (INCREASE -> MAX_OVER_TIME, consistent with
+        the contract's soft-counter treatment of increase()).
+
+        The degraded function's metric argument must still be wrapped in
+        TO_DOUBLE: the telemetry contract / seeder type any increase()-ed field
+        as a counter when the target is silent, and ES|QL rejects MAX_OVER_TIME
+        on a counter (the MySQL "Network Usage Hourly" runtime failure). The
+        cast is a no-op if the field is in fact a gauge double, so it is safe
+        under target uncertainty."""
         translated = self.translate("increase(weird_unknown_metric[5m])")
         esql = translated.esql_query
         self.assertNotIn("INCREASE(weird_unknown_metric", esql)
-        self.assertIn("MAX_OVER_TIME(weird_unknown_metric", esql)
+        self.assertIn("MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)", esql)
 
     def test_rate_on_counter_typed_field_still_uses_RATE(self):
         """Regression guard: degradation must only fire for gauge-typed
@@ -1987,24 +2051,26 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = MAX(LAST_OVER_TIME(node_systemd_units)) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
+        self.assertNotIn("node_systemd_units = node_systemd_units", translated.esql_query)
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
 
     def test_unknown_gauge_selector_assumes_tsds_direct_ts(self):
-        # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge
-        # (STATS field = field), which preserves per-series rows. No FROM+AVG collapse,
-        # so no honest-loss warning (the series are retained, nothing is dropped).
+        # Migration default: an unproven bare gauge assumes TSDS -> TS gauge path.
+        # ES|QL still requires an aggregate expression inside STATS, so use
+        # LAST_OVER_TIME rather than the invalid raw ``STATS field = field`` shape.
         translated = self.translate("node_systemd_units")
 
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = MAX(LAST_OVER_TIME(node_systemd_units)) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
+        self.assertNotIn("node_systemd_units = node_systemd_units", translated.esql_query)
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("Collapsed all series" in warning for warning in translated.warnings))
 
@@ -4963,7 +5029,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
-    def test_live_missing_metric_field_is_not_marked_migrated(self):
+    def test_live_missing_metric_field_is_data_readiness_not_not_feasible(self):
         self.seed_field_caps({
             "some_other_metric": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
         })
@@ -4971,8 +5037,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         translated = self.translate("missing_metric_total")
 
-        self.assertEqual(translated.feasibility, "not_feasible")
-        self.assertIn("Target field missing_metric_total is missing from live schema discovery", translated.warnings)
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn(
+            "Target field missing_metric_total is missing from live schema discovery (data readiness, not translation infeasibility)",
+            translated.warnings,
+        )
 
     def test_template_variable_metric_name_is_not_marked_migrated(self):
         translated = self.translate("$metric")
@@ -6745,6 +6814,34 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"~\"))", yaml_panel["esql"]["query"])
         self.assertIn("Approximated bargauge as bar chart", result.reasons)
 
+    def test_single_value_bargauge_becomes_horizontal_bullet_gauge(self):
+        # A single-value Grafana bargauge is the snapshot of one metric against a
+        # scale -- the faithful Kibana equivalent is a bullet gauge, not a plain
+        # number tile. Horizontal orientation -> horizontal_bullet shape.
+        panel = {
+            "title": "CPU Busy",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "options": {"orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}},
+            "fieldConfig": {"defaults": {"max": 100, "unit": "percent"}},
+            "targets": [{"refId": "A", "expr": "node_load1", "instant": True, "legendFormat": "Load"}],
+        }
+        yaml_panel, _ = self.translate_panel(panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "gauge")
+        self.assertEqual(yaml_panel["esql"]["appearance"]["shape"], "horizontal_bullet")
+
+    def test_single_value_vertical_bargauge_becomes_vertical_bullet_gauge(self):
+        panel = {
+            "title": "CPU Busy",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "options": {"orientation": "vertical"},
+            "targets": [{"refId": "A", "expr": "node_load1", "instant": True}],
+        }
+        yaml_panel, _ = self.translate_panel(panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "gauge")
+        self.assertEqual(yaml_panel["esql"]["appearance"]["shape"], "vertical_bullet")
+
     def test_narrow_xy_panel_defaults_legend_to_bottom(self):
         panel = {
             "title": "CPU Usage",
@@ -7196,7 +7293,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             )
             payload = yaml.safe_load(yaml_path.read_text())
         panels = payload["dashboards"][0]["panels"]
-        self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.1.0")
+        self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.5.0")
         self.assertEqual(
             payload["dashboards"][0]["filters"],
             [{"field": "data_stream.dataset", "equals": "prometheus"}],
@@ -9333,7 +9430,9 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Head chunks count")
 
-    def test_heatmap_panel_falls_back_to_line(self):
+    def test_heatmap_panel_emits_native_heatmap(self):
+        # A histogram-bucket heatmap (BY time, le) maps to a native Kibana
+        # heatmap: x=time, y=le, color=metric (previously fell back to a line).
         panel = {
             "id": 3,
             "type": "heatmap",
@@ -9345,13 +9444,24 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         yaml_panel, result = self.translate_panel(panel)
         self.assertIsNotNone(yaml_panel)
         self.assertEqual(result.grafana_type, "heatmap")
-        self.assertEqual(result.kibana_type, "heatmap")
-        esql_type = yaml_panel.get("esql", {}).get("type", "")
-        self.assertEqual(esql_type, "line", "heatmap should fall back to line chart via fallback rule")
-        self.assertTrue(
-            any("Approximated" in r or "no direct" in r for r in result.reasons),
-            f"Expected fallback warning, got {result.reasons}",
-        )
+        esql = yaml_panel.get("esql", {})
+        self.assertEqual(esql.get("type", ""), "heatmap")
+        self.assertEqual((esql.get("y_axis") or {}).get("field"), "le")
+        self.assertIn("x_axis", esql)
+        self.assertIn("metric", esql)
+
+    def test_heatmap_without_second_dimension_degrades_to_line(self):
+        # Without a y-axis bucket a heatmap is undefined; degrade to line/metric.
+        panel = {
+            "id": 4,
+            "type": "heatmap",
+            "title": "Bare Heatmap",
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"expr": "sum(rate(http_requests_total[5m]))", "refId": "A"}],
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        self.assertIn(yaml_panel.get("esql", {}).get("type", ""), ("line", "metric"))
 
     def test_piechart_panel_maps_to_pie(self):
         panel = {
@@ -10990,11 +11100,12 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         # bar's L2 min_w=8 *would* bump Pressure's right edge to
         # x=8, but CPU Busy sits at x=6..12 -- collision-aware L2
         # keeps Pressure at w=6 to preserve the side-by-side layout
-        # the author chose. Height bumps are independent: gauge h=6
-        # has no vertical neighbour to collide with so it bumps to
-        # L2 gauge min_h=8.
-        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6}, "bar w stays at 6 (collision with CPU Busy)")
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge h bumps to L2 min_h=8")
+        # the author chose. The row cap is lifted to the highest type
+        # legibility floor in the row (gauge min_h=8), so both panels
+        # grow to h=8: the gauge reaches its legibility floor and the
+        # row stays uniform.
+        self.assertEqual(panels[0]["size"], {"w": 6, "h": 8}, "bar w stays at 6 (collision); h lifted to row legibility floor")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge reaches min_h=8; row-mate bar lifted to match")
         # Both panels share Grafana y=1 -> they're the topmost, so
         # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -11330,6 +11441,82 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             f"regression has returned.",
         )
 
+    def test_kibana_native_layout_compacts_stale_collapsed_row_gap(self):
+        """A *collapsed* Grafana row stores its child panels with their
+        last-expanded absolute gridPos, so the first visible row can sit
+        hundreds of rows above the rest (eg. node-exporter-full: CPU/Memory at
+        y=21, Network Traffic at y=433). The faithful transform would preserve
+        that ~400-row gap as a huge blank stripe. Such an artifact gap must be
+        compacted away while small deliberate gaps (see the test above) stay.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "CPU", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 21, "_grafana_row_x": 0, "_grafana_w": 12, "_grafana_h": 12},
+            {"title": "Memory", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 21, "_grafana_row_x": 12, "_grafana_w": 12, "_grafana_h": 12},
+            # Stale coordinates: Grafana left these ~400 rows below.
+            {"title": "Net", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 433, "_grafana_row_x": 0, "_grafana_w": 12, "_grafana_h": 12},
+            {"title": "Disk", "esql": {"type": "line"}, "size": {}, "position": {},
+             "_grafana_row_y": 433, "_grafana_row_x": 12, "_grafana_w": 12, "_grafana_h": 12},
+        ]
+        _apply_kibana_native_layout(panels)
+        by = {p["title"]: p for p in panels}
+        cpu_bottom = by["CPU"]["position"]["y"] + by["CPU"]["size"]["h"]
+        net_top = by["Net"]["position"]["y"]
+        gap = net_top - cpu_bottom
+        self.assertLessEqual(
+            gap, 2,
+            f"stale collapsed-row gap should be compacted to near-contiguous "
+            f"(got {gap} empty rows between the CPU/Memory row and Net/Disk row)",
+        )
+        # The second row must still sit below the first (order preserved).
+        self.assertGreaterEqual(net_top, cpu_bottom)
+
+    def test_collision_minimums_keep_uniform_source_row_uniform(self):
+        """A row that was uniform-height in Grafana must stay uniform in Kibana.
+
+        node-exporter-full "Quick CPU / Mem / Disk" puts a bargauge ("Pressure")
+        next to five gauges, all at gridPos h=4 (-> h=6 after the 1.5x scale).
+        The gauge per-type readability floor (min_h=8) used to bump only the
+        gauges to 8 while the bar stayed at 6, making the row look ragged. A
+        panel must not be grown taller than its tallest source row-mate.
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Pressure", "esql": {"type": "bar"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 3, "_grafana_h": 4},
+            {"title": "CPU Busy", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 3, "_grafana_w": 3, "_grafana_h": 4},
+            {"title": "Sys Load", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 6, "_grafana_w": 3, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        heights = {p["title"]: p["size"]["h"] for p in panels}
+        self.assertEqual(
+            len(set(heights.values())), 1,
+            f"a source-uniform row must stay uniform height, got {heights}",
+        )
+        # The row lifts to the highest type legibility floor in the row (gauge
+        # min_h=8), so all panels — including the bar — reach h=8.
+        self.assertEqual(heights["CPU Busy"], 8, heights)
+
+    def test_collision_minimums_still_bump_standalone_short_panel(self):
+        """The row-uniformity cap must not block the readability floor for a
+        panel that stands alone at its y (no row-mate to stay consistent with).
+        """
+        from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
+
+        panels = [
+            {"title": "Lonely gauge", "esql": {"type": "gauge"}, "size": {}, "position": {},
+             "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 6, "_grafana_h": 4},
+        ]
+        _apply_kibana_native_layout(panels)
+        # 4 * 1.5 = 6, below the gauge min_h of 8; with no row-mate it bumps to 8.
+        self.assertEqual(panels[0]["size"]["h"], 8)
 
     def test_fill_simple_row_bails_when_all_panels_at_hard_min(self):
         """When every panel in the row is already at HARD_MIN_W and the
@@ -12176,6 +12363,32 @@ class NativePromqlTests(unittest.TestCase):
         self.assertTrue(can_use_native_promql("up"))
         self.assertTrue(can_use_native_promql("rate(foo[5m])"))
         self.assertTrue(can_use_native_promql('sum by (job) (rate(http_requests_total[5m]))'))
+        self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
+
+    def test_rejects_range_selector_on_aggregation(self):
+        # A range selector ``[Ns]`` (no colon) applied to an aggregation /
+        # function result is invalid PromQL ("ranges only allowed for vector
+        # selectors"). The ES native PROMQL engine rejects it at parse time, so
+        # the panel must NOT take the native path — it should fall through to the
+        # ES|QL translator, which marks it not_feasible (degrade gracefully)
+        # rather than emitting a query that hard-errors in Kibana.
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(
+            can_use_native_promql("irate(sum by (vhost) (rabbitmq_queue_messages_ready)[5m])")
+        )
+        self.assertFalse(
+            can_use_native_promql(
+                'irate(sum by (vhost, tenant_id) (rabbitmq_queue_messages_ready{tenant_id=~"t1"})[5m])'
+            )
+        )
+        # The Grafana ``[$__interval]`` macro form of the same malformed shape.
+        self.assertFalse(
+            can_use_native_promql("irate(sum by (vhost) (rabbitmq_queue_messages_ready)[$__interval])")
+        )
+        # Valid shapes that must keep the native path: a range on a real vector
+        # selector, and a subquery (already blocked separately) stays rejected.
+        self.assertTrue(can_use_native_promql("rate(foo[5m])"))
+        self.assertTrue(can_use_native_promql("sum by (job) (rate(http_requests_total[5m]))"))
         self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
 
     def test_rejects_topk(self):

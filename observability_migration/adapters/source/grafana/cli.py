@@ -74,6 +74,7 @@ from .esql_validate import (
     _query_source_and_index,
     configure_es_auth,
     summarize_validation_records,
+    validate_esql,
     validate_query_with_fixes,
     write_suggested_rule_pack,
 )
@@ -214,6 +215,21 @@ def parse_args(argv: list[str] | None = None):
         "--validate",
         action="store_true",
         help="Validate generated ES|QL queries against Elasticsearch",
+    )
+    parser.add_argument(
+        "--translation-mode",
+        dest="translation_mode",
+        choices=["auto", "native", "esql"],
+        default="auto",
+        help=(
+            "Control the PromQL translation strategy (issue #158): "
+            "'auto' (default) probes the target and uses native PROMQL when the "
+            "ES|QL PROMQL command is available, otherwise falls back to ES|QL; "
+            "'native' forces native PROMQL even if the probe is inconclusive "
+            "(emits queries that error against a cluster lacking the command); "
+            "'esql' disables native PROMQL entirely so every panel uses the ES|QL "
+            "translator."
+        ),
     )
     parser.add_argument(
         "--validate-narrow-limit",
@@ -1178,8 +1194,43 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
                                             cluster down the fallback path
     When no ES URL is configured there is no cluster to probe, so we
     optimistically default to native PROMQL.
+
+    ``--translation-mode`` lets the user override the probe-driven default
+    (issue #158): ``esql`` disables native PROMQL entirely, ``native`` forces it
+    on (still probing only to warn when the command is confirmed absent), and
+    ``auto`` keeps the probe behavior described above.
     """
+    mode = str(getattr(args, "translation_mode", "auto") or "auto").lower()
     es_url = getattr(args, "es_url", "") or ""
+
+    if mode == "esql":
+        print(
+            "  --translation-mode esql: native PROMQL disabled by user request; "
+            "all panels use the ES|QL translator"
+        )
+        return False
+
+    if mode == "native":
+        if es_url:
+            es_api_key = getattr(args, "es_api_key", "") or None
+            runtime_features = runtime_features or _detect_target_runtime_features(
+                es_url, es_api_key, verify=_resolve_tls_from_args(args)
+            )
+            command_state = runtime_features.get(PROMQL_COMMAND_V0, {})
+            confirmed_absent = (
+                isinstance(command_state, dict)
+                and command_state.get("supported") is False
+                and command_state.get("confidence") == "verified"
+            )
+            if confirmed_absent:
+                print(
+                    "  WARNING: --translation-mode native, but the probe confirmed the "
+                    "ES|QL PROMQL command is ABSENT on the target; emitted native "
+                    "PROMQL queries will error at render time (explicit user choice)"
+                )
+        print("  --translation-mode native: forcing native PROMQL by user request")
+        return True
+
     if not es_url:
         print("  No --es-url to probe; defaulting to native PROMQL")
         return True
@@ -1216,6 +1267,69 @@ def _load_configured_rule_pack(args: argparse.Namespace):
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _attach_native_promql_validator(
+    rule_pack, args: argparse.Namespace, *, verify: bool | str = True
+) -> None:
+    """Attach a cached live native-PROMQL parse validator to *rule_pack*.
+
+    The validator is a ``callable(query) -> (ok, error)`` closing over
+    ``validate_esql``; results are memoized by query string so a panel-level
+    re-check of an identical native query costs at most one cluster round-trip.
+    The panels-side gate (``_native_promql_query_survives_validation``) consults
+    this and degrades a panel to ES|QL only on a parse rejection.
+    """
+    es_url = getattr(args, "es_url", "") or ""
+    es_api_key = getattr(args, "es_api_key", "") or None
+    if not es_url:
+        return
+    cache: dict[str, tuple[bool, str]] = {}
+
+    def _native_promql_validator(query: str) -> tuple[bool, str]:
+        if query in cache:
+            return cache[query]
+        try:
+            ok, err = validate_esql(
+                query,
+                es_url,
+                es_api_key=es_api_key,
+                verify=verify,
+            )
+        except Exception:
+            # A transport failure must never block migration; treat as "kept".
+            ok, err = True, ""
+        cache[query] = (ok, err or "")
+        return cache[query]
+
+    rule_pack.native_promql_validator = _native_promql_validator
+
+
+def _print_native_validation_summary(rule_pack) -> None:
+    """Print an observable summary of the per-run native live-validation gate.
+
+    Only emits a line when the live validator actually ran (i.e. it was attached
+    because ``--es-url`` was configured and native PROMQL is in effect). The
+    counts come from ``rule_pack.native_validation_stats`` and reflect per-panel
+    decisions: how many native queries were CHECKED against the target, how many
+    DEGRADED to ES|QL on a parse rejection, and how many were KEPT native.
+    """
+    if getattr(rule_pack, "native_promql_validator", None) is None:
+        return
+    stats = getattr(rule_pack, "native_validation_stats", None) or {}
+    checked = int(stats.get("checked", 0) or 0)
+    degraded = int(stats.get("degraded", 0) or 0)
+    kept = int(stats.get("kept", 0) or 0)
+    if checked == 0:
+        print(
+            "  Native PROMQL live validation: 0 checked "
+            "(no native PROMQL panels in this run)"
+        )
+        return
+    print(
+        f"  Native PROMQL live validation: {checked} checked, "
+        f"{degraded} degraded to ES|QL (target parse rejection), {kept} kept"
+    )
 
 
 def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> None:
@@ -1268,6 +1382,28 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
             )
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""
+        # Attach the live native-PROMQL parse validator when a cluster is
+        # configured so each built native query is probed; a parse rejection
+        # degrades that panel to ES|QL. The closure is cached by query because
+        # the panel-level gate may re-check identical queries; the per-panel
+        # stats live on ``rule_pack.native_validation_stats`` (issue #158).
+        #
+        # Exception: an explicit ``--translation-mode native`` is a deliberate
+        # "emit native PROMQL even if it errors at render time" request (the flag
+        # already warns when the command is confirmed absent). Attaching the
+        # degrading validator there would silently rewrite those panels to ES|QL,
+        # contradicting the flag's contract — so skip it for forced native
+        # (PR #234 review).
+        forced_native = (getattr(args, "translation_mode", "auto") or "auto").lower() == "native"
+        if es_url and not forced_native:
+            rule_pack.native_validation_stats = {"checked": 0, "degraded": 0, "kept": 0}
+            _attach_native_promql_validator(rule_pack, args, verify=verify)
+    else:
+        # ``--translation-mode esql`` (or a confirmed-absent probe) disables the
+        # native path entirely; no validator and the ES|QL translator handles
+        # every panel.
+        rule_pack.native_promql = False
+        rule_pack.native_promql_validator = None
 
     # Offline runs have no cluster to probe; ES|QL named-parameter binding is a
     # stable core feature, so assume it (mirroring the native-PROMQL offline
@@ -1853,6 +1989,8 @@ def main(argv: list[str] | None = None):
             f"(of {result.total_panels} panels)"
         )
 
+    _print_native_validation_summary(rule_pack)
+
     feature_gap_artifacts = _collect_feature_gap_artifacts(dashboard_outputs, args.data_view)
     all_dashboard_links = feature_gap_artifacts["dashboard_links"]
     all_panel_links = feature_gap_artifacts["panel_links"]
@@ -1925,7 +2063,7 @@ def main(argv: list[str] | None = None):
     validation_records = []
     validation_summary = {}
     if args.validate and args.es_url:
-        print("\n[3/7] Validating ES|QL queries against Elasticsearch...", flush=True)
+        print("\n[3/7] Verification-packet ES|QL validation against Elasticsearch...", flush=True)
         passed = 0
         fixed = 0
         fixed_empty = 0
@@ -2018,7 +2156,11 @@ def main(argv: list[str] | None = None):
                 continue
             sync_result_queries_to_yaml(result, yaml_path)
     else:
-        print("\n[3/7] Validation: skipped (pass --validate --es-url to enable)")
+        print(
+            "\n[3/7] Verification-packet ES|QL validation: skipped "
+            "(pass --validate --es-url to enable; this is distinct from the "
+            "native PROMQL parse validation that runs with --es-url)"
+        )
 
     yaml_files = sorted(yaml_dir.glob("*.yaml"))
     print("\n[4/7] Linting generated dashboard YAML...")

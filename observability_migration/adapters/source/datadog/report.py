@@ -13,8 +13,10 @@ from observability_migration.core.reporting.summary_md import (
     AttentionItem,
     DashboardRow,
     GapSummary,
+    PanelProvenance,
     SummaryTotals,
     SummaryView,
+    classify_panel_provenance,
 )
 
 from .models import DashboardResult
@@ -476,6 +478,17 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
     def _gate(pr, name):
         return (pr.verification_packet or {}).get("semantic_gate") == name
 
+    def _provenance(pr):
+        # Datadog never emits native PROMQL, but classify uniformly so the
+        # native count is a derived 0 rather than a hard-coded assumption. The
+        # ``not_feasible`` status string is shared across both sources.
+        return classify_panel_provenance(
+            status=pr.status,
+            query=getattr(pr, "esql_query", "") or "",
+            query_ir=getattr(pr, "query_ir", {}),
+            kibana_type=getattr(pr, "kibana_type", "") or "",
+        )
+
     for dr in results:
         dr.recompute_counts()
 
@@ -496,6 +509,15 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         compiled_total=len(results),
         uploaded_ok=sum(1 for dr in results if dr.uploaded),
         upload_attempted=sum(1 for dr in results if dr.upload_attempted),
+        native_promql=sum(
+            1 for dr in results for pr in _renderable(dr) if _provenance(pr) == PanelProvenance.NATIVE
+        ),
+        esql_translated=sum(
+            1 for dr in results for pr in _renderable(dr) if _provenance(pr) == PanelProvenance.ESQL
+        ),
+        placeholder=sum(
+            1 for dr in results for pr in _renderable(dr) if _provenance(pr) == PanelProvenance.PLACEHOLDER
+        ),
     )
 
     risk_by_title = {item.get("dashboard"): item.get("risk_score") for item in review_queue}
@@ -505,6 +527,7 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
     warning_items: list[AttentionItem] = []
     for dr in results:
         renderable = _renderable(dr)
+        prov = [_provenance(pr) for pr in renderable]
         dashboards.append(
             DashboardRow(
                 title=dr.dashboard_title,
@@ -517,6 +540,9 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
                 compile_error=dr.compile_error,
                 risk_score=risk_by_title.get(dr.dashboard_title),
                 rollout_state="",
+                native_promql=prov.count(PanelProvenance.NATIVE),
+                esql_translated=prov.count(PanelProvenance.ESQL),
+                placeholder=prov.count(PanelProvenance.PLACEHOLDER),
             )
         )
         seen: set = set()

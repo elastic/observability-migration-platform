@@ -69,7 +69,9 @@ def make_es_request(
     hangs the seed nor fails it on a single blip).
     """
     base = es_url.rstrip("/")
-    headers = {"Authorization": f"ApiKey {api_key}"}
+    # A security-disabled local stack has no API key; an empty "ApiKey " header
+    # is wrong, so omit Authorization entirely when no key is configured.
+    headers = {"Authorization": f"ApiKey {api_key}"} if api_key else {}
     read_timeout = float(timeout)
     request_timeout = (float(connect_timeout), read_timeout)
     attempts = max(1, max_retries + 1)

@@ -1,0 +1,61 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+# Render-audit gate against a LOCAL no-SSO Kibana (full CI automation).
+#
+# The serverless render audit needs an interactive SSO login, so it can't run
+# unattended. This spins up the security-disabled local stack
+# (parity-rig/docker-compose.render-audit.yml), migrates + uploads the
+# kitchen-sink canary, seeds telemetry, and drives the dashboard in headless
+# Chrome — proving panels actually render with no auth wall.
+
+name: Render audit (local Kibana)
+
+on:
+  schedule:
+    - cron: "30 6 * * *"  # nightly, after the live-gates job
+  workflow_dispatch:
+    inputs:
+      stack_version:
+        description: "Elastic stack version for the local ES+Kibana"
+        default: "9.5.0-SNAPSHOT"
+
+permissions:
+  contents: read
+
+jobs:
+  render-audit:
+    name: Render audit (local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STACK_VERSION: ${{ github.event.inputs.stack_version || '9.5.0-SNAPSHOT' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync locked environment
+        run: UV_PROJECT_ENVIRONMENT=.venv uv sync --locked --python 3.12 --all-extras
+
+      - name: Install headless Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Start local ES + Kibana (security disabled)
+        run: |
+          docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+          echo "stack healthy"
+
+      - name: Run render audit against local Kibana
+        run: bash scripts/run_render_audit_local.sh
+
+      - name: Tear down local stack
+        if: always()
+        run: docker compose -f parity-rig/docker-compose.render-audit.yml down -v

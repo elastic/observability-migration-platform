@@ -45,6 +45,10 @@ demand with:
 .venv/bin/pre-commit run --all-files
 ```
 
+For the full picture of how migration correctness is verified — the layered
+confidence pyramid, every gate (coverage matrices, fidelity ratchets, live
+validation, render audit), and how to extend them — see `docs/testing.md`.
+
 ## License Compliance And SBOM
 
 When adding or bumping Python dependencies in `pyproject.toml` or `uv.lock`,

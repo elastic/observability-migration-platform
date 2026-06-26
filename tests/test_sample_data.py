@@ -71,6 +71,26 @@ class MakeEsRequestTests(unittest.TestCase):
             self.assertEqual(request("DELETE", "/_data_stream/x"), {"acknowledged": True})
         self.assertEqual(req.call_args.kwargs["verify"], False)
 
+    def test_api_key_header_sent_when_key_present(self):
+        with mock.patch(
+            "observability_migration.core.sample_data.requests.request",
+            return_value=self._resp(200, ""),
+        ) as req:
+            request = sample_data.make_es_request("https://es", "abc123")
+            request("GET", "/x")
+        self.assertEqual(req.call_args.kwargs["headers"]["Authorization"], "ApiKey abc123")
+
+    def test_no_auth_header_when_key_empty(self):
+        # A security-disabled local stack has no API key; sending an empty
+        # "ApiKey " header is wrong. Omit Authorization entirely.
+        with mock.patch(
+            "observability_migration.core.sample_data.requests.request",
+            return_value=self._resp(200, ""),
+        ) as req:
+            request = sample_data.make_es_request("http://localhost:9200", "")
+            request("GET", "/x")
+        self.assertNotIn("Authorization", req.call_args.kwargs["headers"])
+
     def test_empty_success_body_is_ack(self):
         with mock.patch(
             "observability_migration.core.sample_data.requests.request",

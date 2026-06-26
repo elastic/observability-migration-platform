@@ -105,6 +105,75 @@ _MATH_FN_ESQL = {
 }
 
 
+# ES|QL TS functions that REQUIRE a counter argument. Every other range
+# function (MAX_OVER_TIME, MIN_OVER_TIME, SUM_OVER_TIME, AVG_OVER_TIME,
+# COUNT_OVER_TIME, DELTA, DERIV, PERCENTILE_OVER_TIME, …) rejects counter input
+# ("argument of [...] must be [... except counter types]").
+_COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+
+# PromQL range functions that are counter-only by Prometheus convention. When a
+# panel's source query wraps a metric in one of these, the telemetry contract
+# and the synthetic-data seeder both type that metric as a counter
+# (``time_series_metric: counter``) — see
+# ``observability_migration.core.telemetry_contract``. So even when the offline
+# counter heuristic guessed "gauge" and we degraded the function to a gauge
+# analogue (e.g. ``increase()`` -> ``MAX_OVER_TIME``), the *stored* field is a
+# counter and ES|QL still rejects the bare metric. The counter-style source
+# function is therefore an authoritative cast signal.
+_COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
+
+
+def _counter_safe_metric_arg(
+    esql_func: str,
+    metric_expr: str,
+    is_counter: bool,
+    source_range_func: str | None = None,
+    *,
+    counter_refuted: bool = False,
+) -> str:
+    """Cast a counter metric to double for ES|QL functions that reject counters,
+    so the emitted query executes instead of failing at runtime.
+
+    Casts when EITHER:
+
+    - the field is a confirmed counter (``is_counter``), OR
+    - the panel's *source* PromQL used a counter-only range function
+      (``rate``/``irate``/``increase``) and the target has NOT authoritatively
+      refuted the counter classification (``counter_refuted``). This mirrors the
+      telemetry contract / seeder, which type any ``rate()``/``increase()``-ed
+      field as a counter unless an explicit rule-pack ``gauge`` pin or live
+      gauge field-caps say otherwise. So when the offline heuristic merely
+      *guessed* "gauge" and we degraded ``increase()`` -> ``MAX_OVER_TIME``, the
+      stored field is still a counter and the bare metric would be rejected.
+
+    The cast is skipped for counter-consuming ES|QL functions
+    (``RATE``/``IRATE``/``INCREASE``), which take the raw counter, and for a
+    field that is an authoritative gauge (``counter_refuted``) — there the
+    stored field really is a gauge double, so no needless cast / snapshot churn
+    is added on the common gauge ``*_over_time`` path.
+    """
+    if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
+        return metric_expr
+    counter_source = (
+        (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
+        and not counter_refuted
+    )
+    if is_counter or counter_source:
+        return f"TO_DOUBLE({metric_expr})"
+    return metric_expr
+
+
+def _counter_refuted(resolver, metric: str) -> bool:
+    """True when the target authoritatively says ``metric`` is NOT a counter
+    (explicit rule-pack ``gauge`` pin or live gauge field-caps). Silent
+    (returns False) when offline or the field is unknown, so a counter-style
+    source function can still drive the counter-safe cast."""
+    if resolver is None or not metric:
+        return False
+    refutes = getattr(resolver, "refutes_counter", None)
+    return bool(refutes(metric)) if callable(refutes) else False
+
+
 def _default_instance_field(rp):
     return "instance" if rp.native_promql else "service.instance.id"
 
@@ -943,6 +1012,8 @@ def join_family_rule(context):
                 left_metric_field,
                 left_info["range_window"],
                 left_frag,
+                is_counter=left_is_counter,
+                resolver=resolver,
             )
             right_stats_call = _build_stats_call(
                 right_info["outer_agg"],
@@ -950,6 +1021,8 @@ def join_family_rule(context):
                 right_metric_field,
                 right_info["range_window"],
                 right_frag,
+                is_counter=right_is_counter,
+                resolver=resolver,
             )
             # Apply per-side exclusive filters via CASE() so that label
             # selectors which appear on only one operand (e.g. mode="user" on
@@ -1153,7 +1226,7 @@ def join_family_rule(context):
             )
             if counter_warning:
                 _append_unique(context.warnings, counter_warning)
-            inner_expr = f"{esql_inner}({physical_metric}, {w})"
+            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric))}, {w})"
         elif is_counter:
             inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
@@ -1323,21 +1396,32 @@ def topk_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
-    source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    # A bare counter is auto-rated below (inner_func becomes "rate"), so it must
+    # run under the TS command — RATE() is invalid under FROM. Select the source
+    # from is_counter as well as an explicit range_func; time_filter and bucket
+    # derive from source, so this also picks ts_time_filter / TBUCKET.
+    source = "TS" if (is_counter or frag.range_func in AGG_FUNCTION_MAP) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
-    inner_func = frag.range_func or ("rate" if _is_counter_fallback(frag.metric, rp) else "")
+    inner_func = frag.range_func or ("rate" if is_counter else "")
     if inner_func in {"rate", "irate", "increase"}:
         prefer = "counter"
     else:
         prefer = "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
     if inner_func:
-        stats_expr = _build_stats_call(
-            frag.outer_agg or "avg",
-            inner_func,
-            physical_metric,
-            frag.range_window or rp.default_rate_window,
+        esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
+        esql_inner, counter_warning, is_counter = resolve_counter_range_translation(
+            inner_func, frag.metric, is_counter, resolver, esql_inner
+        )
+        if counter_warning:
+            _append_unique(context.warnings, counter_warning)
+        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric))
+        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+        stats_expr = _agg_stats_expr(
+            OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
+            inner_expr,
             frag,
         )
     else:
@@ -1585,7 +1669,7 @@ def scaled_agg_family_rule(context):
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({physical_metric}, {frag.range_window})', frag)}"
+    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})', frag)}"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -1667,7 +1751,7 @@ def nested_agg_family_rule(context):
             _append_unique(context.warnings, counter_warning)
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({physical_metric}, {frag.range_window}))"
+        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window}))"
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
@@ -1987,7 +2071,7 @@ def range_agg_family_rule(context):
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({physical_metric}, {frag.range_window})"
+    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
@@ -2390,7 +2474,7 @@ def simple_metric_family_rule(context):
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = physical_metric
+        stats_expr = f"MAX(LAST_OVER_TIME({physical_metric}))"
     elif can_use_ts_aggregated_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter
@@ -2700,32 +2784,48 @@ def value_wrapper_transforms_rule(context):
     lines = context.esql_query.splitlines()
     applied = []
 
-    # Detect two-stage topk shape: contains "STATS <field> = LAST(..." which
-    # means the output metric isn't defined until after that line — EVAL must
-    # be inserted *after* it, not before the first SORT.
-    last_stats_idx = next(
-        (i for i, ln in enumerate(lines) if "= LAST(" in ln and ln.strip().startswith("| STATS")),
+    # Detect two-stage topk shape: the output metric is defined in a terminal
+    # STATS line after the first time-bucket SORT, so wrapper filters/evals must
+    # be inserted after that line, not before the first SORT.
+    value_stats_idx = next(
+        (
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip().startswith("| STATS")
+            and re.search(rf"\b{re.escape(metric_field)}\s*=", ln)
+        ),
         None,
     )
 
     def _eval_insert_idx(lines):
-        if last_stats_idx is not None:
-            return last_stats_idx + 1
+        if value_stats_idx is not None:
+            return value_stats_idx + 1
         return next(
             (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
             len(lines),
         )
 
-    # round() → EVAL value = ROUND(value, N)
+    # round() → faithful round-to-nearest-multiple.
+    # PromQL round(v, to_nearest) rounds v to the nearest multiple of
+    # `to_nearest` (default 1). ES|QL ROUND(v, decimals) is different: its
+    # second argument is a *whole number of decimal places*, so a fractional
+    # step like 0.001 makes ROUND(v, 0.001) an invalid query
+    # ("second argument ... must be [whole number ...], found ... [double]").
+    # Emit ROUND(v / step) * step, which reproduces PromQL's semantics for any
+    # step (integer or fractional) and is always valid ES|QL.
     if frag.extra.get("has_round"):
         precision = frag.extra.get("round_precision")
-        if precision is not None:
-            prec_arg = int(precision) if precision == int(precision) else precision
-            eval_clause = f"| EVAL {metric_field} = ROUND({metric_field}, {prec_arg})"
-        else:
+        if precision is None or precision in (0, 1):
             eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
+            round_warning = "round() approximated with ES|QL ROUND()"
+        else:
+            step = int(precision) if precision == int(precision) else precision
+            eval_clause = (
+                f"| EVAL {metric_field} = ROUND({metric_field} / {step}) * {step}"
+            )
+            round_warning = "round(v, step) emitted as ROUND(v / step) * step"
         lines.insert(_eval_insert_idx(lines), eval_clause)
-        _append_unique(context.warnings, "round() approximated with ES|QL ROUND()")
+        _append_unique(context.warnings, round_warning)
         applied.append("round")
 
     # clamp_min() → EVAL value = GREATEST(value, min)
@@ -2767,12 +2867,12 @@ def value_wrapper_transforms_rule(context):
         applied.append(math_fn)
 
     # sort() / sort_desc() → set the output sort direction.
-    # For two-stage topk, replace the LAST "| SORT <field>" line (which controls
-    # output order) rather than the first SORT (which orders time buckets for LAST()).
+    # For two-stage topk, replace the final value-sort line rather than the first
+    # SORT (which orders time buckets for the terminal value collapse).
     if "value_sort_desc" in frag.extra:
         sort_desc = frag.extra["value_sort_desc"]
         direction = "DESC" if sort_desc else "ASC"
-        if last_stats_idx is not None:
+        if value_stats_idx is not None:
             # Two-stage topk: update the last value-sort line only
             for i in range(len(lines) - 1, -1, -1):
                 if lines[i].strip().startswith("| SORT") and metric_field in lines[i]:
@@ -2847,11 +2947,23 @@ def post_filter_rule(context):
     value = _format_scalar_value(post_filter["value"])
     clause = f"| WHERE {context.output_metric_field} {post_filter['op']} {value}"
     lines = context.esql_query.splitlines()
-    sort_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("| SORT")), None)
-    if sort_idx is None:
-        lines.append(clause)
+    value_def_idx = next(
+        (
+            idx
+            for idx, line in enumerate(lines)
+            if line.strip().startswith(("| STATS", "| EVAL"))
+            and re.search(rf"\b{re.escape(context.output_metric_field)}\s*=", line)
+        ),
+        None,
+    )
+    if value_def_idx is not None:
+        lines.insert(value_def_idx + 1, clause)
     else:
-        lines.insert(sort_idx, clause)
+        sort_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("| SORT")), None)
+        if sort_idx is None:
+            lines.append(clause)
+        else:
+            lines.insert(sort_idx, clause)
     context.esql_query = "\n".join(lines)
     return f"applied post-aggregation filter {post_filter['op']} {value}"
 
@@ -2966,12 +3078,13 @@ def live_metric_fields_exist_rule(context):
             missing.append(metric)
     if not missing:
         return None
-    context.feasibility = "not_feasible"
-    context.confidence = 0.0
     for metric in missing:
         resolved = _resolve_metric_field(resolver, metric, prefer="gauge") or metric
-        _append_unique(context.warnings, f"Target field {resolved} is missing from live schema discovery")
-    return "missing live metric fields"
+        _append_unique(
+            context.warnings,
+            f"Target field {resolved} is missing from live schema discovery (data readiness, not translation infeasibility)",
+        )
+    return "missing live metric fields (data readiness warning)"
 
 
 _logger = logging.getLogger(__name__)

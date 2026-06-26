@@ -77,6 +77,33 @@ class TestUnifiedCliRouting(unittest.TestCase):
         mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_translation_mode_when_set(self, mock_main):
+        # A non-default --translation-mode is forwarded to the adapter CLI (for
+        # Datadog it is a documented no-op, but the user gets the acknowledgement);
+        # the default "auto" is NOT forwarded so the adapter's own default applies.
+        base = dict(
+            input_mode="files", input_dir="infra/datadog/dashboards",
+            output_dir="out", data_view="metrics-*", field_profile="otel",
+            logs_index="logs-*", compile=True, validate=False, upload=False,
+            preflight=False, es_url="", es_api_key="", kibana_url="",
+            kibana_api_key="", space_id="", dataset_filter="", logs_dataset_filter="",
+            smoke=False, browser_audit=False, capture_screenshots=False,
+            smoke_output="", smoke_timeout=30, chrome_binary="",
+        )
+        original_argv = list(sys.argv)
+        try:
+            app_cli._run_datadog_migration(SimpleNamespace(**base, translation_mode="esql"))
+            self.assertIn("--translation-mode", sys.argv)
+            idx = sys.argv.index("--translation-mode")
+            self.assertEqual(sys.argv[idx + 1], "esql")
+            mock_main.reset_mock()
+
+            app_cli._run_datadog_migration(SimpleNamespace(**base, translation_mode="auto"))
+            self.assertNotIn("--translation-mode", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_source_execution(self, mock_main):
         # The Datadog source-side oracle (--source-execution) is implemented
         # on the standalone datadog CLI; the canonical obs-migrate wrapper

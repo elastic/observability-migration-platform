@@ -1543,15 +1543,15 @@ class TestValueWrapperTranslations(unittest.TestCase):
         self.assertIn("GREATEST(", ctx.esql_query)
         self.assertTrue(any("clamp_min" in w.lower() for w in ctx.warnings), ctx.warnings)
 
-    def test_round_over_topk_inserts_eval_after_last(self):
-        """EVAL for round() must appear after STATS value = LAST(...), not before it."""
+    def test_round_over_topk_inserts_eval_after_terminal_value_stats(self):
+        """EVAL for round() must appear after the terminal topk value STATS."""
         ctx = self._translate("round(topk(5, rate(http_requests_total[5m])), 2)")
         self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
         self.assertIn("ROUND(", ctx.esql_query)
         lines = ctx.esql_query.splitlines()
-        last_idx = next(i for i, ln in enumerate(lines) if "= LAST(" in ln)
+        value_stats_idx = next(i for i, ln in enumerate(lines) if ln.startswith("| STATS") and "value =" in ln)
         round_idx = next(i for i, ln in enumerate(lines) if "ROUND(" in ln)
-        self.assertGreater(round_idx, last_idx, "ROUND() must appear after STATS value = LAST(...)")
+        self.assertGreater(round_idx, value_stats_idx, "ROUND() must appear after terminal topk value STATS")
 
     def test_sort_desc_over_topk_preserves_time_bucket_sort(self):
         """sort_desc(topk()) must not replace the time-bucket SORT needed by LAST()."""

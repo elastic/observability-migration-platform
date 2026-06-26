@@ -165,6 +165,56 @@ To make this real, the next type-safety work should be:
    decisions.
 6. Keep live ES|QL validation as the last line of defense, not the first one.
 
+## Unsupported PromQL Families (The Honest Boundary)
+
+Some PromQL families have no faithful ES|QL target. Rather than emit a query
+that silently computes the wrong thing, the Grafana adapter marks them
+`not_feasible` and the panel degrades to a "Migration Required" placeholder
+with a reviewer-facing reason. This section documents that boundary so the
+"degrade gracefully" rule (see `CLAUDE.md`) stays auditable. Ground truth is
+`HARD_UNSUPPORTED_CALL_REASONS` / `HARD_UNSUPPORTED_AST_REASONS` in
+`observability_migration/adapters/source/grafana/promql.py` and the family
+classifier in `.../grafana/translate.py`.
+
+### Always `not_feasible` (no ES|QL equivalent)
+
+| PromQL | Why there is no honest ES|QL translation |
+|---|---|
+| `bottomk(k, …)` | Per-series bottom-N selection requires manual redesign (mirror of `topk`, but without the latest-bucket approximation that `topk` accepts). |
+| `label_join(…)` | Concatenates several source labels into a new label, rewriting series identity in a way ES|QL's column model cannot reproduce per-series. |
+| `count_values("l", v)` | Buckets samples by their *value* into a new label — ES|QL has no value-as-dimension grouping. |
+| `absent(v)` / `absent_over_time(v)` | Returns a synthetic series when the input is empty; ES|QL cannot synthesize a row from the absence of data. |
+| `changes(v[range])` | Counts value transitions over the raw sample stream; ES|QL aggregates are bucket-oriented, not sample-transition-oriented. |
+| `resets(v[range])` | Counts counter resets in the raw stream; same sample-level semantics gap as `changes`. |
+| `vector(s)` | Converts a scalar into an instant vector; no ES|QL equivalent for fabricating a series from a constant. |
+| `group(…)` | Returns the constant `1` per label set (value-discarding). Aggregating the metric value instead would change the result. |
+| `stdvar(v)` | Population variance; ES|QL has no variance aggregation and `STATS` cannot square `STD_DEV()` inline. |
+| `<expr> offset <d>` | Time-shifts the lookup window at sample granularity; ES|QL has no per-query time offset on the bucket timeline. |
+| `<expr> @ <ts>` | Pins evaluation to an absolute timestamp; same time-axis-control gap as `offset`. |
+| `<subquery>[r:s]` | Subqueries evaluate an inner range expression on a sliding step; ES|QL cannot express the nested resolution. |
+| `… without (labels)` | Aggregation by exclusion needs the full label universe to invert; ES|QL `STATS BY` only lists kept dimensions. |
+| `__name__` introspection | Selecting/relabeling by metric name treats the metric name as data; ES|QL has no metric-name-as-field model. |
+
+Root causes cluster into four buckets: (1) **no equivalent operation**
+(`absent`, `changes`, `resets`, `stdvar`, `count_values`, `group`, `vector`);
+(2) **sample-level / time-shift semantics** ES|QL's bucketed aggregation
+cannot reach (`offset`, `@`, subquery); (3) **label algebra that changes
+series identity** (`label_join`, complex `label_replace`); (4) **type
+prerequisites we cannot prove** (see conditional cases below).
+
+### Conditionally supported (feasible only when prerequisites hold)
+
+| PromQL | Behavior | Falls back to |
+|---|---|---|
+| `histogram_quantile(phi, …)` | Translates to ES|QL `PERCENTILE()` **only** when the base metric is provably histogram / exponential-histogram typed. | `not_feasible` when the field type cannot be confirmed — we will not emit a `PERCENTILE()` that silently misreads a non-histogram field. |
+| `topk(k, …)` / `topk by (…) (k, …)` | **Feasible**, approximated as a latest-bucket ES|QL top-N. | Grouped form keeps inner labels; ungrouped form collapses to a single series and warns to add a `preferred_group_labels` hint. |
+| `label_replace(v, dst, repl, src, rx)` | **Feasible** via `EVAL` for a full copy (`$1` over `(.*)`) or a constant replacement, and via an anchored `GROK` for a single capture group. | Complex multi-capture replacements skip the rename (warning emitted) but the underlying query still runs. |
+
+When growing ES|QL coverage, the upgrade matrix below is where a conditional
+case graduates to unconditional, or an unsupported family gains a safe target.
+Any such change must keep an explicit regression fixture for the unsupported
+side of the boundary (see the testing policy at the end of this doc).
+
 ## Upgrade Matrix
 
 | Priority | Capability | Current repo state | Concrete upgrade path | Primary code targets | Acceptance |
