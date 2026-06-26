@@ -42,14 +42,22 @@ notes so operators know what to check by hand.
   attributes error markers to *titled* panels (field gaps → warn; real render
   errors → fail) and flags markers in the unsegmented/prefix region. A trailing
   **untitled** broken panel whose marker is absorbed into the previous panel's
-  EOF-extended segment cannot be reliably attributed from the a11y snapshot, so
+  EOF-extended segment cannot be reliably attributed from the captured DOM, so
   it is **not** hard-failed (its data-readiness still surfaces as a warn). The
   guard intentionally errs away from false failures.
-- **`--agent-browser` vs headless** — `--agent-browser` captures the
-  accessibility snapshot from the logged-in agent-browser session (no
-  `--user-data-dir`); the headless-Chrome path uses `--user-data-dir` with a
-  logged-in profile. Serverless render audit requires one of these (a one-time
-  SSO login).
+- **`--agent-browser` is tab-selection only** — `--agent-browser` focuses the
+  Kibana tab in a live agent-browser session so the session is not left on a
+  stray tab, but DOM capture always uses the headless `--user-data-dir` path
+  (which reads HTML, navigates to the exact URL, and exposes CSS-class render
+  markers). Serverless render audit therefore needs a logged-in
+  `--user-data-dir` profile (a one-time SSO login).
+- **`obs-migrate verify` cannot self-detect a fully auth-blocked run** — an
+  auth/security/quota error from the cluster classifies as `other` (a warn), not
+  a hard fail. If a key lacks ES|QL read access, the gate reports `other` rather
+  than failing, so confirm the `ok` count is non-zero before trusting a PASS.
+  (A dedicated `blocked` bucket was removed: its heuristics misfired — a real
+  ES|QL error at column 429 was read as a quota signal, and a transient quota
+  error could mask a real bug in the exit code.)
 - **Datadog numeric parity** — `--source-execution` numbers are only meaningful
   when the source (Datadog) and target (Elastic) ingest the **same** telemetry;
   otherwise comparisons are structural-only.

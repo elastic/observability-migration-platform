@@ -227,13 +227,6 @@ def select_kibana_tab_id(
 TabDriver = Callable[[list[str]], str]
 
 
-# Settle budget (ms) for the --agent-browser capture path: after navigating to
-# the dashboard we wait for networkidle AND this bounded budget so async Lens
-# panels (each issues its own ES|QL after load) finish rendering before the
-# snapshot — mirroring the established parity-rig agent-browser wait pattern.
-_AGENT_BROWSER_SETTLE_MS = 4000
-
-
 def _default_tab_driver(args: list[str]) -> str:
     """Run ``agent-browser <args>`` and return stdout (empty on failure)."""
     try:
@@ -273,14 +266,6 @@ def activate_kibana_tab(
         return None
     drive(["tab", tab_id])
     return tab_id
-
-
-def _agent_browser_snapshot(drive: TabDriver) -> str:
-    """Capture the active agent-browser tab's accessibility snapshot — the text
-    the render-audit classifier parses. Used when ``--agent-browser`` drives the
-    logged-in session, so DOM capture targets the activated Kibana tab rather
-    than a separate headless Chrome (PR #234 review)."""
-    return drive(["snapshot"])
 
 
 def fetch_available_fields(
@@ -435,10 +420,13 @@ def run_audit_cli(
     legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
     a render ``fail`` when ``--fail-on-error``.
 
-    With ``--agent-browser`` the driver first selects and activates the Kibana
+    ``--agent-browser`` is a tab-selection helper: it focuses the Kibana
     ``/app/*`` tab of a live agent-browser session (so a stray gemini-glic /
-    found.no / SSO-interstitial tab being "active" does not make us read the
-    wrong page) before capturing the DOM.
+    found.no / SSO-interstitial tab being "active" is not left in front). DOM
+    capture always goes through the headless ``dump_dom`` path, which navigates
+    to the exact target URL and reads HTML — so CSS-class render markers
+    (``embPanel__error``) are visible and we never snapshot the wrong tab
+    mid-load. Headless capture needs a logged-in ``--user-data-dir`` profile.
     """
     url = build_dashboard_url(
         args.kibana_url, args.space, args.dashboard_id,
@@ -447,25 +435,10 @@ def run_audit_cli(
     drive = tab_driver or _default_tab_driver
     if getattr(args, "agent_browser", False):
         # Focus a Kibana tab first so the session isn't left on a stray
-        # gemini-glic / SSO tab. Best-effort: tab selection falls back to the
-        # first Kibana /app/* tab when the target dashboard isn't open, so it
-        # alone does NOT guarantee we're on the right page.
+        # gemini-glic / SSO tab. Best-effort UX only — capture still uses the
+        # headless path below regardless of which tab is active.
         activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=drive)
-    fetch = dom_fetcher
-    if fetch is None and getattr(args, "agent_browser", False):
-        # Capture the accessibility snapshot from the LIVE agent-browser session
-        # (the logged-in profile) rather than a separate headless Chrome. ALWAYS
-        # navigate to the TARGET dashboard URL first — relying on the activated
-        # tab would snapshot the wrong page whenever some other Kibana tab is open
-        # (tab selection falls back to the first /app/* tab). Then let the async
-        # Lens panels settle (networkidle + a bounded budget) before capture, or
-        # we read panels mid-load and miss render errors (PR #234 review hunt).
-        drive(["open", url])
-        drive(["wait", "--load", "networkidle"])
-        drive(["wait", str(_AGENT_BROWSER_SETTLE_MS)])
-        fetch = lambda _u: _agent_browser_snapshot(drive)  # noqa: E731
-    if fetch is None:
-        fetch = lambda u: dump_dom(u, args.user_data_dir)  # noqa: E731
+    fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
     snapshot = fetch(url)
 
     report: dict | None = None
@@ -594,9 +567,10 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--agent-browser", action="store_true",
-        help="Drive a live agent-browser session: select+activate the Kibana "
-             "tab matching the host/dashboard-id before capturing the DOM "
-             "(ignores stray gemini-glic / SSO-interstitial tabs).",
+        help="Tab-selection helper: focus the Kibana tab matching the "
+             "host/dashboard-id in a live agent-browser session (ignores stray "
+             "gemini-glic / SSO-interstitial tabs). DOM capture still uses the "
+             "headless --user-data-dir path.",
     )
     return parser
 

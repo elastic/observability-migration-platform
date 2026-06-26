@@ -95,27 +95,51 @@ class TestForcedNativeSkipsValidator(unittest.TestCase):
         self.assertIsNotNone(getattr(rp, "native_promql_validator", None))
 
 
-class TestVerifyBlocksOnAuthErrors(unittest.TestCase):
-    # #3: a run where the cluster refused every query (auth/security/quota) must
-    # not exit 0 / report PASS.
-    def test_classify_and_exit_code(self):
+class TestVerifyClassifiesAuthAsOther(unittest.TestCase):
+    # De-scoped (hunt #3): the dedicated 'blocked' bucket was removed. Its regex
+    # (`\b429\b`) misclassified real ES|QL errors (e.g. `line 1:429:`) as blocked,
+    # and its exit-code precedence let a transient quota error mask real bugs.
+    # Auth/security/quota errors now fall through to 'other' (a warn) -- the
+    # simpler, robust contract. A fully auth-blocked run is a documented
+    # limitation (see docs/known-limitations.md), not a hard fail.
+    def test_auth_and_quota_classify_as_other(self):
         from observability_migration.app import verify as v
         self.assertEqual(
             v.classify_validation(False, "action [indices:data/read/esql] is unauthorized for API key"),
-            "blocked",
+            "other",
         )
         self.assertEqual(
             v.classify_validation(False, "circuit_breaking_exception: [parent] Data too large"),
-            "blocked",
+            "other",
         )
+
+    def test_429_in_error_column_is_not_misclassified(self):
+        # The root false_gate: a real ES|QL error whose column position is 429
+        # must classify by its actual content, never as an infra/quota signal
+        # (the removed 'blocked' bucket matched the bare '429' in 'line 1:429:').
+        from observability_migration.app import verify as v
+        # content -> data_gap (an unknown column), NOT 'blocked'
+        self.assertEqual(
+            v.classify_validation(False, "line 1:429: Unknown column [foo]"),
+            "data_gap",
+        )
+        # content -> real_bug (a parse error), NOT 'blocked'
+        self.assertEqual(
+            v.classify_validation(False, "line 1:429: mismatched input 'FROM'"),
+            "real_bug",
+        )
+
+    def test_real_bug_exit_code_not_demoted_by_quota(self):
+        # A coexisting quota/'other' result must not demote a real_bug from the
+        # hard-fail exit code (1).
+        from observability_migration.app import verify as v
         acc = {
             "total": 5,
-            "counts": {"ok": 0, "real_bug": 0, "data_gap": 0, "blocked": 5, "other": 0, "unreachable": 0},
+            "counts": {"ok": 2, "real_bug": 1, "data_gap": 0, "other": 2, "unreachable": 0},
             "results": [], "unreachable": False,
         }
         report = v.build_report(acceptance=acc, compare=None)
-        self.assertEqual(report["verdict"], "BLOCKED")
-        self.assertEqual(v.exit_code_for(report), 2)
+        self.assertEqual(v.exit_code_for(report), 1)
 
 
 class TestVerifyThreadsTls(unittest.TestCase):
@@ -146,11 +170,36 @@ class TestVerifyThreadsTls(unittest.TestCase):
         self.assertEqual(seen, [False])
 
 
-class TestAgentBrowserCapturesFromSession(unittest.TestCase):
-    # Review B#2: --agent-browser must capture the a11y snapshot from the
-    # activated agent-browser tab (the logged-in session), not a separate
-    # headless Chrome (dump_dom).
-    def test_capture_via_session_not_dump_dom(self):
+class TestProvenanceEmptyQueryIsEsql(unittest.TestCase):
+    # De-scoped (hunt #3): the empty-query -> PLACEHOLDER branch was reverted.
+    # It mis-classified successfully-migrated Datadog Lens panels (whose query
+    # lives off the classify input) as PLACEHOLDER, deflating the ES|QL count and
+    # inflating "not migrated". A migrated panel with a blank query string now
+    # classifies as ES|QL; only status (not_feasible/requires_manual/skipped) or
+    # a native-PROMQL marker change the bucket.
+    def test_migrated_blank_query_is_esql_not_placeholder(self):
+        from observability_migration.core.reporting.summary_md import (
+            PanelProvenance,
+            classify_panel_provenance,
+        )
+        self.assertEqual(
+            classify_panel_provenance(status="migrated", query="", query_ir={}),
+            PanelProvenance.ESQL)
+        self.assertEqual(
+            classify_panel_provenance(status="migrated", query="FROM x | STATS y=AVG(z)", query_ir={}),
+            PanelProvenance.ESQL)
+        # status-based placeholders still win regardless of query
+        self.assertEqual(
+            classify_panel_provenance(status="not_feasible", query="", query_ir={}),
+            PanelProvenance.PLACEHOLDER)
+
+
+class TestAgentBrowserUsesHeadlessCapture(unittest.TestCase):
+    # De-scoped (hunt #3): --agent-browser is now a tab-selection helper only;
+    # DOM capture always goes through the headless dump_dom path (which reads
+    # HTML, so CSS-class markers like embPanel__error are visible, and navigates
+    # to the exact target URL). The fragile a11y-snapshot capture was removed.
+    def test_agent_browser_activates_tab_then_captures_via_dump_dom(self):
         import json as _json
         import types
 
@@ -163,8 +212,6 @@ class TestAgentBrowserCapturesFromSession(unittest.TestCase):
             if argv[:2] == ["tab", "list"]:
                 return _json.dumps(
                     {"data": {"tabs": [{"tabId": "t1", "url": f"{kib}/app/dashboards#/view/d1"}]}})
-            if argv == ["snapshot"]:
-                return 'StaticText "panel" line chart rendered instance_1'
             return ""
 
         orig = rad.dump_dom
@@ -178,77 +225,11 @@ class TestAgentBrowserCapturesFromSession(unittest.TestCase):
             rc = rad.run_audit_cli(args, tab_driver=tab_driver)
         finally:
             rad.dump_dom = orig
-        self.assertIn(("snapshot",), calls)   # captured from the agent-browser session
-        self.assertEqual(dump_calls, [])       # dump_dom (separate Chrome) NOT used
-        self.assertEqual(rc, 0)
-
-
-class TestSecondHuntFixes(unittest.TestCase):
-    # Bugs the session-fixes hunt found in this session's OWN fixes.
-    def test_scorecard_shows_blocked_line(self):
-        # Gate-1 breakdown must reconcile with the total: the blocked bucket
-        # was added to verdict/exit but not to render_scorecard.
-        from observability_migration.app import verify as v
-        acc = {"total": 2,
-               "counts": {"ok": 1, "real_bug": 0, "data_gap": 0, "blocked": 1,
-                          "other": 0, "unreachable": 0},
-               "results": [], "unreachable": False}
-        card = v.render_scorecard(v.build_report(acceptance=acc, compare=None, artifact_dir="x"))
-        self.assertIn("blocked   : 1", card)
-
-    def test_query_less_migrated_panel_is_placeholder(self):
-        # A migrated panel with no executable query (static text/markdown) must
-        # not inflate "ES|QL translated".
-        from observability_migration.core.reporting.summary_md import (
-            PanelProvenance,
-            classify_panel_provenance,
-        )
-        self.assertEqual(
-            classify_panel_provenance(status="migrated", query="", query_ir={}),
-            PanelProvenance.PLACEHOLDER)
-        self.assertEqual(
-            classify_panel_provenance(status="migrated", query="FROM x | STATS y=AVG(z)", query_ir={}),
-            PanelProvenance.ESQL)
-
-    def test_agent_browser_navigates_to_target_and_settles(self):
-        # --agent-browser must navigate to the TARGET dashboard (even when a
-        # different Kibana tab is already open) and settle async panels before
-        # capture — not snapshot whatever tab is active, mid-load.
-        import json as _json
-        import types
-
-        from observability_migration.targets.kibana import render_audit_driver as rad
-        kib = "https://kb.example.com"
-        calls = []
-
-        def tab_driver(argv):
-            calls.append(tuple(argv))
-            if argv[:2] == ["tab", "list"]:
-                # a Kibana tab is open, but it is NOT the target dashboard
-                return _json.dumps({"data": {"tabs": [{"tabId": "t2", "url": f"{kib}/app/home"}]}})
-            if argv[:1] == ["snapshot"]:
-                return 'StaticText "x" line chart rendered'
-            return ""
-
-        orig = rad.dump_dom
-        dump = []
-        rad.dump_dom = lambda *a, **k: (dump.append(1) or "DUMP")
-        try:
-            args = types.SimpleNamespace(
-                kibana_url=kib, dashboard_id="d1", space="", user_data_dir="",
-                time_from="now-1h", time_to="now", fail_on_error=True, elements=False,
-                migration_out="", es_url="", es_api_key="", insecure=False, agent_browser=True)
-            rad.run_audit_cli(args, tab_driver=tab_driver)
-        finally:
-            rad.dump_dom = orig
         names = [c[0] for c in calls]
-        # navigated to the TARGET dashboard, waited, then snapshotted — in order
-        self.assertTrue(any(c[0] == "open" and "d1" in c[-1] for c in calls), calls)
-        self.assertIn("wait", names)
-        self.assertIn("snapshot", names)
-        self.assertLess(names.index("open"), names.index("snapshot"))
-        self.assertLess(names.index("wait"), names.index("snapshot"))
-        self.assertEqual(dump, [])  # not the separate headless Chrome
+        self.assertIn(("tab", "list", "--json"), calls)  # tab selection still runs
+        self.assertEqual(dump_calls, [1])                # captured via headless dump_dom
+        self.assertNotIn("snapshot", names)              # no fragile a11y capture
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":

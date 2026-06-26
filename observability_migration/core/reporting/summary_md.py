@@ -54,9 +54,15 @@ def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
 
     A ``not_feasible`` / ``requires_manual`` / ``skipped`` panel is always a
     placeholder, even if a stale query string is present, because each ships a
-    markdown placeholder (or no live query) rather than an executable ES|QL
-    query — counting them as "ES|QL translated" overstates the migrated surface
-    (PR #234 review).
+    markdown placeholder rather than an executable ES|QL query — counting them
+    as "ES|QL translated" overstates the migrated surface (PR #234 review).
+
+    A blank ``query`` string alone is NOT treated as a placeholder: some
+    successfully-migrated panels (notably Datadog Lens) carry the executable
+    query off this input, so blanking on it mis-classified real ES|QL panels as
+    placeholders. Provenance therefore turns on ``status`` and the native-PROMQL
+    marker only (de-scoped after a hunt found the empty-query branch deflated the
+    ES|QL count and inflated "not migrated").
     """
     if status in ("not_feasible", "requires_manual", "skipped"):
         return PanelProvenance.PLACEHOLDER
@@ -69,11 +75,6 @@ def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
         return PanelProvenance.NATIVE
     if str(query or "").lstrip().startswith(_NATIVE_PROMQL_PREFIX):
         return PanelProvenance.NATIVE
-    if not str(query or "").strip():
-        # A migrated panel with no executable query is a non-data visual (text /
-        # markdown), not an ES|QL-translated data panel — count it as a
-        # placeholder rather than inflating "ES|QL translated" (PR #234 review).
-        return PanelProvenance.PLACEHOLDER
     return PanelProvenance.ESQL
 
 
@@ -331,7 +332,7 @@ def _render_provenance(view: SummaryView) -> list[str]:
         "Structural-only unless separately validated |"
     )
     out.append(
-        f"| Placeholder / no live query | {placeholder} | {_pct(placeholder, classified)} | "
+        f"| Placeholder (not feasible / manual) | {placeholder} | {_pct(placeholder, classified)} | "
         "Not migrated (manual rebuild) or a non-query visual (text/markdown) |"
     )
     out.append("")

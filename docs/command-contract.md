@@ -799,24 +799,25 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
 
-# Driving a live agent-browser session instead of headless Chrome (--agent-browser):
+# Focusing the right tab in a live agent-browser session (--agent-browser):
 # bootstrap.sh logs in once and keeps a persistent profile
 # (~/.agent-browser/profiles/mig-to-kbn-verifier) + saved state. A live session
 # often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
 # (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
-# (/internal/security/capture-url, auth_provider_hint). The *active* tab is
-# frequently the wrong one. --agent-browser enumerates `tab list --json`,
-# activates the Kibana /app/* tab matching the host + dashboard id (ignoring the
-# stray tabs), and then captures the accessibility snapshot FROM that live
-# logged-in session (`agent-browser snapshot`) — not a separate headless Chrome.
-# So with --agent-browser you do NOT pass --user-data-dir (that flag is only for
-# the headless-Chrome path); the logged-in agent-browser profile is the session.
-# The pure selection rule is select_kibana_page_url() in render_audit_driver.py.
+# (/internal/security/capture-url, auth_provider_hint). --agent-browser is a
+# tab-selection helper: it enumerates `tab list --json` and activates the Kibana
+# /app/* tab matching the host + dashboard id (ignoring the stray tabs) so the
+# session isn't left on the wrong tab. DOM capture ALWAYS uses the headless
+# dump_dom path (it reads HTML, so CSS-class render markers like embPanel__error
+# are visible, and it navigates to the exact target URL), so you still pass a
+# logged-in --user-data-dir profile. The pure selection rule is
+# select_kibana_page_url() in render_audit_driver.py.
 # Manual equivalent: `agent-browser tab list` then `agent-browser tab t<N>` for
 # the Kibana tab whose URL matches the cluster host + dashboard id.
 KIBANA_URL="$KIBANA_ENDPOINT" bash parity-rig/verifier/bootstrap.sh   # one-time SSO
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile \
   --agent-browser --fail-on-error
 
 # Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
