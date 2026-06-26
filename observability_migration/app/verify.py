@@ -201,14 +201,19 @@ def cluster_reachable(
     *,
     index: str = "metrics-*",
     validator: Validator = validate_esql,
+    verify: bool | str = True,
 ) -> bool:
     """Probe the cluster with a trivial, data-free query (read-only).
 
     ``ROW`` needs no index or data, so a transport error (``ok is None``) means
     the cluster is unreachable. An HTTP error response (``ok is False``) still
-    proves we reached Elasticsearch, so that counts as reachable.
+    proves we reached Elasticsearch, so that counts as reachable. ``verify``
+    carries the resolved TLS setting (custom CA path / False for ``--insecure``)
+    so a private-CA cluster is not misreported as unreachable (PR #234 review).
     """
-    ok, _ = validator("ROW _probe = 1", es_url, index_pattern=index, es_api_key=api_key)
+    ok, _ = validator(
+        "ROW _probe = 1", es_url, index_pattern=index, es_api_key=api_key, verify=verify
+    )
     return ok is not None
 
 
@@ -224,8 +229,12 @@ def run_acceptance_gate(
     api_key: str,
     index: str = "metrics-*",
     validator: Validator = validate_esql,
+    verify: bool | str = True,
 ) -> dict[str, Any]:
-    """Run each unique emitted query through ``validate_esql`` and classify it."""
+    """Run each unique emitted query through ``validate_esql`` and classify it.
+
+    ``verify`` carries the resolved TLS setting through to the validator so the
+    acceptance gate honors ``--ca-cert`` / ``--insecure`` (PR #234 review)."""
     counts = {bucket: 0 for bucket in _BUCKETS}
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -234,7 +243,7 @@ def run_acceptance_gate(
         if not q or q in seen:
             continue
         seen.add(q)
-        ok, error = validator(q, es_url, index_pattern=index, es_api_key=api_key)
+        ok, error = validator(q, es_url, index_pattern=index, es_api_key=api_key, verify=verify)
         classification = classify_validation(ok, error)
         counts[classification] += 1
         results.append(
@@ -477,6 +486,7 @@ def run_verify(
     run_compare: bool = False,
     validator: Validator = validate_esql,
     compare_runner: CompareRunner | None = None,
+    verify: bool | str = True,
 ) -> int:
     """Run the verify orchestrator end-to-end and return a process exit code.
 
@@ -516,12 +526,12 @@ def run_verify(
         return 2
 
     # Reachability preflight before spending the full query sweep.
-    if not cluster_reachable(es_url, api_key, index=index, validator=validator):
+    if not cluster_reachable(es_url, api_key, index=index, validator=validator, verify=verify):
         print(json.dumps({"error": "es_unreachable", "es_url": es_url}, indent=2))
         return 2
 
     acceptance = run_acceptance_gate(
-        items, es_url=es_url, api_key=api_key, index=index, validator=validator
+        items, es_url=es_url, api_key=api_key, index=index, validator=validator, verify=verify
     )
     if acceptance.get("unreachable"):
         # The cluster dropped mid-sweep; treat as unreachable (exit 2).

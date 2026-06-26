@@ -268,6 +268,14 @@ def activate_kibana_tab(
     return tab_id
 
 
+def _agent_browser_snapshot(drive: TabDriver) -> str:
+    """Capture the active agent-browser tab's accessibility snapshot — the text
+    the render-audit classifier parses. Used when ``--agent-browser`` drives the
+    logged-in session, so DOM capture targets the activated Kibana tab rather
+    than a separate headless Chrome (PR #234 review)."""
+    return drive(["snapshot"])
+
+
 def fetch_available_fields(
     es_url: str, es_api_key: str, index_pattern: str, *, timeout: int = 10, verify: bool = True
 ) -> set[str] | None:
@@ -429,9 +437,27 @@ def run_audit_cli(
         args.kibana_url, args.space, args.dashboard_id,
         time_from=args.time_from, time_to=args.time_to,
     )
+    drive = tab_driver or _default_tab_driver
+    active = None
     if getattr(args, "agent_browser", False):
-        activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=tab_driver)
-    fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
+        # Select + activate the Kibana tab in the live agent-browser session
+        # before any capture, so reads target the right page (not a stray
+        # gemini-glic / SSO tab).
+        active = activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=drive)
+    fetch = dom_fetcher
+    if fetch is None and getattr(args, "agent_browser", False):
+        # Capture the accessibility snapshot from the LIVE agent-browser session
+        # (the logged-in persistent profile) rather than a separate headless
+        # Chrome: activating a tab does not affect dump_dom's own Chrome
+        # subprocess, and the documented Serverless flow uses --agent-browser
+        # WITHOUT --user-data-dir, so dump_dom would hit a login wall / capture an
+        # unauthenticated page (PR #234 review). If no Kibana tab is open in the
+        # session, open the dashboard there first, then snapshot it.
+        if active is None:
+            drive(["open", url])
+        fetch = lambda _u: _agent_browser_snapshot(drive)  # noqa: E731
+    if fetch is None:
+        fetch = lambda u: dump_dom(u, args.user_data_dir)  # noqa: E731
     snapshot = fetch(url)
 
     report: dict | None = None

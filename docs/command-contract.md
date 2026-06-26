@@ -805,9 +805,12 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 # often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
 # (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
 # (/internal/security/capture-url, auth_provider_hint). The *active* tab is
-# frequently the wrong one. --agent-browser enumerates `tab list --json` and
+# frequently the wrong one. --agent-browser enumerates `tab list --json`,
 # activates the Kibana /app/* tab matching the host + dashboard id (ignoring the
-# stray tabs) before capturing the DOM, so URL/DOM reads target the right page.
+# stray tabs), and then captures the accessibility snapshot FROM that live
+# logged-in session (`agent-browser snapshot`) — not a separate headless Chrome.
+# So with --agent-browser you do NOT pass --user-data-dir (that flag is only for
+# the headless-Chrome path); the logged-in agent-browser profile is the session.
 # The pure selection rule is select_kibana_page_url() in render_audit_driver.py.
 # Manual equivalent: `agent-browser tab list` then `agent-browser tab t<N>` for
 # the Kibana tab whose URL matches the cluster host + dashboard id.

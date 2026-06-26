@@ -1497,6 +1497,9 @@ def _run_verify(args: Any) -> int:
         report_out=args.report_out,
         run_compare=bool(getattr(args, "run_compare", False)),
         compare_runner=compare_runner,
+        # Honor --ca-cert / --insecure for the acceptance gate too, not just the
+        # optional compare runner (PR #234 review).
+        verify=_tls_verify(args),
     )
 
 

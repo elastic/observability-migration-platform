@@ -118,5 +118,70 @@ class TestVerifyBlocksOnAuthErrors(unittest.TestCase):
         self.assertEqual(v.exit_code_for(report), 2)
 
 
+class TestVerifyThreadsTls(unittest.TestCase):
+    # Review B#1: the acceptance gate + reachability probe must pass the resolved
+    # TLS verify value to the validator (honor --ca-cert / --insecure), not just
+    # the optional compare runner.
+    @staticmethod
+    def _recording_validator(seen):
+        def fake(query, es_url, index_pattern="metrics-*", es_api_key=None, verify=True):
+            seen.append(verify)
+            return (True, "")
+        return fake
+
+    def test_acceptance_gate_passes_verify_to_validator(self):
+        from observability_migration.app import verify as v
+        seen: list = []
+        v.run_acceptance_gate(
+            [("d", "p", "FROM x")], es_url="http://es", api_key="k",
+            index="metrics-*", validator=self._recording_validator(seen),
+            verify="/tmp/ca.pem")
+        self.assertEqual(seen, ["/tmp/ca.pem"])
+
+    def test_cluster_reachable_passes_verify_to_validator(self):
+        from observability_migration.app import verify as v
+        seen: list = []
+        v.cluster_reachable(
+            "http://es", "k", validator=self._recording_validator(seen), verify=False)
+        self.assertEqual(seen, [False])
+
+
+class TestAgentBrowserCapturesFromSession(unittest.TestCase):
+    # Review B#2: --agent-browser must capture the a11y snapshot from the
+    # activated agent-browser tab (the logged-in session), not a separate
+    # headless Chrome (dump_dom).
+    def test_capture_via_session_not_dump_dom(self):
+        import json as _json
+        import types
+
+        from observability_migration.targets.kibana import render_audit_driver as rad
+        kib = "https://kb.example.com"
+        calls = []
+
+        def tab_driver(argv):
+            calls.append(tuple(argv))
+            if argv[:2] == ["tab", "list"]:
+                return _json.dumps(
+                    {"data": {"tabs": [{"tabId": "t1", "url": f"{kib}/app/dashboards#/view/d1"}]}})
+            if argv == ["snapshot"]:
+                return 'StaticText "panel" line chart rendered instance_1'
+            return ""
+
+        orig = rad.dump_dom
+        dump_calls = []
+        rad.dump_dom = lambda *a, **k: (dump_calls.append(1) or "DUMP")
+        try:
+            args = types.SimpleNamespace(
+                kibana_url=kib, dashboard_id="d1", space="", user_data_dir="",
+                time_from="now-1h", time_to="now", fail_on_error=False, elements=False,
+                migration_out="", es_url="", es_api_key="", insecure=False, agent_browser=True)
+            rc = rad.run_audit_cli(args, tab_driver=tab_driver)
+        finally:
+            rad.dump_dom = orig
+        self.assertIn(("snapshot",), calls)   # captured from the agent-browser session
+        self.assertEqual(dump_calls, [])       # dump_dom (separate Chrome) NOT used
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
