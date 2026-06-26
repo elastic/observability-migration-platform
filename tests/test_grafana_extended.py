@@ -2958,6 +2958,30 @@ class TestPromQLWrapperFragments(unittest.TestCase):
             msg=f"join-ratio denominator increase() must cast counter to double: {esql}",
         )
 
+    def test_scaled_agg_measure_spec_increase_casts_to_double(self):
+        # PR #234 (stefans): _build_measure_spec's scaled_agg branch must keep
+        # the counter-safe cast like the adjacent range_agg branch. A formula-plan
+        # panel such as sum(increase(non_total[5m])) * 100 otherwise emits
+        # SUM(MAX_OVER_TIME(metric, …)) against a counter-typed TSDS field and
+        # fails 9.5 runtime validation.
+        from observability_migration.adapters.source.grafana import promql, rules, schema
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        rp = rules.RulePackConfig()
+        res = schema.SchemaResolver(rp)
+        frag = translate_promql_to_esql(
+            "sum(increase(weird_unknown_metric[5m])) * 100",
+            esql_index="metrics-*", rule_pack=rp, resolver=res,
+        ).fragment
+        self.assertEqual(frag.family, "scaled_agg")
+        spec = promql._build_measure_spec(frag, res, rp)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            spec.stats_expr,
+            msg=f"scaled_agg measure-spec must cast counter to double: {spec.stats_expr}",
+        )
+
     def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
         # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
         # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so

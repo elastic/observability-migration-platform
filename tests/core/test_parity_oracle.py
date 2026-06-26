@@ -150,6 +150,28 @@ class NormalizeAndDiffTests(unittest.TestCase):
             "max",
         )
 
+    def test_translated_reducer_uses_terminal_stats_not_first(self):
+        # PR #234 (stefans): with multiple STATS stages the reducer must be the
+        # TERMINAL/outer aggregation, not the first one search() happens to hit.
+        # An inner SUM collapsed under an outer AVG must report "avg" so native
+        # series projection uses the right reducer.
+        self.assertEqual(
+            po._translated_reducer(
+                "TS m | WHERE @timestamp >= ?_tstart "
+                "| STATS inner = SUM(v) BY time_bucket, host "
+                "| STATS value = AVG(inner) BY time_bucket"
+            ),
+            "avg",
+        )
+        # Outer MAX over an inner SUM.
+        self.assertEqual(
+            po._translated_reducer(
+                "TS m | STATS a = SUM(v) BY time_bucket, dc "
+                "| STATS value = MAX(a) BY time_bucket"
+            ),
+            "max",
+        )
+
     def test_normalize_translated_canonicalizes_otel_labels(self):
         data = {
             "columns": [

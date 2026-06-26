@@ -608,11 +608,18 @@ _TRANSLATED_REDUCER_RE = re.compile(
 
 
 def _translated_reducer(esql: str) -> str:
-    """Return the outer STATS aggregation ('sum' default) of an ES|QL query."""
-    match = _TRANSLATED_REDUCER_RE.search(esql or "")
-    if not match:
+    """Return the *terminal* (outer) STATS aggregation of an ES|QL query
+    ('sum' default).
+
+    A translated pipeline can have multiple STATS stages — e.g. an inner range
+    aggregation collapsed under a different outer reducer. The reducer that
+    drives native-series projection is the LAST (terminal) STATS, not the first
+    one a plain ``search()`` would return (PR #234).
+    """
+    matches = list(_TRANSLATED_REDUCER_RE.finditer(esql or ""))
+    if not matches:
         return "sum"
-    agg = match.group("agg").lower()
+    agg = matches[-1].group("agg").lower()
     return agg if agg in {"avg", "max", "min", "sum"} else "sum"
 
 

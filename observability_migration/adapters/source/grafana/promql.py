@@ -3252,7 +3252,13 @@ def _build_measure_spec(
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        inner_arg = _counter_safe_metric_arg(esql_inner, metric_field, is_counter)
+        inner_arg = _counter_safe_metric_arg(
+            esql_inner,
+            metric_field,
+            is_counter,
+            frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+        )
         stats_expr = _apply_outer_agg(
             esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )
