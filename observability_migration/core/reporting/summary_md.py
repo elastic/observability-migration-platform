@@ -20,6 +20,55 @@ _WARNING_GROUP_CAP = 25
 # Source query text is truncated to this many characters in the worklist.
 _QUERY_TRUNCATE = 160
 
+# A native-PROMQL panel reuses the source PromQL via ES's ``PROMQL index=…``
+# command, so its emitted query begins with this marker.
+_NATIVE_PROMQL_PREFIX = "PROMQL index="
+
+
+class PanelProvenance:
+    """Provenance buckets for a migrated panel's emitted query.
+
+    - ``NATIVE``: emitted query is ``PROMQL index=… value=(…)`` — the source
+      PromQL run through Elasticsearch's native PROMQL command. These panels are
+      numerically oracle-verifiable (Grafana only).
+    - ``ESQL``: emitted query is a translated ``FROM … | STATS …`` ES|QL
+      pipeline. Structural-only unless separately validated (all Datadog panels
+      and some Grafana panels).
+    - ``PLACEHOLDER``: the panel was ``not_feasible`` and replaced with a
+      "Migration Required" markdown placeholder (no query).
+    """
+
+    NATIVE = "native"
+    ESQL = "esql"
+    PLACEHOLDER = "placeholder"
+
+
+def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
+    """Classify a single panel into a :class:`PanelProvenance` bucket.
+
+    Provenance is derived from data the result models already carry. We prefer
+    the structured ``query_ir["family"] == "native_promql"`` marker emitted by
+    the planner over string-sniffing, falling back to the ``PROMQL index=``
+    query prefix so panels that lack the marker (e.g. older traces) are still
+    classified correctly.
+
+    A ``not_feasible`` panel is always a placeholder, even if a stale query
+    string is present, because it ships a markdown placeholder rather than the
+    query.
+    """
+    if status == "not_feasible":
+        return PanelProvenance.PLACEHOLDER
+    family = ""
+    if isinstance(query_ir, dict):
+        family = str(query_ir.get("family", "") or "")
+    else:
+        family = str(getattr(query_ir, "family", "") or "")
+    if family == "native_promql":
+        return PanelProvenance.NATIVE
+    if str(query or "").lstrip().startswith(_NATIVE_PROMQL_PREFIX):
+        return PanelProvenance.NATIVE
+    return PanelProvenance.ESQL
+
 
 @dataclass
 class SummaryTotals:
@@ -37,6 +86,12 @@ class SummaryTotals:
     compiled_total: int
     uploaded_ok: int
     upload_attempted: int
+    # Translation-provenance breakdown across all dashboards. Native-PROMQL
+    # panels are numerically oracle-verifiable; ES|QL-translated panels are
+    # structural-only; placeholders are not_feasible panels.
+    native_promql: int = 0
+    esql_translated: int = 0
+    placeholder: int = 0
 
 
 @dataclass
@@ -51,6 +106,10 @@ class DashboardRow:
     compile_error: str
     risk_score: float | None
     rollout_state: str
+    # Per-dashboard translation-provenance breakdown (see PanelProvenance).
+    native_promql: int = 0
+    esql_translated: int = 0
+    placeholder: int = 0
 
 
 @dataclass
@@ -179,6 +238,9 @@ def render_markdown(view: SummaryView) -> str:
         lines.append(f"| Verification | {t.green} 🟢 / {t.yellow} 🟡 / {t.red} 🔴 | |")
     lines.append("")
 
+    # 2b. Translation provenance
+    lines.extend(_render_provenance(view))
+
     # 3. Per-dashboard table
     lines.extend(_render_dashboard_table(view))
 
@@ -230,6 +292,78 @@ def _render_dashboard_table(view: SummaryView) -> list[str]:
             row += f" {int(d.risk_score or 0)} |"
         out.append(row)
     out.append("")
+    return out
+
+
+def _render_provenance(view: SummaryView) -> list[str]:
+    """Render the translation-provenance breakdown.
+
+    Shows, per dashboard and in total, how the emitted queries split across
+    native-PROMQL / ES|QL-translated / placeholder, plus a note clarifying which
+    are numerically verifiable. Rendered identically for Grafana and Datadog.
+    """
+    t = view.totals
+    noun = view.element_noun or "panel"
+    native = t.native_promql
+    esql = t.esql_translated
+    placeholder = t.placeholder
+    classified = native + esql + placeholder
+    # Nothing to show if no panels were classified (e.g. an empty run).
+    if classified <= 0:
+        return []
+
+    out = ["## Translation provenance", ""]
+    out.append(f"| Provenance | {noun.title()}s | % | Numeric verifiability |")
+    out.append("|---|--:|--:|:--|")
+    out.append(
+        f"| Native PROMQL | {native} | {_pct(native, classified)} | "
+        "Oracle-verifiable (native-PROMQL oracle) |"
+    )
+    out.append(
+        f"| ES\\|QL translated | {esql} | {_pct(esql, classified)} | "
+        "Structural-only unless separately validated |"
+    )
+    out.append(
+        f"| Placeholder (not feasible) | {placeholder} | {_pct(placeholder, classified)} | "
+        "Not migrated — manual rebuild |"
+    )
+    out.append("")
+
+    # Top-level one-line total so the split is grep-able at a glance.
+    out.append(
+        f"**Total:** {native} native PROMQL · {esql} ES\\|QL translated · "
+        f"{placeholder} placeholder (of {classified} {_plural(noun, classified)})."
+    )
+    out.append("")
+
+    # Verifiability note — calls out the all-ES|QL (e.g. Datadog) case.
+    if native > 0:
+        out.append(
+            "> Native-PROMQL panels are **numerically verifiable** via the "
+            "native-PROMQL oracle (source PromQL replayed in Elasticsearch). "
+            "ES\\|QL-translated panels are **structural-only** unless separately "
+            "validated against source data."
+        )
+    else:
+        out.append(
+            "> This run has **0 native** PROMQL panels — every migrated query is "
+            "ES\\|QL-translated, which is **structural-only** unless separately "
+            "validated against source data. (Native-PROMQL verification applies "
+            "to Grafana/Prometheus sources only.)"
+        )
+    out.append("")
+
+    # Per-dashboard breakdown — only when there is more than one dashboard, to
+    # avoid duplicating the single-dashboard total table above.
+    if len(view.dashboards) > 1:
+        out.append("| Dashboard | Native | ES\\|QL | Placeholder |")
+        out.append("|---|--:|--:|--:|")
+        for d in view.dashboards:
+            out.append(
+                f"| {_cell(d.title)} | {d.native_promql} | "
+                f"{d.esql_translated} | {d.placeholder} |"
+            )
+        out.append("")
     return out
 
 
@@ -320,8 +454,10 @@ __all__ = [
     "DashboardRow",
     "GapSummary",
     "GapTask",
+    "PanelProvenance",
     "SummaryTotals",
     "SummaryView",
+    "classify_panel_provenance",
     "render_markdown",
     "save_markdown_summary",
 ]

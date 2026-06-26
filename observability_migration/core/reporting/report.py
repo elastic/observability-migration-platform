@@ -19,8 +19,10 @@ from observability_migration.core.reporting.summary_md import (
     DashboardRow,
     GapSummary,
     GapTask,
+    PanelProvenance,
     SummaryTotals,
     SummaryView,
+    classify_panel_provenance,
 )
 from observability_migration.core.verification.disposition import (
     SELF_HEAL_SEMANTIC_LOSS,
@@ -569,6 +571,13 @@ def build_summary_view(
     def _gate(pr, name):
         return (pr.verification_packet or {}).get("semantic_gate") == name
 
+    def _provenance(pr):
+        return classify_panel_provenance(
+            status=pr.status,
+            query=getattr(pr, "esql_query", "") or "",
+            query_ir=getattr(pr, "query_ir", {}),
+        )
+
     elements_total = sum(len(_renderable(r)) for r in results)
     rows_total = sum(1 for r in results for pr in r.panel_results if pr.grafana_type == "row")
     skipped = sum(r.skipped for r in results) - rows_total
@@ -588,6 +597,15 @@ def build_summary_view(
         compiled_total=len(compile_results),
         uploaded_ok=sum(1 for r in results if r.uploaded),
         upload_attempted=sum(1 for r in results if r.upload_attempted),
+        native_promql=sum(
+            1 for r in results for pr in _renderable(r) if _provenance(pr) == PanelProvenance.NATIVE
+        ),
+        esql_translated=sum(
+            1 for r in results for pr in _renderable(r) if _provenance(pr) == PanelProvenance.ESQL
+        ),
+        placeholder=sum(
+            1 for r in results for pr in _renderable(r) if _provenance(pr) == PanelProvenance.PLACEHOLDER
+        ),
     )
 
     risk_by_title = {item.get("dashboard"): item.get("risk_score") for item in review_queue}
@@ -597,6 +615,7 @@ def build_summary_view(
     warning_items: list[AttentionItem] = []
     for r in results:
         renderable = _renderable(r)
+        prov = [_provenance(pr) for pr in renderable]
         dashboards.append(
             DashboardRow(
                 title=r.dashboard_title,
@@ -609,6 +628,9 @@ def build_summary_view(
                 compile_error=r.compile_error,
                 risk_score=risk_by_title.get(r.dashboard_title),
                 rollout_state="",
+                native_promql=prov.count(PanelProvenance.NATIVE),
+                esql_translated=prov.count(PanelProvenance.ESQL),
+                placeholder=prov.count(PanelProvenance.PLACEHOLDER),
             )
         )
         seen_attention: set = set()
