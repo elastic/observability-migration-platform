@@ -636,6 +636,69 @@ then clean up:
   --confirm
 ```
 
+### Verify (one-command package-native scorecard)
+
+`obs-migrate verify` is a thin orchestrator that runs the **package-native**
+correctness gates over an already-migrated artifact dir and prints ONE
+consolidated scorecard. It exists so users don't have to assemble the
+individual gates by hand. It is read-only on the cluster.
+
+```bash
+.venv/bin/obs-migrate verify \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --report-out verify_report.json
+
+# Add numeric parity (runs obs-migrate compare in-process over the same dir):
+.venv/bin/obs-migrate verify \
+  --artifact-dir <output-dir>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" --api-key "$KEY" \
+  --compare
+```
+
+What it runs:
+
+1. **Emitted-query acceptance gate** — reads each panel's emitted ES|QL from
+   `verification_packets.json` (`packets[].translated_query`) and/or
+   `migration_report.json` (`dashboards[].panels[].esql_query`), dedupes
+   identical queries, runs each against Elasticsearch via the package-native
+   `esql_validate.validate_esql`, and classifies the result as `ok` /
+   `real_bug` (a genuine parse/type/argument/function error in the emitted
+   ES|QL) / `data_gap` (well-formed query, telemetry absent — unknown
+   column/index) / `other`. Data-gap signals win over real-bug signals when
+   both appear.
+2. **Numeric parity gate (opt-in, `--compare`)** — invokes the existing
+   `obs-migrate compare` implementation in-process over the same artifact dir
+   and surfaces its STRICT/FUZZY/SHAPE/STRUCTURAL/FAIL/ERROR counts. If compare
+   can't run (no data / unreachable), the scorecard says so rather than failing.
+
+`--artifact-dir` is required (a single migrated dashboard artifact dir).
+`--es-url`/`--api-key` default to `ELASTICSEARCH_ENDPOINT`/`ES_URL` and `KEY`.
+`--index` (default `metrics-*`) is the pattern used to validate queries and to
+seed the compare native-PROMQL oracle. `--report-out` (default
+`verify_report.json`) writes the consolidated JSON report. `--kibana-url` is
+accepted for parity with sibling commands but is not required by the
+package-native gates. Honors `--ca-cert` / `--insecure`.
+
+**Coverage honesty.** `verify` is intentionally NOT exhaustive. The scorecard
+always lists the deeper gates it does NOT run, with the exact command for each
+— these live in `parity-rig/` and are not importable from the installed
+package:
+
+- `verifier.dashboards_api` — Kibana typed UI-contract validation (accessor
+  wiring, column refs).
+- render audit (`parity-rig/render_audit_driver.py`) — the only gate that
+  catches Lens accessor / "invalid column" / empty-state render failures that
+  ES|QL execution and the schema gate miss.
+- `obs-migrate verify-panels` — the full 5-tier panel verifier (delegates to
+  `parity-rig/verifier`).
+
+Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
+(missing artifact dir, missing credentials, no emitted queries), `1` on any
+`real_bug` or compare `FAIL`/`ERROR`, and `0` otherwise (`data_gap`/`other`
+are warnings, not failures).
+
 ### Verification And Benchmark Gates
 
 The `parity-rig/verifier/` tools are repo-oriented correctness gates used by

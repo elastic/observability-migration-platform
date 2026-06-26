@@ -11,9 +11,11 @@ dedicated source CLIs.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -568,6 +570,59 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
     _add_tls_arguments(compare_cmd)
 
+    verify_unified_cmd = sub.add_parser(
+        "verify",
+        help="One command + one scorecard for the package-native correctness "
+             "gates over a migrated dashboard artifact dir (emitted-query "
+             "acceptance + optional numeric parity).",
+        description=(
+            "Thin orchestrator over the package-native correctness gates. Reads the "
+            "emitted ES|QL from a migrated artifact dir's verification_packets.json / "
+            "migration_report.json, runs each query against Elasticsearch and "
+            "classifies it (ok / real_bug / data_gap / other), optionally runs "
+            "'obs-migrate compare' in-process for numeric parity, and prints ONE "
+            "consolidated scorecard. It also lists the deeper gates it does NOT run "
+            "(Kibana typed-contract dashboards_api, browser render audit) -- these "
+            "live in parity-rig/. Read-only on the cluster. Exit code is 2 when the "
+            "cluster is unreachable or inputs are invalid, 1 on any real_bug or "
+            "compare FAIL/ERROR, and 0 otherwise."
+        ),
+    )
+    verify_unified_cmd.add_argument(
+        "--artifact-dir", dest="artifact_dir", required=True,
+        help="Migrated dashboard artifact dir (contains verification_packets.json "
+             "and/or migration_report.json), e.g. '<output-dir>/dashboards'.",
+    )
+    verify_unified_cmd.add_argument(
+        "--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
+        help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).",
+    )
+    verify_unified_cmd.add_argument(
+        "--api-key", default=os.getenv("KEY", ""),
+        help="Elasticsearch API key (defaults to KEY).",
+    )
+    verify_unified_cmd.add_argument(
+        "--kibana-url", default="",
+        help="Kibana base URL (accepted for parity with sibling commands; the "
+             "package-native gates run here do not require it -- the deeper "
+             "Kibana-contract gates that do live in parity-rig/).",
+    )
+    verify_unified_cmd.add_argument(
+        "--index", default="metrics-*",
+        help="ES index pattern used to validate emitted queries and to seed the "
+             "compare native-PROMQL oracle (default: metrics-*).",
+    )
+    verify_unified_cmd.add_argument(
+        "--compare", dest="run_compare", action="store_true",
+        help="Also run the numeric-parity gate ('obs-migrate compare') in-process "
+             "over the same artifact dir.",
+    )
+    verify_unified_cmd.add_argument(
+        "--report-out", default="verify_report.json",
+        help="Path for the consolidated JSON report (default: verify_report.json).",
+    )
+    _add_tls_arguments(verify_unified_cmd)
+
     return parser
 
 
@@ -610,6 +665,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_remove_sample_data(args))
     elif args.command == "compare":
         sys.exit(_run_compare(args))
+    elif args.command == "verify":
+        sys.exit(_run_verify(args))
     elif args.command == "doctor":
         _run_doctor()
     else:
@@ -1363,6 +1420,69 @@ def _render_compare_md(report: dict[str, Any]) -> str:
             f"| {r.get('verdict','')} | {err} | {series} | {r.get('reason','')} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _verify_compare_runner(args: Any) -> Callable[..., dict[str, Any]]:
+    """Build the compare-runner seam for ``obs-migrate verify``.
+
+    Reuses the existing in-process ``_run_compare`` implementation (no shelling
+    out, no re-implementation): it writes a structured JSON report to a temp
+    file, which we read back to surface the STRICT/FUZZY/SHAPE/FAIL/ERROR
+    counts. ``_run_compare`` returns 2 when the cluster is unreachable or inputs
+    are invalid -- we map that to ``ran: False`` rather than failing the whole
+    verify run.
+    """
+    import tempfile
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+
+    def runner(*, artifact_dir: str, es_url: str, api_key: str, index: str) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "verify_compare_report.json"
+            compare_args = SimpleNamespace(
+                artifact_dir=[artifact_dir],
+                es_url=es_url,
+                api_key=api_key,
+                index=index,
+                step_seconds=300,
+                window_minutes=60,
+                report_out=str(report_path),
+                ca_cert=getattr(args, "ca_cert", ""),
+                insecure=getattr(args, "insecure", False),
+            )
+            # _run_compare prints its own JSON summary to stdout; keep the verify
+            # scorecard clean by swallowing it (we re-render from the report).
+            with redirect_stdout(io.StringIO()):
+                code = _run_compare(compare_args)
+            if code == 2 or not report_path.exists():
+                return {"ran": False, "reason": "compare unavailable (no data / unreachable)"}
+            try:
+                data = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                return {"ran": False, "reason": f"compare report unreadable: {exc}"}
+            return {
+                "ran": True,
+                "summary": data.get("summary", {}),
+                "oracle_available": data.get("oracle_available"),
+            }
+
+    return runner
+
+
+def _run_verify(args: Any) -> int:
+    """Run the package-native verify orchestrator (acceptance + optional parity)."""
+    from observability_migration.app.verify import run_verify
+
+    compare_runner = _verify_compare_runner(args) if getattr(args, "run_compare", False) else None
+    return run_verify(
+        artifact_dir=args.artifact_dir,
+        es_url=args.es_url,
+        api_key=args.api_key,
+        index=args.index,
+        report_out=args.report_out,
+        run_compare=bool(getattr(args, "run_compare", False)),
+        compare_runner=compare_runner,
+    )
 
 
 def _run_seed_sample_data(args: Any) -> int:
