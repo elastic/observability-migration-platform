@@ -183,5 +183,73 @@ class TestAgentBrowserCapturesFromSession(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class TestSecondHuntFixes(unittest.TestCase):
+    # Bugs the session-fixes hunt found in this session's OWN fixes.
+    def test_scorecard_shows_blocked_line(self):
+        # Gate-1 breakdown must reconcile with the total: the blocked bucket
+        # was added to verdict/exit but not to render_scorecard.
+        from observability_migration.app import verify as v
+        acc = {"total": 2,
+               "counts": {"ok": 1, "real_bug": 0, "data_gap": 0, "blocked": 1,
+                          "other": 0, "unreachable": 0},
+               "results": [], "unreachable": False}
+        card = v.render_scorecard(v.build_report(acceptance=acc, compare=None, artifact_dir="x"))
+        self.assertIn("blocked   : 1", card)
+
+    def test_query_less_migrated_panel_is_placeholder(self):
+        # A migrated panel with no executable query (static text/markdown) must
+        # not inflate "ES|QL translated".
+        from observability_migration.core.reporting.summary_md import (
+            PanelProvenance,
+            classify_panel_provenance,
+        )
+        self.assertEqual(
+            classify_panel_provenance(status="migrated", query="", query_ir={}),
+            PanelProvenance.PLACEHOLDER)
+        self.assertEqual(
+            classify_panel_provenance(status="migrated", query="FROM x | STATS y=AVG(z)", query_ir={}),
+            PanelProvenance.ESQL)
+
+    def test_agent_browser_navigates_to_target_and_settles(self):
+        # --agent-browser must navigate to the TARGET dashboard (even when a
+        # different Kibana tab is already open) and settle async panels before
+        # capture — not snapshot whatever tab is active, mid-load.
+        import json as _json
+        import types
+
+        from observability_migration.targets.kibana import render_audit_driver as rad
+        kib = "https://kb.example.com"
+        calls = []
+
+        def tab_driver(argv):
+            calls.append(tuple(argv))
+            if argv[:2] == ["tab", "list"]:
+                # a Kibana tab is open, but it is NOT the target dashboard
+                return _json.dumps({"data": {"tabs": [{"tabId": "t2", "url": f"{kib}/app/home"}]}})
+            if argv[:1] == ["snapshot"]:
+                return 'StaticText "x" line chart rendered'
+            return ""
+
+        orig = rad.dump_dom
+        dump = []
+        rad.dump_dom = lambda *a, **k: (dump.append(1) or "DUMP")
+        try:
+            args = types.SimpleNamespace(
+                kibana_url=kib, dashboard_id="d1", space="", user_data_dir="",
+                time_from="now-1h", time_to="now", fail_on_error=True, elements=False,
+                migration_out="", es_url="", es_api_key="", insecure=False, agent_browser=True)
+            rad.run_audit_cli(args, tab_driver=tab_driver)
+        finally:
+            rad.dump_dom = orig
+        names = [c[0] for c in calls]
+        # navigated to the TARGET dashboard, waited, then snapshotted — in order
+        self.assertTrue(any(c[0] == "open" and "d1" in c[-1] for c in calls), calls)
+        self.assertIn("wait", names)
+        self.assertIn("snapshot", names)
+        self.assertLess(names.index("open"), names.index("snapshot"))
+        self.assertLess(names.index("wait"), names.index("snapshot"))
+        self.assertEqual(dump, [])  # not the separate headless Chrome
+
+
 if __name__ == "__main__":
     unittest.main()

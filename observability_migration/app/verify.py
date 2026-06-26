@@ -419,6 +419,8 @@ def render_scorecard(report: dict[str, Any]) -> str:
     lines.append(f"      ok        : {counts.get('ok', 0)}")
     lines.append(f"      real_bug  : {counts.get('real_bug', 0)}   (translator bug -> FAIL)")
     lines.append(f"      data_gap  : {counts.get('data_gap', 0)}   (telemetry absent -> warn)")
+    if counts.get("blocked"):
+        lines.append(f"      blocked   : {counts.get('blocked', 0)}   (auth/security/quota -> NOT validated, FAIL)")
     lines.append(f"      other     : {counts.get('other', 0)}   (5xx/timeout/unclassified -> warn)")
     if counts.get("unreachable"):
         lines.append(f"      unreachable: {counts.get('unreachable', 0)}   (transport error)")

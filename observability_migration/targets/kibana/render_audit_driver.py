@@ -227,6 +227,13 @@ def select_kibana_tab_id(
 TabDriver = Callable[[list[str]], str]
 
 
+# Settle budget (ms) for the --agent-browser capture path: after navigating to
+# the dashboard we wait for networkidle AND this bounded budget so async Lens
+# panels (each issues its own ES|QL after load) finish rendering before the
+# snapshot — mirroring the established parity-rig agent-browser wait pattern.
+_AGENT_BROWSER_SETTLE_MS = 4000
+
+
 def _default_tab_driver(args: list[str]) -> str:
     """Run ``agent-browser <args>`` and return stdout (empty on failure)."""
     try:
@@ -438,23 +445,24 @@ def run_audit_cli(
         time_from=args.time_from, time_to=args.time_to,
     )
     drive = tab_driver or _default_tab_driver
-    active = None
     if getattr(args, "agent_browser", False):
-        # Select + activate the Kibana tab in the live agent-browser session
-        # before any capture, so reads target the right page (not a stray
-        # gemini-glic / SSO tab).
-        active = activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=drive)
+        # Focus a Kibana tab first so the session isn't left on a stray
+        # gemini-glic / SSO tab. Best-effort: tab selection falls back to the
+        # first Kibana /app/* tab when the target dashboard isn't open, so it
+        # alone does NOT guarantee we're on the right page.
+        activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=drive)
     fetch = dom_fetcher
     if fetch is None and getattr(args, "agent_browser", False):
         # Capture the accessibility snapshot from the LIVE agent-browser session
-        # (the logged-in persistent profile) rather than a separate headless
-        # Chrome: activating a tab does not affect dump_dom's own Chrome
-        # subprocess, and the documented Serverless flow uses --agent-browser
-        # WITHOUT --user-data-dir, so dump_dom would hit a login wall / capture an
-        # unauthenticated page (PR #234 review). If no Kibana tab is open in the
-        # session, open the dashboard there first, then snapshot it.
-        if active is None:
-            drive(["open", url])
+        # (the logged-in profile) rather than a separate headless Chrome. ALWAYS
+        # navigate to the TARGET dashboard URL first — relying on the activated
+        # tab would snapshot the wrong page whenever some other Kibana tab is open
+        # (tab selection falls back to the first /app/* tab). Then let the async
+        # Lens panels settle (networkidle + a bounded budget) before capture, or
+        # we read panels mid-load and miss render errors (PR #234 review hunt).
+        drive(["open", url])
+        drive(["wait", "--load", "networkidle"])
+        drive(["wait", str(_AGENT_BROWSER_SETTLE_MS)])
         fetch = lambda _u: _agent_browser_snapshot(drive)  # noqa: E731
     if fetch is None:
         fetch = lambda u: dump_dom(u, args.user_data_dir)  # noqa: E731

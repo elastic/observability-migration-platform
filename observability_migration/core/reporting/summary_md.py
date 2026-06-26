@@ -69,6 +69,11 @@ def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
         return PanelProvenance.NATIVE
     if str(query or "").lstrip().startswith(_NATIVE_PROMQL_PREFIX):
         return PanelProvenance.NATIVE
+    if not str(query or "").strip():
+        # A migrated panel with no executable query is a non-data visual (text /
+        # markdown), not an ES|QL-translated data panel — count it as a
+        # placeholder rather than inflating "ES|QL translated" (PR #234 review).
+        return PanelProvenance.PLACEHOLDER
     return PanelProvenance.ESQL
 
 
@@ -326,8 +331,8 @@ def _render_provenance(view: SummaryView) -> list[str]:
         "Structural-only unless separately validated |"
     )
     out.append(
-        f"| Placeholder (not feasible) | {placeholder} | {_pct(placeholder, classified)} | "
-        "Not migrated — manual rebuild |"
+        f"| Placeholder / no live query | {placeholder} | {_pct(placeholder, classified)} | "
+        "Not migrated (manual rebuild) or a non-query visual (text/markdown) |"
     )
     out.append("")
 
