@@ -111,6 +111,9 @@ PANEL_TYPE_MAP = {
     "stat": "metric",
     "singlestat": "metric",
     "gauge": "gauge",
+    # Default/single-value mapping only. ``bargauge_panel_rule`` routes a
+    # grouped or multi-value bargauge to a bar chart (``kibana_type="bar"``) at
+    # translation time; a single-value bargauge stays a bullet gauge.
     "bargauge": "gauge",
     "table": "datatable",
     "table-old": "datatable",
@@ -656,7 +659,7 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
 _PROMQL_UNSUPPORTED_RE = re.compile(
     r"""
       @\s*\d                                      # @ timestamp modifier
-    | \[\d+[smhd]:\d+[smhd]\]                    # subquery [range:step] syntax
+    | \[\s*\d+[smhd]\s*:\s*(?:\d+[smhd]\s*)?\]   # subquery [range:step] or default-step [range:]
     | \btopk\s*\(                                 # topk not supported by ES PROMQL bridge
     | \bbottomk\s*\(                              # bottomk not supported
     | \bchanges\s*\(                              # changes() not supported

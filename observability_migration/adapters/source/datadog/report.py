@@ -486,6 +486,7 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
             status=pr.status,
             query=getattr(pr, "esql_query", "") or "",
             query_ir=getattr(pr, "query_ir", {}),
+            kibana_type=getattr(pr, "kibana_type", "") or "",
         )
 
     for dr in results:

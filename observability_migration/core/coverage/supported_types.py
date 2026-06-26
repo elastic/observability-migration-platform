@@ -30,6 +30,9 @@ GRAFANA_SUPPORTED_PANEL_TYPES: dict[str, str] = {
     "stat": "metric",
     "singlestat": "metric",
     "gauge": "gauge",
+    # Mirrors PANEL_TYPE_MAP's default. NOTE: a grouped/multi-value bargauge is
+    # dynamically routed to a bar chart by bargauge_panel_rule at translation
+    # time; "gauge" is the single-value default (see grafana.panels).
     "bargauge": "gauge",
     "table": "datatable",
     "table-old": "datatable",

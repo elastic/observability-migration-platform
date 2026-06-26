@@ -576,6 +576,7 @@ def build_summary_view(
             status=pr.status,
             query=getattr(pr, "esql_query", "") or "",
             query_ir=getattr(pr, "query_ir", {}),
+            kibana_type=getattr(pr, "kibana_type", "") or "",
         )
 
     elements_total = sum(len(_renderable(r)) for r in results)

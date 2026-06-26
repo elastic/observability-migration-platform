@@ -333,12 +333,14 @@ def build_report(
     unreachable = bool(acceptance.get("unreachable"))
     compare_fails = _compare_fail_count(compare)
 
-    if unreachable:
-        verdict = "UNREACHABLE"
-    elif real_bugs or compare_fails:
-        # Genuine failure signal, but we still surface the full scorecard;
-        # call it ATTENTION (exit code carries the hard fail).
+    if real_bugs or compare_fails:
+        # A genuine failure signal outranks an unreachable cluster: if we already
+        # found a real_bug/compare FAIL before the cluster dropped mid-sweep, the
+        # verdict (and exit code) must reflect the bug, not the infra blip. We
+        # still surface the full scorecard; call it ATTENTION.
         verdict = "ATTENTION"
+    elif unreachable:
+        verdict = "UNREACHABLE"
     elif data_gaps or others:
         verdict = "ATTENTION"
     else:
@@ -513,11 +515,14 @@ def run_verify(
         items, es_url=es_url, api_key=api_key, index=index, validator=validator, verify=verify
     )
     if acceptance.get("unreachable"):
-        # The cluster dropped mid-sweep; treat as unreachable (exit 2).
+        # The cluster dropped mid-sweep. Defer the exit code to exit_code_for so a
+        # real_bug found BEFORE the drop still produces exit 1 (a hard fail), not
+        # exit 2 (which CI reads as a non-fatal infra blip). With no real_bug, the
+        # report's UNREACHABLE verdict still yields exit 2.
         report = build_report(acceptance=acceptance, compare=None, artifact_dir=str(art))
         print(render_scorecard(report))
         _maybe_write(report, report_out)
-        return 2
+        return exit_code_for(report)
 
     compare: dict[str, Any] | None = None
     if run_compare and compare_runner is not None:

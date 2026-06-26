@@ -1396,10 +1396,14 @@ def topk_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
-    source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    # A bare counter is auto-rated below (inner_func becomes "rate"), so it must
+    # run under the TS command — RATE() is invalid under FROM. Select the source
+    # from is_counter as well as an explicit range_func; time_filter and bucket
+    # derive from source, so this also picks ts_time_filter / TBUCKET.
+    source = "TS" if (is_counter or frag.range_func in AGG_FUNCTION_MAP) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
-    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     inner_func = frag.range_func or ("rate" if is_counter else "")
     if inner_func in {"rate", "irate", "increase"}:
         prefer = "counter"

@@ -40,6 +40,17 @@ _RENDER_ERROR_PATTERNS = (
 )
 _ERROR_RE = [re.compile(p, re.IGNORECASE) for p in _RENDER_ERROR_PATTERNS]
 
+# A render error is only a *field gap* (data-readiness warn) when the panel text
+# actually names an absent column/field. A generic render marker
+# (embPanel__error) or a translator/ES|QL bug marker (is not yet implemented,
+# Output has changed from, a bare verification_exception) must NOT be downgraded
+# to field_gap just because a breakdown field happens to be absent — that masked
+# real translator bugs as warns (hunt #4).
+_FIELD_ABSENCE_RE = re.compile(
+    r"Unknown column|unknown field|invalid column|column name or index is invalid",
+    re.IGNORECASE,
+)
+
 # Console signatures that indicate a panel/query/render failure — specific enough
 # to exclude benign platform noise. A bare "kibana" keyword is intentionally NOT
 # used: it matches CSP violations referencing ``kibana.estccdn.com`` and other
@@ -420,7 +431,10 @@ def classify_panel(
     text = str(panel_text or "")
     markers = find_render_error_markers(text)
     if markers:
-        if available_fields is not None:
+        # Only a column/field-absence error can be a field_gap. A translator/ES|QL
+        # bug marker (or a bare embPanel__error) is a real render_error even when
+        # a breakdown field is absent — never downgrade it (hunt #4).
+        if available_fields is not None and _FIELD_ABSENCE_RE.search(text):
             avail = set(available_fields)
             missing = [f for f in breakdown_fields if f and f not in avail]
             if missing:

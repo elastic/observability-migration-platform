@@ -3376,7 +3376,15 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
             return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
         return None
     ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
-    if agg.endswith("_OVER_TIME") and ts_match:
+    # A top-level windowed time-series function (the *_OVER_TIME family AND the
+    # counter range functions RATE/IRATE/INCREASE/DELTA/DERIV) takes the window
+    # as its own trailing argument. Only the value (field) may be wrapped in
+    # CASE; folding the whole inner would push the window literal into the CASE
+    # and emit an invalid 4-arg CASE (issue: bare RATE + per-operand filter).
+    if (
+        agg.endswith("_OVER_TIME")
+        or agg in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}
+    ) and ts_match:
         field = ts_match.group("field").strip()
         window = ts_match.group("window").strip()
         return f"{agg}(CASE({condition}, {field}, NULL), {window})"

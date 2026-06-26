@@ -43,7 +43,16 @@ class PanelProvenance:
     PLACEHOLDER = "placeholder"
 
 
-def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
+# Kibana panel types that carry no executable query — pure presentational
+# visuals (Grafana text panels, Datadog note/free_text/image/iframe widgets all
+# emit a "markdown" panel). These are placeholders, not ES|QL-translated data
+# panels, regardless of status (hunt #4).
+_NON_DATA_KIBANA_TYPES = frozenset(
+    {"markdown", "text", "note", "free_text", "image", "iframe"}
+)
+
+
+def classify_panel_provenance(*, status: str, query: str, query_ir, kibana_type: str = "") -> str:
     """Classify a single panel into a :class:`PanelProvenance` bucket.
 
     Provenance is derived from data the result models already carry. We prefer
@@ -52,19 +61,25 @@ def classify_panel_provenance(*, status: str, query: str, query_ir) -> str:
     query prefix so panels that lack the marker (e.g. older traces) are still
     classified correctly.
 
-    A ``not_feasible`` / ``requires_manual`` / ``skipped`` panel is always a
-    placeholder, even if a stale query string is present, because each ships a
-    markdown placeholder rather than an executable ES|QL query — counting them
-    as "ES|QL translated" overstates the migrated surface (PR #234 review).
+    A ``not_feasible`` / ``requires_manual`` / ``skipped`` / ``blocked`` panel is
+    always a placeholder, even if a stale query string is present, because each
+    ships a markdown placeholder rather than an executable ES|QL query — counting
+    them as "ES|QL translated" overstates the migrated surface (PR #234 review).
+
+    A non-data visual (``kibana_type`` markdown/text/image/iframe) is likewise a
+    placeholder even when migrated "ok": it carries no executable query.
 
     A blank ``query`` string alone is NOT treated as a placeholder: some
-    successfully-migrated panels (notably Datadog Lens) carry the executable
+    successfully-migrated data panels (notably Datadog Lens) carry the executable
     query off this input, so blanking on it mis-classified real ES|QL panels as
-    placeholders. Provenance therefore turns on ``status`` and the native-PROMQL
-    marker only (de-scoped after a hunt found the empty-query branch deflated the
-    ES|QL count and inflated "not migrated").
+    placeholders. Provenance therefore turns on ``status``, ``kibana_type``, and
+    the native-PROMQL marker — never on a blank query string.
     """
-    if status in ("not_feasible", "requires_manual", "skipped"):
+    if status in ("not_feasible", "requires_manual", "skipped", "blocked"):
+        return PanelProvenance.PLACEHOLDER
+    # A non-data visual (markdown/text/image/iframe) ships no executable query
+    # even when migrated "ok"; it is a placeholder, not an ES|QL data panel.
+    if str(kibana_type or "").lower() in _NON_DATA_KIBANA_TYPES:
         return PanelProvenance.PLACEHOLDER
     family = ""
     if isinstance(query_ir, dict):

@@ -273,12 +273,13 @@ def fetch_available_fields(
 ) -> set[str] | None:
     """Field names present in the target index (for field_gap/data_gap attribution).
 
-    Returns ``None`` only when the target schema is *unknown* — no ES URL is
-    configured or discovery fails — so the per-panel classifier treats a render
-    marker as a hard ``render_error`` (a field gap cannot be proven without
-    knowing the target schema). A successful field-caps call that simply matched
-    no fields returns an empty ``set()`` (schema known, field absent), which lets
-    the classifier still attribute a field gap.
+    Returns ``None`` when the target schema is *unknown or empty* — no ES URL is
+    configured, discovery fails, or ``_field_caps`` returns no fields (a 200 on
+    an absent/empty index is indistinguishable from a real schema with zero
+    fields). In every such case the per-panel classifier treats a render marker
+    as a hard ``render_error`` rather than downgrading it to a ``field_gap`` it
+    cannot prove (hunt #4: an empty/unreachable-but-200 result masked real render
+    errors). Only a *non-empty* field set enables field-gap attribution.
 
     Delegates to ``fetch_field_capabilities`` so TLS, retry, and header logic
     stay in one place.
@@ -289,9 +290,9 @@ def fetch_available_fields(
         caps = fetch_field_capabilities(
             es_url, index_pattern, es_api_key=es_api_key, timeout=timeout, verify=verify
         )
-        # ``{}`` is a *successful* empty result (schema known, no matching field)
-        # and must stay distinct from ``None`` (fetch failure) — see PR #234.
-        return set(caps.keys()) if caps is not None else set()
+        # Empty caps ({} or None) -> unknown schema (None); only a populated
+        # field set enables field-gap attribution.
+        return set(caps.keys()) if caps else None
     except Exception:
         return None
 
@@ -446,7 +447,14 @@ def run_audit_cli(
     if migration_out:
         report_path = Path(migration_out) / "migration_report.json"
         if report_path.exists():
-            report = json.loads(report_path.read_text())
+            try:
+                report = json.loads(report_path.read_text())
+            except (ValueError, OSError) as exc:
+                # A malformed/unreadable report must not crash the audit; degrade
+                # to the whole-dashboard render classification (hunt #4).
+                print(f"warning: could not read migration_report.json ({exc}); "
+                      "falling back to whole-dashboard render classification")
+                report = None
 
     if report is not None:
         kinds = expected_kind_by_panel(report)
