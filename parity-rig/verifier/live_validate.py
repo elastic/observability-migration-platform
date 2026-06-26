@@ -31,6 +31,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Reuse the package's dashboard-control-param binding when importable so the
+# live oracle agrees with the uploaded-dashboard smoke path; otherwise the
+# verifier stays runnable standalone and simply binds no extra params.
+try:  # pragma: no cover - exercised implicitly when the package is installed
+    from observability_migration.adapters.source.grafana.esql_validate import (
+        _validation_params_for_query,
+    )
+except Exception:  # pragma: no cover
+    _validation_params_for_query = None
+
 # A runner takes (es_url, api_key, esql) and returns (status_code, body).
 QueryRunner = Callable[[str, str, str], "tuple[int, dict[str, Any] | str]"]
 
@@ -91,6 +101,32 @@ def classify_error(text: str) -> str:
     return "other"
 
 
+def _merge_validation_params(query: str, collectors) -> list[dict[str, Any]]:
+    """Build the ``params`` list for the default runner.
+
+    Auto-binds the query's ``?name`` placeholders (notably the Lens-injected
+    ``?_tstart``/``?_tend`` time params) and overlays the uploaded-dashboard
+    smoke bindings for dashboard control params (``RLIKE ?var`` -> ``.*``,
+    arithmetic -> ``0``) so a query mixing time params with control params binds
+    both. Order is preserved and smoke bindings win on conflicts -- *except* for
+    the collector-recognized time aliases (``?_tstart``/``?_tend`` and their
+    ``?_t_start``/``?_t_end``/``?tstart``/``?tend`` spellings), whose ISO-date
+    autobind must survive: the smoke helper only date-binds ``_tstart``/``_tend``
+    and would otherwise wildcard those aliases to ``.*`` and fail at runtime.
+    """
+    time_aliases = getattr(collectors, "_TIME_PARAM_ALIASES", frozenset())
+    merged: dict[str, Any] = {}
+    for entry in collectors._autoparams_for_esql(query):
+        merged.update(entry)
+    if _validation_params_for_query:
+        for entry in _validation_params_for_query(query):
+            for name, value in entry.items():
+                if name in time_aliases and name in merged:
+                    continue
+                merged[name] = value
+    return [{name: value} for name, value in merged.items()]
+
+
 def validate_query(
     es_url: str,
     api_key: str,
@@ -104,7 +140,18 @@ def validate_query(
     if runner is None:
         from . import collectors
 
-        runner = collectors.run_cluster_query
+        # Bind every ``?name`` placeholder the query references. ``run_cluster_query``
+        # only auto-binds when ``params`` is ``None``, so passing an explicit list
+        # would otherwise suppress its ``?_tstart``/``?_tend`` time autobind. Start
+        # from that autobind (covers Lens time placeholders) and overlay the
+        # uploaded-dashboard smoke bindings (``RLIKE ?var`` -> ``.*``, arithmetic
+        # -> ``0``) so a query mixing control params and time params binds both and
+        # is not mis-executed (and mis-classified as ``real_bug``).
+        params = _merge_validation_params(query, collectors)
+
+        def runner(es, key, q):
+            return collectors.run_cluster_query(es, key, q, params=params or None)
+
     status, body = runner(es_url, api_key, query)
     if status == 200 and isinstance(body, dict):
         columns = [c.get("name", "") for c in (body.get("columns") or [])]

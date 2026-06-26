@@ -307,6 +307,14 @@ def run_cluster_query(
 
 _NAMED_PARAM_PATTERN = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
 
+# Lens injects the chart time range under any of these alias spellings; each
+# must bind to a concrete date, not a string/number wildcard. Exposed so other
+# binders (e.g. ``live_validate._merge_validation_params``) can recognise the
+# same set and avoid overwriting these date binds with control-param wildcards.
+_TSTART_ALIASES = ("_tstart", "_t_start", "tstart")
+_TEND_ALIASES = ("_tend", "_t_end", "tend")
+_TIME_PARAM_ALIASES = frozenset(_TSTART_ALIASES + _TEND_ALIASES)
+
 
 def _autoparams_for_esql(esql: str) -> list[dict[str, Any]]:
     """Build a minimal ``params`` list for any ``?name`` references in
@@ -326,9 +334,9 @@ def _autoparams_for_esql(esql: str) -> list[dict[str, Any]]:
     start = end - timedelta(hours=1)
     params: list[dict[str, Any]] = []
     for name in sorted(names):
-        if name in ("_tstart", "_t_start", "tstart"):
+        if name in _TSTART_ALIASES:
             params.append({name: start.isoformat().replace("+00:00", "Z")})
-        elif name in ("_tend", "_t_end", "tend"):
+        elif name in _TEND_ALIASES:
             params.append({name: end.isoformat().replace("+00:00", "Z")})
         else:
             params.append({name: ""})
