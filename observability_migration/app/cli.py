@@ -198,6 +198,15 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Explicit data_stream.dataset filter for metrics")
     migrate.add_argument("--logs-dataset-filter", default="",
                          help="Explicit data_stream.dataset filter for logs")
+    migrate.add_argument(
+        "--translation-mode",
+        dest="translation_mode",
+        choices=["auto", "native", "esql"],
+        default="auto",
+        help="Translation strategy override (Grafana). 'auto' (default) probes the "
+             "target and prefers native PROMQL; 'native' forces native PROMQL; "
+             "'esql' forces ES|QL translation for every panel. No-op for Datadog.",
+    )
     migrate.add_argument("--smoke", action="store_true")
     migrate.add_argument("--browser-audit", action="store_true")
     migrate.add_argument("--capture-screenshots", action="store_true")
@@ -839,6 +848,9 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--dataset-filter", args.dataset_filter])
     if args.logs_dataset_filter:
         legacy_argv.extend(["--logs-dataset-filter", args.logs_dataset_filter])
+    _translation_mode = getattr(args, "translation_mode", "auto") or "auto"
+    if _translation_mode != "auto":
+        legacy_argv.extend(["--translation-mode", _translation_mode])
     if args.smoke_report:
         legacy_argv.extend(["--smoke-report", args.smoke_report])
     if getattr(args, "create_alert_rules", False):
@@ -922,6 +934,9 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--dataset-filter", args.dataset_filter])
     if args.logs_dataset_filter:
         legacy_argv.extend(["--logs-dataset-filter", args.logs_dataset_filter])
+    _translation_mode = getattr(args, "translation_mode", "auto") or "auto"
+    if _translation_mode != "auto":
+        legacy_argv.extend(["--translation-mode", _translation_mode])
     if args.kibana_url:
         legacy_argv.extend(["--kibana-url", args.kibana_url])
     if args.kibana_api_key:
