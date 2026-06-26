@@ -685,11 +685,21 @@ def _render_attr_predicate(field: str, value: str, negated: bool, field_capabili
     comp = _COMPARISON_RE.fullmatch(value)
     if comp:
         op, number = comp.groups()
+        # Range/relational comparisons (>=, >, <, <=) require numeric operands;
+        # keep the bare number even when the type is unknown.
         rhs = _render_attr_literal(number, field_capability)
         if negated:
             return f"NOT ({field} {op} {rhs})"
         return f"{field} {op} {rhs}"
     op = "!=" if negated else "=="
+    # Equality on a numeric-looking value whose target field type is UNKNOWN is
+    # ambiguous: log facets such as http.status_code are frequently mapped as
+    # keyword in the target, and ES|QL rejects `<keyword> == <integer>`. When we
+    # have no field caps to disambiguate, compare as string via TO_STRING(...)
+    # so the predicate is valid against both keyword and numeric mappings.
+    # With caps present, honor them exactly (numeric stays numeric).
+    if field_capability is None and _NUMERIC_RE.fullmatch(value):
+        return f'TO_STRING({field}) {op} "{_esql_escape(value)}"'
     return f"{field} {op} {_render_attr_literal(value, field_capability)}"
 
 

@@ -2893,6 +2893,30 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertIn("MAX_OVER_TIME(node_load1,", gauge)
         self.assertNotIn("TO_DOUBLE", gauge)
 
+    def test_increase_degraded_to_gauge_fn_still_casts_to_double(self):
+        # Regression for the MySQL "Network Usage Hourly" runtime failure:
+        # increase() over a counter whose name carries no _total suffix
+        # (e.g. mysql_global_status_bytes_received) is classified gauge by the
+        # offline suffix heuristic, so increase() degrades to MAX_OVER_TIME.
+        # But the telemetry contract/seeder type any increase()-wrapped metric
+        # as a counter, so the stored field is counter_double and ES|QL rejects
+        # MAX_OVER_TIME(<counter>). The counter-style *source* function is the
+        # authoritative signal: the degraded gauge analogue must still wrap the
+        # metric in TO_DOUBLE so the emitted query executes.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        result = translate_promql_to_esql(
+            "increase(mysql_global_status_bytes_received[1h])"
+        )
+        esql = result.esql_query
+        self.assertIn("MAX_OVER_TIME(", esql)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(mysql_global_status_bytes_received)",
+            esql,
+            msg=f"increase()-degraded gauge fallback must cast counter to double: {esql}",
+        )
+
     def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
         # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
         # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so

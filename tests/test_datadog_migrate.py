@@ -502,11 +502,23 @@ class TestLogParser(unittest.TestCase):
         esql = log_ast_to_esql_where(lq.ast)
         self.assertIn("==", esql)
 
-    def test_grouped_numeric_attribute_filter(self):
+    def test_grouped_numeric_attribute_filter_unknown_caps_is_type_tolerant(self):
+        # Regression for the NGINX "Error logs" runtime failure: without target
+        # field caps, a numeric-looking facet equality (@http.status_code:(404
+        # OR 500)) used to emit `http.status_code == 404` (integer). But log
+        # facets such as http.status_code are commonly mapped as keyword in the
+        # target (the synthetic seeder maps them so), and ES|QL rejects
+        # `<keyword> == <integer>` ("first argument is [keyword] so second
+        # argument must also be [keyword]"). When the field type is unknown, an
+        # equality must be type-tolerant: TO_STRING(field) == "404" runs against
+        # both keyword and numeric mappings.
         lq = parse_log_query("@http.status_code:(404 OR 500)")
         esql = log_ast_to_esql_where(lq.ast)
-        self.assertIn("http.status_code == 404", esql)
+        self.assertIn('TO_STRING(http.status_code) == "404"', esql)
+        self.assertIn('TO_STRING(http.status_code) == "500"', esql)
         self.assertIn("OR", esql)
+        # The raw integer comparison that ES|QL rejects on keyword fields is gone.
+        self.assertNotIn("== 404", esql)
 
     def test_grouped_numeric_attribute_filter_quotes_keyword_fields(self):
         profile = FieldMapProfile(

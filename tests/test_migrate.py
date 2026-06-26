@@ -1545,12 +1545,19 @@ class TranslatorRegressionTests(unittest.TestCase):
         """increase() is NOT forced to counter the way rate()/irate() are: it can
         be misused on a real gauge, and ES|QL INCREASE() also requires counter
         typing. With no counter suffix and no target proof, keep the conservative
-        gauge degradation (consistent with the contract's soft-counter treatment
-        of increase())."""
+        gauge *function* degradation (INCREASE -> MAX_OVER_TIME, consistent with
+        the contract's soft-counter treatment of increase()).
+
+        The degraded function's metric argument must still be wrapped in
+        TO_DOUBLE: the telemetry contract / seeder type any increase()-ed field
+        as a counter when the target is silent, and ES|QL rejects MAX_OVER_TIME
+        on a counter (the MySQL "Network Usage Hourly" runtime failure). The
+        cast is a no-op if the field is in fact a gauge double, so it is safe
+        under target uncertainty."""
         translated = self.translate("increase(weird_unknown_metric[5m])")
         esql = translated.esql_query
         self.assertNotIn("INCREASE(weird_unknown_metric", esql)
-        self.assertIn("MAX_OVER_TIME(weird_unknown_metric", esql)
+        self.assertIn("MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)", esql)
 
     def test_rate_on_counter_typed_field_still_uses_RATE(self):
         """Regression guard: degradation must only fire for gauge-typed

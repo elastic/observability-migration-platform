@@ -111,19 +111,67 @@ _MATH_FN_ESQL = {
 # ("argument of [...] must be [... except counter types]").
 _COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
 
+# PromQL range functions that are counter-only by Prometheus convention. When a
+# panel's source query wraps a metric in one of these, the telemetry contract
+# and the synthetic-data seeder both type that metric as a counter
+# (``time_series_metric: counter``) — see
+# ``observability_migration.core.telemetry_contract``. So even when the offline
+# counter heuristic guessed "gauge" and we degraded the function to a gauge
+# analogue (e.g. ``increase()`` -> ``MAX_OVER_TIME``), the *stored* field is a
+# counter and ES|QL still rejects the bare metric. The counter-style source
+# function is therefore an authoritative cast signal.
+_COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
 
-def _counter_safe_metric_arg(esql_func: str, metric_expr: str, is_counter: bool) -> str:
-    """Cast a known-counter metric to double for ES|QL functions that reject
-    counters, so the emitted query executes instead of failing at runtime.
 
-    Only applies when the field is a confirmed counter AND the function is not
-    counter-consuming (RATE/IRATE/INCREASE keep the raw counter). Gauges
-    (``is_counter`` False) are returned unchanged, so no extra cast is emitted
-    for the common gauge ``*_over_time`` downsample path.
+def _counter_safe_metric_arg(
+    esql_func: str,
+    metric_expr: str,
+    is_counter: bool,
+    source_range_func: str | None = None,
+    *,
+    counter_refuted: bool = False,
+) -> str:
+    """Cast a counter metric to double for ES|QL functions that reject counters,
+    so the emitted query executes instead of failing at runtime.
+
+    Casts when EITHER:
+
+    - the field is a confirmed counter (``is_counter``), OR
+    - the panel's *source* PromQL used a counter-only range function
+      (``rate``/``irate``/``increase``) and the target has NOT authoritatively
+      refuted the counter classification (``counter_refuted``). This mirrors the
+      telemetry contract / seeder, which type any ``rate()``/``increase()``-ed
+      field as a counter unless an explicit rule-pack ``gauge`` pin or live
+      gauge field-caps say otherwise. So when the offline heuristic merely
+      *guessed* "gauge" and we degraded ``increase()`` -> ``MAX_OVER_TIME``, the
+      stored field is still a counter and the bare metric would be rejected.
+
+    The cast is skipped for counter-consuming ES|QL functions
+    (``RATE``/``IRATE``/``INCREASE``), which take the raw counter, and for a
+    field that is an authoritative gauge (``counter_refuted``) — there the
+    stored field really is a gauge double, so no needless cast / snapshot churn
+    is added on the common gauge ``*_over_time`` path.
     """
-    if is_counter and (esql_func or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+    if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
+        return metric_expr
+    counter_source = (
+        (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
+        and not counter_refuted
+    )
+    if is_counter or counter_source:
         return f"TO_DOUBLE({metric_expr})"
     return metric_expr
+
+
+def _counter_refuted(resolver, metric: str) -> bool:
+    """True when the target authoritatively says ``metric`` is NOT a counter
+    (explicit rule-pack ``gauge`` pin or live gauge field-caps). Silent
+    (returns False) when offline or the field is unknown, so a counter-style
+    source function can still drive the counter-safe cast."""
+    if resolver is None or not metric:
+        return False
+    refutes = getattr(resolver, "refutes_counter", None)
+    return bool(refutes(metric)) if callable(refutes) else False
 
 
 def _default_instance_field(rp):
@@ -1174,7 +1222,7 @@ def join_family_rule(context):
             )
             if counter_warning:
                 _append_unique(context.warnings, counter_warning)
-            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter)}, {w})"
+            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric))}, {w})"
         elif is_counter:
             inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
@@ -1361,7 +1409,7 @@ def topk_family_rule(context):
         )
         if counter_warning:
             _append_unique(context.warnings, counter_warning)
-        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter)
+        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric))
         inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
         stats_expr = _agg_stats_expr(
             OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
@@ -1613,7 +1661,7 @@ def scaled_agg_family_rule(context):
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter)}, {frag.range_window})', frag)}"
+    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})', frag)}"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -1695,7 +1743,7 @@ def nested_agg_family_rule(context):
             _append_unique(context.warnings, counter_warning)
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter)}, {frag.range_window}))"
+        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window}))"
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
@@ -2015,7 +2063,7 @@ def range_agg_family_rule(context):
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter)}, {frag.range_window})"
+    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
