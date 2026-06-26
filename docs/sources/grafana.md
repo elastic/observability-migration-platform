@@ -269,6 +269,13 @@ Use that doc for:
   for private CAs; `--insecure` disables verification for testing only.
 - `--dataset-filter` and `--logs-dataset-filter` control the emitted dashboard
   filters when you need non-default dataset wiring.
+- All 10 standard Grafana threshold operators are supported when translating a
+  single-condition threshold alert: `gt` (Is above), `lt` (Is below), `eq` (Is
+  equal to), `ne` (Is not equal to), `gte` (Is above or equal to), `lte` (Is
+  below or equal to), `within_range` / `outside_range` (exclusive bounds), and
+  `within_range_included` / `outside_range_included` (inclusive bounds). The
+  emitted ES|QL `WHERE` clause fires on exactly the same values as the Grafana
+  source, preserving the exclusive-vs-inclusive range distinction.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes
   `<output-dir>/alerts/alert_rule_upload_results.json`.
 - `--rules-file` / `--plugin` extend deterministic translation without editing

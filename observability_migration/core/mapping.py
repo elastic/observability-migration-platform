@@ -340,8 +340,11 @@ def _legacy_condition_where_clause(condition: dict[str, Any]) -> str:
     upper = _coerce_float(params[1])
     if lower is None or upper is None or lower > upper:
         return ""
+    # Grafana classic alerting range operators use exclusive bounds
+    # (``Lower < v && v < Upper``), matching the unified threshold path and
+    # ``within_range``/``outside_range`` in ``pkg/expr/threshold.go`` (issue #204).
     if eval_type == "within_range":
-        return f"value >= {lower} AND value <= {upper}"
+        return f"value > {lower} AND value < {upper}"
     return f"value < {lower} OR value > {upper}"
 
 
@@ -461,12 +464,59 @@ def _default_promql_index(data_view: str) -> str:
     return index or "metrics-prometheus-*"
 
 
+# Single-value comparison operators: evaluator type -> ES|QL comparator.
+_THRESHOLD_COMPARATORS = {
+    "gt": ">",
+    "lt": "<",
+    "gte": ">=",
+    "lte": "<=",
+    "eq": "==",
+    "ne": "!=",
+}
+
+# Two-bound range operators: evaluator type -> ES|QL clause template. Semantics
+# mirror Grafana ``pkg/expr/threshold.go`` exactly, preserving the distinction
+# between the exclusive ``within/outside_range`` operators and their inclusive
+# ``*_range_included`` variants (issue #204).
+_THRESHOLD_RANGE_CLAUSES = {
+    "within_range": "value > {lo} AND value < {hi}",
+    "outside_range": "value < {lo} OR value > {hi}",
+    "within_range_included": "value >= {lo} AND value <= {hi}",
+    "outside_range_included": "value <= {lo} OR value >= {hi}",
+}
+
+
+def _threshold_evaluator_where_clause(eval_type: str, params: Any) -> str:
+    """Render a Grafana threshold evaluator as an ES|QL ``value`` clause.
+
+    Supports all 10 standard Grafana threshold operators. Returns ``""`` when
+    the evaluator type is unknown or its parameters are malformed.
+    """
+    eval_type = str(eval_type or "").strip().lower()
+    params = params if isinstance(params, list) else []
+
+    comparator = _THRESHOLD_COMPARATORS.get(eval_type)
+    if comparator:
+        threshold = _coerce_float(params[0] if params else None)
+        if threshold is None:
+            return ""
+        return f"value {comparator} {threshold}"
+
+    template = _THRESHOLD_RANGE_CLAUSES.get(eval_type)
+    if template is None or len(params) < 2:
+        return ""
+    lower = _coerce_float(params[0])
+    upper = _coerce_float(params[1])
+    if lower is None or upper is None:
+        return ""
+    return template.format(lo=lower, hi=upper)
+
+
 def _grafana_unified_simple_threshold_where_clause(ir: AlertingIR) -> str:
     ext = ir.source_extension or {}
     data_list = ext.get("data")
     if not isinstance(data_list, list):
         return ""
-    comp_map = {"gt": ">", "lt": "<", "gte": ">=", "lte": "<="}
     for item in data_list:
         if not isinstance(item, dict):
             continue
@@ -482,14 +532,9 @@ def _grafana_unified_simple_threshold_where_clause(ir: AlertingIR) -> str:
             return ""
         raw_evaluator = condition.get("evaluator")
         evaluator = raw_evaluator if isinstance(raw_evaluator, dict) else {}
-        comparator = comp_map.get(str(evaluator.get("type", "") or "").strip().lower())
-        if not comparator:
-            return ""
-        params = evaluator.get("params")
-        threshold = _coerce_float(params[0] if isinstance(params, list) and params else None)
-        if threshold is None:
-            return ""
-        return f"value {comparator} {threshold}"
+        return _threshold_evaluator_where_clause(
+            evaluator.get("type", ""), evaluator.get("params")
+        )
     return ""
 
 
