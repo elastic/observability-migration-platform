@@ -151,13 +151,20 @@ class RulePackConfig:
     index_rewrites: list = field(default_factory=list)
     native_promql: bool = False
     runtime_features: dict = field(default_factory=dict)
-    # Optional live native-PROMQL validator: a callable ``(query) -> (ok, error)``
-    # attached only when a target cluster is configured (``--es-url``). When set,
-    # the native-PROMQL emit path validates each built native query against the
-    # cluster and, on a parse rejection, degrades the panel to the ES|QL path
-    # (which marks unparseable shapes not_feasible) instead of shipping a query
-    # that hard-errors in Kibana. None (the default) preserves offline behavior.
+    # Optional live native-PROMQL validator: a ``callable(query) -> (ok, error)``
+    # the CLI attaches when ``--es-url`` is configured. When present, each built
+    # native PROMQL query is probed against the target; a parse rejection
+    # degrades that panel to ES|QL translation (see
+    # panels._native_promql_query_survives_validation). None (the default)
+    # preserves offline behavior.
     native_promql_validator: object = None
+    # Per-run counters for the native live-validation gate, populated by the gate
+    # when ``native_promql_validator`` is attached so the CLI can print an
+    # observable summary line: how many native queries were CHECKED, how many
+    # DEGRADED to ES|QL on a parse rejection, and how many were KEPT native.
+    native_validation_stats: dict = field(
+        default_factory=lambda: {"checked": 0, "degraded": 0, "kept": 0}
+    )
 
     def __post_init__(self):
         if self.native_promql:

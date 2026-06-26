@@ -877,54 +877,6 @@ def _promql_has_range_on_nonselector(expr):
     return bool(_PROMQL_RANGE_ON_NONSELECTOR_RE.search(stripped))
 
 
-# Native-PROMQL live-validation classifier (feature B). A *parse/syntax*
-# rejection from the cluster means the emitted native query cannot be parsed at
-# all — the panel must degrade to the ES|QL path. A *data gap* (unknown
-# column/index, absent data) means the query is structurally valid but the
-# telemetry is missing, which must NOT downgrade an otherwise-good native panel.
-_NATIVE_DATA_GAP_RE = re.compile(
-    r"unknown column|unknown index|no such index|index_not_found|field_not_found",
-    re.IGNORECASE,
-)
-_NATIVE_PARSE_REJECTION_RE = re.compile(
-    r"parsing_exception|no viable alternative|mismatched input|extraneous input"
-    r"|ranges only allowed|token recognition error",
-    re.IGNORECASE,
-)
-
-
-def _native_query_parse_rejected(error) -> bool:
-    """True when a native-PROMQL validation error is a parse/syntax rejection
-    (cluster cannot parse the query) rather than a data gap (valid query, absent
-    data). Only parse rejections justify degrading a native panel to the ES|QL
-    path; data gaps must not, or a valid panel would be downgraded merely because
-    the target lacks seed data."""
-    text = str(error or "")
-    if not text:
-        return False
-    if _NATIVE_DATA_GAP_RE.search(text):
-        return False
-    return bool(_NATIVE_PARSE_REJECTION_RE.search(text))
-
-
-def _native_promql_query_survives_validation(rule_pack, query) -> bool:
-    """Run the rule pack's optional live native-PROMQL validator against a built
-    native query. Returns False only when the validator is present AND the query
-    is rejected at parse time, signalling the caller to degrade to ES|QL. Absent
-    validator (offline) or non-parse errors keep the native path."""
-    validator = getattr(rule_pack, "native_promql_validator", None)
-    if validator is None:
-        return True
-    try:
-        ok, err = validator(query)
-    except Exception:
-        # A flaky/unavailable validator must never block migration; keep native.
-        return True
-    if ok:
-        return True
-    return not _native_query_parse_rejected(err)
-
-
 def _promql_has_known_server_bug(expr):
     cleaned = _clean_promql_for_native(expr)
     if (
@@ -1243,6 +1195,77 @@ def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
     return False
 
 
+# Substrings that mark a target-side *parse* rejection of a native PROMQL query
+# — the cluster cannot even understand the query syntax, so degrading to ES|QL
+# is the right call. Field/index gaps ("Unknown column", "Unknown index",
+# "verification_exception") are data-readiness conditions, NOT parse errors: the
+# native query is structurally valid and self-heals once telemetry lands, so we
+# keep it native (issue #158 / #154).
+_NATIVE_PARSE_REJECTION_SIGNALS = (
+    "mismatched input",
+    "parsing_exception",
+    "parse_exception",
+    "extraneous input",
+    "no viable alternative",
+    "syntax error",
+    "invalid date format",
+    "input mismatch",
+    "token recognition error",
+    "cannot parse",
+)
+
+
+def _native_query_parse_rejected(err) -> bool:
+    """Return True only when *err* describes a target *parse* rejection.
+
+    A parse rejection means the native PROMQL query is malformed for this target
+    and must degrade to ES|QL. Empty errors and data/field gaps return False so
+    the native path is preserved.
+    """
+    text = str(err or "").lower()
+    if not text:
+        return False
+    return any(signal in text for signal in _NATIVE_PARSE_REJECTION_SIGNALS)
+
+
+def _native_promql_query_survives_validation(rule_pack, query) -> bool:
+    """Run the rule pack's optional live native-PROMQL validator against a built
+    native query.
+
+    Returns False only when the validator is present AND the query is rejected at
+    parse time, signalling the caller to degrade to ES|QL. An absent validator
+    (offline) or a non-parse error (data/field gap, flaky transport) keeps the
+    native path.
+
+    Records per-panel decisions on ``rule_pack.native_validation_stats`` so the
+    migrate CLI can print an observable summary. The validator may be cached by
+    query upstream, but this gate runs once per panel, so counts reflect
+    panel-level decisions.
+    """
+    validator = getattr(rule_pack, "native_promql_validator", None)
+    if validator is None:
+        return True
+    stats = getattr(rule_pack, "native_validation_stats", None)
+    if not isinstance(stats, dict):
+        stats = {"checked": 0, "degraded": 0, "kept": 0}
+        try:
+            rule_pack.native_validation_stats = stats
+        except Exception:
+            pass
+    stats["checked"] = stats.get("checked", 0) + 1
+    try:
+        ok, err = validator(query)
+    except Exception:
+        # A flaky/unavailable validator must never block migration; keep native.
+        stats["kept"] = stats.get("kept", 0) + 1
+        return True
+    if ok or not _native_query_parse_rejected(err):
+        stats["kept"] = stats.get("kept", 0) + 1
+        return True
+    stats["degraded"] = stats.get("degraded", 0) + 1
+    return False
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
@@ -1379,10 +1402,15 @@ def _translate_panel_native_promql(
                                              runtime_features=runtime_features,
                                              instant=instant,
                                              regex_default_params=regex_default_params)
-    # Feature B: when a live cluster validator is configured (--es-url), refuse a
-    # native query the target rejects at parse time and degrade to the ES|QL path
-    # (returning None) instead of shipping a query that hard-errors in Kibana.
+    # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
+    # and the target rejects this query at parse time, degrade to ES|QL (return
+    # None so the caller falls through to the ES|QL translator). A data/field gap
+    # keeps the native path (issue #158).
     if not _native_promql_query_survives_validation(rule_pack, promql_query):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL degraded to ES|QL: target rejected the query at parse time",
+        )
         return None
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
@@ -1528,11 +1556,14 @@ def _translate_multi_target_native_promql(
     step = _DEFAULT_NATIVE_PROMQL_STEP
     promql_query = f"PROMQL index={index} step={step} value=({combined_expr})"
 
-    # Feature B: degrade to ES|QL if the live cluster rejects the combined native
-    # query at parse time (see _native_promql_query_survives_validation).
+    # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
+    # ES|QL translation; a data/field gap keeps native (issue #158).
     if not _native_promql_query_survives_validation(rule_pack, promql_query):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL degraded to ES|QL: target rejected the query at parse time",
+        )
         return None
-
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
