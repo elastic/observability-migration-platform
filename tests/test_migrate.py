@@ -12310,6 +12310,32 @@ class NativePromqlTests(unittest.TestCase):
         self.assertTrue(can_use_native_promql('sum by (job) (rate(http_requests_total[5m]))'))
         self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
 
+    def test_rejects_range_selector_on_aggregation(self):
+        # A range selector ``[Ns]`` (no colon) applied to an aggregation /
+        # function result is invalid PromQL ("ranges only allowed for vector
+        # selectors"). The ES native PROMQL engine rejects it at parse time, so
+        # the panel must NOT take the native path — it should fall through to the
+        # ES|QL translator, which marks it not_feasible (degrade gracefully)
+        # rather than emitting a query that hard-errors in Kibana.
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(
+            can_use_native_promql("irate(sum by (vhost) (rabbitmq_queue_messages_ready)[5m])")
+        )
+        self.assertFalse(
+            can_use_native_promql(
+                'irate(sum by (vhost, tenant_id) (rabbitmq_queue_messages_ready{tenant_id=~"t1"})[5m])'
+            )
+        )
+        # The Grafana ``[$__interval]`` macro form of the same malformed shape.
+        self.assertFalse(
+            can_use_native_promql("irate(sum by (vhost) (rabbitmq_queue_messages_ready)[$__interval])")
+        )
+        # Valid shapes that must keep the native path: a range on a real vector
+        # selector, and a subquery (already blocked separately) stays rejected.
+        self.assertTrue(can_use_native_promql("rate(foo[5m])"))
+        self.assertTrue(can_use_native_promql("sum by (job) (rate(http_requests_total[5m]))"))
+        self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
+
     def test_rejects_topk(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertFalse(can_use_native_promql("topk(5, http_requests_total)"))

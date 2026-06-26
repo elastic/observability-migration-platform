@@ -3413,5 +3413,54 @@ class TestCounterOnlyRangeFuncTrustsSource(unittest.TestCase):
         )
 
 
+class TestNativePromqlLiveValidationFallback(unittest.TestCase):
+    """B: per-panel live native-PROMQL validation backstop.
+
+    When a target cluster is configured (``--es-url``) a native-PROMQL validator
+    is attached to the rule pack. A panel whose emitted native query the cluster
+    rejects at *parse* time must degrade to the ES|QL path instead of shipping a
+    query that hard-errors in Kibana. Data gaps (unknown column/index, no data)
+    must NOT degrade a structurally-valid native query. With no validator
+    (offline), behavior is unchanged.
+    """
+
+    def _native_query(self, rp):
+        _yaml, pr = _translate_panel(
+            _make_panel(1, "rate(http_requests_total[5m])"), rule_pack=rp
+        )
+        return getattr(pr, "esql_query", "") or ""
+
+    def test_no_validator_keeps_native_offline(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_validator_ok_keeps_native(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (True, "")
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_parse_rejected_native_query_falls_back_to_esql(self):
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (
+            False,
+            '{"type":"parsing_exception","reason":"line 1:40: no viable alternative at input"}',
+        )
+        query = self._native_query(rp)
+        self.assertFalse(
+            query.startswith("PROMQL "),
+            f"parse-rejected native query should degrade to ES|QL, got: {query!r}",
+        )
+
+    def test_data_gap_error_does_not_degrade(self):
+        # Unknown column / index means the query is valid but the data is absent
+        # (or the seed is missing a field). A valid native query must be kept.
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = lambda q: (
+            False,
+            '{"type":"verification_exception","reason":"line 1:54: Unknown column [host]"}',
+        )
+        self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -151,6 +151,13 @@ class RulePackConfig:
     index_rewrites: list = field(default_factory=list)
     native_promql: bool = False
     runtime_features: dict = field(default_factory=dict)
+    # Optional live native-PROMQL validator: a callable ``(query) -> (ok, error)``
+    # attached only when a target cluster is configured (``--es-url``). When set,
+    # the native-PROMQL emit path validates each built native query against the
+    # cluster and, on a parse rejection, degrades the panel to the ES|QL path
+    # (which marks unparseable shapes not_feasible) instead of shipping a query
+    # that hard-errors in Kibana. None (the default) preserves offline behavior.
+    native_promql_validator: object = None
 
     def __post_init__(self):
         if self.native_promql:

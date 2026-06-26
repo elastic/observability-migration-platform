@@ -1257,6 +1257,31 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""
 
+    # Feature B: with a live cluster, attach a per-panel native-PROMQL validator
+    # so the emit path can degrade any native query the target rejects at parse
+    # time to the ES|QL path (instead of shipping a Kibana-hard-erroring panel).
+    # Results are cached by query string to bound the per-panel round-trips, and
+    # a flaky validator never blocks migration (it falls back to keeping native).
+    if native and es_url:
+        from .esql_validate import validate_esql
+
+        _native_validation_cache: dict[str, tuple[bool, str]] = {}
+
+        def _native_promql_validator(
+            query, _es_url=es_url, _key=es_api_key, _verify=verify,
+            _cache=_native_validation_cache,
+        ):
+            if query in _cache:
+                return _cache[query]
+            try:
+                result = validate_esql(query, _es_url, es_api_key=_key, verify=_verify)
+            except Exception:
+                result = (True, "")
+            _cache[query] = result
+            return result
+
+        rule_pack.native_promql_validator = _native_promql_validator
+
     # Offline runs have no cluster to probe; ES|QL named-parameter binding is a
     # stable core feature, so assume it (mirroring the native-PROMQL offline
     # default above) rather than dropping $var label filters (issue #132).
