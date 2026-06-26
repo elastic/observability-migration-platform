@@ -116,7 +116,11 @@ _CHART_TYPE_RE = re.compile(
 # Legend items render as "<name>; Click: to show, ... + Click: to hide".
 _LEGEND_ITEM_RE = re.compile(r'"?([^";]+?); Click: to show')
 _LOADING_RE = re.compile(r'progressbar "Loading"', re.IGNORECASE)
-_GRID_RE = re.compile(r'grid "|columnheader |gridcell ', re.IGNORECASE)
+_GRID_RE = re.compile(
+    r'grid "|columnheader |gridcell |role="grid"|euiDataGrid|lnsDataTable',
+    re.IGNORECASE,
+)
+_MARKDOWN_RE = re.compile(r"markdownVis|markdownBody|kbnMarkdown__body", re.IGNORECASE)
 # A metric value renders as a quoted number StaticText, e.g. ``"6.983"``.
 _QUOTED_NUMBER_RE = re.compile(r'"\s*[-+]?[\d,]+(?:\.\d+)?\s*%?\s*"')
 
@@ -168,17 +172,20 @@ def extract_panel_elements(title: str, panel_text: str) -> PanelElements:
     kind = _CHART_KIND.get(chart_word, "")
 
     is_grid = bool(_GRID_RE.search(text))
+    is_markdown = bool(_MARKDOWN_RE.search(text))
     has_metric_value = bool(_QUOTED_NUMBER_RE.search(text))
 
     if _EMPTY_STATE_RE.search(text.strip()) and not (legend or is_grid or chart_word):
         return PanelElements(title=title, status="empty", detail="no data")
 
     if not kind:
-        if is_grid:
+        if is_markdown:
+            kind, chart_word = "markdown", "markdown"
+        elif is_grid:
             kind, chart_word = "datatable", "table"
         elif has_metric_value:
             kind, chart_word = "metric", "metric"
-    has_data = bool(legend) or is_grid or has_metric_value or kind in ("xy", "partition", "heatmap", "gauge")
+    has_data = bool(legend) or is_grid or is_markdown or has_metric_value or kind in ("xy", "partition", "heatmap", "gauge")
     return PanelElements(
         title=title, status="rendered", chart_type=chart_word, chart_kind=kind,
         legend_entries=legend, has_data=has_data,
@@ -511,11 +518,14 @@ def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
             esql = (panel.get("yaml_panel") or {}).get("esql") if isinstance(panel.get("yaml_panel"), dict) else {}
             esql = esql if isinstance(esql, dict) else {}
             fields: list[str] = []
-            breakdown = esql.get("breakdown")
-            if isinstance(breakdown, dict) and breakdown.get("field"):
-                fields.append(str(breakdown["field"]))
-            elif isinstance(breakdown, list):
-                fields.extend(str(b.get("field")) for b in breakdown if isinstance(b, dict) and b.get("field"))
+            for key in ("breakdown", "y_axis"):
+                value = esql.get(key)
+                if isinstance(value, dict) and value.get("field"):
+                    fields.append(str(value["field"]))
+            for key in ("breakdown", "breakdowns"):
+                value = esql.get(key)
+                if isinstance(value, list):
+                    fields.extend(str(b.get("field")) for b in value if isinstance(b, dict) and b.get("field"))
             if fields:
                 out[title] = list(dict.fromkeys(fields))
     return out

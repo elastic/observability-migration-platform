@@ -62,6 +62,16 @@ KIBANA_TYPE_HEIGHT: dict[str, int] = {
     "markdown": 6,
 }
 KIBANA_DEFAULT_HEIGHT = 8
+_DATADOG_PRIVATE_PANEL_KEYS = (
+    "_dd_y",
+    "_dd_x",
+    "_dd_w",
+    "_dd_h",
+    "_dd_type",
+    "_dd_display_type",
+    "_dd_widget_id",
+    "_markdown_role",
+)
 
 
 def generate_dashboard_yaml(
@@ -93,20 +103,18 @@ def generate_dashboard_yaml(
         if panel:
             panels.append(panel)
 
+    _ensure_unique_leaf_panel_titles(panels, result_map)
+
     non_section = [p for p in panels if "section" not in p]
     _apply_row_layout(non_section)
-    for p in non_section:
-        for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-            p.pop(key, None)
 
     for p in panels:
         if "section" in p:
-            for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-                p.pop(key, None)
             p.pop("size", None)
             p.pop("position", None)
 
     _resolve_overlaps(non_section)
+    _strip_datadog_private_keys(panels)
 
     doc: dict[str, Any] = {
         "dashboards": [
@@ -139,6 +147,71 @@ def generate_dashboard_yaml(
     apply_style_guide_layout(doc)
 
     return yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def _iter_leaf_panels(panels: list[dict[str, Any]]):
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            yield from _iter_leaf_panels(section.get("panels") or [])
+        else:
+            yield panel
+
+
+def _fallback_panel_title(panel: dict[str, Any], result: TranslationResult | None) -> str:
+    source_type = str(
+        panel.get("_dd_display_type")
+        or panel.get("_dd_type")
+        or (result.dd_widget_type if result else "")
+        or "widget"
+    ).replace("_", " ")
+    widget_id = str(panel.get("_dd_widget_id") or (result.widget_id if result else "") or "").strip()
+    suffix = f" {widget_id}" if widget_id else ""
+    return f"Datadog {source_type}{suffix}".strip()
+
+
+def _ensure_unique_leaf_panel_titles(
+    panels: list[dict[str, Any]],
+    result_map: dict[str, TranslationResult],
+) -> None:
+    """Keep emitted Datadog panel titles usable as render-audit keys.
+
+    Datadog integration dashboards frequently omit widget titles or repeat the
+    same short title across several tiles. Kibana can render that, but the
+    migration report and render audit key panel metadata by title, so blanks or
+    duplicates collapse per-panel verdicts. Assign stable emitted titles and keep
+    the matching TranslationResult title in sync for the report.
+    """
+    used: set[str] = set()
+    for ordinal, panel in enumerate(_iter_leaf_panels(panels), start=1):
+        widget_id = str(panel.get("_dd_widget_id") or "")
+        result = result_map.get(widget_id)
+        base = str((result.title if result else "") or panel.get("title") or "").strip()
+        if not base:
+            base = _fallback_panel_title(panel, result)
+
+        title = base
+        if title in used:
+            suffix = f"widget {widget_id}" if widget_id else str(ordinal)
+            title = f"{base} ({suffix})"
+            counter = 2
+            while title in used:
+                title = f"{base} ({suffix}-{counter})"
+                counter += 1
+
+        used.add(title)
+        panel["title"] = title
+        if result is not None:
+            result.title = title
+
+
+def _strip_datadog_private_keys(panels: list[dict[str, Any]]) -> None:
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            _strip_datadog_private_keys(section.get("panels") or [])
+        for key in _DATADOG_PRIVATE_PANEL_KEYS:
+            panel.pop(key, None)
 
 
 def _build_controls_from_template_vars(
@@ -289,6 +362,7 @@ def _build_yaml_panel(
     panel["_dd_h"] = int(layout.get("height", 2) or 2)
     panel["_dd_type"] = widget.widget_type
     panel["_dd_display_type"] = widget.display_type
+    panel["_dd_widget_id"] = widget.id
     return panel
 
 
@@ -556,10 +630,6 @@ def _build_group_panel(
 
     _apply_row_layout(child_panels)
     _resolve_overlaps(child_panels)
-
-    for p in child_panels:
-        for key in ("_dd_y", "_dd_x", "_dd_w", "_dd_h", "_dd_type", "_dd_display_type", "_markdown_role"):
-            p.pop(key, None)
 
     return {
         "title": widget.title or "Section",

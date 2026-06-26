@@ -729,6 +729,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
         )
 
+    def test_filtered_outer_agg_wraps_case_inside_nested_ts_function(self):
+        expr = promql._inline_filters_into_stats_expr(
+            "SUM(RATE(node_cpu_seconds_total, 5m))",
+            ['mode == "system"'],
+        )
+
+        self.assertEqual(
+            expr,
+            'SUM(RATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m))',
+        )
+        self.assertNotIn("CASE((mode == \"system\"), RATE(", expr)
+
     def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM(LAST_OVER_TIME(kube_pod_container_resource_requests))",
@@ -877,7 +889,10 @@ class TranslatorRegressionTests(unittest.TestCase):
             '/ on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance="$node",job="$job"}[1m])))'
         )
 
-        self.assertIn("IRATE(node_cpu_guest_seconds_total", translated.esql_query)
+        self.assertIn(
+            'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
+            translated.esql_query,
+        )
         self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
@@ -965,9 +980,49 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
-        self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
+        self.assertIn("STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value) BY service.name", translated.esql_query)
+        self.assertNotIn("LAST(_bucket_value, time_bucket)", translated.esql_query)
         self.assertIn("LIMIT 5", translated.esql_query)
         self.assertIn("Translated grouped topk() as latest-bucket ES|QL top N", translated.warnings)
+
+    def test_topk_delta_counter_casts_metric_before_delta(self):
+        self.seed_field_caps(
+            {
+                "kafka_topic_partition_current_offset": {
+                    "counter_double": {
+                        "type": "counter_double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "topic": {"keyword": {"type": "keyword", "searchable": True, "aggregatable": True}},
+            }
+        )
+
+        translated = self.translate(
+            "topk(5, sum(delta(kafka_topic_partition_current_offset[5m])) by (topic))"
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn(
+            "DELTA(TO_DOUBLE(kafka_topic_partition_current_offset), 5m)",
+            translated.esql_query,
+        )
+
+    def test_topk_value_filter_runs_after_terminal_value_stats(self):
+        translated = self.translate(
+            "topk(5, sum(rate(http_requests_total[5m]) > 0) by (handler))"
+        )
+
+        lines = translated.esql_query.splitlines()
+        value_stats_idx = next(
+            i for i, line in enumerate(lines)
+            if line.startswith("| STATS") and "value =" in line
+        )
+        value_filter_idx = next(i for i, line in enumerate(lines) if line == "| WHERE value > 0")
+
+        self.assertGreater(value_filter_idx, value_stats_idx)
 
     def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
         translated = self.translate(
@@ -1943,24 +1998,26 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = MAX(LAST_OVER_TIME(node_systemd_units)) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
+        self.assertNotIn("node_systemd_units = node_systemd_units", translated.esql_query)
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("No explicit aggregation" in warning for warning in translated.warnings))
 
     def test_unknown_gauge_selector_assumes_tsds_direct_ts(self):
-        # Migration default: an unproven bare gauge assumes TSDS -> TS direct-gauge
-        # (STATS field = field), which preserves per-series rows. No FROM+AVG collapse,
-        # so no honest-loss warning (the series are retained, nothing is dropped).
+        # Migration default: an unproven bare gauge assumes TSDS -> TS gauge path.
+        # ES|QL still requires an aggregate expression inside STATS, so use
+        # LAST_OVER_TIME rather than the invalid raw ``STATS field = field`` shape.
         translated = self.translate("node_systemd_units")
 
         self.assertEqual(translated.source_type, "TS")
         self.assertIn("TS metrics-*", translated.esql_query)
         self.assertIn(
-            "| STATS node_systemd_units = node_systemd_units BY time_bucket = TBUCKET(5 minute)",
+            "| STATS node_systemd_units = MAX(LAST_OVER_TIME(node_systemd_units)) BY time_bucket = TBUCKET(5 minute)",
             translated.esql_query,
         )
+        self.assertNotIn("node_systemd_units = node_systemd_units", translated.esql_query)
         self.assertNotIn("AVG(node_systemd_units)", translated.esql_query)
         self.assertFalse(any("Collapsed all series" in warning for warning in translated.warnings))
 

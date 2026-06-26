@@ -5,37 +5,37 @@ panels: 36
 controls: 2
 filters: 0
 statuses: {'ok': 9, 'skipped': 7, 'warning': 27}
-- title=''; kind=markdown
-- title=''; kind=markdown
+- title='Datadog note 8013519185925578'; kind=markdown
+- title='Datadog note 2021637053460700'; kind=markdown
 - title='Hit rate'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Blocked clients'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Redis keyspace'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Unsaved changes'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Primary link down'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title=''; kind=markdown
+- title='Datadog note 7896589211182748'; kind=markdown
 - title='Latency by Host'; kind=esql; type=line; dimension=time_bucket; metrics=['latency_of_the_redis_info_command']; breakdowns=[]; primary=; metric=
-- title=''; kind=markdown
+- title='Datadog note 18'; kind=markdown
 - title='Slowlog duration'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['name', 'command']; primary=; metric=
 - title='Slowlog query rates'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['command', 'name']; primary=; metric=
 - title='Average replication delay (offset)'; kind=esql; type=line; dimension=time_bucket; metrics=['offsets']; breakdowns=[]; primary=; metric=
 - title='Average CPU usage'; kind=esql; type=line; dimension=time_bucket; metrics=['system', 'user']; breakdowns=[]; primary=; metric=
 - title='Cache hit rate'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Cache hit rate'; kind=esql; type=line; dimension=time_bucket; metrics=['hit']; breakdowns=[]; primary=; metric=
+- title='Cache hit rate (widget 21)'; kind=esql; type=line; dimension=time_bucket; metrics=['hit']; breakdowns=[]; primary=; metric=
 - title='Percent Used Memory by Host'; kind=esql; type=line; dimension=time_bucket; metrics=['memory_used']; breakdowns=[]; primary=; metric=
-- title=''; kind=markdown
+- title='Datadog note 24'; kind=markdown
 - title='Evictions'; kind=esql; type=line; dimension=time_bucket; metrics=['keys_evicted_due_to_the_maxmemory_limit']; breakdowns=[]; primary=; metric=
 - title='Total allocated memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Fragmentation ratio'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Fragmentation ratio'; kind=esql; type=line; dimension=time_bucket; metrics=['used_memory_rss_used_memory']; breakdowns=[]; primary=; metric=
+- title='Fragmentation ratio (widget 27)'; kind=esql; type=line; dimension=time_bucket; metrics=['used_memory_rss_used_memory']; breakdowns=[]; primary=; metric=
 - title='Connected clients'; kind=esql; type=line; dimension=time_bucket; metrics=['connected_clients']; breakdowns=[]; primary=; metric=
-- title=''; kind=markdown
-- title='Blocked clients'; kind=esql; type=line; dimension=time_bucket; metrics=['connections_waiting_on_a_blocking_call']; breakdowns=[]; primary=; metric=
+- title='Datadog note 12'; kind=markdown
+- title='Blocked clients (widget 29)'; kind=esql; type=line; dimension=time_bucket; metrics=['connections_waiting_on_a_blocking_call']; breakdowns=[]; primary=; metric=
 - title='Connected replicas'; kind=esql; type=line; dimension=time_bucket; metrics=['connected_replicas']; breakdowns=[]; primary=; metric=
 - title='Rejected connections'; kind=esql; type=line; dimension=time_bucket; metrics=['rejected_connections']; breakdowns=[]; primary=; metric=
 - title='Commands per second'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Total keys'; kind=esql; type=line; dimension=time_bucket; metrics=['total_keys']; breakdowns=[]; primary=; metric=
 - title='Current total'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title=''; kind=markdown
+- title='Datadog note 4351331682136830'; kind=markdown
 - title='Expired keys'; kind=esql; type=line; dimension=time_bucket; metrics=['expired_keys']; breakdowns=[]; primary=; metric=
 - title='Keys with expiration'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Key length distribution'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=

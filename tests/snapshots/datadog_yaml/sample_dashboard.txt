@@ -10,7 +10,7 @@ statuses: {'ok': 8, 'requires_manual': 1, 'warning': 2}
 - title='Current CPU Average'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Top Hosts by CPU'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['host.name']; primary=; metric=
 - title='Disk I/O (Formula: Read + Write)'; kind=esql; type=line; dimension=time_bucket; metrics=['total_i_o']; breakdowns=[]; primary=; metric=
-- title=''; kind=markdown
+- title='Datadog note 6'; kind=markdown
 - title='Log Error Rate'; kind=esql; type=line; dimension=time_bucket; metrics=['count']; breakdowns=[]; primary=; metric=
 - title='Log Entries by Service'; kind=esql; type=datatable; dimension=; metrics=['count']; breakdowns=['service.name']; primary=; metric=
 - title='Request Latency Distribution'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=resource_name

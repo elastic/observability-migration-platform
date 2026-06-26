@@ -250,6 +250,13 @@ def _gauge_fallback_for_counter_range_func(range_func):
 # ``increase`` is excluded: it can be misused on a real gauge, so it keeps the
 # conservative heuristic-driven degradation.
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
+_COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+
+
+def _counter_safe_metric_arg(esql_func, metric_expr, is_counter):
+    if is_counter and (esql_func or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+        return f"TO_DOUBLE({metric_expr})"
+    return metric_expr
 
 
 # Outer aggregations ES|QL rejects directly on counter_long/counter_double
@@ -3086,7 +3093,7 @@ def _build_measure_spec(
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = metric_field
+            stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
@@ -3161,7 +3168,8 @@ def _build_measure_spec(
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        inner_expr = f"{esql_inner}({metric_field}, {frag.range_window})"
+        inner_arg = _counter_safe_metric_arg(esql_inner, metric_field, is_counter)
+        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -3187,8 +3195,9 @@ def _build_measure_spec(
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        inner_arg = _counter_safe_metric_arg(esql_inner, metric_field, is_counter)
         stats_expr = _apply_outer_agg(
-            esql_outer, f"{esql_inner}({metric_field}, {frag.range_window})", frag
+            esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
@@ -3308,6 +3317,15 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
         field = ts_match.group("field").strip()
         window = ts_match.group("window").strip()
         return f"{agg}(CASE({condition}, {field}, NULL), {window})"
+    nested_ts = re.fullmatch(
+        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
+        inner,
+    )
+    if nested_ts:
+        func = nested_ts.group("func")
+        field = nested_ts.group("field").strip()
+        window = nested_ts.group("window").strip()
+        return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
     if re.fullmatch(r"LAST_OVER_TIME\(.+\)", inner):
         return None
     if inner == "*":

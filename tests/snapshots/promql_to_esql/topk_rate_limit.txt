@@ -7,6 +7,6 @@ TS metrics-*
 | WHERE http_requests_total IS NOT NULL
 | STATS _bucket_value = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
 | SORT time_bucket ASC
-| STATS value = LAST(_bucket_value, time_bucket)
+| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value)
 | SORT value DESC
 | LIMIT 5

@@ -1347,18 +1347,25 @@ def topk_family_rule(context):
     source = "TS" if frag.range_func in AGG_FUNCTION_MAP else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
-    inner_func = frag.range_func or ("rate" if _is_counter_fallback(frag.metric, rp) else "")
+    is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    inner_func = frag.range_func or ("rate" if is_counter else "")
     if inner_func in {"rate", "irate", "increase"}:
         prefer = "counter"
     else:
         prefer = "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
     if inner_func:
-        stats_expr = _build_stats_call(
-            frag.outer_agg or "avg",
-            inner_func,
-            physical_metric,
-            frag.range_window or rp.default_rate_window,
+        esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
+        esql_inner, counter_warning, is_counter = resolve_counter_range_translation(
+            inner_func, frag.metric, is_counter, resolver, esql_inner
+        )
+        if counter_warning:
+            _append_unique(context.warnings, counter_warning)
+        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter)
+        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+        stats_expr = _agg_stats_expr(
+            OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
+            inner_expr,
             frag,
         )
     else:
@@ -1385,7 +1392,7 @@ def topk_family_rule(context):
                 f"| WHERE {physical_metric} IS NOT NULL",
                 f"| STATS _bucket_value = {stats_expr} BY {bucket}",
                 "| SORT time_bucket ASC",
-                "| STATS value = LAST(_bucket_value, time_bucket)",
+                "| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value)",
                 "| SORT value DESC",
                 f"| LIMIT {limit}",
             ]
@@ -1407,7 +1414,7 @@ def topk_family_rule(context):
             f"| WHERE {physical_metric} IS NOT NULL",
             f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
             "| SORT time_bucket ASC",
-            f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
+            f"| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value) BY {', '.join(group_fields)}",
             f"| KEEP {', '.join(group_fields + ['value'])}",
             "| SORT value DESC",
             f"| LIMIT {limit}",
@@ -2411,7 +2418,7 @@ def simple_metric_family_rule(context):
         time_filter = rp.ts_time_filter
         bucket = rp.ts_bucket
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = physical_metric
+        stats_expr = f"MAX(LAST_OVER_TIME({physical_metric}))"
     elif can_use_ts_aggregated_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter
@@ -2721,17 +2728,22 @@ def value_wrapper_transforms_rule(context):
     lines = context.esql_query.splitlines()
     applied = []
 
-    # Detect two-stage topk shape: contains "STATS <field> = LAST(..." which
-    # means the output metric isn't defined until after that line — EVAL must
-    # be inserted *after* it, not before the first SORT.
-    last_stats_idx = next(
-        (i for i, ln in enumerate(lines) if "= LAST(" in ln and ln.strip().startswith("| STATS")),
+    # Detect two-stage topk shape: the output metric is defined in a terminal
+    # STATS line after the first time-bucket SORT, so wrapper filters/evals must
+    # be inserted after that line, not before the first SORT.
+    value_stats_idx = next(
+        (
+            i
+            for i, ln in enumerate(lines)
+            if ln.strip().startswith("| STATS")
+            and re.search(rf"\b{re.escape(metric_field)}\s*=", ln)
+        ),
         None,
     )
 
     def _eval_insert_idx(lines):
-        if last_stats_idx is not None:
-            return last_stats_idx + 1
+        if value_stats_idx is not None:
+            return value_stats_idx + 1
         return next(
             (i for i, ln in enumerate(lines) if ln.strip().startswith("| SORT")),
             len(lines),
@@ -2747,7 +2759,7 @@ def value_wrapper_transforms_rule(context):
     # step (integer or fractional) and is always valid ES|QL.
     if frag.extra.get("has_round"):
         precision = frag.extra.get("round_precision")
-        if precision is None or precision == 1:
+        if precision is None or precision in (0, 1):
             eval_clause = f"| EVAL {metric_field} = ROUND({metric_field})"
             round_warning = "round() approximated with ES|QL ROUND()"
         else:
@@ -2799,12 +2811,12 @@ def value_wrapper_transforms_rule(context):
         applied.append(math_fn)
 
     # sort() / sort_desc() → set the output sort direction.
-    # For two-stage topk, replace the LAST "| SORT <field>" line (which controls
-    # output order) rather than the first SORT (which orders time buckets for LAST()).
+    # For two-stage topk, replace the final value-sort line rather than the first
+    # SORT (which orders time buckets for the terminal value collapse).
     if "value_sort_desc" in frag.extra:
         sort_desc = frag.extra["value_sort_desc"]
         direction = "DESC" if sort_desc else "ASC"
-        if last_stats_idx is not None:
+        if value_stats_idx is not None:
             # Two-stage topk: update the last value-sort line only
             for i in range(len(lines) - 1, -1, -1):
                 if lines[i].strip().startswith("| SORT") and metric_field in lines[i]:
@@ -2879,11 +2891,23 @@ def post_filter_rule(context):
     value = _format_scalar_value(post_filter["value"])
     clause = f"| WHERE {context.output_metric_field} {post_filter['op']} {value}"
     lines = context.esql_query.splitlines()
-    sort_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("| SORT")), None)
-    if sort_idx is None:
-        lines.append(clause)
+    value_def_idx = next(
+        (
+            idx
+            for idx, line in enumerate(lines)
+            if line.strip().startswith(("| STATS", "| EVAL"))
+            and re.search(rf"\b{re.escape(context.output_metric_field)}\s*=", line)
+        ),
+        None,
+    )
+    if value_def_idx is not None:
+        lines.insert(value_def_idx + 1, clause)
     else:
-        lines.insert(sort_idx, clause)
+        sort_idx = next((idx for idx, line in enumerate(lines) if line.strip().startswith("| SORT")), None)
+        if sort_idx is None:
+            lines.append(clause)
+        else:
+            lines.insert(sort_idx, clause)
     context.esql_query = "\n".join(lines)
     return f"applied post-aggregation filter {post_filter['op']} {value}"
 

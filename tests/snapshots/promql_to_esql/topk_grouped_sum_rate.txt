@@ -7,7 +7,7 @@ TS metrics-*
 | WHERE http_requests_total IS NOT NULL
 | STATS _bucket_value = SUM(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), handler
 | SORT time_bucket ASC
-| STATS value = LAST(_bucket_value, time_bucket) BY handler
+| STATS time_bucket = MAX(time_bucket), value = MAX(_bucket_value) BY handler
 | KEEP handler, value
 | SORT value DESC
 | LIMIT 10

@@ -226,7 +226,7 @@ def run_audit_cli(
 
     if report is not None:
         kinds = expected_kind_by_panel(report)
-        segments, _unmatched = segment_panels(snapshot, kinds.keys())
+        segments, unmatched = segment_panels(snapshot, kinds.keys())
         fetch_fields = field_fetcher or (
             lambda: fetch_available_fields(
                 getattr(args, "es_url", "") or "",
@@ -243,6 +243,23 @@ def run_audit_cli(
             available_fields=available_fields,
             available_metrics=available_fields,
         )
+        whole_verdict = classify_render(snapshot)
+        segmented_verdict = classify_render("\n".join(chunk for _title, chunk in segments))
+        unsegmented_hard_error = (
+            whole_verdict.status == "fail"
+            and whole_verdict.rendered_error_markers
+            and set(whole_verdict.rendered_error_markers)
+            - set(segmented_verdict.rendered_error_markers)
+        )
+        if unsegmented_hard_error:
+            verdict.status = "fail"
+            verdict.rendered_error_markers = whole_verdict.rendered_error_markers
+            verdict.reasons.extend(
+                reason for reason in whole_verdict.reasons if reason not in verdict.reasons
+            )
+        elif unmatched and verdict.status == "pass":
+            verdict.status = "warn"
+            verdict.reasons.append(f"panel title(s) did not render: {unmatched}")
     else:
         verdict = classify_render(snapshot)
 

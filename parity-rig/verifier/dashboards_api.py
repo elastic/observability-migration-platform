@@ -271,10 +271,11 @@ def mapped_panel_count(payload: dict[str, Any]) -> int:
 def make_kibana_api_call(kibana_url: str, api_key: str) -> ApiCall:
     base = kibana_url.rstrip("/")
     headers = {
-        "Authorization": f"ApiKey {api_key}",
         "kbn-xsrf": "true",
         "Content-Type": "application/json",
     }
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
 
     def call(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any] | str]:
         response = requests.request(

@@ -206,6 +206,12 @@ def test_breakdown_fields_by_panel_extracts_breakdown_only():
                 {"title": "tbl", "yaml_panel": {"esql": {
                     "breakdown": [{"field": "instance"}, {"field": "mode"}],
                 }}},
+                {"title": "heatmap", "yaml_panel": {"esql": {
+                    "y_axis": {"field": "le"},
+                }}},
+                {"title": "datatable", "yaml_panel": {"esql": {
+                    "breakdowns": [{"field": "pod"}, {"field": "namespace"}],
+                }}},
                 {"title": "stat", "yaml_panel": {"esql": {"metrics": [{"field": "value"}]}}},
             ],
         }],
@@ -213,6 +219,8 @@ def test_breakdown_fields_by_panel_extracts_breakdown_only():
     out = breakdown_fields_by_panel(report)
     assert out["ts"] == ["method"]          # value/step excluded
     assert out["tbl"] == ["instance", "mode"]
+    assert out["heatmap"] == ["le"]
+    assert out["datatable"] == ["pod", "namespace"]
     assert "stat" not in out                 # no breakdown -> not listed
 
 
@@ -379,7 +387,17 @@ _PIE_CHUNK = 'StaticText "sunburst chart" row StaticText "instance_2" StaticText
 _GAUGE_CHUNK = 'graphics-document StaticText "Chart type" StaticText ":" StaticText "Bullet chart"'
 _METRIC_CHUNK = 'heading "canary stat" StaticText "6.983"'
 _TABLE_CHUNK = 'grid "canary table" columnheader "instance" gridcell "instance_2" gridcell "35,258.0"'
+_TABLE_HTML_CHUNK = (
+    '<div data-title="canary table"><div data-test-subj="lnsDataTable">'
+    '<div class="euiDataGrid" role="grid" aria-label="canary table">'
+    '<div role="columnheader" title="time_bucket"></div></div></div></div>'
+)
 _HEATMAP_CHUNK = 'button "le_1; Click: to show, ⌘ + Click: to hide" StaticText "Chart type" StaticText ":" StaticText "line chart"'
+_MARKDOWN_HTML_CHUNK = (
+    '<div data-title="canary text"><div class="visualization markdownVis">'
+    '<div data-test-subj="markdownBody" class="kbnMarkdown__body">'
+    '<h1>Canary</h1></div></div></div>'
+)
 
 
 def test_extract_line_chart_with_legend():
@@ -410,6 +428,18 @@ def test_extract_metric_value():
 def test_extract_table_grid():
     el = extract_panel_elements("table", _TABLE_CHUNK)
     assert el.chart_kind == "datatable"
+    assert el.has_data is True
+
+
+def test_extract_table_grid_from_dump_dom_html():
+    el = extract_panel_elements("table", _TABLE_HTML_CHUNK)
+    assert el.chart_kind == "datatable"
+    assert el.has_data is True
+
+
+def test_extract_markdown_from_dump_dom_html():
+    el = extract_panel_elements("text", _MARKDOWN_HTML_CHUNK)
+    assert el.chart_kind == "markdown"
     assert el.has_data is True
 
 

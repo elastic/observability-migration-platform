@@ -297,3 +297,26 @@ class TestPayloadAndValidation:
         assert [f.category for f in findings] == ["unsupported_by_api_oracle"]
         assert dashboards_api.summarize(findings)["errors"] == 0
 
+    def test_make_kibana_api_call_omits_authorization_for_empty_key(self, monkeypatch) -> None:
+        seen = {}
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "scratch"}
+
+        def fake_request(method, url, *, headers, json, timeout):
+            seen["headers"] = headers
+            return Response()
+
+        monkeypatch.setattr(dashboards_api.requests, "request", fake_request)
+
+        call = dashboards_api.make_kibana_api_call("http://localhost:5601", "")
+        status, _body = call("POST", "/api/dashboards", {"title": "t"})
+
+        assert status == 200
+        assert "Authorization" not in seen["headers"]
+        assert seen["headers"]["kbn-xsrf"] == "true"
+

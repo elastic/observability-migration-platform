@@ -207,3 +207,24 @@ def test_cli_render_marker_fails_when_no_field_metadata(tmp_path):
         field_fetcher=lambda: None,
     )
     assert rc == 1
+
+
+def test_cli_unsegmented_render_error_still_fails(tmp_path):
+    import json as _json
+
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    report = {"dashboards": [{"panels": [
+        {"title": "Expected title", "kibana_type": "line", "yaml_panel": {"esql": {
+            "type": "line", "query": "FROM metrics-* | STATS c=COUNT()"}}},
+    ]}]}
+    (tmp_path / "migration_report.json").write_text(_json.dumps(report))
+    args = _cli_args(migration_out=str(tmp_path), fail_on_error=True)
+
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: "embPanel__error An error occurred while loading this panel",
+        field_fetcher=lambda: {"@timestamp"},
+    )
+
+    assert rc == 1

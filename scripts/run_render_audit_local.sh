@@ -52,8 +52,12 @@ echo "-- seed telemetry (fresh, so instant panels populate up to now) --"
 
 echo "-- render audit + per-panel element check for every uploaded dashboard --"
 rc=0
-ids="$(curl -fs "$KIBANA_URL/api/dashboards?perPage=200" -H 'kbn-xsrf: true' \
-  | "$PY" -c "import sys,json; [print(x['id']) for x in json.load(sys.stdin)['dashboards']]")"
+ids="$(curl -fs "$KIBANA_URL/api/saved_objects/_find?type=dashboard&per_page=200" -H 'kbn-xsrf: true' \
+  | "$PY" -c "import sys,json,pathlib; payload=json.load(sys.stdin); report=json.loads(pathlib.Path('$WORK/out/dashboards/migration_report.json').read_text()); titles={str(d.get('title') or d.get('dashboard_title') or '') for d in report.get('dashboards', [])}; [print(x['id']) for x in payload.get('saved_objects', []) if str((x.get('attributes') or {}).get('title') or '') in titles]")"
+if [ -z "$ids" ]; then
+  echo "No uploaded dashboard ids matched this run's migration_report.json" >&2
+  exit 1
+fi
 for did in $ids; do
   echo "  -- dashboard $did --"
   "$PY" -m observability_migration.targets.kibana.render_audit_driver \

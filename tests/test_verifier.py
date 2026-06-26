@@ -306,6 +306,55 @@ class TestRunClusterQueryAutoparams:
         )
         assert params == [{"host": ""}]
 
+    def test_run_cluster_query_omits_authorization_for_empty_key(self, monkeypatch):
+        seen = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"columns": [], "values": []}
+
+        def fake_post(url, *, headers, json, timeout):
+            seen["headers"] = headers
+            return Response()
+
+        monkeypatch.setattr(collectors.requests, "post", fake_post)
+
+        status, _body = collectors.run_cluster_query(
+            "http://localhost:9200", "", "FROM metrics-* | LIMIT 1"
+        )
+
+        assert status == 200
+        assert "Authorization" not in seen["headers"]
+        assert seen["headers"]["Content-Type"] == "application/json"
+
+    def test_fetch_cluster_dashboard_omits_authorization_for_empty_key(self, monkeypatch):
+        seen = {}
+
+        class Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "dash-1", "attributes": {"panelsJSON": "[]"}}
+
+        def fake_get(url, *, headers, timeout):
+            seen["headers"] = headers
+            return Response()
+
+        monkeypatch.setattr(collectors.requests, "get", fake_get)
+
+        body = collectors.fetch_cluster_dashboard(
+            "http://localhost:5601", "", "dash-1"
+        )
+
+        assert body["id"] == "dash-1"
+        assert "Authorization" not in seen["headers"]
+        assert seen["headers"]["kbn-xsrf"] == "verifier"
+
 
 # --------------------------------------------------------------------- #
 # Comparator
