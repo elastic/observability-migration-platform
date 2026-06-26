@@ -16,6 +16,7 @@ from typing import Any
 import requests
 
 from observability_migration.core.http import apply_tls
+from observability_migration.core.mapping import AUTOMATED_TIER, DRAFT_REVIEW_TIER
 from observability_migration.targets.kibana.compile import kibana_url_for_space
 
 logger = logging.getLogger(__name__)
@@ -353,7 +354,40 @@ def collect_emitted_rule_payloads(*comparison_reports: dict[str, Any]) -> list[d
 
 
 DEFAULT_MIGRATED_RULE_TAG = "obs-migration"
+DEFAULT_REVIEW_RULE_TAG = "obs-migration-review"
 DEFAULT_MIGRATED_RULE_NAME_PREFIX = "[migrated] "
+
+# Automation tiers whose translated payloads we create in Kibana by default.
+# Both fully-automated and draft (review-required) translations land a real,
+# disabled rule the user can inspect; only manual_required is held back because
+# no faithful payload exists for it. See issue #206.
+DEFAULT_CREATABLE_TIERS = frozenset({AUTOMATED_TIER, DRAFT_REVIEW_TIER})
+
+
+def _tier_is_creatable(tier: str, creatable_tiers: frozenset[str]) -> bool:
+    """Whether an item carrying `tier` should be created.
+
+    Tier-bearing items are created only when `tier` is in `creatable_tiers`.
+    Tier-less items (empty `tier`) come from raw emitted-payload lists that do
+    not carry a tier; they cannot be gated, so they are always attempted. Pass
+    only tier-bearing items when you need `creatable_tiers` to be authoritative.
+    """
+    if not tier:
+        return True
+    return tier in creatable_tiers
+
+
+def _tier_requires_review(tier: str) -> bool:
+    """Whether a created rule must be flagged for human review.
+
+    Fail-safe by design: only a tier positively confirmed as fully `automated`
+    is exempt. Draft (`draft_requires_review`), any future creatable tier, and
+    tier-less items of unknown classification are all flagged, so a rule is
+    never silently treated as fully automated and a reviewer can always find
+    what still needs inspection. Decoupling this from `creatable_tiers` means
+    adding a new creatable tier cannot accidentally produce an unflagged rule.
+    """
+    return tier != AUTOMATED_TIER
 
 
 def _normalize_rule_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -418,9 +452,10 @@ def create_rules_from_payloads(
     space_id: str = "",
     preflight: dict[str, Any] | None = None,
     marker_tag: str = DEFAULT_MIGRATED_RULE_TAG,
+    review_marker_tag: str = DEFAULT_REVIEW_RULE_TAG,
     name_prefix: str = DEFAULT_MIGRATED_RULE_NAME_PREFIX,
     enabled: bool = False,
-    only_automated: bool = True,
+    creatable_tiers: frozenset[str] | None = None,
     timeout: int = 15,
     verify: bool | str = True,
     create_rule_fn: Any | None = None,
@@ -434,10 +469,20 @@ def create_rules_from_payloads(
 
     Parameters
     ----------
-    only_automated:
-        When True (default), skip rule items whose `automation_tier` is not
-        `automated`. Items without a tier are still attempted so that callers
-        passing raw emitted-payload lists (which do not carry the tier) work.
+    creatable_tiers:
+        The set of `automation_tier` values whose rule items are created.
+        Defaults to `DEFAULT_CREATABLE_TIERS` (`automated` and
+        `draft_requires_review`), so a successful translation always lands a
+        rule the user can inspect; `manual_required` is skipped. Tier-less
+        items (raw emitted-payload lists carry no tier) cannot be gated and are
+        always attempted, so pass only tier-bearing items when you need
+        `creatable_tiers` to be authoritative.
+    review_marker_tag:
+        Extra tag added to every created rule that is not positively a fully
+        `automated` translation — `draft_requires_review`, any future creatable
+        tier, and tier-less items of unknown classification (in addition to
+        `marker_tag`). Fail-safe: a rule is never silently treated as fully
+        automated, so reviewers can always find what still needs inspection.
     enabled:
         Forwarded to `create_rule`. Keep False by default for safety.
 
@@ -448,6 +493,7 @@ def create_rules_from_payloads(
         `skipped`, per-item details, and the preflight snapshot used.
     """
     creator = create_rule_fn or create_rule
+    tiers = creatable_tiers if creatable_tiers is not None else DEFAULT_CREATABLE_TIERS
     preflight_unreachable = _preflight_unreachable(preflight)
     items = _normalize_rule_items(rule_items)
 
@@ -492,13 +538,13 @@ def create_rules_from_payloads(
 
     for item in items:
         tier = item.get("automation_tier", "")
-        if only_automated and tier and tier != "automated":
+        if not _tier_is_creatable(tier, tiers):
             summary["skipped"].append(
                 {
                     "alert_id": item["alert_id"],
                     "name": item["name"],
                     "kind": item["kind"],
-                    "reason": f"automation_tier_not_automated:{tier}",
+                    "reason": f"automation_tier_not_creatable:{tier}",
                 }
             )
             continue
@@ -525,6 +571,8 @@ def create_rules_from_payloads(
         tags = list(existing_tags)
         if marker_tag and marker_tag not in tags:
             tags.append(marker_tag)
+        if _tier_requires_review(tier) and review_marker_tag and review_marker_tag not in tags:
+            tags.append(review_marker_tag)
 
         response = creator(
             kibana_url,
