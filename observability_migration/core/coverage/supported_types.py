@@ -30,7 +30,7 @@ GRAFANA_SUPPORTED_PANEL_TYPES: dict[str, str] = {
     "stat": "metric",
     "singlestat": "metric",
     "gauge": "gauge",
-    "bargauge": "bar",
+    "bargauge": "gauge",
     "table": "datatable",
     "table-old": "datatable",
     "text": "markdown",

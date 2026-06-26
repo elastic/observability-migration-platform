@@ -11035,12 +11035,12 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         # bar's L2 min_w=8 *would* bump Pressure's right edge to
         # x=8, but CPU Busy sits at x=6..12 -- collision-aware L2
         # keeps Pressure at w=6 to preserve the side-by-side layout
-        # the author chose. The gauge's L2 min_h=8 *would* grow it to 8,
-        # but the row-uniformity guard caps it at the tallest source
-        # row-mate (the bar at h=6), so the side-by-side row stays a
-        # consistent height instead of going ragged.
-        self.assertEqual(panels[0]["size"], {"w": 6, "h": 6}, "bar w stays at 6 (collision with CPU Busy)")
-        self.assertEqual(panels[1]["size"], {"w": 6, "h": 6}, "gauge h capped at row-mate height (6), not min_h=8")
+        # the author chose. The row cap is lifted to the highest type
+        # legibility floor in the row (gauge min_h=8), so both panels
+        # grow to h=8: the gauge reaches its legibility floor and the
+        # row stays uniform.
+        self.assertEqual(panels[0]["size"], {"w": 6, "h": 8}, "bar w stays at 6 (collision); h lifted to row legibility floor")
+        self.assertEqual(panels[1]["size"], {"w": 6, "h": 8}, "gauge reaches min_h=8; row-mate bar lifted to match")
         # Both panels share Grafana y=1 -> they're the topmost, so
         # both shift to Kibana y=0 (after min-y normalization).
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -11435,7 +11435,9 @@ class KibanaNativeLayoutTests(unittest.TestCase):
             len(set(heights.values())), 1,
             f"a source-uniform row must stay uniform height, got {heights}",
         )
-        self.assertEqual(heights["CPU Busy"], 6, heights)
+        # The row lifts to the highest type legibility floor in the row (gauge
+        # min_h=8), so all panels — including the bar — reach h=8.
+        self.assertEqual(heights["CPU Busy"], 8, heights)
 
     def test_collision_minimums_still_bump_standalone_short_panel(self):
         """The row-uniformity cap must not block the readability floor for a

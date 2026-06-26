@@ -111,7 +111,7 @@ PANEL_TYPE_MAP = {
     "stat": "metric",
     "singlestat": "metric",
     "gauge": "gauge",
-    "bargauge": "bar",
+    "bargauge": "gauge",
     "table": "datatable",
     "table-old": "datatable",
     "text": "markdown",
@@ -574,7 +574,8 @@ _select_xy_dimension_fields = _select_xy_dimension_fields_canonical
 
 def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
                             override_group_cols=None, mode=None,
-                            legend_format_template=None, legend_labels=None):
+                            legend_format_template=None, legend_labels=None,
+                            warnings=None):
     metric_col = None
     metric_fields = None
     xy_by_cols = None
@@ -637,6 +638,7 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
     if kibana_type == "heatmap":
         return _build_esql_heatmap_panel(
             query, metric_col=metric_col, by_cols=xy_by_cols, time_fields=time_fields,
+            warnings=warnings,
         )
     if kibana_type == "datatable":
         if metric_fields and len(metric_fields) > 1:
@@ -1845,7 +1847,7 @@ def _build_esql_heatmap_panel(esql, metric_col=None, by_cols=None, time_fields=N
     extracted_metric_col, extracted_by_cols = _extract_esql_columns(esql)
     if metric_col is None:
         metric_col = extracted_metric_col
-    if by_cols is None:
+    if not by_cols:
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields
@@ -2029,11 +2031,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if query_language == "esql" and len(visible_targets) == 1:
         native_query = visible_targets[0][1]
         esql_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
-        native_panel = _native_esql_panel_spec(native_query, kibana_type, mode=esql_mode)
+        native_warnings = []
+        native_panel = _native_esql_panel_spec(native_query, kibana_type, mode=esql_mode, warnings=native_warnings)
         if native_panel:
             native_shape = _extract_esql_shape(native_query)
             native_panel_type = str(native_panel.get("type") or "")
-            native_warnings = []
             if kibana_type == "pie" and native_panel_type != "pie":
                 native_warnings.append(
                     "Approximated pie chart as bar chart because no categorical breakdown was available"
@@ -5114,6 +5116,26 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
         if len(heights) > 1:
             row_height_cap[py] = max(heights)
 
+    # Lift each capped row's target to the highest type-specific legibility
+    # floor among all panels in that row. A gauge (min_h=8) beside a bar
+    # (min_h=6) raises the whole row to 8 so every panel reaches legibility
+    # AND the row stays height-uniform.
+    for panel in yaml_panels:
+        esql_cfg = panel.get("esql")
+        if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+            _etype = str(esql_cfg["type"])
+        elif "markdown" in panel:
+            _etype = "markdown"
+        else:
+            _etype = str(_kibana_panel_type(panel) or "")
+        _constraints = _TYPE_SIZE_CONSTRAINTS.get(_etype)
+        if _constraints is None:
+            continue
+        _, _type_min_h, _ = _constraints
+        _x, _py, _w, _ph = _rect(panel)
+        if _py in row_height_cap:
+            row_height_cap[_py] = max(row_height_cap[_py], _type_min_h)
+
     for idx, panel in enumerate(yaml_panels):
         kibana_type = _kibana_panel_type(panel)
         esql_cfg = panel.get("esql")
@@ -5152,12 +5174,13 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             if not collides:
                 w = min_w
 
-        # Try to bump height to min_h, but never taller than the tallest
-        # source panel in this row (keeps a source-uniform row uniform).
-        target_h = min_h
+        # Grow to the row's target height: at least the type's legibility floor
+        # (min_h), or higher if the row cap (already lifted to the max type
+        # floor in the row) demands it. Capped by the type's max_h.
         cap = row_height_cap.get(y)
-        if cap is not None:
-            target_h = min(target_h, cap)
+        target_h = max(min_h, cap) if cap is not None else min_h
+        if max_h is not None:
+            target_h = min(target_h, max_h)
         if h < target_h:
             candidate = (x, y, w, target_h)
             collides = any(

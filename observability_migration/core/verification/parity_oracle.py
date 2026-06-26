@@ -22,6 +22,12 @@ PROMETHEUS_ONLY_LABELS = frozenset(
     {"__name__", "instance", "job", "exported_instance", "exported_job", "cluster", "replica"}
 )
 
+# Numeric-typed columns that are genuine grouping/label dimensions, not metric
+# values. The parity oracle skips numeric columns when value_column is pinned
+# (to avoid treating co-aggregated metric aliases as labels), but these names
+# must always be preserved as label indices regardless of their ES type.
+_HISTOGRAM_DIM_COLS = frozenset({"le", "quantile", "phi"})
+
 # The translator rewrites well-known Prometheus labels to their OTel/ECS field names
 # (e.g. ``job`` -> ``service.name``). Canonicalize the translated side back to the
 # Prometheus names so series keys align with the native PROMQL output (and so the
@@ -222,7 +228,7 @@ def normalize_translated(
         # (group, bucket) pair a unique key, inflating the series count into a
         # false "series keys did not align" FAIL. A numeric column is a value,
         # not a grouping label, so skip it here.
-        if value_column is not None and column_types[i] in numeric:
+        if value_column is not None and column_types[i] in numeric and columns[i] not in _HISTOGRAM_DIM_COLS:
             continue
         canon = _canonical_label(columns[i])
         if canon not in PROMETHEUS_ONLY_LABELS:

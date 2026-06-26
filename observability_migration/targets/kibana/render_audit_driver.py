@@ -38,6 +38,7 @@ from observability_migration.adapters.source.grafana.smoke import (
     build_dashboard_url,
     discover_chrome_binary,
 )
+from observability_migration.core.verification.field_capabilities import fetch_field_capabilities
 from observability_migration.targets.kibana.render_audit import (
     RenderVerdict,
     audit_dashboard_elements,
@@ -64,27 +65,20 @@ def fetch_available_fields(
 
     Returns ``None`` when no ES URL is configured or discovery fails — the
     per-panel classifier then treats a render marker as a hard ``render_error``
-    (a field gap cannot be proven without knowing the target schema). Mirrors the
-    ``_field_caps`` discovery in the Grafana schema resolver.
+    (a field gap cannot be proven without knowing the target schema).
+
+    Delegates to ``fetch_field_capabilities`` so TLS, retry, and header logic
+    stay in one place.
     """
     if not es_url:
         return None
-    import requests
-
-    headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else {}
     try:
-        resp = requests.get(
-            f"{es_url.rstrip('/')}/{index_pattern}/_field_caps",
-            params={"fields": "*"},
-            headers=headers,
-            timeout=timeout,
-            verify=verify,
+        caps = fetch_field_capabilities(
+            es_url, index_pattern, es_api_key=es_api_key, timeout=timeout, verify=verify
         )
-        if resp.status_code == 200:
-            return set(resp.json().get("fields", {}).keys())
+        return set(caps.keys()) if caps else None
     except Exception:
         return None
-    return None
 
 
 def build_render_audit_command(

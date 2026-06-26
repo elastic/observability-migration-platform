@@ -292,7 +292,7 @@ def audit_dashboard_elements(
             PanelRenderResult(
                 title=title,
                 status="rendered" if el.status == "rendered" else el.status,
-                error_class="" if el.status == "rendered" else "unexpected_empty" if el.status in ("empty", "loading") else "render_error",
+                error_class="" if el.status == "rendered" else "unexpected_empty",
                 detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
             )
         )
