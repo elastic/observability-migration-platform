@@ -736,6 +736,23 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
 
+# Driving a live agent-browser session instead of headless Chrome (--agent-browser):
+# bootstrap.sh logs in once and keeps a persistent profile
+# (~/.agent-browser/profiles/mig-to-kbn-verifier) + saved state. A live session
+# often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
+# (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
+# (/internal/security/capture-url, auth_provider_hint). The *active* tab is
+# frequently the wrong one. --agent-browser enumerates `tab list --json` and
+# activates the Kibana /app/* tab matching the host + dashboard id (ignoring the
+# stray tabs) before capturing the DOM, so URL/DOM reads target the right page.
+# The pure selection rule is select_kibana_page_url() in render_audit_driver.py.
+# Manual equivalent: `agent-browser tab list` then `agent-browser tab t<N>` for
+# the Kibana tab whose URL matches the cluster host + dashboard id.
+KIBANA_URL="$KIBANA_ENDPOINT" bash parity-rig/verifier/bootstrap.sh   # one-time SSO
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --agent-browser --fail-on-error
+
 # Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
 # migrate+upload the canary, seed, and render-audit it.
 STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait

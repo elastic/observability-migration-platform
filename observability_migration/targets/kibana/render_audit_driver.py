@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Protocol, TypeVar
+from urllib.parse import urlsplit
 
 from observability_migration.adapters.source.grafana.smoke import (
     build_dashboard_url,
@@ -57,6 +59,213 @@ DomFetcher = Callable[[str], str]
 # A field fetcher returns the set of field names present in the target index
 # (or None when unavailable), used to attribute render markers to field gaps.
 FieldFetcher = Callable[[], "set[str] | None"]
+
+
+# --------------------------------------------------------------------------- #
+# Kibana-tab / page selection (pure, unit-tested without a browser)
+# --------------------------------------------------------------------------- #
+#
+# The render audit drives a logged-in ``agent-browser`` session on Serverless.
+# That session can carry MULTIPLE tabs/targets — Kibana dashboard tabs PLUS
+# unrelated ones such as Chrome's Gemini "glic" side-panel
+# (``https://gemini.google.com/glic``). The active target is frequently the
+# wrong tab, so a naive ``agent-browser get url`` (or a single-page driver)
+# reads the wrong page: URL checks and login-detection then look at gemini,
+# never the Kibana ``/app/*`` page, even after SAML completed in the Kibana tab.
+#
+# The fix is to enumerate every open tab and pick the Kibana ``/app/*`` page on
+# the target host (preferring the one whose URL carries the dashboard id),
+# ignoring non-Kibana tabs and Elastic SSO interstitials. The rule below is the
+# pure, testable core of that selection; the browser plumbing (``agent-browser
+# tab list`` / ``tab t<N>``) is a thin wrapper around it.
+
+# Substrings that mark a URL as a transient Elastic SSO/security interstitial
+# rather than a usable, logged-in Kibana page.
+_INTERSTITIAL_MARKERS = (
+    "/internal/security/capture-url",
+    "auth_provider_hint",
+)
+
+
+def _bare_host(value: str) -> str:
+    """Reduce ``value`` (a bare host or a full URL) to just its lowercased host."""
+    if not value:
+        return ""
+    raw = value.strip()
+    # ``urlsplit`` only populates ``netloc`` when a scheme (or leading //) is
+    # present; otherwise the whole thing lands in ``path``.
+    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    host = parsed.netloc or parsed.path
+    host = host.split("@")[-1]  # drop any userinfo
+    host = host.split("/")[0]   # drop any path that slipped through
+    host = host.split(":")[0]   # drop any :port
+    return host.lower()
+
+
+def _is_kibana_app_url(url: str, kibana_host: str) -> bool:
+    """True when ``url`` is a logged-in Kibana ``/app/*`` page on ``kibana_host``.
+
+    Rejects non-Kibana origins (gemini glic, staging.found.no, upstream IdP
+    ``/app/`` URLs like okta) by comparing the *exact* parsed host, and rejects
+    Elastic SSO interstitials (``capture-url`` / ``auth_provider_hint``) that
+    live on the Kibana host but are not yet a usable page.
+    """
+    if not url:
+        return False
+    if _bare_host(url) != kibana_host:
+        return False
+    # The space prefix (``/s/<space>``) is optional and precedes ``/app/``.
+    path = urlsplit(url).path
+    if "/app/" not in path and not path.endswith("/app"):
+        return False
+    return not any(marker in url for marker in _INTERSTITIAL_MARKERS)
+
+
+def select_kibana_page_url(
+    urls: Sequence[str], kibana_host: str, dashboard_id: str | None
+) -> str | None:
+    """Pick the Kibana tab URL to drive from every open tab's URL.
+
+    Selection rule, applied to ``urls`` in order:
+
+    1. Keep only logged-in Kibana ``/app/*`` URLs on ``kibana_host`` — ignoring
+       non-Kibana tabs (e.g. ``gemini.google.com/glic``, ``staging.found.no``,
+       upstream IdP ``/app/`` URLs) and Elastic SSO interstitials
+       (``capture-url`` / ``auth_provider_hint``).
+    2. If ``dashboard_id`` is given and any candidate's URL contains it, return
+       the first such candidate.
+    3. Otherwise return the first Kibana ``/app/*`` candidate (so login is still
+       detected and a sibling dashboard tab is usable).
+    4. Return ``None`` when no Kibana ``/app/*`` tab is open.
+
+    ``kibana_host`` may be a bare host or a full ``KIBANA_URL`` (scheme/path are
+    stripped). The function takes no I/O and is unit-tested without a browser.
+    """
+    host = _bare_host(kibana_host)
+    if not host:
+        return None
+    candidates = [u for u in urls if u and _is_kibana_app_url(u, host)]
+    if not candidates:
+        return None
+    if dashboard_id:
+        for url in candidates:
+            if dashboard_id in url:
+                return url
+    return candidates[0]
+
+
+class _HasUrl(Protocol):
+    url: str
+
+
+_PageT = TypeVar("_PageT", bound=_HasUrl)
+
+
+def select_kibana_page(
+    pages: Sequence[_PageT], kibana_host: str, dashboard_id: str | None
+) -> _PageT | None:
+    """Object-oriented twin of :func:`select_kibana_page_url`.
+
+    Picks the page (any object exposing a ``.url`` attribute) whose URL the pure
+    rule selects, so callers holding agent-browser/Playwright-style page handles
+    can activate the right tab directly.
+    """
+    by_url: dict[str, _PageT] = {}
+    for page in pages:
+        url = getattr(page, "url", "") or ""
+        # Keep the first page per URL so ordering ties resolve like the URL rule.
+        by_url.setdefault(url, page)
+    chosen = select_kibana_page_url(list(by_url.keys()), kibana_host, dashboard_id)
+    if chosen is None:
+        return None
+    return by_url[chosen]
+
+
+def parse_agent_browser_tabs(payload: str) -> list[tuple[str, str]]:
+    """Parse ``agent-browser tab list --json`` into ``[(tab_id, url), ...]``.
+
+    The JSON shape is ``{"data": {"tabs": [{"tabId": "t4", "url": ...}, ...]}}``.
+    Tabs without an id or url are dropped. Returns ``[]`` on any parse error so
+    the caller degrades to the active tab rather than raising.
+    """
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    tabs = (data.get("data") or {}).get("tabs") if isinstance(data, dict) else None
+    if not isinstance(tabs, list):
+        return []
+    out: list[tuple[str, str]] = []
+    for tab in tabs:
+        if not isinstance(tab, dict):
+            continue
+        tab_id = str(tab.get("tabId") or "").strip()
+        url = str(tab.get("url") or "").strip()
+        if tab_id and url:
+            out.append((tab_id, url))
+    return out
+
+
+def select_kibana_tab_id(
+    tabs: Sequence[tuple[str, str]], kibana_host: str, dashboard_id: str | None
+) -> str | None:
+    """Pick the agent-browser tab id of the Kibana page to drive.
+
+    ``tabs`` are ``(tab_id, url)`` pairs (e.g. from
+    :func:`parse_agent_browser_tabs`). Applies the same selection rule as
+    :func:`select_kibana_page_url` and returns the matching tab id (``t<N>``), or
+    ``None`` when no Kibana ``/app/*`` tab is open.
+    """
+    by_url: dict[str, str] = {}
+    for tab_id, url in tabs:
+        by_url.setdefault(url, tab_id)
+    chosen = select_kibana_page_url(list(by_url.keys()), kibana_host, dashboard_id)
+    return by_url.get(chosen) if chosen is not None else None
+
+
+# A tab driver runs an ``agent-browser tab ...`` subcommand and returns stdout.
+TabDriver = Callable[[list[str]], str]
+
+
+def _default_tab_driver(args: list[str]) -> str:
+    """Run ``agent-browser <args>`` and return stdout (empty on failure)."""
+    try:
+        proc = subprocess.run(
+            ["agent-browser", *args], capture_output=True, text=True, timeout=30
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout or ""
+
+
+def activate_kibana_tab(
+    kibana_url: str,
+    dashboard_id: str | None,
+    *,
+    tab_driver: TabDriver | None = None,
+) -> str | None:
+    """Select and activate the Kibana ``/app/*`` tab in a live agent-browser session.
+
+    Enumerates every open tab (``agent-browser tab list --json``), picks the one
+    on the Kibana host that matches the dashboard id (ignoring gemini-glic /
+    found.no / SSO interstitial tabs), and switches to it (``agent-browser tab
+    t<N>``) so subsequent URL/DOM reads target the right page instead of the
+    wrong active tab.
+
+    Returns the activated tab id, or ``None`` when no Kibana tab is open (the
+    caller should then fall back to opening the dashboard URL). ``tab_driver`` is
+    injectable so this is unit-tested without a browser.
+    """
+    drive = tab_driver or _default_tab_driver
+    listing = drive(["tab", "list", "--json"])
+    tabs = parse_agent_browser_tabs(listing)
+    if not tabs:
+        return None
+    tab_id = select_kibana_tab_id(tabs, kibana_url, dashboard_id)
+    if tab_id is None:
+        return None
+    drive(["tab", tab_id])
+    return tab_id
 
 
 def fetch_available_fields(
@@ -188,6 +397,7 @@ def run_audit_cli(
     *,
     dom_fetcher: DomFetcher | None = None,
     field_fetcher: FieldFetcher | None = None,
+    tab_driver: TabDriver | None = None,
 ) -> int:
     """Core of the render-audit CLI (separated from argparse for testing).
 
@@ -204,11 +414,18 @@ def run_audit_cli(
     With ``--elements`` it also runs the per-panel element audit (chart kind /
     legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
     a render ``fail`` when ``--fail-on-error``.
+
+    With ``--agent-browser`` the driver first selects and activates the Kibana
+    ``/app/*`` tab of a live agent-browser session (so a stray gemini-glic /
+    found.no / SSO-interstitial tab being "active" does not make us read the
+    wrong page) before capturing the DOM.
     """
     url = build_dashboard_url(
         args.kibana_url, args.space, args.dashboard_id,
         time_from=args.time_from, time_to=args.time_to,
     )
+    if getattr(args, "agent_browser", False):
+        activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=tab_driver)
     fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
     snapshot = fetch(url)
 
@@ -315,6 +532,12 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--insecure", action="store_true",
         help="Skip TLS verification for --es-url.",
+    )
+    parser.add_argument(
+        "--agent-browser", action="store_true",
+        help="Drive a live agent-browser session: select+activate the Kibana "
+             "tab matching the host/dashboard-id before capturing the DOM "
+             "(ignores stray gemini-glic / SSO-interstitial tabs).",
     )
     return parser
 

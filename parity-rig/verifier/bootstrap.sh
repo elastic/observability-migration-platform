@@ -49,7 +49,7 @@ if [[ -z "$KIBANA_HOST" ]]; then
 fi
 
 is_logged_in() {
-  local url="$1"
+  url="$1"
   # Must be hosted on the Kibana origin AND inside /app/* AND NOT
   # the security capture-url interstitial.
   case "$url" in
@@ -64,22 +64,58 @@ is_logged_in() {
   return 1
 }
 
+# Enumerate the URLs of EVERY open tab/target, one per line.
+#
+# An agent-browser session frequently carries multiple tabs — Kibana tabs PLUS
+# unrelated ones such as Chrome's Gemini "glic" side-panel
+# (https://gemini.google.com/glic) or staging.found.no. The *active* target is
+# often the wrong one, so `agent-browser get url` alone reads the wrong page and
+# never sees the Kibana /app/* URL even after SAML completed in the Kibana tab.
+# We therefore scan all tabs (`tab list`) and fall back to the active URL.
+list_all_tab_urls() {
+  agent-browser tab list 2>/dev/null \
+    | grep -oE 'https?://[^[:space:]]+' || true
+  # Belt-and-suspenders: include the active tab's URL too.
+  agent-browser get url 2>/dev/null | grep -oE 'https?://[^[:space:]]+' || true
+}
+
+# True (0) when ANY open tab is a logged-in Kibana /app/* page. Echoes the
+# matching URL so the caller can report it.
+any_tab_logged_in() {
+  found=""
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    if is_logged_in "$url"; then
+      found="$url"
+      break
+    fi
+  done <<EOF
+$(list_all_tab_urls)
+EOF
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  return 1
+}
+
 echo
-echo "Waiting up to ${WAIT_SECONDS}s for browser to settle on https://${KIBANA_HOST}/app/* (SAML complete)."
+echo "Waiting up to ${WAIT_SECONDS}s for ANY tab to settle on https://${KIBANA_HOST}/app/* (SAML complete)."
+echo "    (tolerant of extra tabs: gemini-glic side-panel, staging.found.no, SSO interstitials)"
 deadline=$((SECONDS + WAIT_SECONDS))
+logged_in_url=""
 while (( SECONDS < deadline )); do
-  current_url="$(agent-browser get url 2>/dev/null | tail -1 || true)"
-  if is_logged_in "$current_url"; then
-    echo "Detected logged-in URL: $current_url"
+  if logged_in_url="$(any_tab_logged_in)"; then
+    echo "Detected logged-in Kibana tab: $logged_in_url"
     break
   fi
   sleep 3
 done
 
-current_url="$(agent-browser get url 2>/dev/null | tail -1 || true)"
-if ! is_logged_in "$current_url"; then
-  echo "Did not land on https://${KIBANA_HOST}/app/* after ${WAIT_SECONDS}s; aborting" >&2
-  echo "  current URL: $current_url" >&2
+if ! logged_in_url="$(any_tab_logged_in)"; then
+  echo "No tab landed on https://${KIBANA_HOST}/app/* after ${WAIT_SECONDS}s; aborting" >&2
+  echo "  open tabs:" >&2
+  list_all_tab_urls | sort -u | sed 's/^/    /' >&2 || true
   exit 2
 fi
 
