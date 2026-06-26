@@ -1012,6 +1012,8 @@ def join_family_rule(context):
                 left_metric_field,
                 left_info["range_window"],
                 left_frag,
+                is_counter=left_is_counter,
+                resolver=resolver,
             )
             right_stats_call = _build_stats_call(
                 right_info["outer_agg"],
@@ -1019,6 +1021,8 @@ def join_family_rule(context):
                 right_metric_field,
                 right_info["range_window"],
                 right_frag,
+                is_counter=right_is_counter,
+                resolver=resolver,
             )
             # Apply per-side exclusive filters via CASE() so that label
             # selectors which appear on only one operand (e.g. mode="user" on

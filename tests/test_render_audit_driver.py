@@ -185,6 +185,27 @@ def test_cli_field_gap_warns_and_does_not_fail(tmp_path):
     assert rc == 0
 
 
+def test_cli_field_gap_with_duplicate_marker_in_one_panel_does_not_fail(tmp_path):
+    # PR #234 review: the same Kibana error string can appear twice inside one
+    # panel's dumped DOM (nested nodes). A single proven field_gap panel must
+    # stay a warn — the unsegmented-error guard must count markers OUTSIDE
+    # segmented panels, not compare a global occurrence count to the number of
+    # error panels (which promotes duplicate in-panel field-gap text to a fail).
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+    dom = (
+        'StaticText "HTTP by method" '
+        'StaticText "Provided column name or index is invalid" '
+        'StaticText "Provided column name or index is invalid"'
+    )
+    args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)
+    rc = run_audit_cli(
+        args,
+        dom_fetcher=lambda _u: dom,
+        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+    )
+    assert rc == 0
+
+
 def test_cli_render_error_with_present_field_still_fails(tmp_path):
     from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
     args = _cli_args(migration_out=_field_gap_report(tmp_path), fail_on_error=True)

@@ -2917,6 +2917,47 @@ class TestPromQLWrapperFragments(unittest.TestCase):
             msg=f"increase()-degraded gauge fallback must cast counter to double: {esql}",
         )
 
+    def test_binary_wrapped_increase_still_casts_to_double(self):
+        # PR #234 review: the degraded increase() cast must also apply when the
+        # call is composed inside a binary expression. Under unknown field caps
+        # increase(weird_unknown_metric[5m]) degrades to MAX_OVER_TIME, but the
+        # stored field may be counter_double, so the binary measure-spec path must
+        # still wrap the metric in TO_DOUBLE or the query fails at runtime.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        esql = translate_promql_to_esql(
+            "increase(weird_unknown_metric[5m]) * 2"
+        ).esql_query
+        self.assertIn("MAX_OVER_TIME(", esql)
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            esql,
+            msg=f"binary-wrapped increase() must keep the counter-safe cast: {esql}",
+        )
+
+    def test_join_ratio_increase_still_casts_to_double(self):
+        # PR #234 review: the join-ratio _build_stats_call path emitted bare
+        # SUM(MAX_OVER_TIME(metric, ...)) with no cast. Both operands of a
+        # group_left ratio over degraded increase() must keep TO_DOUBLE.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        esql = translate_promql_to_esql(
+            "sum(increase(weird_unknown_metric[5m])) / on(job) group_left "
+            "sum(increase(other_unknown_metric[5m]))"
+        ).esql_query
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(weird_unknown_metric)",
+            esql,
+            msg=f"join-ratio numerator increase() must cast counter to double: {esql}",
+        )
+        self.assertIn(
+            "MAX_OVER_TIME(TO_DOUBLE(other_unknown_metric)",
+            esql,
+            msg=f"join-ratio denominator increase() must cast counter to double: {esql}",
+        )
+
     def test_round_to_fractional_step_emits_valid_divide_multiply_esql(self):
         # PromQL round(v, 0.001) rounds to the nearest 0.001 step. ES|QL
         # ROUND(v, decimals) takes a WHOLE-NUMBER decimal-places arg, so

@@ -251,12 +251,50 @@ def _gauge_fallback_for_counter_range_func(range_func):
 # conservative heuristic-driven degradation.
 _COUNTER_ONLY_RANGE_FUNCTIONS = frozenset({"rate", "irate"})
 _COUNTER_INPUT_ESQL_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+# Source PromQL range functions that are counter-only by Prometheus convention.
+# When a panel wraps a metric in one of these, the telemetry contract / seeder
+# type that field as a counter, so even a heuristic "gauge" guess that degraded
+# the call to a gauge analogue (increase -> MAX_OVER_TIME) still queries a
+# counter-typed stored field and must cast.
+_COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
 
 
-def _counter_safe_metric_arg(esql_func, metric_expr, is_counter):
-    if is_counter and (esql_func or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+def _counter_safe_metric_arg(
+    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False
+):
+    """Cast a counter metric to double for ES|QL functions that reject counters.
+
+    Casts when EITHER the field is a confirmed counter, OR the panel's *source*
+    PromQL used a counter-only range function (rate/irate/increase) and the
+    target has not authoritatively refuted the counter classification — mirroring
+    the telemetry contract / seeder. RATE/IRATE/INCREASE consume the raw counter
+    directly, so they are never cast; an authoritative gauge (``counter_refuted``)
+    is left unchanged to avoid needless cast / snapshot churn.
+
+    This is the shared counter-safe helper used by both the direct/topk family
+    rules (via the translate.py import) and the composed binary measure-spec /
+    join-ratio paths below, so degraded-range casting stays consistent.
+    """
+    if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
+        return metric_expr
+    counter_source = (
+        (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
+        and not counter_refuted
+    )
+    if is_counter or counter_source:
         return f"TO_DOUBLE({metric_expr})"
     return metric_expr
+
+
+def _counter_refuted(resolver, metric):
+    """True when the target authoritatively says ``metric`` is NOT a counter
+    (explicit rule-pack ``gauge`` pin or live gauge field-caps). Silent (False)
+    when offline or the field is unknown, so a counter-style source function can
+    still drive the counter-safe cast."""
+    if resolver is None or not metric:
+        return False
+    refutes = getattr(resolver, "refutes_counter", None)
+    return bool(refutes(metric)) if callable(refutes) else False
 
 
 # Outer aggregations ES|QL rejects directly on counter_long/counter_double
@@ -2462,10 +2500,23 @@ def _apply_fragment_to_context(frag, context):
     if not context.range_window and (frag.range_window or summary.range_window):
         context.range_window = frag.range_window or summary.range_window
 
-def _build_stats_call(outer_agg, inner_func, metric_name, range_window, frag=None):
+def _build_stats_call(
+    outer_agg, inner_func, metric_name, range_window, frag=None,
+    *, is_counter=False, resolver=None,
+):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
     esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
-    inner_expr = f"{esql_inner}({metric_name}, {range_window})"
+    # Keep the counter-safe cast on composed (join-ratio) operands: a degraded
+    # increase()/rate() over an unknown-caps counter must still wrap the metric
+    # in TO_DOUBLE, exactly like the standalone/measure-spec paths (PR #234).
+    metric_arg = _counter_safe_metric_arg(
+        esql_inner,
+        metric_name,
+        is_counter,
+        frag.range_func if frag else None,
+        counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
+    )
+    inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
     return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
@@ -3168,7 +3219,13 @@ def _build_measure_spec(
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        inner_arg = _counter_safe_metric_arg(esql_inner, metric_field, is_counter)
+        inner_arg = _counter_safe_metric_arg(
+            esql_inner,
+            metric_field,
+            is_counter,
+            frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+        )
         inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:

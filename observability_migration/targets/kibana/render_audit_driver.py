@@ -273,9 +273,12 @@ def fetch_available_fields(
 ) -> set[str] | None:
     """Field names present in the target index (for field_gap/data_gap attribution).
 
-    Returns ``None`` when no ES URL is configured or discovery fails — the
-    per-panel classifier then treats a render marker as a hard ``render_error``
-    (a field gap cannot be proven without knowing the target schema).
+    Returns ``None`` only when the target schema is *unknown* — no ES URL is
+    configured or discovery fails — so the per-panel classifier treats a render
+    marker as a hard ``render_error`` (a field gap cannot be proven without
+    knowing the target schema). A successful field-caps call that simply matched
+    no fields returns an empty ``set()`` (schema known, field absent), which lets
+    the classifier still attribute a field gap.
 
     Delegates to ``fetch_field_capabilities`` so TLS, retry, and header logic
     stay in one place.
@@ -286,7 +289,9 @@ def fetch_available_fields(
         caps = fetch_field_capabilities(
             es_url, index_pattern, es_api_key=es_api_key, timeout=timeout, verify=verify
         )
-        return set(caps.keys()) if caps else None
+        # ``{}`` is a *successful* empty result (schema known, no matching field)
+        # and must stay distinct from ``None`` (fetch failure) — see PR #234.
+        return set(caps.keys()) if caps is not None else set()
     except Exception:
         return None
 
@@ -392,6 +397,26 @@ def audit_control_interactions(
     return findings
 
 
+def _attributed_segment_text(segments) -> str:
+    """Concatenate recognized-panel chunks, truncating each at an untitled/hidden
+    panel boundary.
+
+    ``segment_panels`` extends the LAST recognized panel's chunk to end-of-
+    snapshot, which can absorb a trailing *untitled* (unrecognized) panel. Its
+    error markers would then look attributed to the last recognized panel.
+    Truncating at the untitled-panel boundary keeps those markers OUT of the
+    attributed text so the unsegmented-marker count catches an extra hidden
+    broken panel, while a marker merely duplicated inside ONE recognized
+    field-gap panel (no untitled boundary) stays attributed and is not promoted
+    to a hard failure (PR #234).
+    """
+    parts = []
+    for _title, chunk in segments:
+        cut = chunk.lower().find("untitled panel")
+        parts.append(chunk[:cut] if cut >= 0 else chunk)
+    return "\n".join(parts)
+
+
 def run_audit_cli(
     args: argparse.Namespace,
     *,
@@ -456,15 +481,27 @@ def run_audit_cli(
             available_metrics=available_fields,
         )
         whole_verdict = classify_render(snapshot)
-        segmented_verdict = classify_render("\n".join(chunk for _title, chunk in segments))
+        attributed_text = _attributed_segment_text(segments)
+        attributed_verdict = classify_render(attributed_text)
+        # Markers OUTSIDE every recognized panel's attributed text are genuinely
+        # unattributed broken panels the per-panel classifier never saw. The old
+        # guard compared a whole-snapshot occurrence count to the number of error
+        # panels (PR #234), which conflated the same error string appearing twice
+        # inside ONE segmented field-gap panel (nested DOM nodes) with an extra
+        # unsegmented broken panel — promoting a proven field_gap to a hard
+        # failure. Subtracting the attributed occurrences counts only truly
+        # unattributed markers (incl. a trailing untitled panel the last segment
+        # absorbed, which _attributed_segment_text truncates away).
+        unsegmented_marker_count = count_render_error_markers(
+            snapshot
+        ) - count_render_error_markers(attributed_text)
         unsegmented_hard_error = (
             whole_verdict.status == "fail"
             and whole_verdict.rendered_error_markers
             and (
                 set(whole_verdict.rendered_error_markers)
-                - set(segmented_verdict.rendered_error_markers)
-                or count_render_error_markers(snapshot)
-                > sum(1 for panel in verdict.panels if panel.status == "error")
+                - set(attributed_verdict.rendered_error_markers)
+                or unsegmented_marker_count > 0
             )
         )
         if unsegmented_hard_error:
