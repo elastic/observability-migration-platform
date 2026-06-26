@@ -200,12 +200,103 @@ def _iter_leaf_panels(panels):
             yield panel
 
 
+_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+_INTERNAL_ESQL_PARAMS = {"_tstart", "_tend", "_job"}
+
+
+def _query_param_names(query):
+    if not isinstance(query, str):
+        return set()
+    unquoted = _ESQL_QUOTED_RE.sub('""', query)
+    return {
+        match.group("name")
+        for match in _ESQL_PARAM_RE.finditer(unquoted)
+        if match.group("name") not in _INTERNAL_ESQL_PARAMS
+    }
+
+
+def _esql_identifier(name):
+    text = str(name or "")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        return text
+    return "`" + text.replace("`", "``") + "`"
+
+
+def _query_index(query):
+    match = re.search(r"(?im)^\s*(?:FROM|TS)\s+([^\s|]+)", str(query or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _infer_control_data_view(dashboard, leaf_panels):
+    for panel in leaf_panels:
+        esql_config = panel.get("esql") if isinstance(panel, dict) else None
+        if isinstance(esql_config, dict):
+            index = _query_index(esql_config.get("query"))
+            if index:
+                return index
+    for control in dashboard.get("controls") or []:
+        if not isinstance(control, dict):
+            continue
+        index = _query_index(control.get("query"))
+        if index:
+            return index
+    return "metrics-*"
+
+
+def _values_control_query(field_name, data_view):
+    field = _esql_identifier(field_name)
+    return (
+        f"FROM {data_view or 'metrics-*'} | WHERE {field} IS NOT NULL"
+        f" | STATS count = COUNT(*) BY {field}"
+        f" | SORT {field} ASC | KEEP {field} | LIMIT 1000"
+    )
+
+
+def _ensure_controls_for_emitted_params(dashboard, leaf_panels):
+    emitted: set[str] = set()
+    for panel in leaf_panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_config = panel.get("esql")
+        query = esql_config.get("query") if isinstance(esql_config, dict) else None
+        emitted |= _query_param_names(query)
+
+    controls = dashboard.setdefault("controls", [])
+    bound = {
+        control.get("variable_name")
+        for control in controls
+        if isinstance(control, dict)
+        and control.get("type") == "esql"
+        and control.get("variable_name")
+    }
+    missing = sorted(name for name in emitted if name not in bound)
+    if not missing:
+        return False
+
+    data_view = _infer_control_data_view(dashboard, leaf_panels)
+    for name in missing:
+        controls.append(
+            {
+                "type": "esql",
+                "label": name,
+                "variable_name": name,
+                "variable_type": "values",
+                "query": _values_control_query(name, data_view),
+                "multiple": False,
+                "default": ".*",
+            }
+        )
+    return True
+
+
 def sync_result_queries_to_yaml(result, yaml_path):
     payload = yaml.safe_load(Path(yaml_path).read_text()) or {}
     dashboards = payload.get("dashboards") or []
     if not dashboards:
         return False
-    panels = dashboards[0].get("panels") or []
+    dashboard = dashboards[0]
+    panels = dashboard.get("panels") or []
     leaf_panels = list(_iter_leaf_panels(panels))
     yaml_panel_results = getattr(result, "yaml_panel_results", None)
     panel_results = yaml_panel_results if yaml_panel_results is not None else result.panel_results
@@ -234,6 +325,8 @@ def sync_result_queries_to_yaml(result, yaml_path):
         _sync_esql_panel_fields(yaml_panel, existing_query, panel_result.esql_query)
         updated = True
         panel_result.visual_ir = refresh_visual_ir(panel_result, yaml_panel)
+    if _ensure_controls_for_emitted_params(dashboard, leaf_panels):
+        updated = True
     if updated:
         Path(yaml_path).write_text(
             yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)

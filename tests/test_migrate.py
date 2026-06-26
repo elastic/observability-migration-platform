@@ -829,6 +829,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("instance"), "service.instance.id")
         self.assertEqual(self.resolver.resolve_control_field("instance"), "service.instance.id")
 
+    def test_resolve_service_label_falls_back_to_service_name(self):
+        """Envoy-style PromQL often groups by `service`, while OTel targets store
+        that dimension as `service.name`."""
+        self.seed_field_caps({
+            "service.name": {"keyword": {"aggregatable": True, "searchable": True}},
+        })
+        self.resolver._build_discovered_mappings()
+        self.assertEqual(self.resolver.resolve_label("service"), "service.name")
+        self.assertEqual(self.resolver.resolve_control_field("service"), "service.name")
+
+    def test_range_window_day_emits_duration_not_calendar_period(self):
+        translated = self.translate('sum_over_time(nginxlog_resp_bytes{resp_code=~"200"}[24h])')
+        self.assertIn("SUM_OVER_TIME(nginxlog_resp_bytes, 24h)", translated.esql_query)
+        self.assertNotIn("SUM_OVER_TIME(nginxlog_resp_bytes, 1d)", translated.esql_query)
+
     def test_resolve_label_keeps_source_field_when_only_source_present(self):
         """If the target only has `instance`, the resolver keeps `instance`."""
         self.seed_field_caps({
@@ -4666,6 +4681,79 @@ class TranslatorRegressionTests(unittest.TestCase):
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
 
+    def test_sync_result_queries_to_yaml_adds_controls_for_new_params(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Start time", "singlestat", "metric", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| WHERE operation RLIKE ?operation\n"
+            "| WHERE instance RLIKE ?instance\n"
+            "| WHERE process_start_time_seconds IS NOT NULL\n"
+            "| STATS value = AVG(process_start_time_seconds) BY time_bucket = TBUCKET(5 minute)"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "controls": [
+                    {
+                        "type": "esql",
+                        "label": "Application",
+                        "variable_name": "application",
+                        "variable_type": "values",
+                        "query": "FROM metrics-* | KEEP application",
+                        "default": ".*",
+                    },
+                    {
+                        "type": "esql",
+                        "label": "Instance",
+                        "variable_name": "instance",
+                        "variable_type": "values",
+                        "query": "FROM metrics-* | KEEP instance",
+                        "default": ".*",
+                    },
+                ],
+                "panels": [
+                    {
+                        "title": "Quick Facts",
+                        "section": {
+                            "panels": [
+                                {
+                                    "title": "Start time",
+                                    "esql": {
+                                        "type": "metric",
+                                        "query": (
+                                            "TS metrics-*\n"
+                                            "| WHERE application RLIKE ?application\n"
+                                            "| WHERE instance RLIKE ?instance\n"
+                                            "| WHERE process_start_time_seconds IS NOT NULL\n"
+                                            "| STATS value = AVG(process_start_time_seconds) BY time_bucket = TBUCKET(5 minute)"
+                                        ),
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            updated = migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        self.assertTrue(updated)
+        controls = rewritten["dashboards"][0].get("controls", [])
+        bound = {c.get("variable_name") for c in controls if c.get("type") == "esql"}
+        self.assertIn("operation", bound)
+        operation = next(c for c in controls if c.get("variable_name") == "operation")
+        self.assertEqual(operation["default"], ".*")
+        self.assertIn("WHERE operation IS NOT NULL", operation["query"])
+
     def test_sync_result_queries_to_yaml_updates_metric_field_after_query_alias_change(self):
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Interrupts Detail", "graph", "line", "migrated", 0.85)
@@ -7001,7 +7089,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                     "thresholds": {
                         "steps": [
                             {"value": None, "color": "green"},
-                            {"value": 70, "color": "orange"},
+                            {"value": 70, "color": "semi-dark-orange"},
                             {"value": 90, "color": "red"},
                         ]
                     },
@@ -9402,7 +9490,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(result.kibana_type, "metric")
         self.assertEqual(yaml_panel["esql"]["type"], "metric")
 
-    def test_native_promql_xy_generic_value_metric_uses_panel_title_label(self):
+    def test_grouped_xy_promql_uses_esql_metric_field_label(self):
         rule_pack = migrate.RulePackConfig()
         rule_pack.native_promql = True
         resolver = migrate.SchemaResolver(rule_pack)
@@ -9427,8 +9515,9 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         )
         self.assertIsNotNone(yaml_panel)
         self.assertEqual(yaml_panel["esql"]["type"], "line")
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Head chunks count")
+        self.assertNotIn("PROMQL", yaml_panel["esql"]["query"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "prometheus_tsdb_head_chunks")
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Prometheus Tsdb Head Chunks")
 
     def test_heatmap_panel_emits_native_heatmap(self):
         # A histogram-bucket heatmap (BY time, le) maps to a native Kibana
@@ -11755,7 +11844,7 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
         # operator.
         cap_warning_titles = [
             pr.title for pr in result.panel_results
-            if pr.status == "skipped" and "repeat" in (pr.warnings or [""])[0].lower()
+            if pr.status == "skipped" and "repeat" in (pr.reasons or [""])[0].lower()
         ]
         self.assertTrue(cap_warning_titles, "expected a skip-result mentioning the repeat cap")
 
@@ -11788,7 +11877,7 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
             pr for pr in result.panel_results
             if pr.status == "skipped"
             and any("unresolvable" in w.lower() or "could not resolve" in w.lower()
-                    for w in (pr.warnings or []))
+                    for w in (pr.reasons or []))
         ]
         self.assertTrue(
             unresolvable_warnings,
@@ -12293,13 +12382,21 @@ class NativePromqlTests(unittest.TestCase):
         self.assertIn("PROMQL", result.esql_query)
         self.assertIn("rate(http_requests_total[5m])", result.esql_query)
 
-    def test_sum_by_uses_native_promql(self):
+    def test_sum_by_chart_uses_esql_for_breakdown_projection(self):
         panel = self._make_panel('sum by (instance) (rate(http_requests_total[5m]))')
         _yaml_panel, result = self.translate_panel(panel)
-        self.assertIn("PROMQL", result.esql_query)
-        self.assertIn("sum by (instance)", result.esql_query)
+        self.assertNotIn("PROMQL", result.esql_query)
+        self.assertIn("instance", result.esql_query)
         self.assertEqual(result.query_ir["output_shape"], "time_series")
-        self.assertEqual(result.query_ir["output_group_fields"], ["step", "instance"])
+        self.assertEqual(result.query_ir["output_group_fields"], ["time_bucket", "service.instance.id"])
+
+    def test_grouped_promql_uses_esql_to_project_breakdown_column(self):
+        panel = self._make_panel('sum by (service) (rate(envoy_http_downstream_rq_total[1m]))')
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertNotIn("PROMQL", result.esql_query)
+        self.assertIn("service", result.esql_query)
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
 
     def test_avg_over_time_uses_native_promql(self):
         panel = self._make_panel("avg_over_time(cpu_usage[10m])")
@@ -12565,7 +12662,7 @@ class NativePromqlTests(unittest.TestCase):
     def test_native_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum by (job) (rate(http_requests_total[5m]))")
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "job")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
 
     def test_native_postfix_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum(rate(http_requests_total[5m])) by (handler)")

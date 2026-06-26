@@ -1339,13 +1339,15 @@ def _translate_panel_native_promql(
         regex_default_params=regex_default_params,
     )
     _, group_cols = _native_promql_result_shape(expr)
+    real_group_cols = [col for col in group_cols if col != "_timeseries"]
+    if real_group_cols and kibana_type in ("line", "bar", "area", "xy", "pie", "heatmap"):
+        return None
     # Parse the macro-resolved form once; reused by the metric/gauge gate below
     # and the QueryIR fields further down (avoids parsing the same expr twice).
     native_fragment = _parse_fragment(cleaned_expr or expr)
     if kibana_type in ("metric", "gauge"):
         # A real multi-series breakdown (``by (instance)`` → ``['instance']``)
         # can't be rendered as one value, so keep degrading those to ES|QL.
-        real_group_cols = [col for col in group_cols if col != "_timeseries"]
         if real_group_cols:
             return None
         # ``_timeseries`` is the time dimension only, not a breakdown. For a
@@ -2923,6 +2925,9 @@ def _normalize_color(value):
         "orange": "#D6BF57",
         "yellow": "#D6BF57",
     }
+    for token, mapped in named.items():
+        if lowered.endswith(f"-{token}"):
+            return mapped
     return named.get(lowered, text)
 
 
@@ -4645,8 +4650,8 @@ def _substitute_grafana_variables(text: str, substitutions: dict[str, str]) -> s
         return text
 
     def _repl(match: re.Match) -> str:
-        name = match.group(1) or match.group(2)
-        return substitutions.get(name, match.group(0))
+        name = str(match.group(1) or match.group(2) or "")
+        return substitutions.get(name, str(match.group(0) or ""))
 
     return _VARIABLE_REFERENCE_RE.sub(_repl, text)
 
@@ -4764,7 +4769,7 @@ def _expand_repeat_panels(
                     "skipped",
                     1.0,
                 )
-                warn_result.warnings = [
+                warn_result.reasons = [
                     f"Could not resolve repeat variable ${repeat_name}; "
                     f"the dashboard's templating doesn't expose its values "
                     f"(no options[] or current cached). The repeat "
@@ -4788,7 +4793,7 @@ def _expand_repeat_panels(
                     "skipped",
                     1.0,
                 )
-                warn_result.warnings = [
+                warn_result.reasons = [
                     f"Repeat variable ${repeat_name} has {len(values)} "
                     f"values; capped expansion to the first "
                     f"{L4_REPEAT_EXPANSION_CAP} to prevent dashboard "
@@ -5623,7 +5628,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # (PR #133 review). Stored on the shared rule pack so it is reachable from
     # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
     # explicitly into the native path. Set before any panel translation runs.
-    rule_pack._regex_default_param_names = _collect_regex_default_param_names(variables)
+    setattr(rule_pack, "_regex_default_param_names", _collect_regex_default_param_names(variables))
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)

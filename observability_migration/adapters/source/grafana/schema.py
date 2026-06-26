@@ -33,6 +33,7 @@ class SchemaResolver:
 
     PROM_TO_OTEL_CANDIDATES = {
         "instance": ["service.instance.id", "host.name", "host.ip"],
+        "service": ["service.name"],
         "service_instance_id": ["service.instance.id"],
         "job": ["service.name"],
         "service_name": ["service.name"],
@@ -285,7 +286,7 @@ class SchemaResolver:
         profile = self._current_schema_profile()
         if profile == "prometheus_remote_write":
             namespaced = f"prometheus.labels.{label}"
-            if namespaced in self._field_cache:
+            if self._field_cache and namespaced in self._field_cache:
                 return namespaced
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist

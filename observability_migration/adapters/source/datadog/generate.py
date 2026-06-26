@@ -1256,6 +1256,7 @@ def _infer_keep_fields(query: str) -> list[str]:
 
 
 def _dimension_config(field: str, data_type: str | None = None) -> dict[str, Any]:
+    field = _strip_field_name(field)
     config: dict[str, Any] = {"field": field}
     label = _pretty_field_label(field)
     if label:
@@ -1270,6 +1271,7 @@ def _metric_config(
     result: TranslationResult,
     field: str,
 ) -> dict[str, Any]:
+    field = _strip_field_name(field)
     config: dict[str, Any] = {"field": field}
     label = _metric_label(widget, result, field)
     # On metric (query_value) panels the panel title is already displayed by

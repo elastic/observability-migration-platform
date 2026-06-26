@@ -4,7 +4,7 @@ warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| WHERE service == "web"
+| WHERE service.name == "web"
 | WHERE NOT (status RLIKE ".*cam(era)?")
 | WHERE http_requests_total IS NOT NULL
 | STATS http_requests_total = MAX(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(5 minute)
