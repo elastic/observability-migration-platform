@@ -177,6 +177,13 @@ def is_time_bucket_expression(expr):
     return text == "@TIMESTAMP" or "BUCKET(@TIMESTAMP" in text or text.startswith("TBUCKET(")
 
 
+def _output_field_name(field_name):
+    text = str(field_name or "").strip()
+    if len(text) >= 2 and text[0] == "`" and text[-1] == "`":
+        return text[1:-1].replace("``", "`")
+    return text
+
+
 def select_xy_dimension_fields(by_cols, time_fields=None):
     """Pick the x-axis (and optional breakdown) dimension for an XY chart.
 
@@ -218,14 +225,14 @@ def extract_esql_shape(esql):
             metric_fields = []
             for assignment in _split_top_level_csv(assignments_text):
                 alias, expr = split_top_level_assignment(assignment)
-                field_name = alias or expr
+                field_name = _output_field_name(alias or expr)
                 if field_name:
                     metric_fields.append(field_name)
             group_fields = []
             time_fields = []
             for part in _split_top_level_csv(by_text):
                 alias, expr = split_top_level_assignment(part)
-                field_name = alias or expr
+                field_name = _output_field_name(alias or expr)
                 if not field_name:
                     continue
                 group_fields.append(field_name)
@@ -243,12 +250,17 @@ def extract_esql_shape(esql):
         if lower_command.startswith("eval "):
             for assignment in _split_top_level_csv(command[5:].strip()):
                 alias, _expr = split_top_level_assignment(assignment)
-                if alias and alias not in shape.projected_fields:
-                    shape.projected_fields.append(alias)
+                field_name = _output_field_name(alias)
+                if field_name and field_name not in shape.projected_fields:
+                    shape.projected_fields.append(field_name)
             continue
 
         if lower_command.startswith("keep "):
-            projected_fields = [part.strip() for part in _split_top_level_csv(command[5:].strip()) if part.strip()]
+            projected_fields = [
+                _output_field_name(part)
+                for part in _split_top_level_csv(command[5:].strip())
+                if part.strip()
+            ]
             group_fields = [field for field in shape.group_fields if field in projected_fields]
             metric_fields = [field for field in shape.metric_fields if field in projected_fields]
             if not metric_fields:
@@ -281,7 +293,7 @@ def extract_esql_shape(esql):
             projected_fields = []
             for assignment in _split_top_level_csv(command[4:].strip()):
                 alias, expr = split_top_level_assignment(assignment)
-                field_name = alias or expr
+                field_name = _output_field_name(alias or expr)
                 if field_name:
                     projected_fields.append(field_name)
             time_fields = [f for f in projected_fields if is_time_like_output_field(f)]

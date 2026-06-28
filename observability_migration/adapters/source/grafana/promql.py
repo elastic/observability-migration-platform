@@ -1491,8 +1491,6 @@ def _duration_to_promql(delta: timedelta | None):
     parts = []
     remaining = total_seconds
     for unit_seconds, suffix in (
-        (7 * 24 * 3600, "w"),
-        (24 * 3600, "d"),
         (3600, "h"),
         (60, "m"),
         (1, "s"),

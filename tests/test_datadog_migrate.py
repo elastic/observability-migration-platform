@@ -1928,6 +1928,29 @@ class TestYAMLGeneration(unittest.TestCase):
         yaml_str = generate_dashboard_yaml(dash, results)
         return yaml.safe_load(yaml_str)["dashboards"][0]
 
+    def test_hyphenated_group_by_uses_unquoted_yaml_field(self):
+        query = "sum:kafka.consumer.messages_in{*} by {client-id}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Messages Consumed",
+            queries=[wq],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        dash = self._render_dashboard([widget])
+        esql = dash["panels"][0]["esql"]
+
+        self.assertIn("`client-id`", esql["query"])
+        self.assertEqual(esql["breakdown"]["field"], "client-id")
+
     def test_generate_from_sample(self):
         path = Path(__file__).parent.parent / "infra" / "datadog" / "dashboards" / "sample_dashboard.json"
         raw = json.loads(path.read_text())

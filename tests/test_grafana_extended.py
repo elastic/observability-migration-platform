@@ -627,7 +627,7 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertIn('CASE((status RLIKE "5..")', query)
         self.assertIn("RATE(http_requests_total, 5m)", query)
         # Service filter is common to both sides and stays in WHERE.
-        self.assertIn('service RLIKE "api|worker"', query)
+        self.assertIn('service.name RLIKE "api|worker"', query)
         # Final percentage EVAL composes the two stats columns.
         self.assertIn("* 100", query)
 
@@ -2088,7 +2088,7 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         self.assertEqual(result.query_ir.get("family"), "binary_expr")
         self.assertEqual(result.query_ir.get("metric"), "computed_value")
         self.assertEqual(result.query_ir.get("output_metric_field"), "computed_value")
-        self.assertEqual(result.query_ir.get("output_group_fields"), ["time_bucket", "service"])
+        self.assertEqual(result.query_ir.get("output_group_fields"), ["time_bucket", "service.name"])
         self.assertTrue(result.query_ir.get("semantic_losses"))
 
         query = yaml_panel["esql"]["query"]
@@ -2099,7 +2099,7 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         self.assertEqual(result.visual_ir.presentation.config["query"], query)
         self.assertEqual(result.visual_ir.metadata.get("output_shape"), "time_series")
         self.assertEqual(yaml_panel["esql"]["dimension"]["field"], "time_bucket")
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
         self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "computed_value")
 
     def test_logql_contains_preserves_event_row_intent_across_ir_and_visual_ir(self):
