@@ -998,8 +998,9 @@ Without `--es-url`, Datadog stays in offline field-capabilities mode.
 Dashboard-capable runs (`--assets dashboards` or `--assets all`) compile by
 default and still write dashboard YAML plus the standard dashboard run reports;
 pass `--no-compile` only when you explicitly want to skip local dashboard
-compilation. Upload still recompiles dashboard YAML because Kibana upload does
-not consume the NDJSON from the local compile step. Alerts-only runs
+compilation. Upload still compiles dashboard YAML during the upload step (it
+recompiles via `kb-dashboard-cli` and does not consume the NDJSON written by
+`obs-migrate compile`). Alerts-only runs
 (`--assets alerts`) skip dashboard YAML and compiled output, write monitor
 artifacts under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
