@@ -13,15 +13,19 @@ package is `observability_migration`.
 
 ## Status
 
-Pre-1.0 (`0.1.0`). Actively developed. The CLI surface and emitted YAML
-schema may change between releases — pin a tag if you build automation on
-top.
+Pre-1.0 (`0.1.0`). Actively developed. Release tags use `vX.Y.Z`
+(for example, `v0.1.0`) and build GitHub Release artifacts. PyPI
+publishing is pending Trusted Publisher setup, so install from a checkout
+or release source archive for this release. The CLI surface and emitted
+YAML schema may change between releases — pin a tag if you build
+automation on top.
 
 ## Quick Start
 
-Requires Python 3.11+. On **Python 3.12+** the `[kibana]` extra bundles the
-Kibana compile/lint tooling directly in your environment, so nothing else
-is needed:
+Requires Python 3.11+. From a repo checkout or unpacked release source
+archive, on **Python 3.12+** the `[kibana]` extra bundles the Kibana
+compile/lint tooling directly in your environment, so nothing else is
+needed:
 
 ```bash
 python3 -m venv .venv
@@ -68,6 +72,7 @@ For full command walkthroughs, env-file setup, and end-to-end flows, see
 
 - Docs index — [`docs/README.md`](docs/README.md)
 - Canonical commands — [`docs/command-contract.md`](docs/command-contract.md)
+- Known limitations — [`docs/known-limitations.md`](docs/known-limitations.md)
 - Architecture — [`docs/architecture.md`](docs/architecture.md)
 - Grafana source — [`docs/sources/grafana.md`](docs/sources/grafana.md)
 - Datadog source — [`docs/sources/datadog.md`](docs/sources/datadog.md)
