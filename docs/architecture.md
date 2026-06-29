@@ -45,7 +45,8 @@ That changes the preferred Grafana translation branch:
   configured, target capability detection downgrades to ES|QL translation only
   when the `PROMQL` command is *confirmed* unsupported. An inconclusive probe
   (transport/auth error) keeps native `PROMQL` — the optimistic default — and
-  warns. There are no override flags; the user declares no intent
+  warns. `--translation-mode {auto,native,esql}` exists for explicit operator
+  overrides; `auto` remains the normal path
 - LogQL panels still translate to ES|QL against the configured logs index
 - source-native ES|QL can be reused directly
 - the local OTLP lab is a repeatable stand-in for local development and CI, not the primary production target
@@ -195,7 +196,7 @@ the same stage sequence.
 | Target query validation | First-class `--validate --es-url` loop with auto-fix/manualize and YAML sync | First-class `--validate --es-url` loop with shared ES query fixes plus Datadog-safe YAML regeneration/manualization |
 | Compile / layout | YAML lint, compile, and compiled-layout validation are part of the main Grafana flow | Optional shared compile via `--compile`, after any validation-driven YAML rewrites |
 | Upload | First-class `--upload` in the dedicated CLI after lint/compile/layout pass | First-class `--upload` in the dedicated CLI after compile; shared `obs-migrate upload` remains available |
-| Smoke / verification | Optional smoke-report merge plus verification packets and semantic gates in the main flow | First-class `--smoke`, semantic gates, and live metric source execution during verification when configured |
+| Smoke / verification | First-class `--smoke`, Grafana-only pre-existing `--smoke-report` merge, verification packets, and semantic gates in the main flow | First-class `--smoke`, semantic gates, and live metric source execution during verification when configured |
 | Reports | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, optional preflight artifacts, rollout plan | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, `rollout_plan.json`, optional smoke report |
 
 #### Grafana Dedicated Flow
@@ -267,7 +268,7 @@ The shared target runtime is centered on `targets/kibana/`:
 
 - `emit/` builds YAML panel shapes and display metadata
 - `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate compile/upload` and the Datadog smoke path
-- `compile.py` wraps `uvx kb-dashboard-cli`, YAML lint, compiled-layout validation, upload helpers, and post-validation YAML sync
+- `compile.py` wraps installed-first `kb-dashboard-cli` resolution (pinned `uvx` fallback), YAML lint, compiled-layout validation, upload helpers, and post-validation YAML sync
 - `smoke.py` inspects uploaded saved objects, runs ES|QL runtime checks, and supports browser audits/screenshots
 
 Some runtime-validation behavior still lives in Grafana modules because it is

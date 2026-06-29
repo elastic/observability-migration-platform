@@ -85,9 +85,11 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 1. One-time: register `obs-migrate` on PyPI and add a Trusted Publisher for
    this repo + `.github/workflows/release.yml` (environment `pypi`).
 2. Bump `version` in `pyproject.toml`; commit via PR.
-3. Tag the merge commit `vX.Y.Z` and push the tag. The release workflow builds,
-   publishes to PyPI via OIDC, and attaches the wheel/sdist + SBOM to a GitHub
-   Release.
+3. Tag the merge commit `vX.Y.Z` and push the tag. The release workflow builds
+   the wheel/sdist and attaches them, plus the SBOM, to a GitHub Release.
+4. Until PyPI Trusted Publishing is configured, the workflow's PyPI publish step
+   is intentionally disabled. After Trusted Publishing is enabled, re-enable that
+   step so tag pushes also publish to PyPI via OIDC.
 
 ## Docs And Structure Rules
 

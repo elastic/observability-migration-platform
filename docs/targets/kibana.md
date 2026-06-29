@@ -49,7 +49,7 @@ Compilation and upload shell out to `kb-dashboard-cli`, resolved
 **installed-first**: if the console script is on `PATH` (the `[kibana]` extra,
 installed via `pip install ".[kibana]"`, which requires Python 3.12+) it is
 used directly; otherwise the runtime falls back to a pinned
-`uvx --from kb-dashboard-cli==<version> kb-dashboard-cli`. Lint and layout
+`uvx --from kb-dashboard-cli==0.4.1 kb-dashboard-cli`. Lint and layout
 validation now run **in-process** inside the package and no longer shell out to
 repo scripts.
 
@@ -57,14 +57,14 @@ repo scripts.
 # installed extra (3.12+):
 kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
 # or via the pinned uvx fallback (3.11):
-uvx kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
+uvx --from kb-dashboard-cli==0.4.1 kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
 ```
 
 ### `obs-migrate upload` Input Shape
 
 `obs-migrate upload` expects a directory of **dashboard YAML files**. Internally
-it recompiles each YAML through `uvx kb-dashboard-cli compile --upload`, which
-means the upload step does not consume the NDJSON written by
+it recompiles each YAML through the same installed-first `kb-dashboard-cli`
+resolution path, which means the upload step does not consume the NDJSON written by
 `obs-migrate compile`. The accepted shapes are:
 
 - A directory containing `*.yaml` dashboard files directly (e.g. `migration_output/dashboards/yaml`).
