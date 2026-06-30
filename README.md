@@ -29,8 +29,9 @@ needed:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install ".[all]"        # grafana + datadog + kibana tooling
-.venv/bin/obs-migrate doctor          # confirm the environment is ready
+source .venv/bin/activate
+pip install ".[all]"                  # grafana + datadog + kibana tooling
+obs-migrate doctor                    # confirm the environment is ready
 ```
 
 `obs-migrate doctor` reports whether the Kibana tooling resolves from the
@@ -43,6 +44,9 @@ obs-migrate doctor
   kb-dashboard-cli: available (installed)
   kb-dashboard-lint: available (installed)
 ```
+
+If you see `command not found: obs-migrate`, activate the venv with
+`source .venv/bin/activate`.
 
 On **Python 3.11** the Kibana tools are not installed by the extra (they
 require 3.12+); compile and lint instead shell out to a pinned `uvx`
