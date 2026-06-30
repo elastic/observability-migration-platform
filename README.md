@@ -58,6 +58,47 @@ entry point.
 For full command walkthroughs, env-file setup, and end-to-end flows, see
 [`docs/command-contract.md`](docs/command-contract.md).
 
+## Run your first migration
+
+Once `obs-migrate doctor` reports a healthy environment, you can migrate a
+dashboard with no Elastic or Kibana credentials. The repo ships sample
+dashboards for exactly this, so list them first (offline, no setup):
+
+```bash
+.venv/bin/obs-migrate list-samples
+```
+
+Then migrate the bundled Grafana sample from files into a local output
+directory:
+
+```bash
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir observability_migration/sample_dashboards/grafana/prom-basics \
+  --output-dir sample_out
+```
+
+This translates the dashboard into Kibana-ready YAML. Anything that can't be
+expressed natively, such as the sample's World Map panel, is kept as a
+manual-review marker rather than silently dropped.
+
+Everything is written under your `--output-dir`:
+
+- `sample_out/dashboards/yaml/`: the generated dashboard YAML
+- `sample_out/dashboards/compiled/`: the compiled Kibana NDJSON
+- `sample_out/dashboards/migration_summary.md`: a human-readable verdict,
+  scorecard, and per-dashboard worklist; read this first
+
+To go further:
+
+- [`docs/command-contract.md`](docs/command-contract.md): the full command
+  reference (env-file setup, live API extraction, alerts, and upload). Reach
+  for it as the reference once the example above works, not as the starting
+  point.
+- [`docs/known-limitations.md`](docs/known-limitations.md): what the tool
+  can't translate yet.
+
 ## Compatibility
 
 - **Python**: 3.11+
