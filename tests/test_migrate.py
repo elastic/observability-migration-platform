@@ -1168,6 +1168,150 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(resolver.discovery_status()["status"], "error")
         self.assertIn("401", resolver.discovery_status()["error"])
 
+    def test_field_resolution_summary_flags_offline_fallback(self):
+        # No --es-url: resolution relies on built-in OTel defaults, which the
+        # summary must flag so the run can warn the user (issue #256).
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "offline")
+        self.assertTrue(summary["otel_fallback"])
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["field_count"], 0)
+
+    def test_field_resolution_summary_flags_empty_fallback(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"fields": {}}
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "empty")
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_flags_error_fallback(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=401, text="Unauthorized")
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "error")
+        self.assertTrue(summary["otel_fallback"])
+        self.assertIn("401", summary["error"])
+
+    def test_field_resolution_summary_clears_fallback_for_known_profile(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "prometheus.labels.instance": {"keyword": {"aggregatable": True}},
+                "prometheus.http_requests_total.counter": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_clears_fallback_when_otel_fields_confirmed(self):
+        # Discovery returned live OTel fields that back resolution — every
+        # resolved label maps to a confirmed field, so no warning.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "service.instance.id": {"keyword": {"aggregatable": True}},
+                "k8s.namespace.name": {"keyword": {"aggregatable": True}},
+                "http_requests_total": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            # Both resolve to live-confirmed OTel fields (discovered mappings),
+            # not blind candidates.
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertGreater(summary["label_mappings"], 0)
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_no_warn_for_verified_bare_labels(self):
+        # Discovery succeeded and the dashboard's labels exist verbatim in the
+        # target (source-faithful), so resolution is verified even without a
+        # recognized profile or OTel mappings — no warning (review finding #1).
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "instance": {"keyword": {"aggregatable": True}},
+                "job": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "instance")
+            self.assertEqual(resolver.resolve_label("job"), "job")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["label_mappings"], 0)
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_warns_on_partial_otel_fallback(self):
+        # One label resolves to a live-confirmed OTel field, but a sibling label
+        # falls back to a blind OTel default absent from the target. A single
+        # confirmed mapping must not mask the sibling's blind fallback — the run
+        # still warns (review finding #2).
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "service.instance.id": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            # instance -> confirmed; namespace -> blind k8s.namespace.name.
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertGreater(summary["label_mappings"], 0)
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_flags_unrecognized_schema(self):
+        # Discovery succeeded but no Prometheus profile and no OTel candidate
+        # matched the live schema; an absent label resolves to a blind OTel
+        # default, so the run warns.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "totally.unrelated.field": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["label_mappings"], 0)
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_silent_when_unrecognized_schema_unused(self):
+        # Discovery succeeded, schema unrecognized, but no label ever fell back
+        # (e.g. a dashboard with no metric labels): nothing rendered empty due
+        # to fields, so the run stays silent.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "totally.unrelated.field": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertFalse(summary["otel_fallback"])
+
     def test_resolve_label_namespaces_to_prometheus_labels_when_profile_active(self):
         self.seed_field_caps({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
@@ -9051,6 +9195,27 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         with open(path) as f:
             data = json.load(f)
         self.assertEqual(data["runtime_features"], result.runtime_features)
+        os.unlink(path)
+
+    def test_report_records_field_discovery_summary(self):
+        from observability_migration.core.reporting.report import save_detailed_report
+
+        result = migrate.MigrationResult("Dash", "uid-1")
+        result.total_panels = 1
+        result.migrated = 1
+        field_discovery = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "otel_fallback": True,
+        }
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            path = f.name
+        save_detailed_report([result], [], path, field_discovery=field_discovery)
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data["field_discovery"], field_discovery)
         os.unlink(path)
 
 

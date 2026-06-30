@@ -90,6 +90,13 @@ class SchemaResolver:
         self._discovery_status = "not_attempted"
         self._discovery_error = ""
         self._cooccurrence_cache = {}
+        # Set True the first time a label resolves to an unverified OTel/
+        # pass-through default (the target neither advertised the source label
+        # nor a known schema profile). Drives the run-summary fallback warning
+        # for the ambiguous "discovery ok but schema unrecognized" case, where
+        # whether fields actually fell back depends on the labels in play
+        # (issue #256).
+        self._emitted_unverified_otel_default = False
 
     def _candidate_fields(self, label):
         candidates = []
@@ -214,6 +221,49 @@ class SchemaResolver:
             "field_count": len(self._field_cache or {}),
         }
 
+    def field_resolution_summary(self):
+        """Summarize how label/metric resolution is backed, for run reporting.
+
+        Returns a dict describing whether resolution is verified against the
+        live target or is falling back to the built-in OTel/pass-through
+        defaults. ``otel_fallback`` is True when emitted field names
+        (e.g. ``service.name``) and the query index are unverified guesses that
+        may not match the user's data, so panels can render empty:
+
+        - discovery offline/empty/errored (no live capabilities to verify
+          against) — always a fallback;
+        - discovery ok but the target schema is unrecognized AND a label
+          actually resolved to a blind OTel/pass-through default during
+          translation.
+
+        It is False when a known Prometheus schema profile was detected, or
+        discovery succeeded and every resolved label was source-faithful or
+        backed by a live-confirmed OTel field. The unrecognized-schema case is
+        judged from actual resolution (``_emitted_unverified_otel_default``)
+        rather than profile/mapping counts, because whether fields fell back
+        depends on the specific labels the dashboards used: a bare label that
+        exists verbatim in the target is verified, while a blind OTel candidate
+        for an absent label is not — and a single confirmed mapping does not
+        make a sibling label's blind fallback safe (issue #256)."""
+        self._discover_fields()
+        profile = self._current_schema_profile()
+        has_capabilities = bool(self._field_cache)
+        if not has_capabilities:
+            otel_fallback = True
+        elif profile is not None:
+            otel_fallback = False
+        else:
+            otel_fallback = self._emitted_unverified_otel_default
+        return {
+            "status": self._discovery_status,
+            "schema_profile": profile,
+            "index_pattern": self._index_pattern,
+            "field_count": len(self._field_cache or {}),
+            "label_mappings": len(self._discovered_mappings),
+            "otel_fallback": otel_fallback,
+            "error": self._discovery_error,
+        }
+
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.
         if self._compute_schema_profile(self._field_cache or {}) == "prometheus_native":
@@ -297,6 +347,11 @@ class SchemaResolver:
         # Otherwise, fall back to OTEL/Prometheus normalization candidates.
         if label in self._discovered_mappings:
             return self._discovered_mappings[label]
+        # Reaching here, the source label is absent from the target's live
+        # capabilities (or discovery never ran) and no known profile applies, so
+        # whatever field we emit below is an unverified guess that may not match
+        # the user's data. Record it so the run summary can warn (issue #256).
+        self._emitted_unverified_otel_default = True
         candidates = self._candidate_fields(label)
         if candidates:
             return candidates[0]

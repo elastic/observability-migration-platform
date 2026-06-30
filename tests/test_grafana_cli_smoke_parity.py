@@ -314,6 +314,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
             yaml_path = yaml_dir / "current-dashboard.yaml"
@@ -441,6 +450,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             empty_input = Path(tmpdir) / "empty_input"
@@ -626,6 +644,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             resolver = mock.Mock()
             resolver._field_cache = {}
             resolver._discovered_mappings = {}
+            resolver.field_resolution_summary.return_value = {
+                "status": "offline",
+                "schema_profile": None,
+                "index_pattern": "metrics-*",
+                "field_count": 0,
+                "label_mappings": 0,
+                "otel_fallback": True,
+                "error": "",
+            }
 
             with mock.patch.dict(
                 sys.modules,
@@ -681,6 +708,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
             yaml_path = yaml_dir / "demo-dashboard.yaml"
@@ -803,6 +839,10 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             run_summary["dashboards"]["artifacts_dir"],
             str(Path(tmpdir) / "dashboards"),
         )
+        # Field-discovery status (issue #256) is carried end-to-end into the
+        # machine-readable run summary so an offline/unverified run is auditable.
+        self.assertTrue(run_summary["dashboards"]["field_discovery"]["otel_fallback"])
+        self.assertEqual(run_summary["dashboards"]["field_discovery"]["status"], "offline")
         self.assertTrue(yaml_output_exists)
 
     def test_dashboards_only_writes_markdown_summary(self):
@@ -815,6 +855,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
             yaml_path = yaml_dir / "demo-dashboard.yaml"
@@ -898,6 +947,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
             yaml_path = yaml_dir / "demo-dashboard.yaml"
@@ -979,6 +1037,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
 
         def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
             yaml_path = yaml_dir / "demo-dashboard.yaml"
@@ -1060,6 +1127,15 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         resolver = mock.Mock()
         resolver._field_cache = {}
         resolver._discovered_mappings = {}
+        resolver.field_resolution_summary.return_value = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "field_count": 0,
+            "label_mappings": 0,
+            "otel_fallback": True,
+            "error": "",
+        }
         adapter = mock.Mock()
         adapter.upload_dashboard.return_value = {
             "success": True,

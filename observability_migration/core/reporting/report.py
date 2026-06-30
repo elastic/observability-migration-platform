@@ -295,7 +295,52 @@ def _element_summary(panels: int, rows: int) -> str:
     return f"{total} total ({breakdown})"
 
 
-def print_report(results, compile_results):
+def _describe_field_discovery(field_discovery):
+    """Human-readable cause for an OTel/pass-through field fallback."""
+    status = (field_discovery or {}).get("status", "")
+    index_pattern = (field_discovery or {}).get("index_pattern") or "metrics-*"
+    error = (field_discovery or {}).get("error") or ""
+    if status == "offline":
+        return "target schema discovery did not run (no --es-url provided)"
+    if status == "empty":
+        return f"target schema discovery found no fields under '{index_pattern}'"
+    if status == "error":
+        detail = f": {error}" if error else ""
+        return f"target schema discovery failed{detail}"
+    # Discovery returned fields but no known schema/OTel fields matched.
+    return f"target schema under '{index_pattern}' was not recognized"
+
+
+def print_field_discovery_warning(field_discovery):
+    """Print a prominent, top-of-summary warning when migrated panels query
+    unverified OTel field defaults. No-op unless ``otel_fallback`` is set, so
+    a normal run (discovery succeeded and fields resolved) prints nothing."""
+    if not field_discovery or not field_discovery.get("otel_fallback"):
+        return
+    index_pattern = field_discovery.get("index_pattern") or "metrics-*"
+    print("\n" + "!" * 70)
+    print("WARNING: migrated panels may render empty")
+    print("!" * 70)
+    print(f"  {_describe_field_discovery(field_discovery)}.")
+    # Discovery that ran but matched no known layout did reach the target, so
+    # don't claim the schema is missing — only that it was unrecognized.
+    if field_discovery.get("status") == "ok":
+        cause = "No known Prometheus or OTel field layout was detected"
+    else:
+        cause = "The target schema is unknown"
+    print(
+        f"  {cause}, so queries fall back to OTel field defaults\n"
+        f"  (e.g. service.name) and index '{index_pattern}'. These are unverified\n"
+        "  guesses that may not match your data, so panels can come up empty."
+    )
+    print(
+        "  Fix: re-run pointing the migration at your target data —\n"
+        "       --es-url (and --es-api-key if required) for schema discovery, and\n"
+        "       --esql-index for the index/data stream your metrics live in."
+    )
+
+
+def print_report(results, compile_results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
     # from _flatten_dashboard_panels). The user-facing "renderable panels"
@@ -338,6 +383,7 @@ def print_report(results, compile_results):
     print("\n" + "=" * 70)
     print("MIGRATION REPORT")
     print("=" * 70)
+    print_field_discovery_warning(field_discovery)
     print(f"\nDashboards processed: {len(results)}")
     # One summary line surfaces both the source-side total and the panel/row
     # split so the reader can verify the math at a glance.
@@ -413,7 +459,7 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None):
+def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None):
     runtime_features = {}
     for result in results:
         runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
@@ -448,6 +494,8 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
         "runtime_features": runtime_features,
         "dashboards": [],
     }
+    if field_discovery is not None:
+        report["field_discovery"] = field_discovery
     if validation_summary or validation_records:
         report["validation"] = {
             "summary": validation_summary or {},
