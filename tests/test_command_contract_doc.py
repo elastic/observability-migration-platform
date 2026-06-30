@@ -291,6 +291,30 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("field_capabilities_discovery", text)
         self.assertIn("Datadog `--data-view` is an explicit override", text)
 
+    def test_command_contract_documents_esql_index_and_data_view_distinction(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        # --esql-index must be defined in the canonical flag table, not just
+        # appear inside copy-paste examples (issue #257).
+        self.assertIn("| `--esql-index` |", text)
+        # Dedicated side-by-side section disambiguating the two flags.
+        self.assertIn("### Target index flags: data-view vs esql-index", text)
+        # The default-fallback behavior must be stated explicitly.
+        self.assertIn("Defaults to `--data-view` when unset", text)
+        # The two distinct roles of --esql-index must both be documented:
+        # query emission and schema discovery.
+        self.assertIn("query emission and field", text)
+        self.assertIn("the target of schema discovery", text)
+        # The code-accurate fallback expression is documented.
+        self.assertIn("args.esql_index or args.data_view", text)
+        # Prometheus remediation callout with a worked example.
+        self.assertIn("metrics-alloy.prometheus-default", text)
+        self.assertIn("Prometheus users", text)
+        # --esql-index is Grafana-only today; Datadog has no such flag.
+        self.assertIn("Grafana-only today", text)
+        # --logs-index does NOT fall back to --data-view (profile log default).
+        self.assertIn("does **not** fall back\nto `--data-view`", text)
+        self.assertIn("the source/profile log index", text)
+
     def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("They accept the same `--input-mode {files,api}`", text)
