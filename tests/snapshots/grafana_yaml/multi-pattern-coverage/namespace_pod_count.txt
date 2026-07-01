@@ -1,0 +1,7 @@
+title: Namespace Pod Count
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['kube_pod_info']
+breakdowns: ['pod']
+warning: Approximated grouped stat panel as summary table

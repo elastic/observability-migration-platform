@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
-"""Verify that .claude/skills/ and .cursor/skills/ are byte-identical mirrors.
+"""Verify that repo skill directories are byte-identical mirrors.
 
-The only permitted difference is the self-reference prefix: ~/.claude/ in the
-.claude tree versus ~/.cursor/ in the .cursor tree.  Any other divergence is
-reported as an error.
+The .claude/skills/ tree is canonical.  The only permitted difference in a
+mirror is the self-reference prefix for global skill paths, e.g. ~/.claude/ in
+the canonical tree versus ~/.cursor/ or ~/.codex/ in mirror trees.  Any other
+divergence is reported as an error.
 """
 
 from __future__ import annotations
@@ -17,8 +18,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-CLAUDE_SKILLS = Path(".claude/skills")
-CURSOR_SKILLS = Path(".cursor/skills")
+CANONICAL_SKILLS = Path(".claude/skills")
+CANONICAL_SELF_REFERENCE_PREFIX = "~/.claude/"
+
+
+MIRROR_SKILLS = (
+    (Path(".cursor/skills"), "~/.cursor/"),
+    (Path(".agents/skills"), "~/.codex/"),
+)
 
 
 def _collect_files(base: Path) -> dict[str, Path]:
@@ -32,48 +39,51 @@ def _collect_files(base: Path) -> dict[str, Path]:
     }
 
 
-def _normalise_cursor(content: str) -> str:
-    """Replace ~/.cursor/ with ~/.claude/ so both copies can be compared."""
-    return content.replace("~/.cursor/", "~/.claude/")
+def _normalise_mirror(content: str, self_reference_prefix: str) -> str:
+    """Replace a mirror's global skill prefix with the canonical prefix."""
+    return content.replace(self_reference_prefix, CANONICAL_SELF_REFERENCE_PREFIX)
 
 
 def check_mirror(root: Path) -> list[str]:
     """Return list of human-readable error strings; empty = clean."""
     root = root.expanduser().resolve()
 
-    claude_base = root / CLAUDE_SKILLS
-    cursor_base = root / CURSOR_SKILLS
-
-    claude_files = _collect_files(claude_base)
-    cursor_files = _collect_files(cursor_base)
+    canonical_base = root / CANONICAL_SKILLS
+    canonical_files = _collect_files(canonical_base)
 
     errors: list[str] = []
 
-    claude_set = set(claude_files)
-    cursor_set = set(cursor_files)
+    canonical_set = set(canonical_files)
 
-    for rel in sorted(claude_set - cursor_set):
-        errors.append(f"MISSING from .cursor/skills/: {rel}")
+    for mirror_path, self_reference_prefix in MIRROR_SKILLS:
+        mirror_base = root / mirror_path
+        mirror_files = _collect_files(mirror_base)
+        mirror_set = set(mirror_files)
+        mirror_label = mirror_path.as_posix()
+        canonical_label = CANONICAL_SKILLS.as_posix()
 
-    for rel in sorted(cursor_set - claude_set):
-        errors.append(f"EXTRA in .cursor/skills/ (not in .claude/skills/): {rel}")
+        for rel in sorted(canonical_set - mirror_set):
+            errors.append(f"MISSING from {mirror_label}/: {rel}")
 
-    for rel in sorted(claude_set & cursor_set):
-        claude_content = claude_files[rel].read_text(encoding="utf-8")
-        cursor_content = cursor_files[rel].read_text(encoding="utf-8")
-        cursor_normalised = _normalise_cursor(cursor_content)
+        for rel in sorted(mirror_set - canonical_set):
+            errors.append(f"EXTRA in {mirror_label}/ (not in {canonical_label}/): {rel}")
 
-        if claude_content != cursor_normalised:
-            diff_lines = list(
-                difflib.unified_diff(
-                    claude_content.splitlines(keepends=True),
-                    cursor_normalised.splitlines(keepends=True),
-                    fromfile=f".claude/skills/{rel}",
-                    tofile=f".cursor/skills/{rel} (normalised)",
+        for rel in sorted(canonical_set & mirror_set):
+            canonical_content = canonical_files[rel].read_text(encoding="utf-8")
+            mirror_content = mirror_files[rel].read_text(encoding="utf-8")
+            mirror_normalised = _normalise_mirror(mirror_content, self_reference_prefix)
+
+            if canonical_content != mirror_normalised:
+                diff_lines = list(
+                    difflib.unified_diff(
+                        canonical_content.splitlines(keepends=True),
+                        mirror_normalised.splitlines(keepends=True),
+                        fromfile=f"{canonical_label}/{rel}",
+                        tofile=f"{mirror_label}/{rel} (normalised)",
+                    )
                 )
-            )
-            diff_text = "".join(diff_lines)
-            errors.append(f"CONTENT MISMATCH: {rel}\n{diff_text}")
+                diff_text = "".join(diff_lines)
+                errors.append(f"CONTENT MISMATCH in {mirror_label}: {rel}\n{diff_text}")
 
     return errors
 
