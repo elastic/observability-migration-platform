@@ -604,6 +604,45 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(panel_result.status, "migrated_with_warnings")
         self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
 
+    def test_dashboard_controls_do_not_cover_negative_variable_matchers(self):
+        for expr in ('cpu{host!="$host"}', 'cpu{host!~"$host"}'):
+            dashboard = {
+                "title": "Negative variable matcher",
+                "uid": "negative-var",
+                "templating": {
+                    "list": [
+                        {
+                            "type": "query",
+                            "name": "host",
+                            "label": "Host",
+                            "query": "label_values(cpu, host)",
+                        }
+                    ]
+                },
+                "panels": [
+                    {
+                        "id": 1,
+                        "title": "CPU excluding host",
+                        "type": "graph",
+                        "targets": [{"refId": "A", "expr": expr}],
+                    }
+                ],
+            }
+
+            with self.subTest(expr=expr), tempfile.TemporaryDirectory() as tmpdir:
+                result, _yaml_path = migrate.translate_dashboard(
+                    dashboard,
+                    pathlib.Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=self.rule_pack,
+                    resolver=self.resolver,
+                )
+
+            panel_result = next(pr for pr in result.panel_results if pr.title == "CPU excluding host")
+            self.assertEqual(panel_result.status, "migrated_with_warnings", expr)
+            self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
+
     def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
         panel = {
             "title": "CPU by host",

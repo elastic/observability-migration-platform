@@ -453,7 +453,7 @@ _PROMQL_AGG_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
-    r"^\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*"
+    r"^\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?P<op>=~|!~|!=|=)\s*"
     r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)\s*$",
     re.DOTALL,
 )
@@ -4963,8 +4963,9 @@ def _template_var_name_from_matcher_value(value):
     return grafana_template_var_name(unanchored)
 
 
-def _source_label_matcher_variable_names(expr):
+def _source_label_matcher_variable_coverage(expr):
     names: set[str] = set()
+    has_uncoverable_matcher = False
     text = str(expr or "")
     idx = 0
     while idx < len(text):
@@ -4997,17 +4998,23 @@ def _source_label_matcher_variable_names(expr):
                 continue
             name = _template_var_name_from_matcher_value(match.group("value"))
             if name and not name.startswith("__"):
-                names.add(name)
+                if match.group("op") in {"!=", "!~"}:
+                    has_uncoverable_matcher = True
+                else:
+                    names.add(name)
         idx = end + 1
-    return names
+    return names, has_uncoverable_matcher
 
 
 def _panel_result_variable_warning_is_covered(panel_result, control_variable_names):
     query_ir = panel_result.query_ir or {}
     metadata = query_ir.get("metadata") if isinstance(query_ir, dict) else {}
     names = set(metadata.get("dropped_variable_names") or []) if isinstance(metadata, dict) else set()
+    source_names, has_uncoverable_matcher = _source_label_matcher_variable_coverage(panel_result.promql_expr)
+    if has_uncoverable_matcher:
+        return False
     if not names:
-        names = _source_label_matcher_variable_names(panel_result.promql_expr)
+        names = source_names
     return bool(names) and names.issubset(control_variable_names)
 
 
