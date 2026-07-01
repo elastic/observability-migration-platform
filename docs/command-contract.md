@@ -136,7 +136,9 @@ Datadog.
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
 | `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana currently supports `otel` only; Datadog also supports source-specific built-ins and YAML profile files. ECS fallback is not implemented in this pass. |
-| `--data-view` | Grafana, Datadog | Override the target metrics data view / index pattern | When omitted, the source adapter keeps its own default. For Datadog, this means non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). |
+| `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
+| `--esql-index` | Grafana | The index / data stream **written into generated ES\|QL (fallback) queries and inspected during target schema discovery** | Defaults to `--data-view` when unset. Override it (with `--es-url`) when the ES\|QL/fallback queries should read from, and fields should be discovered from, a specific data stream — required for Prometheus fidelity. It does **not** retarget native-PROMQL panels, which read from `--data-view` in the default `auto` mode (use `--translation-mode esql` to route every panel through ES\|QL). Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
+| `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
 | `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto`; use `native` or `esql` only for explicit operator control |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
@@ -265,6 +267,68 @@ Datadog `--data-view` is an explicit override, not a hidden default. If omitted,
 the active profile controls the metric index (`otel` uses `metrics-*`,
 `prometheus` uses `metrics-prometheus-*`, and custom YAML profiles can set their
 own `metric_index`).
+
+### Target index flags: data-view vs esql-index
+
+`--data-view` and `--esql-index` look interchangeable but control different
+things, and getting `--esql-index` wrong is the most common reason a migrated
+Prometheus dashboard renders empty.
+
+| Flag | Default | What it controls |
+|---|---|---|
+| `--data-view` | `metrics-*` (Grafana) | The **Kibana data view** the migrated panels bind to in the UI. It is the saved-object reference Kibana resolves when it draws the panel. |
+| `--esql-index` | falls back to `--data-view` when unset | The **index / data stream pattern written into generated ES\|QL (fallback) queries** (the `FROM` target those queries read) **and the target of schema discovery** — the index the tool inspects (with `--es-url`) to learn your field layout. It does **not** change the read target of native-PROMQL panels (see the note below). |
+
+In code the Grafana schema resolver is constructed with
+`index_pattern=args.esql_index or args.data_view`, so when you omit
+`--esql-index` it inherits `--data-view` for both ES|QL query emission and field
+discovery. Set it explicitly when your metrics live in a data stream whose name
+differs from the data view you want the panels bound to. `--esql-index` is a
+Grafana flag; Datadog has no separate ES|QL-index override and instead derives
+its metric query target from `--data-view` / the active `--field-profile`.
+
+**Native-PROMQL vs ES|QL read target.** Grafana's default `auto` translation
+mode keeps PROMQL-capable panels native, and those panels build their
+`PROMQL index=…` command from `--data-view` (`datasource_index`), **not**
+`--esql-index`. `--esql-index` only sets the `FROM` target for panels that fall
+back to ES|QL translation, plus the schema-discovery probe. So in `auto` mode,
+pointing only `--esql-index` at a specific stream leaves native panels reading
+from `--data-view` while ES|QL-fallback panels and discovery use `--esql-index`.
+
+**Prometheus users:** point `--esql-index` (with `--es-url`) at your real
+Prometheus data stream so fields resolve and the emitted ES|QL reads from the
+right place. Leaving it at the default while your data lives elsewhere is the
+difference between a working dashboard and an empty one. For example, to bind
+panels to the broad `metrics-*` data view while ES|QL-fallback panels and schema
+discovery read from the `metrics-alloy.prometheus-default` stream:
+
+```bash
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets dashboards \
+  --field-profile otel \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY" \
+  --data-view "metrics-*" \
+  --esql-index "metrics-alloy.prometheus-default"
+```
+
+Because native-PROMQL panels still read from `--data-view` in `auto` mode, if
+you need **every** generated panel to read the specific stream, either set
+`--data-view` to that stream as well, or force ES|QL translation for all panels
+with `--translation-mode esql`.
+
+Without `--es-url`, schema discovery is skipped entirely, so `--esql-index`
+only changes the ES|QL-fallback `FROM` target; the run falls back to OTel field
+defaults and cannot warn you that the index does not match your data.
+
+`--logs-index` is the log analog: it sets the index / data stream written into
+translated Loki / LogQL panels. Unlike `--esql-index`, it does **not** fall back
+to `--data-view` — when unset it defaults to the source/profile log index
+(`logs-*`).
 
 For Grafana native PromQL validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
