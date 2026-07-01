@@ -232,26 +232,25 @@ class SchemaResolver:
 
         - discovery offline/empty/errored (no live capabilities to verify
           against) — always a fallback;
-        - discovery ok but the target schema is unrecognized AND a label
-          actually resolved to a blind OTel/pass-through default during
-          translation.
+        - discovery ok but a label actually resolved to a blind OTel/pass-
+          through default during translation.
 
-        It is False when a known Prometheus schema profile was detected, or
-        discovery succeeded and every resolved label was source-faithful or
-        backed by a live-confirmed OTel field. The unrecognized-schema case is
-        judged from actual resolution (``_emitted_unverified_otel_default``)
-        rather than profile/mapping counts, because whether fields fell back
-        depends on the specific labels the dashboards used: a bare label that
-        exists verbatim in the target is verified, while a blind OTel candidate
-        for an absent label is not — and a single confirmed mapping does not
-        make a sibling label's blind fallback safe (issue #256)."""
+        It is False only when discovery returned live capabilities AND every
+        resolved label was source-faithful or backed by a live-confirmed field.
+        The signal is driven by what resolution actually emitted
+        (``_emitted_unverified_otel_default``) rather than by profile/mapping
+        counts, because whether fields fell back depends on the specific labels
+        the dashboards used. This holds even when a known Prometheus schema
+        profile is detected: a profile match on some fields does not guarantee
+        every dashboard label exists in the target, and a label missing from a
+        recognized profile still falls through to a blind OTel candidate
+        (e.g. ``prometheus_remote_write`` without ``prometheus.labels.namespace``
+        resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262."""
         self._discover_fields()
         profile = self._current_schema_profile()
         has_capabilities = bool(self._field_cache)
         if not has_capabilities:
             otel_fallback = True
-        elif profile is not None:
-            otel_fallback = False
         else:
             otel_fallback = self._emitted_unverified_otel_default
         return {

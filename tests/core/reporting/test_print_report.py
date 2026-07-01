@@ -259,6 +259,22 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
         )
         self.assertIn("target schema discovery failed: HTTP 401", out)
 
+    def test_known_profile_missing_field_warns_without_unrecognized_language(self):
+        # PR #262: a recognized profile that is missing some dashboard fields
+        # must warn, but must not claim the schema was "not recognized".
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "ok",
+                "schema_profile": "prometheus_remote_write",
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertIn("may render empty", out)
+        self.assertIn("prometheus_remote_write", out)
+        self.assertIn("missing some fields", out)
+        self.assertNotIn("was not recognized", out)
+
     def test_unrecognized_schema_fallback_warns(self):
         out = self._run(
             {

@@ -300,6 +300,7 @@ def _describe_field_discovery(field_discovery):
     status = (field_discovery or {}).get("status", "")
     index_pattern = (field_discovery or {}).get("index_pattern") or "metrics-*"
     error = (field_discovery or {}).get("error") or ""
+    schema_profile = (field_discovery or {}).get("schema_profile")
     if status == "offline":
         return "target schema discovery did not run (no --es-url provided)"
     if status == "empty":
@@ -307,7 +308,10 @@ def _describe_field_discovery(field_discovery):
     if status == "error":
         detail = f": {error}" if error else ""
         return f"target schema discovery failed{detail}"
-    # Discovery returned fields but no known schema/OTel fields matched.
+    # Discovery succeeded. A recognized profile that still triggered a fallback
+    # is missing some of the dashboards' fields; otherwise no layout matched.
+    if schema_profile:
+        return f"target schema '{schema_profile}' is missing some fields the dashboards use"
     return f"target schema under '{index_pattern}' was not recognized"
 
 
@@ -322,10 +326,14 @@ def print_field_discovery_warning(field_discovery):
     print("WARNING: migrated panels may render empty")
     print("!" * 70)
     print(f"  {_describe_field_discovery(field_discovery)}.")
-    # Discovery that ran but matched no known layout did reach the target, so
-    # don't claim the schema is missing — only that it was unrecognized.
+    # Discovery that ran did reach the target, so don't claim the schema is
+    # missing — distinguish a recognized-but-incomplete schema from one where
+    # no known layout matched at all.
     if field_discovery.get("status") == "ok":
-        cause = "No known Prometheus or OTel field layout was detected"
+        if field_discovery.get("schema_profile"):
+            cause = "Some fields the dashboards use are absent from the target"
+        else:
+            cause = "No known Prometheus or OTel field layout was detected"
     else:
         cause = "The target schema is unknown"
     print(

@@ -1197,6 +1197,29 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("401", summary["error"])
 
     def test_field_resolution_summary_clears_fallback_for_known_profile(self):
+        # Recognized profile where every resolved label is present as a real
+        # namespaced field: resolution is verified, so no warning.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "prometheus.labels.instance": {"keyword": {"aggregatable": True}},
+                "prometheus.labels.namespace": {"keyword": {"aggregatable": True}},
+                "prometheus.http_requests_total.counter": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+            self.assertEqual(resolver.resolve_label("namespace"), "prometheus.labels.namespace")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_warns_on_missing_label_in_known_profile(self):
+        # PR #262 review: a recognized prometheus_remote_write target missing a
+        # dashboard's label still falls through to a blind OTel default
+        # (k8s.namespace.name). The run must warn even though a profile matched.
         resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
         response = mock.Mock(status_code=200)
         response.json.return_value = {
@@ -1206,10 +1229,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             }
         }
         with mock.patch.object(schema.requests, "get", return_value=response):
+            # instance is present (namespaced); namespace is absent -> blind OTel.
+            self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
             summary = resolver.field_resolution_summary()
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
-        self.assertFalse(summary["otel_fallback"])
+        self.assertTrue(summary["otel_fallback"])
 
     def test_field_resolution_summary_clears_fallback_when_otel_fields_confirmed(self):
         # Discovery returned live OTel fields that back resolution — every
