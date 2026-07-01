@@ -2075,11 +2075,6 @@ def range_agg_family_rule(context):
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
-        _append_unique(
-            context.warnings,
-            f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
-            "when grouping TS functions by label fields",
-        )
     else:
         stats_expr = _agg_stats_expr(outer, inner_expr, frag) if outer else inner_expr
 
@@ -2485,7 +2480,9 @@ def simple_metric_family_rule(context):
         # No explicit PromQL aggregator was given; default to the gauge aggregator. With
         # grouping labels this is a faithful per-series downsample; without them it collapses
         # series and the warning says so (and is recorded as a semantic loss).
-        _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+        warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+        if warning:
+            _append_unique(context.warnings, warning)
     else:
         source = "FROM"
         time_filter = rp.from_time_filter
@@ -2496,7 +2493,9 @@ def simple_metric_family_rule(context):
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
-            _append_unique(context.warnings, gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+            warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+            if warning:
+                _append_unique(context.warnings, warning)
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     eval_line, final_alias = _frag_eval_line(alias, frag)
@@ -2704,11 +2703,6 @@ def stats_expression_rule(context):
     if context.inner_func in AGG_FUNCTION_MAP:
         if context.source_type == "TS" and context.group_labels:
             context.stats_expr = f"AVG({inner_expr})"
-            _append_unique(
-                context.warnings,
-                f"Added outer AVG() around {context.inner_func} because ES|QL requires an outer aggregation "
-                "when grouping TS functions by label fields",
-            )
             return f"built stats expression {context.stats_expr}"
         context.stats_expr = inner_expr
         return f"built stats expression {context.stats_expr}"

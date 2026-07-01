@@ -1,8 +1,7 @@
 title: Container Restarts by namespace
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['kube_pod_container_status_restarts_total']
 breakdown: k8s.namespace.name
-warning: Variable-driven label filters applied via Kibana dashboard controls

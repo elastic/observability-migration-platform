@@ -3041,12 +3041,13 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pac
 def gauge_default_agg_warning(group_fields, metric, default_agg):
     """Honest warning for the default-aggregation gauge path.
 
-    With grouping labels present, the aggregator is a faithful per-series intra-bucket
-    downsample. Without any labels, multiple series collapse into a single line — say so,
-    and include the token ``drop`` so ``build_query_ir`` records it as a semantic loss.
+    With grouping labels present, the aggregator is a faithful per-series
+    intra-bucket downsample, not a migration warning. Without any labels,
+    multiple series collapse into a single line — say so, and include the token
+    ``drop`` so ``build_query_ir`` records it as a semantic loss.
     """
     if group_fields:
-        return f"No explicit aggregation; using {default_agg} per series (faithful gauge downsample)"
+        return ""
     return (
         f"Collapsed all series of `{metric}` into a single {default_agg} line; the source "
         "selector has no series labels (no legend, by(), or dashboard reference), so per-series "
@@ -3150,7 +3151,9 @@ def _build_measure_spec(
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             stats_expr = f"{default_agg}({metric_field})"
-            warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+            warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+            if warning:
+                warnings.append(warning)
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
@@ -3161,7 +3164,9 @@ def _build_measure_spec(
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
-                warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+                warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+                if warning:
+                    warnings.append(warning)
     elif frag.family == "simple_agg":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:
@@ -3228,10 +3233,6 @@ def _build_measure_spec(
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
-            warnings.append(
-                f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
-                "when grouping TS functions by label fields"
-            )
         else:
             stats_expr = _apply_outer_agg(outer, inner_expr, frag) if outer else inner_expr
     elif frag.family == "scaled_agg":

@@ -1,8 +1,7 @@
 title: Queue Length
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['node_network_transmit_queue_length']
 axis_title: packets
-warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -7,7 +7,6 @@ gauge_shape: arc
 gauge_range: [0, 100]
 gauge_thresholds: 80:rgba(50, 172, 45, 0.97), 90:rgba(237, 129, 40, 0.89), 100:rgba(245, 54, 54, 0.9)
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

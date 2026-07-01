@@ -3478,7 +3478,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("BY time_bucket = TBUCKET(5 minute), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
-        self.assertTrue(any("No explicit aggregation" in r for r in result.reasons))
+        self.assertFalse(any("No explicit aggregation" in r for r in result.reasons))
         self.assertFalse(any("only 1 could be migrated" in r for r in result.reasons))
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "ts")
@@ -3975,7 +3975,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("AVG(IRATE(node_network_receive_bytes_total, 5m))", query)
         self.assertIn(", device", query)
-        self.assertTrue(
+        self.assertFalse(
             any(
                 "requires an outer aggregation when grouping TS functions by label fields" in reason
                 for reason in result.reasons
@@ -5760,6 +5760,64 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(host_controls[0]["type"], "esql")
         # No generic data-view control should leak alongside the ES|QL binding.
         self.assertTrue(all(c.get("type") == "esql" for c in controls if c.get("label") == "Host"))
+
+    def test_dashboard_controls_clear_variable_drop_warning(self):
+        """A dropped Grafana variable matcher is not a panel warning once the
+        dashboard emits a Kibana control for that variable.
+        """
+        rule_pack = rules.RulePackConfig()
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Control warning rewrite",
+            "uid": "control-warning-rewrite",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": False,
+                        "current": {"text": "host-01", "value": "host-01"},
+                        "query": "label_values(http_requests_total, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Requests",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'sum(rate(http_requests_total{host="$host"}[5m])) by (host)',
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        controls = doc["dashboards"][0].get("controls", [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["label"], "Host")
+        self.assertEqual(controls[0]["field"], "host")
+        panel_result = result.yaml_panel_results[0]
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertNotIn(
+            "Variable-driven label filters applied via Kibana dashboard controls",
+            panel_result.reasons,
+        )
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
@@ -8595,6 +8653,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         hints = _target_translation_hints(panel, "timeseries", target)
         self.assertEqual(hints.get("preferred_group_labels"), ["a", "b"])
+
+    def test_translation_hints_do_not_infer_labels_for_explicit_aggregations(self):
+        """Dashboard-wide label inference must not widen expressions whose
+        PromQL aggregation already chose to collapse labels.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        target = {
+            "expr": 'sum(redis_db_keys{instance=~"$instance"})',
+            "legendFormat": "keys",
+            "format": "time_series",
+        }
+        hints = _target_translation_hints(
+            panel,
+            "graph",
+            target,
+            metric_series_labels={"redis_db_keys": ["db", "instance"]},
+        )
+
+        self.assertNotIn("preferred_group_labels", hints)
+        self.assertNotIn("preferred_group_labels_origin", hints)
+
+    def test_grouped_rate_outer_avg_is_not_a_warning(self):
+        translated = self.translate(
+            "rate(http_requests_total[5m])",
+            translation_hints={
+                "preferred_group_labels": ["handler"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+
+        self.assertIn("AVG(RATE(", translated.esql_query)
+        self.assertFalse(any("Added outer AVG" in w for w in translated.warnings))
+
+    def test_grouped_gauge_default_downsample_is_not_a_warning(self):
+        translated = self.translate(
+            "node_memory_MemAvailable_bytes",
+            translation_hints={
+                "preferred_group_labels": ["handler"],
+                "preferred_group_labels_origin": "dashboard_inferred",
+            },
+        )
+
+        self.assertIn("AVG(node_memory_MemAvailable_bytes)", translated.esql_query)
+        self.assertFalse(any("faithful gauge downsample" in w for w in translated.warnings))
 
     def test_translation_hints_table_style_patterns_do_not_set_legend_origin(self):
         """When panel-style patterns contribute, the origin must NOT be

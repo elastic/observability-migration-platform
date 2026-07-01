@@ -3,10 +3,7 @@ grafana_type: timeseries
 status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
-metrics: ['computed_value']
-breakdown: cluster
+metrics: ['Linux', 'Windows']
 axis_title: MEMORY
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: Panel has 2 PromQL targets but only 1 could be migrated (dropped targets are Windows-specific)
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job', 'instance'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

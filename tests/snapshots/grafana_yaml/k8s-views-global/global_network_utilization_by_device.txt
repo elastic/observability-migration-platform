@@ -6,5 +6,4 @@ dimension: time_bucket
 metrics: ['Received', 'Transmitted']
 breakdown: device
 axis_title: BANDWIDTH
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Dropped 2 incompatible target(s); showing 2 mergeable targets (dropped targets are Windows-specific)

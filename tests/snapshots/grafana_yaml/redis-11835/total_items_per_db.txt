@@ -1,0 +1,8 @@
+title: Total Items per DB
+grafana_type: graph
+status: migrated
+chart_type: area
+dimension: time_bucket
+metrics: ['redis_db_keys']
+breakdown: db
+mode: stacked

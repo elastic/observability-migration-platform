@@ -7,4 +7,3 @@ metrics: ['instance', 'instance_Windows']
 breakdown: instance
 axis_title: MEMORY
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls

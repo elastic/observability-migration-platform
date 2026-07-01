@@ -3,9 +3,6 @@ grafana_type: timeseries
 status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
-metrics: ['Linux_Packets_dropped_receive', 'Linux_Packets_dropped_transmit']
-breakdown: cluster
+metrics: ['Linux_Packets_dropped_receive', 'Windows_Packets_dropped_receive']
 axis_title: DROPPED PACKETS
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Dropped 2 incompatible target(s); showing 2 mergeable targets (dropped targets are Windows-specific)
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

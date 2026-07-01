@@ -402,6 +402,7 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         and not preferred_group_labels
         and metric_series_labels
         and not expr_has_explicit_grouping(target.get("expr", ""))
+        and _allows_dashboard_label_inference(target.get("expr", ""))
     ):
         inferred = _inferred_labels_for_target(target, metric_series_labels)
         if inferred:
@@ -445,6 +446,17 @@ _PROMQL_AGG_FUNCS = frozenset({
     "sum", "avg", "min", "max", "count", "stddev", "stdvar",
     "topk", "bottomk", "quantile", "group",
 })
+_PROMQL_AGG_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    + "|".join(sorted(_PROMQL_AGG_FUNCS, key=len, reverse=True))
+    + r")\b(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _allows_dashboard_label_inference(expr):
+    """Return True when dashboard-wide label inference can safely add grouping."""
+    return not _PROMQL_AGG_PREFIX_RE.search(str(expr or ""))
 
 
 def _coalesce_panel_title(panel, panel_analysis=None):
@@ -4875,15 +4887,6 @@ def _collect_repeat_variable_names(dashboard):
 _DROPPED_VARS_WARNING = "Dropped variable-driven label filters during migration"
 _DROPPED_LOGQL_LABEL_WARNING = "Dropped variable-driven LogQL label filters during migration"
 _DROPPED_LOGQL_TEXT_WARNING = "Dropped variable-driven LogQL text filter during migration"
-_CONTROLS_VARS_WARNING = (
-    "Variable-driven label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_LABEL_WARNING = (
-    "Variable-driven LogQL label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_TEXT_WARNING = (
-    "Variable-driven LogQL text filter applied via Kibana dashboard controls"
-)
 
 
 def _pre_scan_control_variables(template_list):
@@ -4901,25 +4904,28 @@ def _pre_scan_control_variables(template_list):
     return names
 
 
-_WARNING_REWRITE_MAP = {
-    _DROPPED_VARS_WARNING: _CONTROLS_VARS_WARNING,
-    _DROPPED_LOGQL_LABEL_WARNING: _CONTROLS_LOGQL_LABEL_WARNING,
-    _DROPPED_LOGQL_TEXT_WARNING: _CONTROLS_LOGQL_TEXT_WARNING,
+_CONTROL_COVERED_VARIABLE_WARNINGS = {
+    _DROPPED_VARS_WARNING,
+    _DROPPED_LOGQL_LABEL_WARNING,
+    _DROPPED_LOGQL_TEXT_WARNING,
 }
 
 
 def _rewrite_variable_warnings(panel_results, control_variable_names):
-    """Replace 'Dropped variable-driven …' with a controls-aware message.
+    """Clear variable-drop warnings once dashboard controls cover them.
 
     ``PanelResult.reasons`` carries the translation warnings.
     """
     if not control_variable_names:
         return
     for pr in panel_results:
-        for i, w in enumerate(pr.reasons):
-            replacement = _WARNING_REWRITE_MAP.get(w)
-            if replacement:
-                pr.reasons[i] = replacement
+        original_count = len(pr.reasons)
+        pr.reasons = [w for w in pr.reasons if w not in _CONTROL_COVERED_VARIABLE_WARNINGS]
+        if len(pr.reasons) == original_count:
+            continue
+        if pr.status == "migrated_with_warnings" and not pr.reasons:
+            pr.status = "migrated"
+            pr.confidence = max(pr.confidence, 0.85)
 
 
 def _normalized_text_panel_content(panel):
