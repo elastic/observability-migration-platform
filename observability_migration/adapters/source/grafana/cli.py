@@ -1424,13 +1424,17 @@ def _build_dashboard_run_summary(
     *,
     results: list[MigrationResult],
     validation_summary: dict[str, Any],
+    field_discovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    summary = {
         "total": len(results),
         "translation_failed": sum(1 for r in results if r.translation_error),
         "artifacts_dir": str(output_dir),
         "validation_summary": validation_summary,
     }
+    if field_discovery is not None:
+        summary["field_discovery"] = field_discovery
+    return summary
 
 
 def _run_validation_jobs(
@@ -2344,10 +2348,19 @@ def main(argv: list[str] | None = None):
         )
 
     print("\n[6/7] Generating report...")
+    field_discovery = resolver.field_resolution_summary()
     report_path = base_dir / "migration_report.json"
     manifest_path = base_dir / "migration_manifest.json"
     verification_path = base_dir / "verification_packets.json"
-    save_detailed_report(results, compile_results, report_path, validation_summary, validation_records, verification_payload)
+    save_detailed_report(
+        results,
+        compile_results,
+        report_path,
+        validation_summary,
+        validation_records,
+        verification_payload,
+        field_discovery=field_discovery,
+    )
     save_migration_manifest(results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
     try:
@@ -2368,6 +2381,7 @@ def main(argv: list[str] | None = None):
             base_dir,
             results=results,
             validation_summary=validation_summary,
+            field_discovery=field_discovery,
         ),
         alert_summary=alert_run_summary,
     )
@@ -2452,7 +2466,7 @@ def main(argv: list[str] | None = None):
     except Exception as exc:  # best-effort: never fail a migration on the summary
         print(f"  Migration summary: skipped ({exc})")
 
-    print_report(results, compile_results)
+    print_report(results, compile_results, field_discovery=field_discovery)
 
     if validation_records:
         failed_validations = [
