@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
-"""Structural + CLI-flag validation for the skills in .claude/skills/.
+"""Structural + CLI-flag validation for the canonical skills in .claude/skills/.
 
 Skills are markdown instruction files, not executable code, so we cannot
 "unit test" their semantic output without an LLM.  But a large, high-value
 surface *is* deterministically verifiable, and that is what this script checks
-for every ``SKILL.md`` (the ``.cursor`` mirror is kept byte-identical by
-``check_skill_mirror.py``, so validating one tree is sufficient):
+for every canonical ``SKILL.md`` (the ``.cursor`` and ``.agents`` mirrors are
+kept byte-identical by ``check_skill_mirror.py``, so validating one tree is
+sufficient):
 
 1. Frontmatter validity   — parses as YAML; non-empty ``name`` + ``description``.
 2. ``name`` matches dir    — ``name:`` equals its folder name.
@@ -34,7 +35,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-CLAUDE_SKILLS = Path(".claude/skills")
+CANONICAL_SKILLS = Path(".claude/skills")
 
 # Descriptions are loaded into the model's context for skill selection; keep
 # them bounded so a long one cannot quietly blow the budget. Today's longest is
@@ -43,7 +44,7 @@ MAX_DESCRIPTION_CHARS = 700
 
 # Generic skills this repo deliberately builds on but does not ship (they live
 # in the user's global skill set). References to them are intentional, not rot,
-# so cross-reference and ~/.claude path checks treat them as "known".
+# so cross-reference and canonical ~/.claude path checks treat them as "known".
 KNOWN_EXTERNAL_SKILLS = frozenset({"chrome-devtools-debugging"})
 
 # Top-level repo directories whose referenced files we expect to exist on disk.
@@ -109,7 +110,9 @@ def _cross_reference_errors(rel: str, text: str, known_skills: set[str]) -> list
 _REPO_PATH_RE = re.compile(
     r"(?<![\w/])(?:" + "|".join(REPO_PATH_PREFIXES) + r")/[A-Za-z0-9_./-]+"
 )
-_CLAUDE_SKILL_PATH_RE = re.compile(r"~/\.claude/skills/([a-z][a-z0-9-]*)/([A-Za-z0-9_./-]+)")
+_CANONICAL_SKILL_PATH_RE = re.compile(
+    r"~/\.claude/skills/([a-z][a-z0-9-]*)/([A-Za-z0-9_./-]+)"
+)
 
 _TRAILING_PUNCT = ".,);:`"
 
@@ -133,11 +136,11 @@ def _referenced_path_errors(
         if not (root / candidate).exists():
             errors.append(f"{rel}: referenced path does not exist -> '{candidate}'")
 
-    for skill_name, raw_rest in _CLAUDE_SKILL_PATH_RE.findall(text):
+    for skill_name, raw_rest in _CANONICAL_SKILL_PATH_RE.findall(text):
         if skill_name not in known_skills:
             continue  # external/generic skill, not shipped here — out of our control
         rest = raw_rest.rstrip(_TRAILING_PUNCT)
-        target = root / CLAUDE_SKILLS / skill_name / rest
+        target = root / CANONICAL_SKILLS / skill_name / rest
         if not target.exists():
             errors.append(
                 f"{rel}: referenced skill path does not exist -> "
@@ -285,9 +288,9 @@ def _build_flag_map() -> dict[str, set[str]]:
 def check_structure(root: Path) -> list[str]:
     """Return list of human-readable error strings; empty = clean."""
     root = root.expanduser().resolve()
-    claude_base = root / CLAUDE_SKILLS
+    canonical_base = root / CANONICAL_SKILLS
 
-    skill_files = _skill_files(claude_base)
+    skill_files = _skill_files(canonical_base)
     known_skills = set(skill_files)
 
     errors: list[str] = []
