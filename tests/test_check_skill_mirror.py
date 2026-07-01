@@ -26,7 +26,7 @@ def _write(path: pathlib.Path, content: str) -> None:
 
 class CheckSkillMirrorScriptTests(unittest.TestCase):
     def test_identical_content_passes(self):
-        """Both trees have the same file with identical content."""
+        """Every skill mirror has the same file with identical content."""
         module = _load_script_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -34,21 +34,24 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
             content = "# Test skill content\nSome documentation here."
             _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", content)
             _write(root / ".cursor" / "skills" / "my-skill" / "SKILL.md", content)
+            _write(root / ".agents" / "skills" / "my-skill" / "SKILL.md", content)
 
             errors = module.check_mirror(root)
 
         self.assertEqual(errors, [])
 
     def test_prefix_only_diff_passes(self):
-        """Prefix-only differences (~/.claude/ vs ~/.cursor/) are allowed."""
+        """Tool-specific global skill path prefixes are allowed."""
         module = _load_script_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
             claude_content = "See [this](~/.claude/skills/other/SKILL.md) for details."
             cursor_content = "See [this](~/.cursor/skills/other/SKILL.md) for details."
+            agents_content = "See [this](~/.codex/skills/other/SKILL.md) for details."
             _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", claude_content)
             _write(root / ".cursor" / "skills" / "my-skill" / "SKILL.md", cursor_content)
+            _write(root / ".agents" / "skills" / "my-skill" / "SKILL.md", agents_content)
 
             errors = module.check_mirror(root)
 
@@ -64,10 +67,29 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
             cursor_content = "Content version B"
             _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", claude_content)
             _write(root / ".cursor" / "skills" / "my-skill" / "SKILL.md", cursor_content)
+            _write(root / ".agents" / "skills" / "my-skill" / "SKILL.md", claude_content)
 
             errors = module.check_mirror(root)
 
         self.assertEqual(len(errors), 1)
+        self.assertIn("my-skill/SKILL.md", errors[0])
+
+    def test_agents_semantic_diff_fails(self):
+        """Content differs in .agents/ beyond prefix normalization -> error."""
+        module = _load_script_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            claude_content = "Content version A"
+            agents_content = "Content version B"
+            _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", claude_content)
+            _write(root / ".cursor" / "skills" / "my-skill" / "SKILL.md", claude_content)
+            _write(root / ".agents" / "skills" / "my-skill" / "SKILL.md", agents_content)
+
+            errors = module.check_mirror(root)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(".agents/skills", errors[0])
         self.assertIn("my-skill/SKILL.md", errors[0])
 
     def test_missing_cursor_file_fails(self):
@@ -77,10 +99,26 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
             _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", "content")
+            _write(root / ".agents" / "skills" / "my-skill" / "SKILL.md", "content")
 
             errors = module.check_mirror(root)
 
         self.assertEqual(len(errors), 1)
+        self.assertIn("my-skill/SKILL.md", errors[0])
+
+    def test_missing_agents_file_fails(self):
+        """File in .claude/ but not in .agents/ -> error."""
+        module = _load_script_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            _write(root / ".claude" / "skills" / "my-skill" / "SKILL.md", "content")
+            _write(root / ".cursor" / "skills" / "my-skill" / "SKILL.md", "content")
+
+            errors = module.check_mirror(root)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("MISSING from .agents/skills/", errors[0])
         self.assertIn("my-skill/SKILL.md", errors[0])
 
     def test_extra_cursor_file_fails(self):
@@ -96,8 +134,22 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("extra-skill/SKILL.md", errors[0])
 
+    def test_extra_agents_file_fails(self):
+        """File in .agents/ but not in .claude/ -> error."""
+        module = _load_script_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            _write(root / ".agents" / "skills" / "extra-skill" / "SKILL.md", "content")
+
+            errors = module.check_mirror(root)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("EXTRA in .agents/skills/", errors[0])
+        self.assertIn("extra-skill/SKILL.md", errors[0])
+
     def test_nested_file_passes_when_mirrored(self):
-        """Nested files with identical content in both trees pass."""
+        """Nested files with identical content in every mirror pass."""
         module = _load_script_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -105,6 +157,7 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
             content = "Nested file content"
             _write(root / ".claude" / "skills" / "my-skill" / "subdir" / "extra.md", content)
             _write(root / ".cursor" / "skills" / "my-skill" / "subdir" / "extra.md", content)
+            _write(root / ".agents" / "skills" / "my-skill" / "subdir" / "extra.md", content)
 
             errors = module.check_mirror(root)
 
@@ -131,7 +184,11 @@ class CheckSkillMirrorScriptTests(unittest.TestCase):
             )
             _write(
                 root / ".cursor" / "skills" / "test-skill" / "SKILL.md",
-                "Cursor version",
+                "Claude version",
+            )
+            _write(
+                root / ".agents" / "skills" / "test-skill" / "SKILL.md",
+                "Agents version",
             )
 
             exit_code = module.main(["--root", str(root)])
