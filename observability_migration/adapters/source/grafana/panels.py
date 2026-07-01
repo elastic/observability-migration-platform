@@ -452,11 +452,50 @@ _PROMQL_AGG_PREFIX_RE = re.compile(
     + r")\b(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(",
     re.IGNORECASE,
 )
+_PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
+    r"^\s*[A-Za-z_][A-Za-z0-9_\.:-]*\s*(?:=~|!~|=|!=)\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)\s*$",
+    re.DOTALL,
+)
+
+
+def _strip_wrapping_parentheses(expr):
+    text = str(expr or "").strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        wraps_entire_expr = True
+        quote = ""
+        escaped = False
+        for idx, char in enumerate(text):
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and idx != len(text) - 1:
+                    wraps_entire_expr = False
+                    break
+                if depth < 0:
+                    wraps_entire_expr = False
+                    break
+        if not wraps_entire_expr or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
 
 
 def _allows_dashboard_label_inference(expr):
     """Return True when dashboard-wide label inference can safely add grouping."""
-    return not _PROMQL_AGG_PREFIX_RE.search(str(expr or ""))
+    return not _PROMQL_AGG_PREFIX_RE.search(_strip_wrapping_parentheses(expr))
 
 
 def _coalesce_panel_title(panel, panel_analysis=None):
@@ -4911,6 +4950,67 @@ _CONTROL_COVERED_VARIABLE_WARNINGS = {
 }
 
 
+def _template_var_name_from_matcher_value(value):
+    text = str(value or "").strip()
+    name = grafana_template_var_name(text)
+    if name:
+        return name
+    unanchored = text
+    if unanchored.startswith("^"):
+        unanchored = unanchored[1:]
+    if unanchored.endswith("$") and not unanchored.endswith("\\$"):
+        unanchored = unanchored[:-1]
+    return grafana_template_var_name(unanchored)
+
+
+def _source_label_matcher_variable_names(expr):
+    names: set[str] = set()
+    text = str(expr or "")
+    idx = 0
+    while idx < len(text):
+        if text[idx] != "{":
+            idx += 1
+            continue
+        end = idx + 1
+        quote = ""
+        escaped = False
+        while end < len(text):
+            char = text[end]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "}":
+                break
+            end += 1
+        if end >= len(text) or text[end] != "}":
+            break
+        selector = text[idx + 1:end]
+        for matcher_text in _split_top_level_csv(selector):
+            match = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+            if not match:
+                continue
+            name = _template_var_name_from_matcher_value(match.group("value"))
+            if name and not name.startswith("__"):
+                names.add(name)
+        idx = end + 1
+    return names
+
+
+def _panel_result_variable_warning_is_covered(panel_result, control_variable_names):
+    query_ir = panel_result.query_ir or {}
+    metadata = query_ir.get("metadata") if isinstance(query_ir, dict) else {}
+    names = set(metadata.get("dropped_variable_names") or []) if isinstance(metadata, dict) else set()
+    if not names:
+        names = _source_label_matcher_variable_names(panel_result.promql_expr)
+    return bool(names) and names.issubset(control_variable_names)
+
+
 def _rewrite_variable_warnings(panel_results, control_variable_names):
     """Clear variable-drop warnings once dashboard controls cover them.
 
@@ -4920,7 +5020,14 @@ def _rewrite_variable_warnings(panel_results, control_variable_names):
         return
     for pr in panel_results:
         original_count = len(pr.reasons)
-        pr.reasons = [w for w in pr.reasons if w not in _CONTROL_COVERED_VARIABLE_WARNINGS]
+        pr.reasons = [
+            w
+            for w in pr.reasons
+            if (
+                w not in _CONTROL_COVERED_VARIABLE_WARNINGS
+                or not _panel_result_variable_warning_is_covered(pr, control_variable_names)
+            )
+        ]
         if len(pr.reasons) == original_count:
             continue
         if pr.status == "migrated_with_warnings" and not pr.reasons:
