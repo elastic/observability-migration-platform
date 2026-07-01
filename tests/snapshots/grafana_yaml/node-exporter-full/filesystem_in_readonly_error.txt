@@ -1,0 +1,12 @@
+title: Filesystem in ReadOnly / Error
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['ReadOnly', 'Device_error']
+mode: stacked
+axis_title: counter
+axis_extent: custom [0.0, 1.0]
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Collapsed all series of `node_filesystem_readonly` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `node_filesystem_device_error` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.

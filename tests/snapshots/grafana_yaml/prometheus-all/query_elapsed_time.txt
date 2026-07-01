@@ -1,0 +1,10 @@
+title: Query elapsed time
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['prometheus_engine_query_duration_seconds']
+breakdown: instance
+mode: stacked
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['slice'] are in the query but not on the chart, so series differing only by those are visually merged

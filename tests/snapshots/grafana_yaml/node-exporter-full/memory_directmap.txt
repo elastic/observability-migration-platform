@@ -1,0 +1,11 @@
+title: Memory DirectMap
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['DirectMap1G_Amount_of_pages_mapped_as_this_size', 'DirectMap2M_Amount_of_pages_mapped_as_this_size', 'DirectMap4K_Amount_of_pages_mapped_as_this_size']
+breakdown: instance
+axis_title: bytes
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

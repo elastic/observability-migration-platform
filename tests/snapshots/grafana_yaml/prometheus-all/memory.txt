@@ -1,0 +1,8 @@
+title: Memory
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Total_resident_memory', 'Total_llocated_bytes']
+breakdown: instance
+warning: Variable-driven label filters applied via Kibana dashboard controls

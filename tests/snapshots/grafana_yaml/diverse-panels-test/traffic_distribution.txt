@@ -4,4 +4,4 @@ status: migrated_with_warnings
 chart_type: pie
 metrics: ['http_requests_total']
 breakdowns: ['handler']
-warning: Dropped variable-driven label filters during migration
+warning: Variable-driven label filters applied via Kibana dashboard controls

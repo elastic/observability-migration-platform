@@ -1,0 +1,6 @@
+title: RAM Total
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: node_memory_MemTotal_bytes
+warning: Variable-driven label filters applied via Kibana dashboard controls

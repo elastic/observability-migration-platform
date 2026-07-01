@@ -1,0 +1,11 @@
+title: CPU spent seconds in guests (VMs)
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: bar
+dimension: time_bucket
+metrics: ['node_cpu_guest_seconds_total_ratio']
+breakdown: instance
+mode: unstacked
+axis_title: percentage
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Panel has 2 PromQL targets but only 1 could be migrated

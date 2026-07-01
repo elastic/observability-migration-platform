@@ -1,0 +1,6 @@
+title: RootFS Total
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: node_filesystem_size_bytes
+warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -3,5 +3,5 @@ grafana_type: stat
 status: migrated_with_warnings
 chart_type: datatable
 metrics: ['kube_pod_info']
-breakdowns: ['pod']
+breakdowns: ['k8s.pod.name']
 warning: Approximated grouped stat panel as summary table

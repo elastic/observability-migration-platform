@@ -3,5 +3,5 @@ grafana_type: logs
 status: migrated_with_warnings
 chart_type: datatable
 metrics: ['message']
-breakdowns: ['@timestamp', 'job']
+breakdowns: ['@timestamp']
 warning: Approximated Loki logs panel as an ES|QL datatable

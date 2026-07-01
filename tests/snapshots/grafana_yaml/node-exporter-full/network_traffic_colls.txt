@@ -1,0 +1,8 @@
+title: Network Traffic Colls
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['node_network_transmit_colls_total']
+axis_title: counter
+warning: Variable-driven label filters applied via Kibana dashboard controls

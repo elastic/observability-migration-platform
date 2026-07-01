@@ -1,0 +1,7 @@
+title: Memory Utilization by namespace
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['container_memory_working_set_bytes']
+breakdown: k8s.namespace.name

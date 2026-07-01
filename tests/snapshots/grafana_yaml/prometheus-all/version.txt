@@ -1,0 +1,6 @@
+title: Version
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: prometheus_build_info
+warning: Variable-driven label filters applied via Kibana dashboard controls

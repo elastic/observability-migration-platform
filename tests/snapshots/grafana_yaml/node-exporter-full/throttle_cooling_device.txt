@@ -1,0 +1,10 @@
+title: Throttle cooling device
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Current_in', 'Max_in']
+axis_title: counter
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Collapsed all series of `node_cooling_device_cur_state` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `node_cooling_device_max_state` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
