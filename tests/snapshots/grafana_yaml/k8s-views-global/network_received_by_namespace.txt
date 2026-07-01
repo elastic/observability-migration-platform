@@ -1,0 +1,9 @@
+title: Network Received by namespace
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['container_network_receive_bytes_total']
+breakdown: k8s.namespace.name
+axis_title: BANDWIDTH
+warning: Panel has 2 PromQL targets but only 1 could be migrated (dropped targets are Windows-specific)

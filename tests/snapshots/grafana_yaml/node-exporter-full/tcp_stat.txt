@@ -1,0 +1,11 @@
+title: TCP Stat
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['established_TCP_sockets_in_established_state', 'fin_wait2_TCP_sockets_in_fin_wait2_state', 'listen_TCP_sockets_in_listen_state', 'time_wait_TCP_sockets_in_time_wait_state']
+breakdown: instance
+axis_title: connections
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

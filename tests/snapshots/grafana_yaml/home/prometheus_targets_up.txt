@@ -1,0 +1,6 @@
+title: Prometheus Targets Up
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: up_count
+warning: count() over a comparison collapses matching samples to series by the instance dimension only (the query supplied no grouping labels); if matching series share an instance but differ on another label such as job, the count may be under-stated — add the distinguishing label to by(...) or verify the series identity

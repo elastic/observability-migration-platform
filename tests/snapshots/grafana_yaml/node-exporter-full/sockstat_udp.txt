@@ -1,0 +1,11 @@
+title: Sockstat UDP
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['UDPLITE_inuse_Udplite_sockets_currently_in_use', 'UDP_inuse_Udp_sockets_currently_in_use', 'UDP_mem_Used_memory_for_udp']
+breakdown: instance
+axis_title: counter
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

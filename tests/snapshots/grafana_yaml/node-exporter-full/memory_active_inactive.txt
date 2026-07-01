@@ -1,0 +1,12 @@
+title: Memory Active / Inactive
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['Inactive_Memory_which_has_been_less_recently_used_It_is_more_eligible_to_be_reclaimed_for_other_purposes', 'Active_Memory_that_has_been_used_more_recently_and_usually_not_reclaimed_unless_absolutely_necessary']
+breakdown: instance
+mode: stacked
+axis_title: bytes
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

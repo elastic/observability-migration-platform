@@ -1,0 +1,8 @@
+title: Interrupts Detail
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['node_interrupts_total']
+axis_title: counter
+warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -1,0 +1,8 @@
+title: Disk IOps Discards completed / merged
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Discards_completed', 'Discards_merged']
+axis_title: IOs
+warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -1,7 +1,8 @@
-title: Traffic Distribution
-grafana_type: piechart
+title: Request count
+grafana_type: graph
 status: migrated_with_warnings
-chart_type: pie
+chart_type: line
+dimension: time_bucket
 metrics: ['http_requests_total']
-breakdowns: ['handler']
+breakdown: legend
 warning: Variable-driven label filters applied via Kibana dashboard controls

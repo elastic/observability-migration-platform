@@ -1,0 +1,12 @@
+title: Memory Active / Inactive Detail
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['Inactive_file_File_backed_memory_on_inactive_LRU_list', 'Inactive_anon_Anonymous_and_swap_cache_on_inactive_LRU_list_including_tmpfs_shmem', 'Active_file_File_backed_memory_on_active_LRU_list', 'Active_anon_Anonymous_and_swap_cache_on_active_least_recently_used_LRU_list_including_tmpfs']
+breakdown: instance
+mode: stacked
+axis_title: bytes
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

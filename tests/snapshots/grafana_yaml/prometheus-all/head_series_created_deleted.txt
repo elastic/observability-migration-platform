@@ -1,0 +1,8 @@
+title: Head series created/deleted
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['created_on', 'removed_on']
+breakdown: instance
+warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -1,0 +1,8 @@
+title: ARP Entries
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['node_arp_entries']
+axis_title: Entries
+warning: Variable-driven label filters applied via Kibana dashboard controls

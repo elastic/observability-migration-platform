@@ -1,0 +1,9 @@
+title: Alerting errors
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['prometheus_notifications_dropped_total']
+breakdown: instance
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Panel has 2 PromQL targets but only 1 could be migrated

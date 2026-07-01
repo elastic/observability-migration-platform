@@ -1,0 +1,11 @@
+title: UDP Errors
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['InErrors_UDP_Datagrams_that_could_not_be_delivered_to_an_application', 'NoPorts_UDP_Datagrams_received_on_a_port_with_no_listener', 'InErrors_Lite_UDPLite_Datagrams_that_could_not_be_delivered_to_an_application', 'RcvbufErrors_UDP_buffer_errors_received', 'SndbufErrors_UDP_buffer_errors_send']
+breakdown: instance
+axis_title: datagrams
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Added outer AVG() around irate because ES|QL requires an outer aggregation when grouping TS functions by label fields
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

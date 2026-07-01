@@ -1,0 +1,9 @@
+title: Cont of concurent queries
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Current_count', 'Max_count']
+breakdown: instance
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['handler'] are in the query but not on the chart, so series differing only by those are visually merged

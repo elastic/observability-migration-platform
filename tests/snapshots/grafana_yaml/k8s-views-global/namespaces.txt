@@ -1,0 +1,6 @@
+title: Namespaces
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: kube_namespace_created_count
+warning: Variable-driven label filters applied via Kibana dashboard controls
