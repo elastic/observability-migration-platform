@@ -65,10 +65,12 @@ from observability_migration.targets.kibana.emit.esql_utils import (
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent
 _DASHBOARD_DIR = _REPO_ROOT / "infra" / "grafana" / "dashboards"
+_CONTROL_SCHEMA_DIR = _DASHBOARD_DIR / "control_schemas"
 _SNAPSHOT_DIR = pathlib.Path(__file__).parent / "snapshots" / "grafana_yaml"
 UPDATE_SNAPSHOTS = os.environ.get("UPDATE_SNAPSHOTS") == "1"
 
 DASHBOARD_FILES: list[pathlib.Path] = sorted(_DASHBOARD_DIR.glob("*.json"))
+_SNAPSHOT_DASHBOARDS = ("diverse-panels-test", "multi-pattern-coverage")
 
 # Required YAML schema keys for each ES|QL chart type.
 REQUIRED_KEYS: dict[str, list[str]] = {
@@ -537,15 +539,98 @@ class TestControlsSnapshotExtractor(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test class 3: YAML shape snapshots for diverse-panels-test.json
+# Test class 2e: snapshot dashboard registration
 # ---------------------------------------------------------------------------
 
-_DIVERSE_PANELS_PATH = _DASHBOARD_DIR / "diverse-panels-test.json"
+class TestSnapshotDashboardRegistration(unittest.TestCase):
+    """Dashboard-level snapshots should be driven by registered stems."""
+
+    def test_multi_pattern_dashboard_is_registered(self):
+        self.assertIn(
+            "multi-pattern-coverage",
+            globals().get("_SNAPSHOT_DASHBOARDS", ()),
+        )
+
+    def test_registered_dashboard_files_exist(self):
+        missing = [
+            stem
+            for stem in _SNAPSHOT_DASHBOARDS
+            if not (_DASHBOARD_DIR / f"{stem}.json").exists()
+        ]
+        self.assertEqual(missing, [])
+
+    def test_snapshot_tests_include_dashboard_stem(self):
+        method_names = [
+            name
+            for name in dir(TestGrafanaYAMLSnapshots)
+            if name.startswith("test_")
+        ]
+        self.assertTrue(
+            any(name.startswith("test_multi_pattern_coverage__") for name in method_names),
+            method_names,
+        )
+
+    def test_multi_pattern_control_sidecar_is_not_a_dashboard(self):
+        sidecar = _DASHBOARD_DIR / "control_schemas" / "multi-pattern-coverage.json"
+        self.assertTrue(sidecar.exists())
+        self.assertNotIn(sidecar, DASHBOARD_FILES)
+
+    def test_controls_snapshot_tests_include_dashboard_stem(self):
+        method_names = [
+            name
+            for name in dir(TestGrafanaControlsSnapshot)
+            if name.startswith("test_")
+        ]
+        self.assertTrue(
+            any(name == "test_multi_pattern_coverage__controls" for name in method_names),
+            method_names,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test class 3: YAML shape snapshots for registered dashboards
+# ---------------------------------------------------------------------------
+
+def _snapshot_slug(value: str) -> str:
+    """Return the existing snapshot filename slug for panel titles."""
+    return (
+        value.lower()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("(", "")
+        .replace(")", "")
+    )
+
+
+def _test_slug(value: str) -> str:
+    """Return a Python test-method-friendly slug for dashboard stems."""
+    return _snapshot_slug(value).replace("-", "_")
+
+
+def _snapshot_panel_entries() -> list[tuple[str, str, str]]:
+    """Return (dashboard_stem, panel_title, file_slug) snapshot entries."""
+    entries: list[tuple[str, str, str]] = []
+    for stem in _SNAPSHOT_DASHBOARDS:
+        path = _DASHBOARD_DIR / f"{stem}.json"
+        if not path.exists():
+            continue
+        dash = _load_dashboard(path)
+        seen: dict[str, int] = {}
+        for panel in _workable_panels(dash):
+            title = panel.get("title", "untitled")
+            base_slug = _snapshot_slug(title)
+            seen[base_slug] = seen.get(base_slug, 0) + 1
+            file_slug = base_slug if seen[base_slug] == 1 else f"{base_slug}_{seen[base_slug]}"
+            entries.append((stem, title, file_slug))
+    return entries
 
 
 class TestGrafanaYAMLSnapshots(unittest.TestCase):
-    """Snapshot tests for diverse-panels-test.json — one panel of each chart
-    type.  Captures chart type, spec field names, and migration status.
+    """Snapshot tests for registered dashboard fixtures.
+
+    Captures chart type, spec field names, migration status, and selected
+    visual-fidelity attributes for every workable panel in each registered
+    dashboard stem.
 
     To regenerate:
         UPDATE_SNAPSHOTS=1 python -m pytest tests/test_grafana_yaml_generation.py::TestGrafanaYAMLSnapshots -v
@@ -553,29 +638,31 @@ class TestGrafanaYAMLSnapshots(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        dash = _load_dashboard(_DIVERSE_PANELS_PATH)
-        cls._panels: dict[str, tuple[dict | None, Any]] = {}
-        for panel in _workable_panels(dash):
-            title = panel.get("title", "untitled")
-            cls._panels[title] = (panel, *translate_panel(panel))
+        cls._panels: dict[tuple[str, str], tuple[dict | None, Any]] = {}
+        for stem in _SNAPSHOT_DASHBOARDS:
+            dash = _load_dashboard(_DASHBOARD_DIR / f"{stem}.json")
+            seen: dict[str, int] = {}
+            for panel in _workable_panels(dash):
+                title = panel.get("title", "untitled")
+                base_slug = _snapshot_slug(title)
+                seen[base_slug] = seen.get(base_slug, 0) + 1
+                file_slug = base_slug if seen[base_slug] == 1 else f"{base_slug}_{seen[base_slug]}"
+                cls._panels[(stem, file_slug)] = (panel, *translate_panel(panel))
 
-    def _slug(self, title: str) -> str:
-        return title.lower().replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "")
-
-    def _run_snapshot(self, title: str) -> None:
-        panel, yp, result = self._panels[title]
+    def _run_snapshot(self, stem: str, title: str, file_slug: str) -> None:
+        panel, yp, result = self._panels[(stem, file_slug)]
         esql_block = (yp or {}).get("esql", {}) if yp else {}
         actual = _snapshot_text(title, panel.get("type", ""), result, esql_block)
 
-        snap_dir = _SNAPSHOT_DIR / "diverse-panels-test"
+        snap_dir = _SNAPSHOT_DIR / stem
         snap_dir.mkdir(parents=True, exist_ok=True)
-        snap_path = snap_dir / f"{self._slug(title)}.txt"
+        snap_path = snap_dir / f"{file_slug}.txt"
 
         if UPDATE_SNAPSHOTS or not snap_path.exists():
             snap_path.write_text(actual, encoding="utf-8")
             if not UPDATE_SNAPSHOTS:
                 self.fail(
-                    f"Created new snapshot for '{title}'. "
+                    f"Created new snapshot for '{stem}/{title}'. "
                     "Run again (or with UPDATE_SNAPSHOTS=1) to pass."
                 )
             return
@@ -584,36 +671,26 @@ class TestGrafanaYAMLSnapshots(unittest.TestCase):
         if actual != expected:
             diff = _diff(expected, actual)
             self.fail(
-                f"Snapshot mismatch for '{title}'.\n"
+                f"Snapshot mismatch for '{stem}/{title}'.\n"
                 f"To update: UPDATE_SNAPSHOTS=1 pytest tests/test_grafana_yaml_generation.py\n"
                 f"\n{diff}"
             )
 
 
-def _make_snapshot_test(title: str):
+def _make_snapshot_test(stem: str, title: str, file_slug: str):
     def test_method(self):
-        self._run_snapshot(title)
-    slug = title.lower().replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "")
-    test_method.__name__ = f"test_{slug}"
-    test_method.__doc__ = f"YAML shape snapshot for panel '{title}'"
+        self._run_snapshot(stem, title, file_slug)
+    test_method.__name__ = f"test_{_test_slug(stem)}__{file_slug}"
+    test_method.__doc__ = f"YAML shape snapshot for panel '{stem}/{title}'"
     return test_method
 
 
-_SNAPSHOT_PANELS = [
-    "Request Latency Heatmap",
-    "Traffic Distribution",
-    "Top Endpoints",
-    "CPU Usage",
-    "Memory Usage",
-    "Uptime",
-    "Disk Usage per Mount",
-    "Active Alerts",
-    "Notes",
-    "Application Logs",
-]
-
-for _title in _SNAPSHOT_PANELS:
-    setattr(TestGrafanaYAMLSnapshots, f"test_{_title.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')}", _make_snapshot_test(_title))
+for _stem, _title, _file_slug in _snapshot_panel_entries():
+    setattr(
+        TestGrafanaYAMLSnapshots,
+        f"test_{_test_slug(_stem)}__{_file_slug}",
+        _make_snapshot_test(_stem, _title, _file_slug),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -652,23 +729,54 @@ def _metric_aware_resolver():
     return rp, resolver
 
 
-class TestGrafanaControlsSnapshot(unittest.TestCase):
-    """Snapshot of diverse-panels-test.json dashboard controls (issue #224).
+def _control_resolver_for_dashboard(stem: str):
+    """Return the seeded resolver used by a registered dashboard controls snapshot."""
+    if stem == "diverse-panels-test":
+        return _metric_aware_resolver()
 
-    Controls are translated through the metric-aware path so the snapshot
-    freezes the *fixed* field (`service.instance.id`), not the pre-fix
-    `instance` fallback.
+    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    rp = RulePackConfig()
+    schema_path = _CONTROL_SCHEMA_DIR / f"{stem}.json"
+    if not schema_path.exists():
+        return rp, SchemaResolver(rp)
+
+    payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    rp.control_field_overrides.update(payload.get("control_field_overrides", {}) or {})
+    rp.label_rewrites.update(payload.get("label_rewrites", {}) or {})
+    resolver = SchemaResolver(
+        rp,
+        es_url="https://es",
+        index_pattern=payload.get("index_pattern") or "metrics-*",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = payload.get("field_cache", {}) or {}
+    resolver._cooccurrence_cache = {
+        (item["metric"], item.get("field") or item.get("label")): bool(item.get("cooccurs"))
+        for item in payload.get("cooccurrence_cache", []) or []
+        if item.get("metric") and (item.get("field") or item.get("label"))
+    }
+    return rp, resolver
+
+
+class TestGrafanaControlsSnapshot(unittest.TestCase):
+    """Snapshot registered dashboard controls (issue #224).
+
+    Controls are translated through seeded resolvers so snapshots can freeze
+    metric-aware field resolution without live Elasticsearch access.
 
     To regenerate:
         UPDATE_SNAPSHOTS=1 python -m pytest tests/test_grafana_yaml_generation.py::TestGrafanaControlsSnapshot -v
     """
 
-    def test_controls_snapshot(self):
+    def _run_controls_snapshot(self, stem: str) -> None:
         from observability_migration.adapters.source.grafana.panels import translate_variables
 
-        dash = _load_dashboard(_DIVERSE_PANELS_PATH)
+        dash = _load_dashboard(_DASHBOARD_DIR / f"{stem}.json")
         template_list = dash.get("templating", {}).get("list", [])
-        rule_pack, resolver = _metric_aware_resolver()
+        rule_pack, resolver = _control_resolver_for_dashboard(stem)
         controls = translate_variables(
             template_list,
             datasource_index="metrics-*",
@@ -676,13 +784,14 @@ class TestGrafanaControlsSnapshot(unittest.TestCase):
             resolver=resolver,
         )
 
-        # Behavioural guard: the metric-aware path must have fixed the field.
-        fields = [c.get("field") for c in controls]
-        self.assertIn("service.instance.id", fields)
-        self.assertNotIn("instance", fields)
+        if stem == "diverse-panels-test":
+            # Behavioural guard: the metric-aware path must have fixed the field.
+            fields = [c.get("field") for c in controls]
+            self.assertIn("service.instance.id", fields)
+            self.assertNotIn("instance", fields)
 
         actual = _controls_snapshot_text(controls)
-        snap_dir = _SNAPSHOT_DIR / "diverse-panels-test"
+        snap_dir = _SNAPSHOT_DIR / stem
         snap_dir.mkdir(parents=True, exist_ok=True)
         snap_path = snap_dir / "_controls.txt"
 
@@ -690,7 +799,7 @@ class TestGrafanaControlsSnapshot(unittest.TestCase):
             snap_path.write_text(actual, encoding="utf-8")
             if not UPDATE_SNAPSHOTS:
                 self.fail(
-                    "Created new controls snapshot. "
+                    f"Created new controls snapshot for '{stem}'. "
                     "Run again (or with UPDATE_SNAPSHOTS=1) to pass."
                 )
             return
@@ -698,7 +807,23 @@ class TestGrafanaControlsSnapshot(unittest.TestCase):
         expected = snap_path.read_text(encoding="utf-8")
         if actual != expected:
             self.fail(
-                "Controls snapshot mismatch.\n"
+                f"Controls snapshot mismatch for '{stem}'.\n"
                 "To update: UPDATE_SNAPSHOTS=1 pytest tests/test_grafana_yaml_generation.py\n"
                 f"\n{_diff(expected, actual)}"
             )
+
+
+def _make_controls_snapshot_test(stem: str):
+    def test_method(self):
+        self._run_controls_snapshot(stem)
+    test_method.__name__ = f"test_{_test_slug(stem)}__controls"
+    test_method.__doc__ = f"Controls snapshot for dashboard '{stem}'"
+    return test_method
+
+
+for _stem in _SNAPSHOT_DASHBOARDS:
+    setattr(
+        TestGrafanaControlsSnapshot,
+        f"test_{_test_slug(_stem)}__controls",
+        _make_controls_snapshot_test(_stem),
+    )

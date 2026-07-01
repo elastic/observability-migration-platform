@@ -1,0 +1,69 @@
+{
+  "index_pattern": "metrics-*",
+  "field_cache": {
+    "http_requests_total": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "kube_pod_info": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "service": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "service.name": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "namespace": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "k8s.namespace.name": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    }
+  },
+  "cooccurrence_cache": [
+    {
+      "metric": "http_requests_total",
+      "field": "service",
+      "cooccurs": false
+    },
+    {
+      "metric": "http_requests_total",
+      "field": "service.name",
+      "cooccurs": true
+    },
+    {
+      "metric": "kube_pod_info",
+      "field": "namespace",
+      "cooccurs": false
+    },
+    {
+      "metric": "kube_pod_info",
+      "field": "k8s.namespace.name",
+      "cooccurs": true
+    }
+  ]
+}
