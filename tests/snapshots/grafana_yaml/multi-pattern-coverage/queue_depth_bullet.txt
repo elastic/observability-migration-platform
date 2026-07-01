@@ -1,0 +1,9 @@
+title: Queue Depth Bullet
+grafana_type: bargauge
+status: migrated_with_warnings
+chart_type: gauge
+metric: queue_depth
+gauge_shape: horizontal_bullet
+gauge_range: [0, 500]
+gauge_thresholds: 300:#54B399, 450:#D6BF57, 500:#E7664C
+warning: Approximated bargauge as a bullet gauge

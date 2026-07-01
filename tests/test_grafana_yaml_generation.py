@@ -19,16 +19,14 @@ Three complementary test classes:
    PROMQL() function and column names are determined at runtime).
 
 3. TestGrafanaYAMLSnapshots
-   Captures a compact snapshot of each panel's YAML shape for the
-   diverse-panels-test.json dashboard: chart type, spec field names, status,
-   and the visual-fidelity attributes that change how a panel *looks* even
-   when the numbers are right (stacking mode, axis title/bounds, gauge shape,
-   gauge colour range/thresholds — issue #224).
-   TestGrafanaControlsSnapshot does the same for the dashboard's controls
-   (type, resolved field, multiple), translated through the metric-aware path
-   so the snapshot freezes the fixed field (`service.instance.id`).
-   Running with UPDATE_SNAPSHOTS=1 regenerates golden files; subsequent
-   runs detect regressions.
+   Discovers every Grafana dashboard fixture on disk, renders each through the
+   dashboard-level YAML path, and captures compact panel/control snapshots:
+   chart type, spec field names, status, and the visual-fidelity attributes
+   that change how a panel *looks* even when the numbers are right (stacking
+   mode, axis title/bounds, gauge shape, gauge colour range/thresholds —
+   issue #224).  Running with UPDATE_SNAPSHOTS=1 regenerates golden files;
+   subsequent runs detect regressions.  Ownership checks make orphaned goldens
+   and fixtures with missing snapshots fail the suite (issue #250).
 
 Updating snapshots
 ------------------
@@ -74,6 +72,7 @@ from observability_migration.targets.kibana.emit.esql_utils import (
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent
 _DASHBOARD_DIR = _REPO_ROOT / "infra" / "grafana" / "dashboards"
+_CONTROL_SCHEMA_DIR = _DASHBOARD_DIR / "control_schemas"
 _SNAPSHOT_DIR = pathlib.Path(__file__).parent / "snapshots" / "grafana_yaml"
 UPDATE_SNAPSHOTS = os.environ.get("UPDATE_SNAPSHOTS") == "1"
 
@@ -306,7 +305,7 @@ def _snapshot_panel_path(
     return _SNAPSHOT_DIR / _snapshot_dashboard_id(dashboard_path) / f"{slug}.txt"
 
 
-def _snapshot_rule_pack_and_resolver():
+def _snapshot_rule_pack_and_resolver(dashboard_path: pathlib.Path):
     """Return an offline resolver for deterministic dashboard snapshots.
 
     The field cache is intentionally narrow. It advertises only the label
@@ -320,24 +319,38 @@ def _snapshot_rule_pack_and_resolver():
     rule_pack = RulePackConfig()
     resolver = SchemaResolver(rule_pack)
     label_fields = {"instance", "service.instance.id"}
-    for dashboard_path in _snapshot_dashboard_paths():
-        dashboard = _load_dashboard(dashboard_path)
-        for variable in dashboard.get("templating", {}).get("list", []) or []:
-            query_text = _variable_query_text(variable)
-            field = _extract_variable_source_field(query_text)
-            if field:
-                label_fields.add(field)
+    dashboard = _load_dashboard(dashboard_path)
+    for variable in dashboard.get("templating", {}).get("list", []) or []:
+        query_text = _variable_query_text(variable)
+        field = _extract_variable_source_field(query_text)
+        if field:
+            label_fields.add(field)
 
     keyword = {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}}
+    schema_path = _CONTROL_SCHEMA_DIR / f"{dashboard_path.stem}.json"
+    schema_payload = (
+        json.loads(schema_path.read_text(encoding="utf-8"))
+        if schema_path.exists()
+        else {}
+    )
     resolver._discovery_attempted = True
     resolver._discovery_status = "offline"
     resolver._discovery_error = ""
-    resolver._field_cache = {field: keyword for field in sorted(label_fields)}
+    resolver._field_cache = dict(schema_payload.get("field_cache", {}) or {})
+    for field in sorted(label_fields):
+        resolver._field_cache.setdefault(field, keyword)
     resolver._field_cache["up"] = {"double": {"type": "double", "aggregatable": True}}
     resolver._cooccurrence_cache = {
         ("up", "instance"): False,
         ("up", "service.instance.id"): True,
     }
+    resolver._cooccurrence_cache.update(
+        {
+            (item["metric"], item.get("field") or item.get("label")): bool(item.get("cooccurs"))
+            for item in schema_payload.get("cooccurrence_cache", []) or []
+            if item.get("metric") and (item.get("field") or item.get("label"))
+        }
+    )
     resolver.resolve_metric_field = lambda name, **kw: name
     return rule_pack, resolver
 
@@ -346,7 +359,7 @@ def _snapshot_rule_pack_and_resolver():
 def _render_snapshot_dashboard(path: pathlib.Path) -> tuple[dict[str, Any], tuple[Any, ...]]:
     """Translate a dashboard fixture through the dashboard-level YAML path."""
     dashboard = _load_dashboard(path)
-    rule_pack, resolver = _snapshot_rule_pack_and_resolver()
+    rule_pack, resolver = _snapshot_rule_pack_and_resolver(path)
     with tempfile.TemporaryDirectory() as tmpdir:
         result, yaml_path = translate_dashboard(
             dashboard,
