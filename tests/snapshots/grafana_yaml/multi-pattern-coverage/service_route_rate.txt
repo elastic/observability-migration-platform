@@ -1,0 +1,8 @@
+title: Service Route Rate
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['http_requests_total']
+breakdown: legend
+axis_title: Requests/s
