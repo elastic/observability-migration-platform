@@ -314,6 +314,11 @@ class CommandContractDocTests(unittest.TestCase):
         # --logs-index does NOT fall back to --data-view (profile log default).
         self.assertIn("does **not** fall back\nto `--data-view`", text)
         self.assertIn("the source/profile log index", text)
+        # Native-PROMQL panels read from --data-view, not --esql-index, in the
+        # default auto mode; --esql-index only retargets ES|QL/fallback + discovery.
+        self.assertIn("Native-PROMQL vs ES|QL read target", text)
+        self.assertIn("`PROMQL index=…` command from `--data-view`", text)
+        self.assertIn("--translation-mode esql", text)
 
     def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
