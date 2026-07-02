@@ -16,7 +16,12 @@ import yaml
 from observability_migration.core.assets.operational import build_operational_ir
 from observability_migration.core.assets.query import QueryIR, build_query_ir, infer_output_shape
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.core.reporting.report import MigrationResult, PanelResult, _panel_query_index
+from observability_migration.core.reporting.report import (
+    MigrationResult,
+    PanelResult,
+    _panel_query_index,
+    recompute_result_counts,
+)
 from observability_migration.core.verification.field_capabilities import assess_field_usage
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
@@ -5900,6 +5905,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     _rewrite_variable_warnings(
         result.panel_results, _covered_control_variable_names(controls)
     )
+    recompute_result_counts(result)
     controls = _strip_internal_control_metadata(controls)
 
     yaml_doc = {

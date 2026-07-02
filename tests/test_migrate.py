@@ -5995,6 +5995,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(controls[0]["field"], "host")
         panel_result = result.yaml_panel_results[0]
         self.assertEqual(panel_result.status, "migrated")
+        self.assertEqual(result.migrated, 1)
+        self.assertEqual(result.migrated_with_warnings, 0)
         self.assertNotIn(
             "Variable-driven label filters applied via Kibana dashboard controls",
             panel_result.reasons,
