@@ -4317,6 +4317,7 @@ def translate_variables(
     rule_pack=None,
     resolver=None,
     repeat_variable_names=None,
+    include_variable_names=False,
 ):
     rule_pack = rule_pack or RulePackConfig()
     controls = []
@@ -4331,7 +4332,28 @@ def translate_variables(
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
         if context.control:
-            controls.append(context.control)
+            control = dict(context.control)
+            if include_variable_names and var.get("name"):
+                control[_CONTROL_SOURCE_VARIABLE_NAME] = var.get("name")
+            controls.append(control)
+    return controls
+
+
+def _covered_control_variable_names(controls):
+    names: set[str] = set()
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        variable_name = control.get("variable_name") or control.get(_CONTROL_SOURCE_VARIABLE_NAME)
+        if variable_name:
+            names.add(str(variable_name))
+    return names
+
+
+def _strip_internal_control_metadata(controls):
+    for control in controls or []:
+        if isinstance(control, dict):
+            control.pop(_CONTROL_SOURCE_VARIABLE_NAME, None)
     return controls
 
 
@@ -4926,6 +4948,7 @@ def _collect_repeat_variable_names(dashboard):
 _DROPPED_VARS_WARNING = "Dropped variable-driven label filters during migration"
 _DROPPED_LOGQL_LABEL_WARNING = "Dropped variable-driven LogQL label filters during migration"
 _DROPPED_LOGQL_TEXT_WARNING = "Dropped variable-driven LogQL text filter during migration"
+_CONTROL_SOURCE_VARIABLE_NAME = "_source_variable_name"
 
 
 def _pre_scan_control_variables(template_list):
@@ -4946,7 +4969,6 @@ def _pre_scan_control_variables(template_list):
 _CONTROL_COVERED_VARIABLE_WARNINGS = {
     _DROPPED_VARS_WARNING,
     _DROPPED_LOGQL_LABEL_WARNING,
-    _DROPPED_LOGQL_TEXT_WARNING,
 }
 
 
@@ -5741,7 +5763,6 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     metric_series_labels = build_metric_series_labels(dashboard)
 
     variables = dashboard.get("templating", {}).get("list", [])
-    control_variable_names = _pre_scan_control_variables(variables)
     # Record which ``?var`` params default to the regex match-all so both the
     # ES|QL and native PROMQL matcher emitters loosen equality matchers on
     # All/multi variables into regex matches and render data on first load
@@ -5857,9 +5878,6 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # completeness: every one needs a binding control, and any variable that
     # became a control should no longer be reported as a dropped filter.
     emitted_params = _collect_emitted_param_names(flat_panels)
-    _rewrite_variable_warnings(
-        result.panel_results, control_variable_names | emitted_params
-    )
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -5869,6 +5887,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+        include_variable_names=True,
     )
     controls = _ensure_param_controls(
         controls,
@@ -5878,6 +5897,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         resolver=controls_resolver,
         rule_pack=rule_pack,
     )
+    _rewrite_variable_warnings(
+        result.panel_results, _covered_control_variable_names(controls)
+    )
+    controls = _strip_internal_control_metadata(controls)
 
     yaml_doc = {
         "dashboards": [

@@ -604,6 +604,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(panel_result.status, "migrated_with_warnings")
         self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
 
+    def test_dashboard_controls_do_not_clear_warning_for_skipped_query_variable(self):
+        dashboard = {
+            "title": "Skipped control variable",
+            "uid": "skipped-control-var",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "query_result(up)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by host",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'cpu{host="$host"}'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            payload = yaml.safe_load(yaml_path.read_text())
+
+        self.assertNotIn("controls", payload["dashboards"][0])
+        panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by host")
+        self.assertEqual(panel_result.status, "migrated_with_warnings")
+        self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
+
     def test_dashboard_controls_do_not_cover_negative_variable_matchers(self):
         for expr in ('cpu{host!="$host"}', 'cpu{host!~"$host"}'):
             dashboard = {
@@ -642,6 +682,58 @@ class TranslatorRegressionTests(unittest.TestCase):
             panel_result = next(pr for pr in result.panel_results if pr.title == "CPU excluding host")
             self.assertEqual(panel_result.status, "migrated_with_warnings", expr)
             self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
+
+    def test_dashboard_controls_do_not_cover_logql_text_filter_variables(self):
+        dashboard = {
+            "title": "Log text variable",
+            "uid": "log-text-var",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "svc",
+                        "label": "Service",
+                        "query": "label_values({service_name!=\"\"}, service_name)",
+                    },
+                    {
+                        "type": "query",
+                        "name": "term",
+                        "label": "Term",
+                        "hide": 2,
+                        "query": "label_values({service_name!=\"\"}, term)",
+                    },
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Logs by term",
+                    "type": "logs",
+                    "datasource": {"type": "loki", "uid": "loki"},
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": '{service_name="$svc"} |~ "$term"',
+                            "datasource": {"type": "loki", "uid": "loki"},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, _yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+
+        panel_result = next(pr for pr in result.panel_results if pr.title == "Logs by term")
+        self.assertEqual(panel_result.status, "migrated_with_warnings")
+        self.assertIn("Dropped variable-driven LogQL text filter during migration", panel_result.reasons)
 
     def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
         panel = {
