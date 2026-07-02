@@ -87,6 +87,23 @@ def parse_args():
         help="Restrict validation to one or more Kibana dashboard IDs.",
     )
     parser.add_argument(
+        "--dashboards-from",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Scope validation to the dashboards recorded in a migration artifact "
+            "(a migration detailed report or a prior smoke report). Uploaded "
+            "saved-object IDs are used when present, otherwise dashboard titles. "
+            "Repeatable."
+        ),
+    )
+    parser.add_argument(
+        "--include-deleted",
+        action="store_true",
+        help="Also validate '[DELETED]' placeholder dashboards (skipped by default when unscoped).",
+    )
+    parser.add_argument(
         "--capture-screenshots",
         action="store_true",
         help="Capture dashboard screenshots using headless Chrome/Chromium.",
@@ -506,16 +523,54 @@ def analyze_layout(panels):
     return issues
 
 
-def should_include_dashboard(saved_object, dashboard_titles, dashboard_ids):
+def should_include_dashboard(saved_object, dashboard_titles, dashboard_ids, include_deleted=False):
     title = saved_object.get("attributes", {}).get("title", "")
     dashboard_id = saved_object.get("id", "")
-    if dashboard_titles and title not in set(dashboard_titles):
-        return False
-    if dashboard_ids and dashboard_id not in set(dashboard_ids):
-        return False
-    if not dashboard_titles and not dashboard_ids and title.startswith("[DELETED]"):
+    if dashboard_titles or dashboard_ids:
+        # Scoped: include a dashboard matching any requested id OR any requested
+        # title (a union). Combining id- and title-based scope must never drop a
+        # dashboard that matches only one dimension.
+        return dashboard_id in set(dashboard_ids) or title in set(dashboard_titles)
+    if not include_deleted and title.startswith("[DELETED]"):
         return False
     return True
+
+
+def _iter_dashboard_records(payload):
+    """Yield dashboard-like dicts from a smoke report, migration report, or list."""
+    if isinstance(payload, list):
+        records = payload
+    elif isinstance(payload, dict):
+        records = payload.get("dashboards")
+    else:
+        records = None
+    for item in records or []:
+        if isinstance(item, dict):
+            yield item
+
+
+def load_scope_from_artifact(path):
+    """Extract ``(ids, titles)`` to scope validation from a migration artifact.
+
+    Accepts a migration detailed report or a prior smoke report (both expose a
+    top-level ``dashboards`` list). Each record contributes its uploaded
+    saved-object ID when present (a smoke report), otherwise its title (a
+    migration report has titles but no uploaded ID). Preferring IDs lets the
+    caller load only those dashboards by ID instead of scanning the whole space,
+    which is what makes validation practical on a busy space (#198).
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    ids = []
+    titles = []
+    for record in _iter_dashboard_records(payload):
+        dashboard_id = str(record.get("id") or record.get("kibana_saved_object_id") or "").strip()
+        title = str(record.get("title") or record.get("dashboard_title") or "").strip()
+        if dashboard_id:
+            if dashboard_id not in ids:
+                ids.append(dashboard_id)
+        elif title and title not in titles:
+            titles.append(title)
+    return ids, titles
 
 
 def _chrome_command(chrome_binary, url, args, current_budget, extra_args=None):
@@ -1134,30 +1189,78 @@ def main(verify: bool | str = True):
     if args.kibana_api_key:
         session.headers.update({"Authorization": f"ApiKey {args.kibana_api_key}"})
 
+    requested_ids = list(args.dashboard_id)
+    requested_titles = list(args.dashboard_title)
+    for artifact_path in getattr(args, "dashboards_from", []) or []:
+        artifact_ids, artifact_titles = load_scope_from_artifact(artifact_path)
+        requested_ids.extend(item for item in artifact_ids if item not in requested_ids)
+        requested_titles.extend(item for item in artifact_titles if item not in requested_titles)
+        print(
+            f"Scope from {artifact_path}: {len(artifact_ids)} dashboard ID(s), "
+            f"{len(artifact_titles)} title(s)"
+        )
+    include_deleted = getattr(args, "include_deleted", False)
+    scoped = bool(requested_ids or requested_titles)
+
     dashboards = []
-    if args.dashboard_id:
-        dashboard_items = [
-            load_dashboard(session, args.kibana_url, args.space_id, dashboard_id, args.timeout)
-            for dashboard_id in args.dashboard_id
-        ]
-    else:
-        dashboard_items = load_dashboards(
+    dashboard_items = []
+    seen_ids = set()
+    if requested_ids:
+        for dashboard_id in requested_ids:
+            try:
+                item = load_dashboard(session, args.kibana_url, args.space_id, dashboard_id, args.timeout)
+            except Exception as exc:  # one stale ID should not abort the run
+                print(f"  WARNING: could not load dashboard {dashboard_id}: {exc}")
+                continue
+            dashboard_items.append(item)
+            object_id = item.get("id")
+            if object_id:
+                seen_ids.add(object_id)
+    # Titles can only be resolved from the full listing, and an unscoped run
+    # lists everything anyway. IDs fetched directly above are deduped by id so a
+    # combined id+title scope validates the union without loading anything twice.
+    if requested_titles or not requested_ids:
+        for item in load_dashboards(
             session,
             args.kibana_url,
             args.space_id,
             args.timeout,
             per_page=args.saved_objects_per_page,
-        )
+        ):
+            if item.get("id") not in seen_ids:
+                dashboard_items.append(item)
 
     selected_items = [
         item
         for item in dashboard_items
-        if should_include_dashboard(item, args.dashboard_title, args.dashboard_id)
+        if should_include_dashboard(item, requested_titles, requested_ids, include_deleted=include_deleted)
     ]
-    scope = "requested dashboard(s)" if (args.dashboard_title or args.dashboard_id) else "all non-deleted dashboard(s)"
-    print(f"Inspecting {len(selected_items)}/{len(dashboard_items)} {scope}")
+    space_label = args.space_id or "default"
+    if scoped:
+        scope = "requested dashboard(s)"
+    else:
+        scope = "all dashboard(s)" if include_deleted else "all non-deleted dashboard(s)"
+        print(
+            f"WARNING: no dashboard scope provided; validating {scope} in space '{space_label}'. "
+            "Pass --dashboards-from, --dashboard-id, or --dashboard-title to scope to a migration's uploaded dashboards."
+        )
+    if not scoped and not include_deleted:
+        deleted_skipped = sum(
+            1
+            for item in dashboard_items
+            if str(item.get("attributes", {}).get("title", "")).startswith("[DELETED]")
+        )
+        if deleted_skipped:
+            print(
+                f"  Skipping {deleted_skipped} '[DELETED]' placeholder dashboard(s) "
+                "(use --include-deleted to validate them)."
+            )
+    total_selected = len(selected_items)
+    print(f"Inspecting {total_selected}/{len(dashboard_items)} {scope}")
 
-    for item in selected_items:
+    for index, item in enumerate(selected_items, start=1):
+        item_title = item.get("attributes", {}).get("title", "") or item.get("id", "")
+        print(f"  [{index}/{total_selected}] {item_title}", flush=True)
         attributes = item.get("attributes", {}) or {}
         saved_object = item if attributes.get("panelsJSON") else load_dashboard(
             session,
