@@ -1254,6 +1254,45 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(ids, ["dash-1"])
         self.assertEqual(titles, [])
 
+    def test_load_scope_from_artifact_uses_upload_saved_object_id(self):
+        # Datadog (and Grafana) detailed reports: top-level ``id`` is the SOURCE
+        # dashboard id; the Kibana saved-object id lives under upload.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dd_report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "abc-def-ghi", "title": "DD One", "upload": {"saved_object_id": "kib-1"}},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        # The source id "abc-def-ghi" must never be used as a Kibana id.
+        self.assertEqual(ids, ["kib-1"])
+        self.assertEqual(titles, [])
+
+    def test_load_scope_from_artifact_falls_back_to_title_when_not_uploaded(self):
+        # A migration report that never uploaded exposes an empty saved_object_id;
+        # scope by title rather than the source id.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dd_report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "abc-def-ghi", "title": "DD One", "upload": {"saved_object_id": ""}},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        self.assertEqual(ids, [])
+        self.assertEqual(titles, ["DD One"])
+
     def test_should_include_dashboard_can_opt_into_deleted_placeholders(self):
         deleted = {"id": "old-dashboard", "attributes": {"title": "[DELETED] old-dashboard"}}
 

@@ -549,21 +549,40 @@ def _iter_dashboard_records(payload):
             yield item
 
 
+def _kibana_saved_object_id(record):
+    """Return a record's *Kibana* saved-object ID, never a source dashboard ID.
+
+    The record shape differs by artifact, and a naive top-level ``id`` is a trap:
+
+    - A migration detailed report (Grafana/Datadog) sets top-level ``id`` to the
+      *source* dashboard ID and carries the uploaded Kibana ID under
+      ``upload.saved_object_id``. Trusting ``id`` here would try to load a
+      source ID from Kibana and match nothing.
+    - A prior smoke report has no ``upload`` block; its own ``id`` *is* the
+      Kibana saved-object ID.
+    """
+    upload = record.get("upload")
+    if isinstance(upload, dict):
+        return str(upload.get("saved_object_id") or "").strip()
+    return str(record.get("kibana_saved_object_id") or record.get("id") or "").strip()
+
+
 def load_scope_from_artifact(path):
     """Extract ``(ids, titles)`` to scope validation from a migration artifact.
 
     Accepts a migration detailed report or a prior smoke report (both expose a
-    top-level ``dashboards`` list). Each record contributes its uploaded
-    saved-object ID when present (a smoke report), otherwise its title (a
-    migration report has titles but no uploaded ID). Preferring IDs lets the
-    caller load only those dashboards by ID instead of scanning the whole space,
-    which is what makes validation practical on a busy space (#198).
+    top-level ``dashboards`` list). Each record contributes its uploaded Kibana
+    saved-object ID when present (a smoke report's ``id`` or a migration report's
+    ``upload.saved_object_id``), otherwise its title (a migration report that
+    never uploaded has titles but no Kibana ID). Preferring IDs lets the caller
+    load only those dashboards by ID instead of scanning the whole space, which
+    is what makes validation practical on a busy space (#198).
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     ids = []
     titles = []
     for record in _iter_dashboard_records(payload):
-        dashboard_id = str(record.get("id") or record.get("kibana_saved_object_id") or "").strip()
+        dashboard_id = _kibana_saved_object_id(record)
         title = str(record.get("title") or record.get("dashboard_title") or "").strip()
         if dashboard_id:
             if dashboard_id not in ids:
