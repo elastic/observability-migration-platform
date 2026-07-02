@@ -1080,7 +1080,7 @@ dashboard scoping via `--dashboard-ids` before any Elastic target exists.
 .venv/bin/grafana-validate-uploaded \
   --kibana-url "$KIBANA_ENDPOINT" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
-  --dashboards-from migration_output/migration_report.json \
+  --dashboards-from migration_output/dashboards/migration_report.json \
   --output upload_smoke_report.json
 
 .venv/bin/grafana-generate-corpus --help

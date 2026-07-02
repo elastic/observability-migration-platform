@@ -1306,6 +1306,28 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         inspected = sorted(d["id"] for d in report["dashboards"])
         self.assertEqual(inspected, ["dashboard-123", "dashboard-456"])
 
+    def test_main_refuses_all_space_run_when_requested_scope_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Parses fine but carries no dashboards -> no ids/titles resolved.
+            artifact = pathlib.Path(tmpdir) / "empty.json"
+            artifact.write_text(json.dumps({"dashboards": []}))
+            args = _smoke_args(
+                output=str(pathlib.Path(tmpdir) / "report.json"),
+                dashboards_from=[str(artifact)],
+            )
+
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards") as mock_load_dashboards:
+                    with mock.patch.object(smoke, "load_dashboard") as mock_load_dashboard:
+                        with mock.patch.object(smoke, "inspect_dashboard") as mock_inspect:
+                            with self.assertRaises(SystemExit) as ctx:
+                                smoke.main()
+
+        self.assertIn("No dashboards resolved from the requested scope", str(ctx.exception))
+        mock_load_dashboards.assert_not_called()
+        mock_load_dashboard.assert_not_called()
+        mock_inspect.assert_not_called()
+
     def test_main_scopes_by_ids_from_artifact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact = pathlib.Path(tmpdir) / "prior_smoke.json"

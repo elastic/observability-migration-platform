@@ -1200,7 +1200,19 @@ def main(verify: bool | str = True):
             f"{len(artifact_titles)} title(s)"
         )
     include_deleted = getattr(args, "include_deleted", False)
+    scope_requested = bool(
+        args.dashboard_id or args.dashboard_title or (getattr(args, "dashboards_from", []) or [])
+    )
     scoped = bool(requested_ids or requested_titles)
+    if scope_requested and not scoped:
+        # The user asked to scope the run but nothing resolved (e.g. an empty or
+        # wrong-shape --dashboards-from artifact). Fail loudly instead of
+        # silently validating every dashboard in the space (#198).
+        raise SystemExit(
+            "No dashboards resolved from the requested scope "
+            "(--dashboards-from/--dashboard-id/--dashboard-title). Refusing to "
+            "fall back to an all-space run; check the artifact contents or scope flags."
+        )
 
     dashboards = []
     dashboard_items = []
