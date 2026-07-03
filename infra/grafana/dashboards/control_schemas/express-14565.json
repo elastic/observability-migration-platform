@@ -1,0 +1,48 @@
+{
+  "index_pattern": "metrics-*",
+  "field_cache": {
+    "nodejs_version_info": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "node_uname_info": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "service.instance.id": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    }
+  },
+  "cooccurrence_cache": [
+    {
+      "metric": "nodejs_version_info",
+      "field": "instance",
+      "cooccurs": false
+    },
+    {
+      "metric": "nodejs_version_info",
+      "field": "service.instance.id",
+      "cooccurs": true
+    },
+    {
+      "metric": "node_uname_info",
+      "field": "instance",
+      "cooccurs": false
+    },
+    {
+      "metric": "node_uname_info",
+      "field": "service.instance.id",
+      "cooccurs": true
+    }
+  ]
+}

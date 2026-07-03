@@ -553,6 +553,12 @@ class FormulaPlan:
     # gaps). The translator uses this to emit the correct set-union note instead
     # of the same-bucket arithmetic caveat.
     set_or_fill: bool = False
+    # Set when ``expr`` is a same-metric PromQL ``or`` rewritten as a single
+    # fetch with a unified WHERE OR clause (see
+    # ``_try_rewrite_set_or_same_metric``). This is an exact rewrite, not an
+    # approximation, so the translator must skip the same-bucket arithmetic
+    # caveat for it too.
+    set_or_where: bool = False
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -1812,10 +1818,16 @@ def _ast_call_fragment(node, expr):
     if func_name == "label_replace" and len(child_frags) == 5:
         value_frag = child_frags[0]
         string_args = [f.extra.get("string_value") for f in child_frags[1:]]
-        if (
-            all(s is not None for s in string_args)
-            and not value_frag.extra.get("not_feasible_reasons")
-        ):
+        # A bare ``vector(N)`` value is itself "not feasible" standalone, but
+        # that is exactly the shape of the ``or`` zero-fill idiom Grafana
+        # dashboards use to label a fallback value (e.g.
+        # ``X or on() label_replace(vector(0), "status", "0", "", "")``).
+        # Let it through here so ``_is_vector_fallback_operand`` can still
+        # recognize and strip it in ``_strip_or_vector_fallback`` below.
+        value_ok = not value_frag.extra.get(
+            "not_feasible_reasons"
+        ) or _is_vector_fallback_operand(value_frag)
+        if all(s is not None for s in string_args) and value_ok:
             dst, replacement, src, regex = string_args
             result = _copy_fragment_summary(
                 _new_fragment(expr, family="label_replace"), value_frag
@@ -2367,15 +2379,22 @@ def _restore_sanitized_labels(frag, label_map):
 
 
 def _is_vector_fallback_operand(frag):
-    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback.
+    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback,
+    including one wrapped in ``label_replace(vector(N), ...)``.
 
     ``vector(N)`` has no series labels; in ``X or vector(N)`` it only fills the
     gaps where ``X`` has no data with the constant ``N``. It is not a metric in
     its own right, so when it is the fallback side of an ``or`` we can drop it
-    (issue #66 Pattern A).
+    (issue #66 Pattern A). Dashboards commonly wrap the fallback in
+    ``label_replace(...)`` to stamp a label onto the synthetic zero row (e.g.
+    ``X or on() label_replace(vector(0), "status", "0", "", "")``); that label
+    only matters for the vector's own (dropped) series, so unwrap through it
+    the same way (issue #252).
     """
     if frag is None:
         return False
+    if frag.family == "label_replace":
+        return _is_vector_fallback_operand(frag.extra.get("lr_inner_frag"))
     if frag.extra.get("call_name") != "vector":
         return False
     reasons = frag.extra.get("not_feasible_reasons") or []
@@ -3793,6 +3812,7 @@ def _try_rewrite_set_or_same_metric(
         specs=[new_spec],
         expr=new_spec.final_alias,
         warnings=list(new_spec.warnings),
+        set_or_where=True,
     )
 
 

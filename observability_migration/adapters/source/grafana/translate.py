@@ -1345,7 +1345,13 @@ def binary_expr_family_rule(context):
         # and joins that dropped an operand ``by(...)`` label (review #164) keep
         # the same-bucket caveat. A cross-metric ``or`` union carries its own
         # set-union note (issue #167) and is not arithmetic, so skip it.
-        if not plan.set_or_fill and not _join_is_faithful(frag, resolver, output_group_fields):
+        # Same-metric ``or`` rewritten as a WHERE OR clause (issue #252) is an
+        # exact rewrite too, so skip the arithmetic caveat for it as well.
+        if (
+            not plan.set_or_fill
+            and not plan.set_or_where
+            and not _join_is_faithful(frag, resolver, output_group_fields)
+        ):
             _append_unique(
                 context.warnings,
                 "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -1374,6 +1380,8 @@ def binary_expr_family_rule(context):
     context.translation_complete = True
     if plan.set_or_fill:
         return "translated cross-metric 'or' as COALESCE union"
+    if plan.set_or_where:
+        return "translated same-metric 'or' as unified WHERE OR clause"
     return "translated arithmetic expression"
 
 

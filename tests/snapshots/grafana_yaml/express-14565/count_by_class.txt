@@ -1,0 +1,9 @@
+title: Count by class
+grafana_type: gauge
+status: migrated_with_warnings
+chart_type: gauge
+metric: http_requests_total
+gauge_shape: arc
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Panel has 7 PromQL targets but only 1 could be migrated

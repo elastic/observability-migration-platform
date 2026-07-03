@@ -132,6 +132,17 @@ CASES: list[tuple[str, str, str]] = [
         "up{job='prom'} or vector(0)",
         "timeseries",
     ),
+    # --- or fallback wrapped in label_replace (issue #252) ------------------
+    # Dashboards commonly stamp a label onto the synthetic zero row so a
+    # ``sum()`` always returns a value even when the base series is empty
+    # (e.g. Express Prometheus Middleware's "Count by class" panel). The
+    # label_replace() wrapper is cosmetic for a single fallback operand, so
+    # this must strip the same way as a bare ``or vector(N)``.
+    (
+        "or_label_replace_vector_fallback",
+        'http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", "")',
+        "timeseries",
+    ),
     # --- uptime: time() - boot_time ----------------------------------------
     (
         "uptime_expression",

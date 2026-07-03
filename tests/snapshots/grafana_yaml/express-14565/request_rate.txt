@@ -1,0 +1,9 @@
+title: Request rate
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['http_requests_total']
+breakdown: instance
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['status'] are in the query but not on the chart, so series differing only by those are visually merged
