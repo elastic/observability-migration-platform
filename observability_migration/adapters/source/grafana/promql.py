@@ -1572,6 +1572,12 @@ def _copy_fragment_summary(target, source):
         "inner_group",
         "join_labels",
         "offset",
+        # A stripped ``X or vector(N)`` fallback tags its surviving operand so
+        # the translator can warn about the dropped zero-fill. That survivor is
+        # frequently wrapped in an aggregation (``sum(X or vector(0))``), which
+        # rebuilds the fragment via this copy; carry the flag through so the
+        # warning is not lost on the wrapped shape (issue #252 review).
+        "or_vector_fallback",
         "post_filter",
         "quantile_phi",
         "start_matchers",
@@ -3660,6 +3666,21 @@ def _try_rewrite_set_or_same_metric(
     left_frag = frag.extra.get("left_frag")
     right_frag = frag.extra.get("right_frag")
     if not left_frag or not right_frag:
+        return None
+
+    # A bare ``or`` matches on the full label set, so two operands with
+    # disjoint matchers never collide and their union is exactly the OR of
+    # their filters. ``on(...)`` / ``ignoring(...)`` restrict the match to a
+    # subset of labels: PromQL then suppresses a right-hand series wherever the
+    # left has *any* series sharing those labels, even if the differing label
+    # (e.g. ``status``) means they are logically distinct. A flat WHERE-OR keeps
+    # both and over-includes the suppressed rows, so it is no longer an exact
+    # rewrite (issue #252 review). Refuse it and let the rule layer mark the
+    # panel not_feasible rather than emit silently wrong numbers. The parser
+    # tags a bare ``or`` with an empty ``type``; ``on``/``ignoring`` set it to
+    # ``Include`` / ``Exclude``.
+    matching = frag.extra.get("vector_matching")
+    if matching and matching.get("type"):
         return None
 
     # Recurse first into a left-leaning ``or`` chain so ``A or A or A``

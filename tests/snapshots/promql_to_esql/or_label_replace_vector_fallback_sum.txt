@@ -1,0 +1,11 @@
+source: sum(http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", ""))
+feasibility: feasible
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE status RLIKE "4.."
+| WHERE http_requests_total IS NOT NULL
+| STATS http_requests_total = SUM(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

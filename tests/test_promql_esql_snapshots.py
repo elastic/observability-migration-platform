@@ -143,6 +143,23 @@ CASES: list[tuple[str, str, str]] = [
         'http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", "")',
         "timeseries",
     ),
+    # The dashboard shape wraps the fallback in an aggregation so ``sum()``
+    # always returns a value. The stripped zero-fill note must survive the
+    # aggregation copy, not just the bare top-level form (issue #252 review).
+    (
+        "or_label_replace_vector_fallback_sum",
+        'sum(http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", ""))',
+        "timeseries",
+    ),
+    # A same-metric ``or`` with an on()/ignoring() modifier is NOT an exact
+    # WHERE-OR: the modifier suppresses right-hand series that share the matched
+    # labels, so a flat OR over-includes them. It must degrade to not_feasible
+    # instead of the unified-WHERE rewrite (issue #252 review).
+    (
+        "or_same_metric_on_modifier_refused",
+        'http_requests_total{status=~"4.."} or on(instance) http_requests_total{status=~"5.."}',
+        "timeseries",
+    ),
     # --- uptime: time() - boot_time ----------------------------------------
     (
         "uptime_expression",
