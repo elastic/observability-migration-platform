@@ -160,6 +160,14 @@ CASES: list[tuple[str, str, str]] = [
         'http_requests_total{status=~"4.."} or on(instance) http_requests_total{status=~"5.."}',
         "timeseries",
     ),
+    # A label-less ``ignoring()`` does not narrow the match key — it is
+    # equivalent to the full-label-set match of a bare ``or`` — so it must keep
+    # the exact unified-WHERE rewrite, not degrade like on()/ignoring(labels).
+    (
+        "or_same_metric_empty_ignoring_exact",
+        'http_requests_total{status="400"} or ignoring() http_requests_total{status="500"}',
+        "timeseries",
+    ),
     # --- uptime: time() - boot_time ----------------------------------------
     (
         "uptime_expression",

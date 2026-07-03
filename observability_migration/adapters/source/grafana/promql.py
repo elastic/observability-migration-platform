@@ -3670,17 +3670,16 @@ def _try_rewrite_set_or_same_metric(
 
     # A bare ``or`` matches on the full label set, so two operands with
     # disjoint matchers never collide and their union is exactly the OR of
-    # their filters. ``on(...)`` / ``ignoring(...)`` restrict the match to a
-    # subset of labels: PromQL then suppresses a right-hand series wherever the
-    # left has *any* series sharing those labels, even if the differing label
-    # (e.g. ``status``) means they are logically distinct. A flat WHERE-OR keeps
-    # both and over-includes the suppressed rows, so it is no longer an exact
-    # rewrite (issue #252 review). Refuse it and let the rule layer mark the
-    # panel not_feasible rather than emit silently wrong numbers. The parser
-    # tags a bare ``or`` with an empty ``type``; ``on``/``ignoring`` set it to
-    # ``Include`` / ``Exclude``.
-    matching = frag.extra.get("vector_matching")
-    if matching and matching.get("type"):
+    # their filters. A modifier that *narrows* the match key — ``on(...)`` /
+    # ``ignoring(...)`` with labels, or a label-less ``on()`` (matches on the
+    # empty set) — makes PromQL suppress a right-hand series wherever the left
+    # shares the matched labels, even when a differing label (e.g. ``status``)
+    # makes them logically distinct. A flat WHERE-OR keeps both and
+    # over-includes the suppressed rows, so it is no longer exact (issue #252
+    # review). Reuse the shared predicate so a non-narrowing modifier such as a
+    # label-less ``ignoring()`` (equivalent to the full-label-set match) still
+    # takes the exact rewrite; it also walks the whole ``or`` chain.
+    if _or_chain_has_vector_matching(frag):
         return None
 
     # Recurse first into a left-leaning ``or`` chain so ``A or A or A``
