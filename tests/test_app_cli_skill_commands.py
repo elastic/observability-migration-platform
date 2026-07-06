@@ -890,6 +890,47 @@ class CompareSubcommandTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 0)
             self.assertEqual(stderr_quiet.getvalue(), "")
 
+    def test_verify_compare_runner_drives_run_compare_without_quiet_attr(self):
+        # Regression for issue #199: the verify --run-compare seam builds a
+        # SimpleNamespace with no `quiet` field and calls _run_compare, so a
+        # bare `args.quiet` read there aborts the whole verify run. Drive the
+        # real _verify_compare_runner -> _run_compare path (not a stub) and
+        # confirm it completes.
+        from observability_migration.app import cli
+
+        class V:
+            def __init__(self, verdict):
+                self._v = verdict
+                self.max_relative_error = 0.0
+                self.compared_points = 3
+                self.notes = []
+                self.skipped_reason = ""
+                self.fail_reason = ""
+                self.translated_error = ""
+                self.native_error = ""
+                self.native_series = 1
+                self.translated_series = 1
+                self.common_series = 1
+            def verdict(self):
+                return self._v
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "go_goroutines", "translated_query": "TS metrics-*", "semantic_gate": "Green"},
+            ])
+            runner = cli._verify_compare_runner(SimpleNamespace())
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V("STRICT_PASS")),
+                redirect_stderr(stderr),
+            ):
+                result = runner(artifact_dir=str(art), es_url="https://es.test", api_key="k", index="")
+            self.assertTrue(result["ran"], result)
+            self.assertEqual(result["summary"]["panels"], 1)
+
     def test_compare_structural_only_when_no_oracle(self):
         from observability_migration.app import cli
 
