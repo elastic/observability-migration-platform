@@ -1288,7 +1288,7 @@ def _run_compare(args: Any) -> int:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
         return 2
 
-    progress = null_progress if args.quiet else stderr_progress("compare")
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("compare")
     total_panels = len(packets)
     dashboard_count = len({pkt.get("dashboard", "") for pkt in packets})
     progress(f"comparing {total_panels} panels across {dashboard_count} dashboards")
@@ -1547,7 +1547,7 @@ def _run_seed_sample_data(args: Any) -> int:
     verify = _tls_verify(args)
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
     request = make_es_request(args.es_url, args.api_key, verify=verify)
-    progress = null_progress if args.quiet else stderr_progress("seed")
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("seed")
     try:
         summary = seed_sample_data(
             artifact_dirs, request,
