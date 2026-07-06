@@ -12,7 +12,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -669,6 +669,49 @@ class SeedSampleDataSubcommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as artifact_dir, self.assertRaises(SystemExit) as ctx:
             cli.main(["seed-sample-data", "--artifact-dir", artifact_dir, "--api-key", "k"])
         self.assertEqual(ctx.exception.code, 2)
+
+    def test_progress_prints_to_stderr_by_default_and_quiet_suppresses_it(self):
+        from observability_migration.app import cli
+
+        class FakeSummary:
+            ok = 5
+            errors = 0
+            docs_per_stream = {"logs-generic-default": 5}
+            error_samples: list = []
+
+        def fake_seed(artifact_dirs, request, *, on_progress=None, **kwargs):
+            if on_progress is not None:
+                on_progress("ingested 5 docs so far (errors=0)")
+            return FakeSummary()
+
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "seed_sample_data", side_effect=fake_seed),
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main([
+                    "seed-sample-data", "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test", "--api-key", "k",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertIn("seed:", stderr.getvalue())
+
+            stderr_quiet = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "seed_sample_data", side_effect=fake_seed),
+                redirect_stderr(stderr_quiet),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main([
+                    "seed-sample-data", "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test", "--api-key", "k", "--quiet",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(stderr_quiet.getvalue(), "")
 
 
 class RemoveSampleDataSubcommandTests(unittest.TestCase):

@@ -27,6 +27,7 @@ import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.progress import null_progress, stderr_progress
 from observability_migration.core.sample_data import (
     NetworkError,
     load_metric_kind_overrides,
@@ -541,6 +542,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="Delete non-seeder streams overlapping the contract wildcards before seeding.")
     seed_cmd.add_argument("--rules-file", action="append", default=[], help="Rule-pack file with metric_kinds overrides. Repeat to layer.")
     seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
+    seed_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(seed_cmd)
 
     remove_cmd = sub.add_parser(
@@ -1535,6 +1537,7 @@ def _run_seed_sample_data(args: Any) -> int:
     verify = _tls_verify(args)
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
     request = make_es_request(args.es_url, args.api_key, verify=verify)
+    progress = null_progress if args.quiet else stderr_progress("seed")
     try:
         summary = seed_sample_data(
             artifact_dirs, request,
@@ -1542,6 +1545,7 @@ def _run_seed_sample_data(args: Any) -> int:
             batch_docs=args.batch_docs, max_combinations=args.max_combinations,
             no_recreate=args.no_recreate, purge_foreign=args.purge_foreign_streams,
             metric_kind_overrides=overrides,
+            on_progress=progress,
         )
     except NetworkError as exc:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
