@@ -672,6 +672,9 @@ the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labe
   --report-out comparison_report.json
 ```
 
+Progress (panel counts as they're compared, the report path) prints to stderr
+as the run progresses; pass `--quiet` to suppress it.
+
 `--artifact-dir` is required and repeatable (each directory must contain
 `verification_packets.json`). `--es-url`/`--api-key` default to
 `ELASTICSEARCH_ENDPOINT`/`ES_URL` and `KEY`. `--index` overrides the native

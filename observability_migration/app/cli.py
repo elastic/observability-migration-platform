@@ -590,6 +590,7 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
     compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
     compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
+    compare_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(compare_cmd)
 
     verify_unified_cmd = sub.add_parser(
@@ -1287,8 +1288,13 @@ def _run_compare(args: Any) -> int:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
         return 2
 
+    progress = null_progress if args.quiet else stderr_progress("compare")
+    total_panels = len(packets)
+    dashboard_count = len({pkt.get("dashboard", "") for pkt in packets})
+    progress(f"comparing {total_panels} panels across {dashboard_count} dashboards")
+
     rows: list[dict[str, Any]] = []
-    for pkt in packets:
+    for i, pkt in enumerate(packets, start=1):
         is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
         if oracle_ok and is_promql:
             index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
@@ -1384,6 +1390,9 @@ def _run_compare(args: Any) -> int:
                     "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
                 })
 
+        if i % 10 == 0 or i == total_panels:
+            progress(f"processed {i}/{total_panels} panels")
+
     summary = {"panels": len(rows)}
     for r in rows:
         summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
@@ -1391,6 +1400,7 @@ def _run_compare(args: Any) -> int:
     out = Path(args.report_out)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
+    progress(f"report written to {out}")
     print(json.dumps(summary, indent=2))
     return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL") for r in rows) else 0
 
