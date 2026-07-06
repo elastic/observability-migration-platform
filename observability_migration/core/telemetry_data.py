@@ -388,6 +388,7 @@ def ingest_documents(
     request: RequestFn,
     *,
     batch_docs: int = 5000,
+    on_progress: Callable[[str], None] | None = None,
 ) -> IngestSummary:
     summary = IngestSummary()
     batch: list[str] = []
@@ -396,10 +397,14 @@ def ingest_documents(
         batch.append(json.dumps({"create": {"_index": index_name}}))
         batch.append(json.dumps(doc))
         if len(batch) >= batch_docs * 2:
-            _flush_into_summary(batch, request, summary)
+            _flush_into_summary(batch, request, summary, on_progress=on_progress)
             batch = []
+            if on_progress is not None:
+                on_progress(f"ingested {summary.ok} docs so far (errors={summary.errors})")
     if batch:
-        _flush_into_summary(batch, request, summary)
+        _flush_into_summary(batch, request, summary, on_progress=on_progress)
+        if on_progress is not None:
+            on_progress(f"ingested {summary.ok} docs so far (errors={summary.errors})")
     return summary
 
 
@@ -1143,7 +1148,13 @@ class IngestSummary:
     error_samples: list[str] = dataclasses.field(default_factory=list)
 
 
-def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSummary) -> None:
+def _flush_into_summary(
+    lines: list[str],
+    request: RequestFn,
+    summary: IngestSummary,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
     result = request(
         "POST",
         "/_bulk",
@@ -1165,8 +1176,11 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
             # throttling (429); both clear when the batch is smaller. Split and
             # retry so the data still lands instead of being written off.
             mid = (attempted // 2) * 2  # split on a doc boundary (2 lines/doc)
-            _flush_into_summary(lines[:mid], request, summary)
-            _flush_into_summary(lines[mid:], request, summary)
+            first, second = mid // 2, attempted - mid // 2
+            if on_progress is not None:
+                on_progress(f"batch of {attempted} docs failed; retrying as {first} + {second} docs")
+            _flush_into_summary(lines[:mid], request, summary, on_progress=on_progress)
+            _flush_into_summary(lines[mid:], request, summary, on_progress=on_progress)
             return
         # A single document that still fails is a real, unrecoverable error.
         summary.errors += attempted
