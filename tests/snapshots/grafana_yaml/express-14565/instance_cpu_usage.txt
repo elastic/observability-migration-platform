@@ -6,5 +6,4 @@ dimension: time_bucket
 metrics: ['computed_value']
 breakdown: instance
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
