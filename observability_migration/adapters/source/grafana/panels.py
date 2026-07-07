@@ -977,11 +977,21 @@ _PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
 _PROMQL_GROUPING_MODIFIERS = frozenset(
     {"by", "without", "on", "ignoring", "group_left", "group_right"}
 )
+# Aggregation operators. In the usual `sum(...)` form they are caught by the
+# function-call guard (identifier followed by `(`), but in the modifier-before-
+# args form (`sum by (job) (metric)`) the operator is followed by `by`/`without`
+# instead, so it must be reserved explicitly.
+_PROMQL_AGG_OPERATORS = frozenset(
+    {
+        "sum", "min", "max", "avg", "group", "count", "count_values",
+        "stddev", "stdvar", "topk", "bottomk", "quantile", "limitk", "limit_ratio",
+    }
+)
 # PromQL words that read as identifiers but are never metric selectors, so they
 # must not be prefixed even if a colliding `metrics.<word>` field exists. The
 # grouping modifiers are included for the case where they appear without a
 # following `(` (`a * group_left b`).
-_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | frozenset(
+_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | frozenset(
     {"offset", "bool", "and", "or", "unless", "atan2", "start", "end", "inf", "nan"}
 )
 

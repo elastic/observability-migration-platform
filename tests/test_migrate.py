@@ -1825,6 +1825,37 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (instance)", q)
         self.assertNotIn("metrics.instance", q)
 
+    def test_native_promql_does_not_prefix_agg_operator_in_modifier_before_args_form(self):
+        """Regression (#270 review): in the ``sum by (...) (...)`` form the
+        aggregation operator is NOT immediately followed by ``(`` (the modifier
+        comes first), so the function-call guard misses it. It must never be
+        rewritten even when a colliding ``metrics.sum`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum by (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum by (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
+    def test_native_promql_does_not_prefix_without_agg_operator_before_args(self):
+        """Same for the ``sum without (...) (...)`` form."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum without (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum without (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
     def test_native_promql_does_not_prefix_offset_keyword_colliding_with_metric(self):
         """The ``offset`` modifier keyword must not be rewritten even when a
         ``metrics.offset`` field exists."""
