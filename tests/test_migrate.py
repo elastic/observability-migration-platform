@@ -1722,6 +1722,76 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("metrics.instance", q)
 
+    def test_native_promql_prefixes_exact_name_matcher_value(self):
+        """Regression (#270 review): ``{__name__="foo"}`` is the metric-name
+        matcher — equivalent to selecting ``foo`` — so its exact value gets the
+        same field-cache-gated ``metrics.`` prefix a bare selector would."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="metrics.http_requests_total"})', q)
+
+    def test_native_promql_prefixes_name_matcher_alongside_other_labels(self):
+        """The ``__name__`` value is rewritten; a sibling label matcher key is
+        not (it is a real label, not a metric)."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total", job="api"}',
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('{__name__="metrics.http_requests_total", job="api"}', q)
+        self.assertNotIn('metrics.job', q)
+
+    def test_native_promql_leaves_regex_name_matcher_bare(self):
+        """A regex ``__name__=~`` matcher value cannot be safely prefixed
+        (prefixing a regex is fragile), so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__=~"http.*"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__=~"http.*"})', q)
+        self.assertNotIn('metrics.http', q)
+
+    def test_native_promql_leaves_negative_name_matcher_bare(self):
+        """A ``__name__!=`` matcher selects everything *but* the named metric;
+        prefixing its value would change meaning, so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__!="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__!="http_requests_total"})', q)
+        self.assertNotIn('metrics.http_requests_total', q)
+
+    def test_native_promql_leaves_name_matcher_bare_when_prefixed_field_absent(self):
+        """Same gate as bare selectors: an index storing the metric bare (no
+        ``metrics.<name>``) is untouched — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="some_custom_metric"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="some_custom_metric"})', q)
+        self.assertNotIn('metrics.some_custom_metric', q)
+
     def test_native_promql_does_not_prefix_label_key_that_collides_with_metric(self):
         """Regression (#270 review): a label-matcher key must never be rewritten
         even when a ``metrics.<key>`` field happens to exist in the target (a

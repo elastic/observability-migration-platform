@@ -1004,6 +1004,12 @@ def _prefix_native_metric_fields(expr, resolver):
     - function names (any identifier directly followed by ``(``);
     - string literals (label values).
 
+    The one label position that *is* rewritten is the ``__name__`` metric-name
+    matcher: ``{__name__="foo"}`` is equivalent to selecting ``foo``, so its
+    *exact*-match value takes the same field-cache-gated prefix. Regex
+    (``=~``) and negative (``!=``/``!~``) ``__name__`` matchers are left bare —
+    prefixing a regex is fragile and negation would change the selection.
+
     Both guards matter and neither is sufficient alone. A ``metrics.<token>``
     field can legitimately exist for a *label* name that collides with a metric
     name in the target, so ``resolve_metric_field`` / ``field_exists`` cannot
@@ -1051,10 +1057,28 @@ def _prefix_native_metric_fields(expr, resolver):
             return None
         return resolved if _prefixed_field_is_indexed(name) else None
 
+    def _rewrite_name_matcher_value(literal_text):
+        # `{__name__="foo"}` is the metric-name matcher — equivalent to selecting
+        # ``foo`` — so its *exact*-match value takes the same field-cache-gated
+        # ``metrics.`` prefix a bare selector would. Only plain (non-regex)
+        # values reach here; the gate still confirms the prefixed field exists
+        # and the bare name does not, so this is a no-op on bare-metric targets.
+        quote = literal_text[:1]
+        if quote not in "\"'" or len(literal_text) < 2:
+            return literal_text
+        value = literal_text[1:-1]
+        resolved = _resolve_selector(value, "")
+        return f"{quote}{resolved}{quote}" if resolved is not None else literal_text
+
     out = []
     i = 0
     n = len(expr)
     brace_depth = 0
+    # `__name__` exact-match matcher tracking: `name_key_pending` after the
+    # ``__name__`` key, `name_value_exact` once an exact ``=`` (not ``=~``/
+    # ``!=``/``!~``) confirms the next string literal is the metric name.
+    name_key_pending = False
+    name_value_exact = False
     # One flag per open paren: True when the paren is a grouping-label list, so
     # its contents are labels, not metrics. `expect_grouping` arms the next `(`
     # after a grouping modifier keyword.
@@ -1065,7 +1089,11 @@ def _prefix_native_metric_fields(expr, resolver):
         if ch in "\"'":
             literal = _PROMQL_STRING_LITERAL_RE.match(expr, i)
             if literal:
-                out.append(literal.group(0))
+                text = literal.group(0)
+                out.append(
+                    _rewrite_name_matcher_value(text) if name_value_exact else text
+                )
+                name_value_exact = False
                 i = literal.end()
                 continue
             out.append(ch)
@@ -1104,10 +1132,26 @@ def _prefix_native_metric_fields(expr, resolver):
             # Arm grouping only when a bare modifier keyword is immediately
             # followed by its paren list; any other identifier clears it.
             expect_grouping = name in _PROMQL_GROUPING_MODIFIERS
+            # A `__name__` key inside `{...}` arms an exact-value rewrite; any
+            # other identifier ends a pending matcher.
+            name_key_pending = brace_depth > 0 and name == "__name__"
+            name_value_exact = False
             i = ident.end()
             continue
-        # Any other character (operators, brackets, whitespace). Only whitespace
-        # may sit between a grouping modifier and its `(`; anything else cancels.
+        # Any other character (operators, brackets, whitespace).
+        if name_key_pending and ch == "=":
+            # Exact `=`, unless it is the `=~` regex matcher (never rewritten).
+            name_value_exact = expr[i + 1:i + 2] != "~"
+            name_key_pending = False
+        elif name_key_pending and ch == "!":
+            # `!=` / `!~`: negative matcher — prefixing would change meaning.
+            name_key_pending = False
+        elif not ch.isspace():
+            # Any other non-space token ends a pending `__name__` matcher.
+            name_key_pending = False
+            name_value_exact = False
+        # Only whitespace may sit between a grouping modifier and its `(`;
+        # anything else cancels a pending grouping expectation.
         if not ch.isspace():
             expect_grouping = False
         out.append(ch)
