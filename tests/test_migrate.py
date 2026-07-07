@@ -1671,6 +1671,115 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(self.resolver.is_counter("elasticsearch_indices_indexing_time_seconds"))
         self.assertFalse(self.resolver.is_counter("elasticsearch_process_cpu_percent"))
 
+    # --- Native PROMQL path metrics.<name> prefix (#270) ---
+    #
+    # The native PROMQL command (`PROMQL index=... value=(<expr>)`) embeds the
+    # original PromQL expression, whose bare metric names find no field on an
+    # OTel Collector index — the panel renders empty (no error, unlike the ES|QL
+    # path). build_native_promql_query must rewrite each metric selector to its
+    # resolved `metrics.<name>` field. ES's PROMQL command accepts the dotted
+    # selector inside functions (verified live on issue #270).
+
+    def _otel_resolver(self, fields):
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        resolver._discovery_attempted = True
+        resolver._field_cache = fields
+        resolver._discovered_mappings = {}
+        return resolver
+
+    def test_native_promql_prefixes_bare_metric_on_otel_collector_shape(self):
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "elasticsearch_jvm_gc_collection_seconds_sum",
+            index="metrics-prometheusreceiver.otel*",
+            resolver=resolver,
+        )
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", q)
+        self.assertNotIn("value=(elasticsearch_jvm_gc_collection_seconds_sum)", q)
+
+    def test_native_promql_prefixes_metric_inside_functions(self):
+        """The dotted field must land on the metric selector only — not on the
+        `sum`/`rate` function names or the `by` grouping label."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (job)",
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (job)", q)
+        self.assertNotIn("metrics.sum", q)
+        self.assertNotIn("metrics.rate", q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_leaves_bare_metric_when_prefixed_field_absent(self):
+        """Guard: an index that stores the metric bare (no `metrics.<name>`) is
+        unaffected — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            "some_custom_metric", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(some_custom_metric)", q)
+        self.assertNotIn("metrics.some_custom_metric", q)
+
+    def test_native_promql_does_not_prefix_label_values(self):
+        """A metric name appearing inside a label *value* string must not be
+        rewritten — only the selector position is a field reference."""
+        resolver = self._otel_resolver({
+            "metrics.up": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            'up{job="up"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(metrics.up{job=\"up\"})", q)
+        # The label value "up" stays a literal string, not metrics.up.
+        self.assertNotIn('"metrics.up"', q)
+
+    def test_native_promql_no_resolver_is_unchanged_passthrough(self):
+        q = panels.build_native_promql_query("foo", index="metrics-*")
+        self.assertIn("value=(foo)", q)
+        self.assertNotIn("metrics.foo", q)
+
+    def test_translate_panel_native_promql_emits_metrics_prefix_end_to_end(self):
+        """End-to-end via translate_panel with native PROMQL enabled: the OTel
+        Collector panel must emit `value=(metrics.<name>)`, closing the native
+        half of #270 (the ES|QL half is covered above)."""
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.rule_pack.native_promql = True
+        self.rule_pack.runtime_features = {
+            "promql_command_v0": {"supported": True, "confidence": "verified"}
+        }
+        panel = {
+            "type": "timeseries",
+            "title": "ES JVM GC",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": "elasticsearch_jvm_gc_collection_seconds_sum"}],
+        }
+        _yaml_panel, result = migrate.translate_panel(
+            panel,
+            datasource_index="metrics-prometheusreceiver.otel*",
+            esql_index="metrics-prometheusreceiver.otel*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        self.assertIn("PROMQL", result.esql_query)
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", result.esql_query)
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",

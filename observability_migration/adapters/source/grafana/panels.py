@@ -966,6 +966,63 @@ def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=N
     return cleaned
 
 
+# A PromQL string literal (label value); its contents must never be rewritten.
+_PROMQL_STRING_LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+# A candidate PromQL identifier: a metric name, function name, keyword, or label
+# key. Anchored so it never matches inside a larger identifier or an already
+# dot-qualified name (`attributes.job` — the `job` is skipped).
+_PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
+
+
+def _prefix_native_metric_fields(expr, resolver):
+    """Rewrite bare metric selectors in a native PROMQL expression to their
+    resolved ``metrics.<name>`` field (issue #270).
+
+    OTel Collector (``prometheusreceiver``) indices store each metric under a
+    ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
+    field and the panel renders empty. ``resolver.resolve_metric_field`` is used
+    as the gate: it returns the ``metrics.<name>`` form *only* when the live
+    target advertises the prefixed field and not the bare name, so PromQL
+    function names (``sum``/``rate``), keywords (``by``/``offset``), and
+    OTel-shaped label keys — none of which have a ``metrics.<token>`` field —
+    are left untouched. String literals (label values) are skipped entirely, and
+    ES's PROMQL command accepts the dotted selector inside functions.
+
+    Deliberately runs on the *emitted* expression string, after AST analysis
+    (counter/gauge detection, group-column shape) has already read the bare
+    names — the resolver is keyed on the bare metric name, and the PromQL parser
+    would choke on a dotted metric selector.
+    """
+    if resolver is None or not expr:
+        return expr
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if not callable(resolve):
+        return expr
+
+    def _rewrite_segment(segment):
+        def _sub(match):
+            name = match.group(1)
+            # A trailing `(` marks a function call, never a metric selector.
+            if segment[match.end():].lstrip()[:1] == "(":
+                return name
+            try:
+                resolved = resolve(name)
+            except Exception:
+                return name
+            return resolved if resolved == f"metrics.{name}" else name
+
+        return _PROMQL_IDENT_RE.sub(_sub, segment)
+
+    parts = []
+    last = 0
+    for literal in _PROMQL_STRING_LITERAL_RE.finditer(expr):
+        parts.append(_rewrite_segment(expr[last:literal.start()]))
+        parts.append(literal.group(0))
+        last = literal.end()
+    parts.append(_rewrite_segment(expr[last:]))
+    return "".join(parts)
+
+
 def _extract_legend_labels(legend_format):
     """Parse ``{{label}}`` placeholders from a Grafana legendFormat string."""
     if not legend_format or legend_format in ("__auto", ""):
@@ -1007,7 +1064,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False, regex_default_params=None, step=None):
+                              instant=False, regex_default_params=None, step=None,
+                              resolver=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1036,6 +1094,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
     )
+    cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
@@ -1420,7 +1479,8 @@ def _translate_panel_native_promql(
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
                                              instant=instant,
-                                             regex_default_params=regex_default_params)
+                                             regex_default_params=regex_default_params,
+                                             resolver=resolver)
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -1523,7 +1583,7 @@ def _translate_panel_native_promql(
 def _translate_multi_target_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes,
-    panel_inventory, targets_with_expr,
+    panel_inventory, targets_with_expr, resolver=None,
 ):
     """Combine multiple PromQL targets into a single native PROMQL panel.
 
@@ -1565,7 +1625,10 @@ def _translate_multi_target_native_promql(
             ),
         )
         had_bare_variable = had_bare_variable or bare
+        # Parse the bare form for AST analysis, then rewrite metric selectors to
+        # their `metrics.<name>` field for the emitted command (issue #270).
         target_fragments.append(_parse_fragment(cleaned or expr))
+        cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -2407,7 +2470,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             multi_result = _translate_multi_target_native_promql(
                 panel, yaml_panel, title, panel_type, kibana_type,
                 datasource, datasource_index, rule_pack, panel_notes,
-                panel_inventory, targets_with_expr,
+                panel_inventory, targets_with_expr, resolver=resolver,
             )
             if multi_result is not None:
                 return multi_result
