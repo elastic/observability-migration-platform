@@ -3263,9 +3263,34 @@ def _build_measure_spec(
     elif frag.family == "nested_agg":
         inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
-            source = "FROM"
-            time_filter = rule_pack.from_time_filter
-            bucket_expr = rule_pack.from_bucket
+            # A plain COUNT_DISTINCT(label) has no time-series-specific
+            # semantics, so it is safe on either source. Prefer TS whenever
+            # the metric would use TS elsewhere (proven/assumed counter or
+            # TSDS gauge) — otherwise this spec is forced onto FROM and can
+            # never merge with a sibling RATE()/IRATE() operand on the same
+            # metric (the extremely common node_exporter "busy % = per-mode
+            # rate / core count" idiom), which needs TS and has no FROM
+            # equivalent. COUNT_DISTINCT mixed into a TS STATS alongside a
+            # windowed time-series aggregate is valid ES|QL.
+            #
+            # Gate the whole preference behind ``allow_tsds_gauge_promotion``
+            # (not just the gauge half) so the existing binary-expr
+            # reconciliation retry — which rebuilds both operands with
+            # promotion disabled when their sources diverge — can pull this
+            # spec back onto FROM to match a sibling that is unconditionally
+            # pinned there (e.g. a ``scalar()``-wrapped gauge). Without this,
+            # a same-metric ratio against a scalar-wrapped gauge sibling would
+            # regress from feasible (both FROM) to not_feasible (FROM vs TS).
+            is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+            gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
+            if allow_tsds_gauge_promotion and (is_counter or gauge_uses_ts):
+                source = "TS"
+                time_filter = rule_pack.ts_time_filter
+                bucket_expr = rule_pack.ts_bucket
+            else:
+                source = "FROM"
+                time_filter = rule_pack.from_time_filter
+                bucket_expr = rule_pack.from_bucket
             stats_expr = f"COUNT_DISTINCT({inner_groups[0]})"
             warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({inner_groups[0]})")
         else:
@@ -4208,11 +4233,20 @@ def _build_formula_plan(
                         )
                     return plan
 
+        # A caller-supplied ``alias_hint`` (e.g. a multi-target ``target_ref_id``
+        # like "A") is passed as-is to a single measure spec's alias. Passing the
+        # *same* hint to both operands here collapses their aliases whenever left
+        # and right reference the same metric (e.g. the node_exporter "busy % =
+        # per-mode rate / core count" idiom: numerator and denominator both read
+        # ``node_cpu_seconds_total``). ``_build_shared_measure_pipeline`` then
+        # sees two same-alias specs with different stats_exprs and rejects the
+        # whole multi-target fusion as an unresolvable duplicate. Suffix each
+        # side so left/right always get distinct aliases.
         left_plan = _build_formula_plan(
             frag.extra.get("left_frag"),
             resolver,
             rule_pack,
-            alias_hint,
+            f"{alias_hint}_lhs" if alias_hint else alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
@@ -4224,7 +4258,7 @@ def _build_formula_plan(
             frag.extra.get("right_frag"),
             resolver,
             rule_pack,
-            alias_hint,
+            f"{alias_hint}_rhs" if alias_hint else alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,

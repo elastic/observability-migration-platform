@@ -39,6 +39,7 @@ class TestKibanaTargetAdapterUpload(unittest.TestCase):
                     kibana_url="https://kibana.example",
                     kibana_api_key="secret",
                     space_id="shadow",
+                    use_dashboards_api=False,
                 )
 
         self.assertEqual(call_order, ["ensure", "upload"])
@@ -79,6 +80,7 @@ class TestKibanaTargetAdapterUpload(unittest.TestCase):
                     kibana_url="https://kibana.example",
                     kibana_api_key="secret",
                     space_id="shadow",
+                    use_dashboards_api=False,
                 )
 
         self.assertEqual(call_order, ["ensure", "upload"])
@@ -133,6 +135,7 @@ dashboards:
                     kibana_url="https://kibana.example",
                     kibana_api_key="secret",
                     space_id="shadow",
+                    use_dashboards_api=False,
                 )
 
         self.assertTrue(payload["success"])

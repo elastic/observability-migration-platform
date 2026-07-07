@@ -338,7 +338,7 @@ def metric_timeseries_rule(context: PlanContext) -> str | None:
         context.plan.kibana_type = "xy"
         context.plan.reasons.append("multi-query formula → ES|QL for query-side computation")
         return "selected ES|QL XY because widget uses a multi-query formula"
-    context.plan.backend = "lens" if context.use_lens else "esql"
+    context.plan.backend = "esql"
     context.plan.kibana_type = "xy"
     context.plan.reasons.append(f"timeseries → {context.plan.backend} XY panel")
     return f"selected {context.plan.backend} XY panel"
@@ -438,7 +438,7 @@ def metric_geomap_rule(context: PlanContext) -> str | None:
     summary="Default remaining metrics widgets to Lens or ES|QL.",
 )
 def metric_default_rule(context: PlanContext) -> str | None:
-    context.plan.backend = "lens" if context.use_lens else "esql"
+    context.plan.backend = "esql"
     context.plan.reasons.append(f"default {context.plan.backend} path for {context.widget.widget_type}")
     return f"selected default {context.plan.backend} backend"
 
@@ -565,13 +565,7 @@ def _should_use_lens(
 
 
 def _metric_widget_backend(context: PlanContext) -> str:
-    if _prefer_esql_for_simple_metric_widget(
-        context.widget,
-        context.metric_queries,
-        context.has_multi_query_formula,
-    ):
-        return "esql"
-    return "lens" if context.use_lens else "esql"
+    return "esql"
 
 
 def _prefer_esql_for_simple_metric_widget(

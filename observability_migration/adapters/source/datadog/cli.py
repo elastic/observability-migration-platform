@@ -62,7 +62,7 @@ from .extract import (
     selection_metadata_from_datadog_dashboard,
 )
 from .field_map import FieldMapProfile, load_profile
-from .generate import generate_dashboard_yaml
+from .generate import generate_dashboard_artifacts
 from .manifest import save_migration_manifest
 from .models import DashboardResult, NormalizedWidget, TranslationResult
 from .normalize import normalize_dashboard
@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.smoke and not args.upload:
             args.upload = True
             auto_enabled_upload = True
-        compile_requested = args.compile or args.upload
+        compile_requested = args.compile or (args.upload and args.legacy_import)
 
         if args.upload and not args.kibana_url:
             print("  ERROR: --kibana-url is required when --upload is set")
@@ -149,8 +149,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     if auto_enabled_upload:
         print("  Smoke requested: auto-enabling upload step\n")
-    if selection.dashboards and args.upload and not args.compile:
-        print("  Upload requested: auto-enabling compile step\n")
+    if selection.dashboards and args.upload and args.legacy_import and not args.compile:
+        print("  Legacy import requested: auto-enabling compile step\n")
     try:
         field_map = load_profile(args.field_profile)
     except ValueError as exc:
@@ -302,7 +302,7 @@ def _run_dashboard_pipeline(
                     panel_results.append(_translate_widget(child, field_map, args))
 
         dashboard_result.panel_results = panel_results
-        dashboard_yaml = generate_dashboard_yaml(
+        dashboard_yaml, native_dashboard, native_stats = generate_dashboard_artifacts(
             dashboard,
             panel_results,
             data_view=field_map.metric_index,
@@ -311,6 +311,8 @@ def _run_dashboard_pipeline(
             logs_index=field_map.logs_index,
             field_map=field_map,
         )
+        dashboard_result.native_dashboard = native_dashboard
+        dashboard_result.native_dashboard_stats = native_stats
 
         stem = _allocate_yaml_stem(
             title=dashboard.title,
@@ -840,7 +842,7 @@ def _rewrite_dashboard_yaml(
 ) -> None:
     if not result.yaml_path:
         return
-    yaml_str = generate_dashboard_yaml(
+    yaml_str, native_dashboard, native_stats = generate_dashboard_artifacts(
         dashboard,
         result.panel_results,
         data_view=field_map.metric_index,
@@ -850,6 +852,8 @@ def _rewrite_dashboard_yaml(
         field_map=field_map,
     )
     Path(result.yaml_path).write_text(yaml_str, encoding="utf-8")
+    result.native_dashboard = native_dashboard
+    result.native_dashboard_stats = native_stats
 
 
 def _validate_all_dashboards(
@@ -1062,6 +1066,8 @@ def _upload_all_dashboards(
     upload_space = args.space_id or ""
     upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
 
+    use_dashboards_api = not getattr(args, "legacy_import", False)
+
     print(f"\n  Uploading dashboards to {upload_kibana_url}")
     for dr in results:
         dr.upload_attempted = True
@@ -1072,7 +1078,7 @@ def _upload_all_dashboards(
             dr.upload_error = "Upload skipped because no YAML artifact was generated."
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
-        if not dr.compiled:
+        if not use_dashboards_api and not dr.compiled:
             dr.uploaded = False
             dr.upload_error = (
                 "Upload skipped because compile failed."
@@ -1081,7 +1087,13 @@ def _upload_all_dashboards(
             )
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
-        if dr.layout_error:
+        # Legacy ``kb-dashboard-cli`` layout validation inspects the compiled
+        # NDJSON layout, which only the legacy ``--legacy-import`` path
+        # produces/uses. The native Dashboards API upload maps straight from
+        # the YAML/NativeDashboard IR and never touches that compiled output,
+        # so a (possibly stale) legacy layout error must not block it --
+        # mirrors the Grafana CLI's own ``not use_dashboards_api`` gate.
+        if not use_dashboards_api and dr.layout_error:
             dr.uploaded = False
             dr.upload_error = f"Upload skipped because compiled layout validation failed: {dr.layout_error}"
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error[:200]}")
@@ -1089,13 +1101,20 @@ def _upload_all_dashboards(
 
         out_dir = compiled_dir / Path(dr.yaml_path).stem
         out_dir.mkdir(parents=True, exist_ok=True)
+        upload_kwargs: dict[str, Any] = {
+            "kibana_url": args.kibana_url,
+            "space_id": upload_space,
+            "kibana_api_key": args.kibana_api_key,
+            "verify": verify,
+            "use_dashboards_api": use_dashboards_api,
+        }
+        if use_dashboards_api and dr.native_dashboard is not None:
+            upload_kwargs["native_dashboard"] = dr.native_dashboard
+            upload_kwargs["native_dashboard_stats"] = dr.native_dashboard_stats
         upload_result = target_adapter.upload_dashboard(
             dr.yaml_path,
             out_dir,
-            kibana_url=args.kibana_url,
-            space_id=upload_space,
-            kibana_api_key=args.kibana_api_key,
-            verify=verify,
+            **upload_kwargs,
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
@@ -1414,14 +1433,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--compile",
         dest="compile",
         action="store_true",
-        default=True,
-        help="Compile YAML to NDJSON using kb-dashboard-cli (default)",
+        default=False,
+        help="Compile YAML to NDJSON using kb-dashboard-cli",
     )
     parser.add_argument(
         "--no-compile",
         dest="compile",
         action="store_false",
-        help="Skip dashboard YAML compilation unless upload is requested",
+        help="Skip dashboard YAML compilation (default; retained for compatibility)",
     )
     parser.add_argument(
         "--validate", action="store_true",
@@ -1451,6 +1470,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--upload", action="store_true",
         help="Upload dashboards to Kibana after a successful compile pass",
+    )
+    parser.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (POST /api/dashboards)."
+        ),
+    )
+    parser.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--smoke", action="store_true",

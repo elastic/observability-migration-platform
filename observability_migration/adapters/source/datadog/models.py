@@ -470,6 +470,13 @@ class DashboardResult:
     verification_summary: dict[str, int] = field(default_factory=dict)
     alert_results: list = field(default_factory=list)
     alert_summary: dict = field(default_factory=dict)
+    # NativeDashboard IR built from the same in-memory YAML doc that gets
+    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml
+    # / generate.generate_dashboard_artifacts). Mirrors
+    # MigrationResult.native_dashboard on the Grafana side. Not JSON-serialized
+    # directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
     def recompute_counts(self) -> None:
         self.migrated = 0

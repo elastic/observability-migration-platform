@@ -732,6 +732,94 @@ class TestUnifiedCliRouting(unittest.TestCase):
         adapter.upload.assert_called_once()
         self.assertEqual(adapter.upload.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 
+    def test_upload_defaults_legacy_import_to_false(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(
+            ["upload", "--yaml-dir", "/tmp/x", "--kibana-url", "https://kibana.example"]
+        )
+        self.assertFalse(args.legacy_import)
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_defaults_to_native_dashboards_api(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir)
+            (yaml_dir / "dash.yaml").write_text("dashboards: []", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1, "fallbacks": 0},
+                "records": [
+                    {
+                        "yaml_file": "dash.yaml",
+                        "success": True,
+                        "output": "",
+                        "status": "created",
+                        "fallback_used": False,
+                    }
+                ],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            parser = app_cli._build_parser()
+            args = parser.parse_args(
+                [
+                    "upload",
+                    "--yaml-dir",
+                    str(yaml_dir),
+                    "--kibana-url",
+                    "https://kibana.example",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                app_cli._run_upload(args)
+
+        adapter.upload.assert_called_once()
+        self.assertTrue(adapter.upload.call_args.kwargs.get("use_dashboards_api"))
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_legacy_import_opts_out_of_native(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir)
+            (yaml_dir / "dash.yaml").write_text("dashboards: []", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1, "fallbacks": 0},
+                "records": [
+                    {
+                        "yaml_file": "dash.yaml",
+                        "success": True,
+                        "output": "",
+                    }
+                ],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            parser = app_cli._build_parser()
+            args = parser.parse_args(
+                [
+                    "upload",
+                    "--yaml-dir",
+                    str(yaml_dir),
+                    "--kibana-url",
+                    "https://kibana.example",
+                    "--legacy-import",
+                ]
+            )
+            with redirect_stdout(io.StringIO()):
+                app_cli._run_upload(args)
+
+        adapter.upload.assert_called_once()
+        self.assertFalse(adapter.upload.call_args.kwargs.get("use_dashboards_api"))
+
+    def test_upload_help_mentions_legacy_import_flag(self):
+        parser = app_cli._build_parser()
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stdout(stdout):
+            parser.parse_args(["upload", "--help"])
+        help_text = stdout.getvalue()
+        self.assertIn("--legacy-import", help_text)
+        self.assertIn("/api/dashboards", help_text)
+        self.assertIn("typed Kibana Dashboards API", help_text)
+
     def test_upload_help_describes_split_dashboard_artifact_shapes(self):
         parser = app_cli._build_parser()
 
@@ -973,6 +1061,34 @@ class TestUnifiedCliRouting(unittest.TestCase):
         mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_legacy_import_flag(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "grafana", "--legacy-import"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertIn("--legacy-import", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_defaults_to_native_no_legacy_flag(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "grafana"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertNotIn("--legacy-import", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
     def test_run_grafana_migration_forwards_space_id_as_shadow_space(self, mock_main):
         parser = app_cli._build_parser()
         args = parser.parse_args(
@@ -1045,6 +1161,20 @@ class TestUnifiedCliRouting(unittest.TestCase):
             app_cli._run_datadog_migration(args)
             self.assertNotIn("--include", sys.argv)
             self.assertNotIn("dashboards,monitors", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_legacy_import_flag(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "datadog", "--legacy-import"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertIn("--legacy-import", sys.argv)
         finally:
             sys.argv = original_argv
 

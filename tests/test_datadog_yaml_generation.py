@@ -29,6 +29,10 @@ from observability_migration.adapters.source.datadog.generate import (
 from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
 from observability_migration.adapters.source.datadog.planner import plan_widget
 from observability_migration.adapters.source.datadog.translate import translate_widget
+from observability_migration.targets.kibana.dashboards_api import (
+    build_dashboard_payload_from_yaml,
+    map_yaml_panel,
+)
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -341,6 +345,28 @@ class TestDatadogYAMLLensContracts(unittest.TestCase):
             self.fail(f"{path.name}: {len(failures)} lens contract issue(s):\n" + "\n".join(failures))
 
 
+class TestDatadogNativeDashboardsApiContracts(unittest.TestCase):
+    def _check_dashboard(self, path: pathlib.Path) -> None:
+        _dashboard, _results, rendered = _render_dashboard(path)
+        failures: list[str] = []
+        for panel in _iter_leaf_panels(rendered.get("panels") or []):
+            title = panel.get("title", "<untitled>")
+            if "lens" in panel:
+                failures.append(
+                    f"  {title!r}: emitted legacy lens block; native Dashboards API upload maps only esql/markdown leaves"
+                )
+                continue
+            mapped = map_yaml_panel(panel)
+            if mapped.api_panel is None:
+                failures.append(f"  {title!r}: native mapper rejected panel ({mapped.reason})")
+
+        _payload, counts, reasons = build_dashboard_payload_from_yaml(rendered)
+        if counts["unmapped"]:
+            failures.append(f"  payload: {counts['unmapped']} unmapped panel(s): {reasons}")
+        if failures:
+            self.fail(f"{path.name}: native Dashboards API mapping gap(s):\n" + "\n".join(failures))
+
+
 class TestDatadogYAMLSnapshots(unittest.TestCase):
     def _run_snapshot(self, path: pathlib.Path) -> None:
         actual = _snapshot_text(path)
@@ -361,6 +387,42 @@ class TestDatadogYAMLSnapshots(unittest.TestCase):
                 "To update: UPDATE_SNAPSHOTS=1 pytest tests/test_datadog_yaml_generation.py\n"
                 f"\n{_diff(expected, actual)}"
             )
+
+
+class TestHeatmapCompositeYDimension(unittest.TestCase):
+    """A Datadog heatmap grouped by two categorical tags (e.g. service + host)
+    must keep both on the Y axis. The Y axis is a single field, so the two
+    explicit grouping dimensions are composited into one synthetic column
+    instead of silently dropping the second (which merged distinct buckets).
+    """
+
+    def _heatmap(self, dashboard_stem: str, title: str) -> dict[str, Any]:
+        path = next(p for p in DASHBOARD_FILES if p.stem == dashboard_stem)
+        _d, _r, rendered = _render_dashboard(path)
+        for panel in _iter_leaf_panels(rendered.get("panels") or []):
+            e = panel.get("esql")
+            if isinstance(e, dict) and e.get("type") == "heatmap" and panel.get("title") == title:
+                return e
+        raise AssertionError(f"heatmap {title!r} not found in {dashboard_stem}")
+
+    def test_kafka_active_connections_composites_service_and_host(self):
+        e = self._heatmap("kafka", "Active Connections")
+        y_field = (e.get("y_axis") or {}).get("field")
+        query = e.get("query", "")
+        # Both grouping tags must still drive the query …
+        self.assertIn("service.name", query)
+        self.assertIn("host.name", query)
+        # … and the Y axis must reference a real, composited output column that
+        # combines both (not just service.name).
+        self.assertIn("CONCAT", query)
+        self.assertIn(y_field, query)
+        self.assertIn(y_field, _output_columns(query))
+        self.assertNotEqual(y_field, "service.name")
+
+    def test_single_dimension_heatmap_unchanged(self):
+        e = self._heatmap("docker", "Memory by container")
+        self.assertEqual((e.get("y_axis") or {}).get("field"), "container.name")
+        self.assertNotIn("CONCAT", e.get("query", ""))
 
 
 def _make_structure_test(dashboard_path: pathlib.Path):
@@ -397,4 +459,5 @@ for _dashboard_path in DASHBOARD_FILES:
     setattr(TestDatadogYAMLShapeInvariants, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLRenderAuditKeys, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLLensContracts, _test_name, _make_contract_test(_dashboard_path))
+    setattr(TestDatadogNativeDashboardsApiContracts, _test_name, _make_contract_test(_dashboard_path))
     setattr(TestDatadogYAMLSnapshots, _test_name, _make_snapshot_test(_dashboard_path))

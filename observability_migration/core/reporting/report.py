@@ -78,6 +78,11 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    # NativeDashboard IR built from the same in-memory YAML doc that gets
+    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml).
+    # Not JSON-serialized directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
 
 @dataclass

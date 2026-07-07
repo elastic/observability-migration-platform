@@ -221,6 +221,10 @@ def _snapshot_text(title: str, grafana_type: str, result: Any, esql_block: dict)
     if "primary" in esql_block:
         p = esql_block["primary"]
         lines.append(f"primary: {p.get('field') if isinstance(p, dict) else p}")
+        if isinstance(p, dict) and isinstance(p.get("color"), dict):
+            thresholds = p["color"].get("thresholds") or []
+            rendered = ", ".join(f"<={t.get('up_to')}:{t.get('color')}" for t in thresholds)
+            lines.append(f"primary_color: {p['color'].get('apply_to')} {rendered}")
     if "metric" in esql_block:
         m = esql_block["metric"]
         lines.append(f"metric: {m.get('field') if isinstance(m, dict) else m}")
@@ -590,6 +594,95 @@ class TestInstantSingleValuePanels(unittest.TestCase):
         # A line chart cannot plot a single value with no x-axis; it must
         # degrade to a metric visualization rather than invent a time axis.
         self.assertEqual(yp["esql"]["type"], "metric")
+
+
+class TestStatThresholdColor(unittest.TestCase):
+    """A Grafana stat/single-value panel colors its value by threshold steps;
+    the migrated Kibana metric panel must carry those thresholds on
+    ``primary.color`` as a dynamic absolute color, and must honor
+    ``colorMode: none`` (Grafana explicitly disabling value coloring).
+    """
+
+    @staticmethod
+    def _stat_panel(*, color_mode="value", steps=None):
+        panel = _instant_panel("stat")
+        panel["fieldConfig"] = {
+            "defaults": {
+                "thresholds": {
+                    "mode": "absolute",
+                    "steps": steps if steps is not None else [
+                        {"value": None, "color": "green"},
+                        {"value": 80, "color": "red"},
+                    ],
+                }
+            }
+        }
+        panel["options"] = {"colorMode": color_mode}
+        return panel
+
+    def test_stat_thresholds_map_to_primary_dynamic_color(self):
+        # The YAML schema's ``primary_metric`` color is ``MetricChartColor``
+        # (``apply_to`` + ascending ``thresholds``); the target mapper
+        # (``dashboards_api._api_color``) turns that into the native
+        # Dashboards API's dynamic ``range``/``steps`` color-by-value.
+        from observability_migration.targets.kibana.dashboards_api import _api_color
+
+        yp, _result = translate_panel(self._stat_panel())
+        esql = yp["esql"]
+        self.assertEqual(esql["type"], "metric")
+        color = esql["primary"].get("color")
+        self.assertIsInstance(color, dict, f"no primary.color emitted: {esql['primary']}")
+        self.assertEqual(color["apply_to"], "value")
+        colors = [t["color"] for t in color["thresholds"]]
+        self.assertIn("#E7664C", colors)  # red
+
+        native = _api_color(color)
+        self.assertEqual(native["type"], "dynamic")
+        self.assertEqual(native["range"], "absolute")
+        step_colors = [s["color"] for s in native["steps"]]
+        self.assertIn("#54B399", step_colors)  # green
+        self.assertIn("#E7664C", step_colors)  # red
+        red = next(s for s in native["steps"] if s["color"] == "#E7664C")
+        self.assertEqual(red.get("gte"), 80)
+
+    def test_stat_color_mode_none_suppresses_color(self):
+        yp, _ = translate_panel(self._stat_panel(color_mode="none"))
+        self.assertNotIn("color", yp["esql"]["primary"])
+
+    def test_stat_without_thresholds_has_no_color(self):
+        panel = _instant_panel("stat")
+        yp, _ = translate_panel(panel)
+        self.assertNotIn("color", yp["esql"]["primary"])
+
+
+class TestSummaryTableKeepsTimeColumn(unittest.TestCase):
+    """A dimensionless summary-collapsed table keeps a time column in its query
+    output (``| KEEP time_bucket, <metric>``) but drops it from group_fields, so
+    the emitted datatable rendered only the metric and hid *when* the value is
+    from. The time column must be surfaced as a date row.
+    """
+
+    def _datatable_panels(self, dashboard_stem: str) -> dict[str, dict]:
+        path = next(p for p in DASHBOARD_FILES if p.stem == dashboard_stem)
+        rendered, _ = _render_snapshot_dashboard(path)
+        return {
+            str(p.get("title")): p["esql"]
+            for p in _iter_leaf_panels(rendered.get("panels") or [])
+            if isinstance(p.get("esql"), dict) and p["esql"].get("type") == "datatable"
+        }
+
+    def test_active_alerts_table_surfaces_time_bucket_row(self):
+        block = self._datatable_panels("diverse-panels-test")["Active Alerts"]
+        fields = [b.get("field") for b in block.get("breakdowns") or []]
+        self.assertIn("time_bucket", fields, f"breakdowns={block.get('breakdowns')}")
+        self.assertIn("time_bucket", block.get("query", ""))
+        time_row = next(b for b in block["breakdowns"] if b.get("field") == "time_bucket")
+        self.assertEqual(time_row.get("data_type"), "date")
+
+    def test_target_health_table_surfaces_time_bucket_row(self):
+        block = self._datatable_panels("home")["Target Health Status"]
+        fields = [b.get("field") for b in block.get("breakdowns") or []]
+        self.assertIn("time_bucket", fields, f"breakdowns={block.get('breakdowns')}")
 
 
 # ---------------------------------------------------------------------------

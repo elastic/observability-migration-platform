@@ -1085,16 +1085,31 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertGreater(value_filter_idx, value_stats_idx)
 
-    def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
+    def test_grouped_rate_or_irate_formula_with_series_count_denominator_is_not_feasible(self):
+        """A three-level formula — ``(sum(rate(X) or irate(X)) by(ns)) /
+        count(Y) by(ns) * 100`` — cannot be honestly reduced by
+        ``_build_formula_plan``: the numerator's ``or`` spans different range
+        functions on the *same* series (not a plain aggregate) and the
+        denominator's ``count(Y) by(ns)`` is a series-count (nested_agg)
+        pattern that ``_build_measure_spec`` does not model as a formula
+        operand. Before the operand-safety fix, both those per-operand
+        failures fell through to the single top-level ``fragment_extract``
+        fallback, which discarded the division, the ``* 100`` scaling, and
+        the ``or`` entirely — silently emitting a bare ``AVG(RATE(x))`` with
+        no relationship to the source "CPU busy %" formula (a materially
+        larger semantic gap than a normal approximation). It must now be
+        marked ``not_feasible`` instead of emitting that unrelated number."""
         translated = self.translate(
             '(sum(rate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[$interval]) '
             'or irate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[5m])) by (node_name)) '
             '/ count(node_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}) by (node_name) * 100'
         )
 
-        self.assertEqual(translated.feasibility, "feasible")
-        self.assertIn("AVG(RATE(process_cpu_seconds_total, 5m))", translated.esql_query)
-        self.assertNotIn("= RATE(process_cpu_seconds_total, 5m) BY", translated.esql_query)
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("arithmetic" in w and "manual review" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_resolver_for_index_propagates_es_api_key(self):
         """Alternate-index resolvers (used for controls and logs) must inherit
@@ -3596,6 +3611,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("rate(node_cpu_seconds_total", by_ref["A"]["source_expr"])
         self.assertIn("primary target only", by_ref["B"].get("unsupported_reason", ""))
 
+    def test_mixed_windows_and_non_windows_drops_are_not_mislabeled_windows_only(self):
+        """When a panel drops both a Windows-specific target AND an unrelated
+        non-Windows target, the warning must not claim the drops are
+        "Windows-specific" — that phrasing implies nothing of value was lost
+        for a Linux-only cluster and hides the real, unrelated gap."""
+        panel = {
+            "id": 104,
+            "type": "stat",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'sum(rate(node_cpu_seconds_total{mode!="idle"}[5m]))', "refId": "Real Linux"},
+                {"expr": 'sum(rate(windows_cpu_time_total{mode!="idle"}[5m]))', "refId": "Real Windows"},
+                {"expr": 'sum(kube_pod_container_resource_requests{resource="cpu"})', "refId": "Requests"},
+                {"expr": 'sum(kube_pod_container_resource_limits{resource="cpu"})', "refId": "Limits"},
+                {"expr": "sum(machine_cpu_cores)", "refId": "Total"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        combined = " ".join(result.reasons)
+        self.assertNotIn("(dropped targets are Windows-specific)", combined)
+        self.assertTrue(
+            any("of the dropped targets are Windows-specific" in w for w in result.reasons),
+            f"expected a qualified mixed-drop warning, got: {result.reasons}",
+        )
+
+    def test_all_windows_drops_keep_unqualified_windows_specific_message(self):
+        """When every dropped target really is Windows-specific, the simpler
+        unqualified message is accurate and should be kept as-is."""
+        panel = {
+            "id": 105,
+            "type": "graph",
+            "title": "CPU Usage 2",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": ('sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) '
+                          '/ on(instance) sum by (instance) (rate(node_cpu_seconds_total[5m]))'),
+                 "refId": "A"},
+                {"expr": 'avg(sum by (core) (rate(windows_cpu_time_total{mode!="idle"}[5m])))',
+                 "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        self.assertTrue(
+            any("(dropped targets are Windows-specific)" in w for w in result.reasons),
+            f"expected unqualified Windows-specific warning, got: {result.reasons}",
+        )
+
     def test_multi_target_live_gauge_with_divergent_filters_keeps_all_series(self):
         self.seed_field_caps(
             {
@@ -4118,16 +4181,22 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_scalar_wrapped_nested_count_denominator_merges_with_rate_numerator(self):
+        # The canonical node_exporter "CPU busy % = per-mode rate / core count"
+        # idiom (e.g. the "CPU"/"CPU Basic" panels in the node-exporter-full
+        # dashboard). The numerator needs TS (counter irate); the denominator
+        # is a plain COUNT_DISTINCT(cpu) with no time-series-specific
+        # semantics, so it can share the numerator's TS source instead of
+        # being forced onto FROM (which can never merge with a TS sibling).
         expr = (
             'sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__rate_interval])) '
             '/ scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertEqual(translated.feasibility, "not_feasible")
-        self.assertTrue(
-            any("divergent filters/groupings" in w for w in translated.warnings),
-            translated.warnings,
-        )
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("TS metrics", translated.esql_query)
+        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
+        self.assertIn('IRATE(CASE((mode == "system")', translated.esql_query)
+        self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
         # sum(increase(A) / increase(B)) computes a per-element ratio then
@@ -9287,6 +9356,13 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertIn("suffix", fmt)
 
     def test_unit_to_yaml_format_duration_seconds(self):
+        # A bare ``{type: duration}`` is the only shape the kb-dashboard-core
+        # YAML schema accepts here (``ESQLMetricFormat`` et al reject
+        # ``from``/``to`` outright). The typed Dashboards API's own
+        # multi-column format schema separately requires ``from``/``to``, but
+        # ``dashboards_api._api_format`` defaults those independently when
+        # mapping this YAML into the native API payload -- see
+        # test_dashboards_api.py::test_api_format_accepts_bare_duration.
         from observability_migration.targets.kibana.emit.display import grafana_unit_to_yaml_format
         fmt = grafana_unit_to_yaml_format("s")
         self.assertEqual(fmt, {"type": "duration"})

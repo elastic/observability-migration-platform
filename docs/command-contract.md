@@ -473,9 +473,9 @@ set -a && source serverless_creds.env && set +a
   --yaml-dir migration_output/dashboards/yaml \
   --output-dir migration_output/dashboards/compiled
 
-# Upload dashboards to Kibana. The upload step recompiles YAML internally via
-# kb-dashboard-cli and accepts either the YAML directory or the dashboard
-# artifacts directory that contains a sibling yaml/ subfolder.
+# Upload dashboards to Kibana. By default this deploys through Kibana's typed
+# Dashboards API (PUT /api/dashboards/{id}); pass --legacy-import to force the
+# older kb-dashboard-cli compile+saved-objects-import path instead.
 .venv/bin/obs-migrate upload \
   --yaml-dir migration_output/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" \
@@ -484,7 +484,20 @@ set -a && source serverless_creds.env && set +a
 
 `obs-migrate compile` is a local step and does not require Elasticsearch or Kibana. It can still exit nonzero after writing NDJSON if the YAML lint or compiled-layout checks return nonzero, so inspect both the exit status and the generated output directory.
 
-`obs-migrate upload` takes a directory of YAML dashboards and recompiles them through the same installed-first `kb-dashboard-cli` resolution path used by `obs-migrate compile` (installed console script, otherwise pinned `uvx` fallback). It does **not** consume the NDJSON produced by `obs-migrate compile`. The legacy alias `--compiled-dir` is still accepted for backward compatibility but prefer `--yaml-dir` in new scripts. Pointing `--yaml-dir` at `migration_output/dashboards` (which contains a `yaml/` subdirectory) also works.
+`obs-migrate upload` takes a directory of YAML dashboards. By default it deploys
+through Kibana's typed Dashboards API (`PUT /api/dashboards/{id}`): the typed
+path maps the emitted YAML directly to API panels, including sections, controls,
+markdown, and all 11 ES\|QL visualization families. Rejected or empty dashboards
+fall back per-dashboard to the legacy `kb-dashboard-cli` compile+import path so
+unsupported content is not silently dropped.
+
+Pass `--legacy-import` to force the legacy `kb-dashboard-cli` resolution path
+(installed console script, otherwise pinned `uvx` fallback) for every dashboard
+instead of the typed API. Either way the upload consumes YAML directly and does
+**not** consume the NDJSON produced by `obs-migrate compile`. The legacy alias
+`--compiled-dir` is still accepted for backward compatibility but prefer
+`--yaml-dir` in new scripts. Pointing `--yaml-dir` at
+`migration_output/dashboards` (which contains a `yaml/` subdirectory) also works.
 
 ### Cluster
 
@@ -1059,12 +1072,15 @@ through alert-capable runs and rule payload emission/validation limited to
 validated monitor shapes.
 
 Without `--es-url`, Datadog stays in offline field-capabilities mode.
-Dashboard-capable runs (`--assets dashboards` or `--assets all`) compile by
-default and still write dashboard YAML plus the standard dashboard run reports;
-pass `--no-compile` only when you explicitly want to skip local dashboard
-compilation. Upload still compiles dashboard YAML during the upload step (it
-recompiles via `kb-dashboard-cli` and does not consume the NDJSON written by
-`obs-migrate compile`). Alerts-only runs
+Dashboard-capable runs (`--assets dashboards` or `--assets all`) write dashboard
+YAML plus the standard dashboard run reports. Local NDJSON compilation is
+opt-in via `--compile`; `--no-compile` remains accepted for compatibility and is
+the default. Upload deploys through Kibana's typed Dashboards API by default and
+consumes the emitted YAML directly (it does not consume the NDJSON written by
+`obs-migrate compile`), falling back per-dashboard to the legacy
+`kb-dashboard-cli` compile+import only when the typed API rejects or cannot
+represent a dashboard; pass `--legacy-import` to force the legacy compile+import
+path for every dashboard, which auto-enables legacy compilation. Alerts-only runs
 (`--assets alerts`) skip dashboard YAML and compiled output, write monitor
 artifacts under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
@@ -1190,7 +1206,15 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
+.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>
+KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
 ```
+
+`generate_dashboard_schema.sh` refreshes the legacy/debug `kb-dashboard-core`
+YAML schema. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
+Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
+Dashboards API bundle while the API remains technical preview, because the
+standard Kibana bundle may contain redirect-only shells.
 
 Dashboard YAML lint and compiled-layout validation run automatically inside
 `obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
