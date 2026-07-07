@@ -972,6 +972,18 @@ _PROMQL_STRING_LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'"
 # key. Anchored so it never matches inside a larger identifier or an already
 # dot-qualified name (`attributes.job` — the `job` is skipped).
 _PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
+# Vector-matching / aggregation modifiers that introduce a parenthesised list of
+# *label* names (`by (a, b)`, `on(x) group_left(y)`), never metric selectors.
+_PROMQL_GROUPING_MODIFIERS = frozenset(
+    {"by", "without", "on", "ignoring", "group_left", "group_right"}
+)
+# PromQL words that read as identifiers but are never metric selectors, so they
+# must not be prefixed even if a colliding `metrics.<word>` field exists. The
+# grouping modifiers are included for the case where they appear without a
+# following `(` (`a * group_left b`).
+_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | frozenset(
+    {"offset", "bool", "and", "or", "unless", "atan2", "start", "end", "inf", "nan"}
+)
 
 
 def _prefix_native_metric_fields(expr, resolver):
@@ -980,19 +992,26 @@ def _prefix_native_metric_fields(expr, resolver):
 
     OTel Collector (``prometheusreceiver``) indices store each metric under a
     ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
-    field and the panel renders empty. The rewrite fires for a token *only* when
-    the live target advertises the ``metrics.<token>`` field and not the bare
-    name, so PromQL function names (``sum``/``rate``), keywords (``by``/
-    ``offset``), and label keys — none of which have a ``metrics.<token>`` field
-    — are left untouched. String literals (label values) are skipped entirely,
-    and ES's PROMQL command accepts the dotted selector inside functions.
+    field and the panel renders empty. Only a token in *metric-selector*
+    position is rewritten; the scan tracks PromQL structure so that identifiers
+    which merely look like metric names are protected regardless of the target's
+    field caps:
 
-    ``resolve_metric_field`` alone is *not* a sufficient gate: under the
-    ``prometheus_native`` profile it returns ``metrics.<name>`` unconditionally
-    (for the preflight contract), which would rewrite label-matcher keys and
-    ``by(...)`` grouping tokens to a non-existent ``metrics.<label>`` field
-    (labels live under ``labels.<name>`` there). So the resolved prefix is
-    confirmed against the field cache (``field_exists``) before it is applied.
+    - label-matcher keys and values inside ``{...}``;
+    - grouping labels inside a modifier's parens (``by (x)``, ``on(y)``,
+      ``group_left(z)``);
+    - reserved words (``offset``/``bool``/``and``/``or``/``unless``/…);
+    - function names (any identifier directly followed by ``(``);
+    - string literals (label values).
+
+    Both guards matter and neither is sufficient alone. A ``metrics.<token>``
+    field can legitimately exist for a *label* name that collides with a metric
+    name in the target, so ``resolve_metric_field`` / ``field_exists`` cannot
+    distinguish a selector from a label key — only the structural position can.
+    Conversely, ``resolve_metric_field`` returns ``metrics.<name>``
+    unconditionally under the ``prometheus_native`` profile (for the preflight
+    contract), so the resolved prefix is still confirmed against the field cache
+    (``field_exists``) before it is applied.
 
     Deliberately runs on the *emitted* expression string, after AST analysis
     (counter/gauge detection, group-column shape) has already read the bare
@@ -1008,10 +1027,9 @@ def _prefix_native_metric_fields(expr, resolver):
 
     def _prefixed_field_is_indexed(name):
         # Confirm ``metrics.<name>`` is a real field and the bare token is not,
-        # so we only rewrite genuine metric selectors — never label keys or
-        # grouping tokens (see docstring). When the resolver can't answer
-        # (no ``field_exists`` / empty cache), fall back to the resolver's
-        # decision rather than inventing a prefix.
+        # so we never invent a prefix for an index that stores the metric bare.
+        # When the resolver can't answer (no ``field_exists`` / empty cache),
+        # fall back to the resolver's decision.
         if not callable(field_exists):
             return True
         prefixed = field_exists(f"metrics.{name}")
@@ -1019,30 +1037,82 @@ def _prefix_native_metric_fields(expr, resolver):
             return True
         return bool(prefixed) and not field_exists(name)
 
-    def _rewrite_segment(segment):
-        def _sub(match):
-            name = match.group(1)
-            # A trailing `(` marks a function call, never a metric selector.
-            if segment[match.end():].lstrip()[:1] == "(":
-                return name
-            try:
-                resolved = resolve(name)
-            except Exception:
-                return name
-            if resolved != f"metrics.{name}":
-                return name
-            return resolved if _prefixed_field_is_indexed(name) else name
+    def _resolve_selector(name, tail):
+        # A trailing `(` marks a function call, never a metric selector.
+        if tail.lstrip()[:1] == "(":
+            return None
+        if name in _PROMQL_RESERVED_WORDS:
+            return None
+        try:
+            resolved = resolve(name)
+        except Exception:
+            return None
+        if resolved != f"metrics.{name}":
+            return None
+        return resolved if _prefixed_field_is_indexed(name) else None
 
-        return _PROMQL_IDENT_RE.sub(_sub, segment)
-
-    parts = []
-    last = 0
-    for literal in _PROMQL_STRING_LITERAL_RE.finditer(expr):
-        parts.append(_rewrite_segment(expr[last:literal.start()]))
-        parts.append(literal.group(0))
-        last = literal.end()
-    parts.append(_rewrite_segment(expr[last:]))
-    return "".join(parts)
+    out = []
+    i = 0
+    n = len(expr)
+    brace_depth = 0
+    # One flag per open paren: True when the paren is a grouping-label list, so
+    # its contents are labels, not metrics. `expect_grouping` arms the next `(`
+    # after a grouping modifier keyword.
+    paren_is_grouping = []
+    expect_grouping = False
+    while i < n:
+        ch = expr[i]
+        if ch in "\"'":
+            literal = _PROMQL_STRING_LITERAL_RE.match(expr, i)
+            if literal:
+                out.append(literal.group(0))
+                i = literal.end()
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            brace_depth = max(0, brace_depth - 1)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            paren_is_grouping.append(expect_grouping)
+            expect_grouping = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if paren_is_grouping:
+                paren_is_grouping.pop()
+            out.append(ch)
+            i += 1
+            continue
+        ident = _PROMQL_IDENT_RE.match(expr, i)
+        if ident:
+            name = ident.group(1)
+            protected = brace_depth > 0 or (
+                bool(paren_is_grouping) and paren_is_grouping[-1]
+            )
+            resolved = None if protected else _resolve_selector(name, expr[ident.end():])
+            out.append(resolved if resolved is not None else name)
+            # Arm grouping only when a bare modifier keyword is immediately
+            # followed by its paren list; any other identifier clears it.
+            expect_grouping = name in _PROMQL_GROUPING_MODIFIERS
+            i = ident.end()
+            continue
+        # Any other character (operators, brackets, whitespace). Only whitespace
+        # may sit between a grouping modifier and its `(`; anything else cancels.
+        if not ch.isspace():
+            expect_grouping = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _extract_legend_labels(legend_format):

@@ -1722,6 +1722,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("metrics.instance", q)
 
+    def test_native_promql_does_not_prefix_label_key_that_collides_with_metric(self):
+        """Regression (#270 review): a label-matcher key must never be rewritten
+        even when a ``metrics.<key>`` field happens to exist in the target (a
+        label name colliding with a metric name). Only the selector position is
+        a metric reference; the brace contents are label keys/values."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            'http_requests_total{job="api"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=(metrics.http_requests_total{job="api"})', q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_does_not_prefix_grouping_label_colliding_with_metric(self):
+        """A ``by(...)`` grouping label colliding with a metric field must stay
+        bare — it names an output dimension, not a metric selector."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.instance": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (instance)",
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (instance)", q)
+        self.assertNotIn("metrics.instance", q)
+
+    def test_native_promql_does_not_prefix_offset_keyword_colliding_with_metric(self):
+        """The ``offset`` modifier keyword must not be rewritten even when a
+        ``metrics.offset`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.offset": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "http_requests_total offset 5m", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("metrics.http_requests_total offset 5m", q)
+        self.assertNotIn("metrics.offset", q)
+
     def test_native_promql_prefixes_bare_metric_on_otel_collector_shape(self):
         resolver = self._otel_resolver({
             "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
