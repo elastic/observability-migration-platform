@@ -980,13 +980,19 @@ def _prefix_native_metric_fields(expr, resolver):
 
     OTel Collector (``prometheusreceiver``) indices store each metric under a
     ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
-    field and the panel renders empty. ``resolver.resolve_metric_field`` is used
-    as the gate: it returns the ``metrics.<name>`` form *only* when the live
-    target advertises the prefixed field and not the bare name, so PromQL
-    function names (``sum``/``rate``), keywords (``by``/``offset``), and
-    OTel-shaped label keys — none of which have a ``metrics.<token>`` field —
-    are left untouched. String literals (label values) are skipped entirely, and
-    ES's PROMQL command accepts the dotted selector inside functions.
+    field and the panel renders empty. The rewrite fires for a token *only* when
+    the live target advertises the ``metrics.<token>`` field and not the bare
+    name, so PromQL function names (``sum``/``rate``), keywords (``by``/
+    ``offset``), and label keys — none of which have a ``metrics.<token>`` field
+    — are left untouched. String literals (label values) are skipped entirely,
+    and ES's PROMQL command accepts the dotted selector inside functions.
+
+    ``resolve_metric_field`` alone is *not* a sufficient gate: under the
+    ``prometheus_native`` profile it returns ``metrics.<name>`` unconditionally
+    (for the preflight contract), which would rewrite label-matcher keys and
+    ``by(...)`` grouping tokens to a non-existent ``metrics.<label>`` field
+    (labels live under ``labels.<name>`` there). So the resolved prefix is
+    confirmed against the field cache (``field_exists``) before it is applied.
 
     Deliberately runs on the *emitted* expression string, after AST analysis
     (counter/gauge detection, group-column shape) has already read the bare
@@ -998,6 +1004,20 @@ def _prefix_native_metric_fields(expr, resolver):
     resolve = getattr(resolver, "resolve_metric_field", None)
     if not callable(resolve):
         return expr
+    field_exists = getattr(resolver, "field_exists", None)
+
+    def _prefixed_field_is_indexed(name):
+        # Confirm ``metrics.<name>`` is a real field and the bare token is not,
+        # so we only rewrite genuine metric selectors — never label keys or
+        # grouping tokens (see docstring). When the resolver can't answer
+        # (no ``field_exists`` / empty cache), fall back to the resolver's
+        # decision rather than inventing a prefix.
+        if not callable(field_exists):
+            return True
+        prefixed = field_exists(f"metrics.{name}")
+        if prefixed is None:
+            return True
+        return bool(prefixed) and not field_exists(name)
 
     def _rewrite_segment(segment):
         def _sub(match):
@@ -1009,7 +1029,9 @@ def _prefix_native_metric_fields(expr, resolver):
                 resolved = resolve(name)
             except Exception:
                 return name
-            return resolved if resolved == f"metrics.{name}" else name
+            if resolved != f"metrics.{name}":
+                return name
+            return resolved if _prefixed_field_is_indexed(name) else name
 
         return _PROMQL_IDENT_RE.sub(_sub, segment)
 

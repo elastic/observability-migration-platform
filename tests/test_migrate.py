@@ -1687,6 +1687,41 @@ class TranslatorRegressionTests(unittest.TestCase):
         resolver._discovered_mappings = {}
         return resolver
 
+    def _native_profile_resolver(self, fields):
+        """A resolver whose field cache trips the `prometheus_native` profile
+        (both `metrics.<name>` and `labels.<name>` present). On that profile
+        resolve_metric_field returns `metrics.<name>` unconditionally for the
+        preflight contract — so the native-PROMQL rewrite must gate on the field
+        cache itself, not on the resolver's return value alone."""
+        return self._otel_resolver(fields)
+
+    def test_native_profile_does_not_prefix_label_matcher_or_grouping_keys(self):
+        """Regression (#270 review): under the `prometheus_native` profile,
+        labels live under `labels.<name>` — there is no `metrics.<label>` field.
+        The rewrite must touch only the metric selector, leaving label-matcher
+        keys and `by(...)` grouping tokens bare so the PROMQL command still
+        matches labels and groups correctly."""
+        resolver = self._native_profile_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "labels.instance": {"keyword": {"aggregatable": True}},
+        })
+        # Precondition: this cache is detected as the native profile, whose
+        # resolve_metric_field prefixes *any* token unconditionally.
+        self.assertEqual(resolver._current_schema_profile(), "prometheus_native")
+        self.assertEqual(resolver.resolve_metric_field("instance"), "metrics.instance")
+        q = panels.build_native_promql_query(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance)',
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn(
+            'sum(rate(metrics.http_requests_total{instance="i-1"}[5m])) by (instance)',
+            q,
+        )
+        self.assertNotIn("metrics.instance", q)
+
     def test_native_promql_prefixes_bare_metric_on_otel_collector_shape(self):
         resolver = self._otel_resolver({
             "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
