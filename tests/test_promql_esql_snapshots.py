@@ -132,6 +132,42 @@ CASES: list[tuple[str, str, str]] = [
         "up{job='prom'} or vector(0)",
         "timeseries",
     ),
+    # --- or fallback wrapped in label_replace (issue #252) ------------------
+    # Dashboards commonly stamp a label onto the synthetic zero row so a
+    # ``sum()`` always returns a value even when the base series is empty
+    # (e.g. Express Prometheus Middleware's "Count by class" panel). The
+    # label_replace() wrapper is cosmetic for a single fallback operand, so
+    # this must strip the same way as a bare ``or vector(N)``.
+    (
+        "or_label_replace_vector_fallback",
+        'http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", "")',
+        "timeseries",
+    ),
+    # The dashboard shape wraps the fallback in an aggregation so ``sum()``
+    # always returns a value. The stripped zero-fill note must survive the
+    # aggregation copy, not just the bare top-level form (issue #252 review).
+    (
+        "or_label_replace_vector_fallback_sum",
+        'sum(http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", ""))',
+        "timeseries",
+    ),
+    # A same-metric ``or`` with an on()/ignoring() modifier is NOT an exact
+    # WHERE-OR: the modifier suppresses right-hand series that share the matched
+    # labels, so a flat OR over-includes them. It must degrade to not_feasible
+    # instead of the unified-WHERE rewrite (issue #252 review).
+    (
+        "or_same_metric_on_modifier_refused",
+        'http_requests_total{status=~"4.."} or on(instance) http_requests_total{status=~"5.."}',
+        "timeseries",
+    ),
+    # A label-less ``ignoring()`` does not narrow the match key — it is
+    # equivalent to the full-label-set match of a bare ``or`` — so it must keep
+    # the exact unified-WHERE rewrite, not degrade like on()/ignoring(labels).
+    (
+        "or_same_metric_empty_ignoring_exact",
+        'http_requests_total{status="400"} or ignoring() http_requests_total{status="500"}',
+        "timeseries",
+    ),
     # --- uptime: time() - boot_time ----------------------------------------
     (
         "uptime_expression",
