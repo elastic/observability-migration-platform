@@ -27,6 +27,7 @@ import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.progress import null_progress, stderr_progress
 from observability_migration.core.sample_data import (
     NetworkError,
     load_metric_kind_overrides,
@@ -541,6 +542,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="Delete non-seeder streams overlapping the contract wildcards before seeding.")
     seed_cmd.add_argument("--rules-file", action="append", default=[], help="Rule-pack file with metric_kinds overrides. Repeat to layer.")
     seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
+    seed_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(seed_cmd)
 
     remove_cmd = sub.add_parser(
@@ -588,6 +590,7 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
     compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
     compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
+    compare_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(compare_cmd)
 
     verify_unified_cmd = sub.add_parser(
@@ -1285,8 +1288,13 @@ def _run_compare(args: Any) -> int:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
         return 2
 
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("compare")
+    total_panels = len(packets)
+    dashboard_count = len({pkt.get("dashboard", "") for pkt in packets})
+    progress(f"comparing {total_panels} panels across {dashboard_count} dashboards")
+
     rows: list[dict[str, Any]] = []
-    for pkt in packets:
+    for i, pkt in enumerate(packets, start=1):
         is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
         if oracle_ok and is_promql:
             index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
@@ -1382,6 +1390,9 @@ def _run_compare(args: Any) -> int:
                     "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
                 })
 
+        if i % 10 == 0 or i == total_panels:
+            progress(f"processed {i}/{total_panels} panels")
+
     summary = {"panels": len(rows)}
     for r in rows:
         summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
@@ -1389,6 +1400,7 @@ def _run_compare(args: Any) -> int:
     out = Path(args.report_out)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
+    progress(f"report written to {out}")
     print(json.dumps(summary, indent=2))
     return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL") for r in rows) else 0
 
@@ -1535,6 +1547,7 @@ def _run_seed_sample_data(args: Any) -> int:
     verify = _tls_verify(args)
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
     request = make_es_request(args.es_url, args.api_key, verify=verify)
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("seed")
     try:
         summary = seed_sample_data(
             artifact_dirs, request,
@@ -1542,6 +1555,7 @@ def _run_seed_sample_data(args: Any) -> int:
             batch_docs=args.batch_docs, max_combinations=args.max_combinations,
             no_recreate=args.no_recreate, purge_foreign=args.purge_foreign_streams,
             metric_kind_overrides=overrides,
+            on_progress=progress,
         )
     except NetworkError as exc:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))

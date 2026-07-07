@@ -634,7 +634,8 @@ is unreachable or inputs are invalid, `1` on ingest errors, and `0` otherwise.
 `--purge-foreign-streams` to drop non-seeder streams overlapping the contract
 wildcards before seeding, `--no-recreate` to ingest without recreating
 templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
-metric kinds.
+metric kinds. Progress (batch-flush counts, bulk-retry/split notices) prints to
+stderr as the ingest runs; pass `--quiet` to suppress it.
 
 ### Compare (side-by-side parity)
 
@@ -670,6 +671,9 @@ the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labe
   --window-minutes 60 \
   --report-out comparison_report.json
 ```
+
+Progress (panel counts as they're compared, the report path) prints to stderr
+as the run progresses; pass `--quiet` to suppress it.
 
 `--artifact-dir` is required and repeatable (each directory must contain
 `verification_packets.json`). `--es-url`/`--api-key` default to
