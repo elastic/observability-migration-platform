@@ -2038,6 +2038,7 @@ def main(argv: list[str] | None = None):
             args,
             output_dir=alert_output_dir(root_output_dir),
             raw_dashboards=dashboards,
+            resolver=resolver,
         ) or {
             "artifacts_dir": str(alert_output_dir(root_output_dir)),
         }
@@ -2053,6 +2054,7 @@ def main(argv: list[str] | None = None):
             result_mapping = map_alerts_batch(
                 result_alert_irs,
                 data_view=getattr(args, "data_view", "metrics-*"),
+                resolver=resolver,
             )
             result.alert_results = [ir.to_dict() for ir in result_alert_irs]
             result_tiers = result_mapping["summary"]["by_automation_tier"]
