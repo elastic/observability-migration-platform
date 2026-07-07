@@ -1,0 +1,7 @@
+title: Request duration 95th percentile
+grafana_type: timeseries
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)

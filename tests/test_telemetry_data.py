@@ -1248,6 +1248,34 @@ class IngestAccountingTests(unittest.TestCase):
         self.assertEqual(summary.ok, 10)
         self.assertEqual(summary.errors, 0)
 
+    def test_on_progress_receives_batch_and_retry_messages(self):
+        # Same oversized-batch-gets-split setup as the test above, but this
+        # time asserting on the progress callback rather than just the final
+        # counts: issue #199 needs a visible line per flush and per retry.
+        def request(method, path, body=None, content_type="application/json"):
+            lines = body.decode().strip().split("\n") if isinstance(body, (bytes, bytearray)) else []
+            doc_lines = len(lines) // 2
+            if doc_lines > 4:
+                return {"error": {"status": 413, "reason": "request entity too large"}}
+            return {"items": [{"create": {"status": 201}} for _ in range(doc_lines)]}
+
+        messages: list[str] = []
+        summary = ingest_documents(self._docs(10), request, batch_docs=10, on_progress=messages.append)
+
+        self.assertEqual(summary.ok, 10)
+        self.assertTrue(any("retrying" in m for m in messages), messages)
+        self.assertTrue(any("ingested 10 docs so far" in m for m in messages), messages)
+
+    def test_on_progress_is_optional(self):
+        # Existing callers that don't pass on_progress must be unaffected.
+        def request(method, path, body=None, content_type="application/json"):
+            lines = body.decode().strip().split("\n") if isinstance(body, (bytes, bytearray)) else []
+            doc_lines = len(lines) // 2
+            return {"items": [{"create": {"status": 201}} for _ in range(doc_lines)]}
+
+        summary = ingest_documents(self._docs(5), request, batch_docs=10)
+        self.assertEqual(summary.ok, 5)
+
     def test_attempted_equals_ok_plus_errors(self):
         # Docs whose index name starts with "bad-" are unrecoverably rejected
         # (the envelope has no items even for a single doc); "metrics-" docs

@@ -1,0 +1,8 @@
+title: Request count by request
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['http_requests_total']
+warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
