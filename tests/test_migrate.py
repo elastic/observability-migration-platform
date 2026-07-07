@@ -1587,6 +1587,90 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("TBUCKET", translated.esql_query)
         self.assertNotIn("FROM metrics-*", translated.esql_query)
 
+    # --- OTel Collector (prometheusreceiver) metrics.<name> fallback (#270) ---
+    #
+    # The OTel Collector's `metrics-prometheusreceiver.otel*` indices store
+    # metrics as `metrics.<name>` but ship OTel-shaped labels (resource/data-
+    # point attributes), never `labels.<name>`. That means they never satisfy
+    # the prometheus_native profile's dual-signal guard (metrics.* AND labels.*)
+    # tested above, so schema_profile() stays None for this shape. Without a
+    # fallback, resolve_metric_field returned the bare name, and Kibana rejected
+    # the resulting `WHERE <bare> IS NOT NULL` with "Invalid input types for IS
+    # NOT NULL" because the bare field genuinely doesn't exist on the index.
+
+    def test_resolve_metric_field_prefixes_when_target_advertises_metrics_dot_field(self):
+        """When schema_profile() is None (OTel-shaped labels, not labels.*) but
+        the live target advertises the exact `metrics.<name>` field and not the
+        bare name, resolve_metric_field must still prefix it."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+        self.assertEqual(
+            self.resolver.resolve_metric_field("elasticsearch_jvm_gc_collection_seconds_sum"),
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum",
+        )
+
+    def test_resolve_metric_field_leaves_bare_name_when_prefixed_field_absent(self):
+        """Guard: arbitrary custom indices without a matching `metrics.<name>`
+        field must be unaffected — no prefix is invented."""
+        self.seed_field_caps({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("some_custom_metric"),
+            "some_custom_metric",
+        )
+
+    def test_resolve_metric_field_prefers_bare_name_when_both_present(self):
+        """Source-faithful: if the bare name is also a real field (e.g. dual-
+        shipping), keep using it rather than switching to the prefixed form."""
+        self.seed_field_caps({
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total"),
+            "http_requests_total",
+        )
+
+    def test_translator_emits_metrics_prefix_where_clause_for_otel_collector_shape(self):
+        """End-to-end: the exact panel/query shape from issue #270 must emit
+        `WHERE metrics.<name> IS NOT NULL`, not the bare name that Kibana
+        rejects with 'Invalid input types for IS NOT NULL'."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        translated = self.translate("elasticsearch_jvm_gc_collection_seconds_sum")
+        self.assertIn(
+            "WHERE metrics.elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL",
+            translated.esql_query,
+        )
+        self.assertNotIn("WHERE elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL", translated.esql_query)
+
+    def test_is_counter_uses_metrics_prefix_fallback_field_cap(self):
+        """is_counter() must check the fallback-prefixed `metrics.<name>`
+        capability when the bare field doesn't exist on an OTel Collector index.
+        Uses metric names without a `_total`/`_sum`/`_bucket`-style suffix so the
+        name-heuristic short-circuit in is_counter() can't mask a broken
+        field-cap fallback."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_indices_indexing_time_seconds": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.elasticsearch_process_cpu_percent": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+        })
+        self.assertTrue(self.resolver.is_counter("elasticsearch_indices_indexing_time_seconds"))
+        self.assertFalse(self.resolver.is_counter("elasticsearch_process_cpu_percent"))
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",
