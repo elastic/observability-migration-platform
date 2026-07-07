@@ -462,6 +462,14 @@ _PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
     r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)\s*$",
     re.DOTALL,
 )
+# Leading unary sign (``-sum(...)``) or scalar operand + arithmetic operator
+# (``100 * sum(...)``, ``1 - avg(...)``). Peeling these exposes the inner
+# aggregation so the prefix guard still fires on collapsed expressions wrapped
+# in unary/scalar arithmetic. A PromQL metric name can never start with a digit,
+# so stripping a leading number is unambiguous.
+_PROMQL_LEADING_SCALAR_RE = re.compile(
+    r"^\s*(?:[-+]|(?:\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*[-+*/%])",
+)
 
 
 def _strip_wrapping_parentheses(expr):
@@ -499,8 +507,24 @@ def _strip_wrapping_parentheses(expr):
 
 
 def _allows_dashboard_label_inference(expr):
-    """Return True when dashboard-wide label inference can safely add grouping."""
-    return not _PROMQL_AGG_PREFIX_RE.search(_strip_wrapping_parentheses(expr))
+    """Return True when dashboard-wide label inference can safely add grouping.
+
+    An ungrouped PromQL aggregation collapses its input to a single (scalar)
+    series, so re-widening it with inferred labels changes the intended series
+    shape. The guard therefore blocks inference for such expressions — including
+    ones wrapped in unary/scalar arithmetic (``-sum(...)``, ``100 * sum(...)``,
+    ``1 - avg(...)``), which preserve the collapsed shape — by peeling leading
+    signs/scalar operands before checking for an aggregation prefix.
+    """
+    text = _strip_wrapping_parentheses(expr)
+    while True:
+        peeled = _strip_wrapping_parentheses(
+            _PROMQL_LEADING_SCALAR_RE.sub("", text, count=1)
+        )
+        if peeled == text:
+            break
+        text = peeled
+    return not _PROMQL_AGG_PREFIX_RE.search(text)
 
 
 def _coalesce_panel_title(panel, panel_analysis=None):

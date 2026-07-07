@@ -8849,6 +8849,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         for expr in (
             'sum(redis_db_keys{instance=~"$instance"})',
             '(sum(redis_db_keys{instance=~"$instance"}))',
+            # Ungrouped aggregations wrapped in unary/scalar arithmetic still
+            # collapse labels, so dashboard-wide inference must not widen them.
+            '-sum(redis_db_keys{instance=~"$instance"})',
+            '100 * sum(redis_db_keys{instance=~"$instance"})',
+            '1 - avg(redis_db_keys{instance=~"$instance"})',
+            '(100 * sum(redis_db_keys{instance=~"$instance"}))',
+            '-(sum(redis_db_keys{instance=~"$instance"}))',
         ):
             target = {
                 "expr": expr,
@@ -8864,6 +8871,37 @@ class TranslatorRegressionTests(unittest.TestCase):
 
             self.assertNotIn("preferred_group_labels", hints, expr)
             self.assertNotIn("preferred_group_labels_origin", hints, expr)
+
+    def test_translation_hints_still_infer_for_scalar_scaled_non_aggregations(self):
+        """Peeling leading scalar/unary arithmetic must not over-block: a
+        label-preserving vector expression (no ungrouped aggregation) should
+        still receive dashboard-inferred grouping."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            '100 * rate(redis_db_keys{instance=~"$instance"}[5m])',
+            '-redis_db_keys{instance=~"$instance"}',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"redis_db_keys": ["db", "instance"]},
+            )
+
+            self.assertEqual(
+                hints.get("preferred_group_labels_origin"),
+                "dashboard_inferred",
+                expr,
+            )
 
     def test_grouped_rate_outer_avg_is_not_a_warning(self):
         translated = self.translate(
