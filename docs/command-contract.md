@@ -1073,13 +1073,25 @@ dashboard scoping via `--dashboard-ids` before any Elastic target exists.
 ## Validation / Verification CLIs
 
 ```bash
+# Scope validation to just the dashboards a migration uploaded (recommended).
+# --dashboards-from reads a migration detailed report or a prior smoke report and
+# validates only those dashboards — by uploaded saved-object ID when the artifact
+# carries one, otherwise by title. This keeps runs practical on busy spaces (#198).
 .venv/bin/grafana-validate-uploaded \
   --kibana-url "$KIBANA_ENDPOINT" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --dashboards-from migration_output/dashboards/migration_report.json \
   --output upload_smoke_report.json
 
 .venv/bin/grafana-generate-corpus --help
 ```
+
+Scope flags are also available for ad-hoc runs: `--dashboard-id` /
+`--dashboard-title` (repeatable) restrict to specific dashboards. With no scope
+flags the validator inspects **every** dashboard in the space, prints an
+explicit `WARNING` that it is doing so, and skips `[DELETED]` placeholder
+dashboards (pass `--include-deleted` to validate those too). The run prints
+per-dashboard `[i/N]` progress before writing the final report.
 
 ## Tested Alert Upload Flow
 
