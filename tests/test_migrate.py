@@ -735,6 +735,47 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(panel_result.status, "migrated_with_warnings")
         self.assertIn("Dropped variable-driven LogQL text filter during migration", panel_result.reasons)
 
+    def test_dashboard_controls_do_not_clear_warning_for_mismatched_label_field(self):
+        dashboard = {
+            "title": "Mismatched variable field",
+            "uid": "mismatched-var-field",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by instance",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'cpu{instance="$host"}'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            payload = yaml.safe_load(yaml_path.read_text())
+
+        controls = payload["dashboards"][0].get("controls", [])
+        self.assertEqual(controls[0]["field"], "host")
+        panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by instance")
+        self.assertEqual(panel_result.status, "migrated_with_warnings")
+        self.assertIn("Dropped variable-driven label filters during migration", panel_result.reasons)
+
     def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
         panel = {
             "title": "CPU by host",
@@ -8868,6 +8909,36 @@ class TranslatorRegressionTests(unittest.TestCase):
             target = {
                 "expr": expr,
                 "legendFormat": "keys",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"redis_db_keys": ["db", "instance"]},
+            )
+
+            self.assertNotIn("preferred_group_labels", hints, expr)
+            self.assertNotIn("preferred_group_labels_origin", hints, expr)
+
+    def test_translation_hints_do_not_infer_labels_for_scalar_functions(self):
+        """Dashboard-wide label inference must not widen functions that return
+        scalar/unlabeled results.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            'scalar(redis_db_keys{instance=~"$instance"})',
+            'time()',
+            'vector(1)',
+            'absent(redis_db_keys{instance=~"$instance"})',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
                 "format": "time_series",
             }
             hints = _target_translation_hints(
