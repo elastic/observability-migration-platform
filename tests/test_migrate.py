@@ -8856,6 +8856,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             '1 - avg(redis_db_keys{instance=~"$instance"})',
             '(100 * sum(redis_db_keys{instance=~"$instance"}))',
             '-(sum(redis_db_keys{instance=~"$instance"}))',
+            # Label-preserving function wrappers around an ungrouped aggregation
+            # keep the collapsed shape, so inference must not widen them either.
+            'clamp_max(sum(redis_db_keys{instance=~"$instance"}), 100)',
+            'clamp_min(avg(redis_db_keys{instance=~"$instance"}), 0)',
+            'abs(sum(redis_db_keys{instance=~"$instance"}))',
+            'round(-sum(redis_db_keys{instance=~"$instance"}))',
+            'clamp_max((sum(redis_db_keys{instance=~"$instance"})), 100)',
+            '100 * clamp_max(sum(redis_db_keys{instance=~"$instance"}), 5)',
         ):
             target = {
                 "expr": expr,
@@ -8884,6 +8892,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         for expr in (
             '100 * rate(redis_db_keys{instance=~"$instance"}[5m])',
             '-redis_db_keys{instance=~"$instance"}',
+            # Function wrappers around a label-preserving (non-aggregation)
+            # vector keep per-series labels, so inference should still apply.
+            'clamp_max(rate(redis_db_keys{instance=~"$instance"}[5m]), 100)',
+            'abs(redis_db_keys{instance=~"$instance"})',
         ):
             target = {
                 "expr": expr,

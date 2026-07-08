@@ -470,6 +470,12 @@ _PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
 _PROMQL_LEADING_SCALAR_RE = re.compile(
     r"^\s*(?:[-+]|(?:\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*[-+*/%])",
 )
+# Leading ``func(`` call. A PromQL vector-transform function (``clamp_max``,
+# ``abs``, ``round`` …) preserves the label set of its vector operand, which is
+# always its first argument, so recursing into that argument exposes a wrapped
+# aggregation to the prefix guard. Aggregation functions are excluded so the
+# aggregation-prefix check fires on them directly instead.
+_PROMQL_LEADING_FUNC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def _strip_wrapping_parentheses(expr):
@@ -506,6 +512,48 @@ def _strip_wrapping_parentheses(expr):
     return text
 
 
+def _peel_leading_function_first_arg(text):
+    """Return the first argument of a leading non-aggregation function call.
+
+    PromQL vector-transform functions (``clamp_max``, ``abs``, ``round``,
+    ``label_replace`` …) preserve the label set of their vector operand — always
+    the first argument — so the collapsed/widened shape flows from that operand.
+    Returns ``text`` unchanged when it is not a function call, when the function
+    is an aggregation (left for the aggregation-prefix guard), or when the
+    parentheses are unbalanced.
+    """
+    match = _PROMQL_LEADING_FUNC_RE.match(text)
+    if not match or match.group(1).lower() in _PROMQL_AGG_FUNCS:
+        return text
+    open_idx = match.end() - 1  # position of the '('
+    depth = 0
+    quote = ""
+    escaped = False
+    first_arg_end = None
+    for idx in range(open_idx, len(text)):
+        char = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char in ("(", "[", "{"):
+            depth += 1
+        elif char in (")", "]", "}"):
+            depth -= 1
+            if depth == 0:
+                end = first_arg_end if first_arg_end is not None else idx
+                return text[open_idx + 1:end].strip()
+        elif char == "," and depth == 1 and first_arg_end is None:
+            first_arg_end = idx
+    return text  # unbalanced — leave untouched
+
+
 def _allows_dashboard_label_inference(expr):
     """Return True when dashboard-wide label inference can safely add grouping.
 
@@ -513,13 +561,18 @@ def _allows_dashboard_label_inference(expr):
     series, so re-widening it with inferred labels changes the intended series
     shape. The guard therefore blocks inference for such expressions — including
     ones wrapped in unary/scalar arithmetic (``-sum(...)``, ``100 * sum(...)``,
-    ``1 - avg(...)``), which preserve the collapsed shape — by peeling leading
-    signs/scalar operands before checking for an aggregation prefix.
+    ``1 - avg(...)``) or label-preserving function calls
+    (``clamp_max(sum(...), 100)``, ``abs(sum(...))``), which all keep the
+    collapsed shape — by peeling leading signs/scalar operands and non-aggregation
+    function wrappers before checking for an aggregation prefix.
     """
     text = _strip_wrapping_parentheses(expr)
     while True:
         peeled = _strip_wrapping_parentheses(
             _PROMQL_LEADING_SCALAR_RE.sub("", text, count=1)
+        )
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_function_first_arg(peeled)
         )
         if peeled == text:
             break
