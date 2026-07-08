@@ -5,5 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['prometheus_evaluator_duration_seconds']
 breakdown: instance
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['quantile'] are in the query but not on the chart, so series differing only by those are visually merged

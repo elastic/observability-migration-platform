@@ -5,4 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['node_disk_io_time_seconds_total']
 axis_title: %util
-warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Dropped variable-driven label filters during migration

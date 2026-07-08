@@ -7,5 +7,4 @@ metrics: ['node_cpu_guest_seconds_total_ratio']
 breakdown: instance
 mode: unstacked
 axis_title: percentage
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Panel has 2 PromQL targets but only 1 could be migrated

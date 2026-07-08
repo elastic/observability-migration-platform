@@ -1,9 +1,8 @@
 title: CPU Throttled seconds by namespace
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['container_cpu_cfs_throttled_seconds_total']
 breakdown: k8s.namespace.name
 axis_title: SECONDS
-warning: Variable-driven label filters applied via Kibana dashboard controls

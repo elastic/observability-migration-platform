@@ -6,6 +6,4 @@ dimension: time_bucket
 metrics: ['TCP_alloc_Allocated_sockets', 'TCP_inuse_Tcp_sockets_currently_in_use', 'TCP_orphan_Orphan_sockets', 'TCP_tw_Sockets_waiting_close']
 breakdown: instance
 axis_title: counter
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

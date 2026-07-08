@@ -7,6 +7,4 @@ metrics: ['Pgfault_Page_major_and_minor_fault_operations', 'Pgmajfault_Major_pag
 breakdown: instance
 mode: stacked
 axis_title: faults
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: Added outer AVG() around irate because ES|QL requires an outer aggregation when grouping TS functions by label fields
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

@@ -6,6 +6,4 @@ dimension: time_bucket
 metrics: ['ActiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_SENT_state_from_the_CLOSED_state', 'PassiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_RCVD_state_from_the_LISTEN_state']
 breakdown: instance
 axis_title: connections
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: Added outer AVG() around irate because ES|QL requires an outer aggregation when grouping TS functions by label fields
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

@@ -5,6 +5,5 @@ chart_type: line
 dimension: time_bucket
 metrics: ['Scrape_success', 'Scrape_textfile_error_1_true']
 axis_title: counter
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Collapsed all series of `node_scrape_collector_success` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 warning: Collapsed all series of `node_textfile_scrape_error` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.

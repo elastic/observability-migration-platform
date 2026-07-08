@@ -1,8 +1,7 @@
 title: Average Queue Size
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['node_disk_io_time_weighted_seconds_total']
 axis_title: aqu-sz
-warning: Variable-driven label filters applied via Kibana dashboard controls

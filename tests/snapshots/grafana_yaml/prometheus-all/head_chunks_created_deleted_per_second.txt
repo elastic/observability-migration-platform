@@ -1,8 +1,7 @@
 title: Head Chunks Created/Deleted per second
 grafana_type: graph
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['created_on', 'deleted_on']
 breakdown: instance
-warning: Variable-driven label filters applied via Kibana dashboard controls

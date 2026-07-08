@@ -5,4 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['Reads_completed', 'Writes_completed']
 axis_title: IO read (-) / write (+)
-warning: Variable-driven label filters applied via Kibana dashboard controls
+warning: Dropped variable-driven label filters during migration
