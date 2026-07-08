@@ -1,0 +1,76 @@
+{
+  "index_pattern": "metrics-*",
+  "field_cache": {
+    "namespace": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "pod": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "db": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "cmd": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "instance": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "service.instance.id": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "redis_up": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    }
+  },
+  "cooccurrence_cache": [
+    {
+      "metric": "redis_up",
+      "field": "namespace",
+      "cooccurs": true
+    },
+    {
+      "metric": "redis_up",
+      "field": "pod",
+      "cooccurs": true
+    },
+    {
+      "metric": "redis_up",
+      "field": "instance",
+      "cooccurs": false
+    },
+    {
+      "metric": "redis_up",
+      "field": "service.instance.id",
+      "cooccurs": true
+    }
+  ]
+}

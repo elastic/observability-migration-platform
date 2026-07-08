@@ -6,6 +6,4 @@ dimension: time_bucket
 metrics: ['RAM_Total', 'RAM_Used', 'RAM_Cache_Buffer', 'RAM_Free', 'SWAP_Used']
 breakdown: instance
 mode: stacked
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

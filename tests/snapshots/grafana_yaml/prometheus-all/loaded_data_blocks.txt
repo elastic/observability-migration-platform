@@ -1,8 +1,7 @@
 title: Loaded data blocks
 grafana_type: graph
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['prometheus_tsdb_blocks_loaded']
 breakdown: instance
-warning: Variable-driven label filters applied via Kibana dashboard controls

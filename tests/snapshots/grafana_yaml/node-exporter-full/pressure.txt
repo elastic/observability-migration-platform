@@ -5,5 +5,4 @@ chart_type: bar
 dimension: label
 metrics: ['value']
 axis_extent: custom [0.0, 1.0]
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Approximated bargauge as bar chart

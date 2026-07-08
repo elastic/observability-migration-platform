@@ -1,8 +1,7 @@
 title: Reloaded block from disk
 grafana_type: graph
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['prometheus_tsdb_reloads_total']
 breakdown: instance
-warning: Variable-driven label filters applied via Kibana dashboard controls

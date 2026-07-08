@@ -5,5 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['node_cpu_seconds_total_avg']
 axis_title: CPU %
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Panel has 2 PromQL targets but only 1 could be migrated (dropped targets are Windows-specific)

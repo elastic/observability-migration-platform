@@ -1,0 +1,3 @@
+control: type=options field=namespace multiple=False
+control: type=options field=pod multiple=False
+control: type=options field=service.instance.id multiple=False

@@ -3,6 +3,5 @@ grafana_type: timeseries
 status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
-metrics: ['node_cpu_scaling_frequency_hertz']
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: Panel has 3 PromQL targets but only 1 could be migrated
+metrics: ['CPU', 'Max', 'Min']
+warning: Collapsed all series of `node_cpu_scaling_frequency_hertz` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
