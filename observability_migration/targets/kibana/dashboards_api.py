@@ -1210,7 +1210,10 @@ def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     list). A payload whose only items are empty sections has zero leaves and
     must count as empty so the upload path routes it to the legacy-import
     fallback instead of creating a dashboard of empty collapsibles with the
-    source panels silently dropped.
+    source panels silently dropped. A zero-leaf payload is degenerate even
+    when it carries ``pinned_panels``: controls filter nothing without panels,
+    so the emptiness gate deliberately ignores controls and keys only on
+    leaves, letting a controls-only-but-panel-dropped dashboard fall back too.
     """
     for item in payload.get("panels") or []:
         if not isinstance(item, dict):
@@ -1756,7 +1759,7 @@ def upload_native_dashboard(
     )
     payload = dashboard.to_api_payload()
     _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
-    if not _payload_has_leaf_panels(payload) and not payload.get("pinned_panels"):
+    if not _payload_has_leaf_panels(payload):
         res.status = "empty"
         return res
 
@@ -1812,7 +1815,7 @@ def upload_yaml_files(
                 unmapped=counts["unmapped"],
                 unmapped_reasons=dict(reasons),
             )
-            if not _payload_has_leaf_panels(payload) and not payload.get("pinned_panels"):
+            if not _payload_has_leaf_panels(payload):
                 res.status = "empty"
                 if fallback is not None:
                     fallback(path, dashboard)
