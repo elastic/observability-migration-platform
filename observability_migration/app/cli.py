@@ -1115,6 +1115,15 @@ def _run_upload(args: Any) -> None:
         print(f"  [{status}] {item['yaml_file']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
+        dropped_filters = item.get("unmapped_reasons", {}).get(
+            "dropped_unsupported_dashboard_filter", 0
+        )
+        if dropped_filters:
+            print(
+                f"         warning: dropped {dropped_filters} unsupported dashboard "
+                "filter(s); affected panels may query a broader dataset than the source",
+                file=sys.stderr,
+            )
     if upload_payload["summary"]["uploaded_ok"] < upload_payload["summary"]["total"]:
         sys.exit(1)
 

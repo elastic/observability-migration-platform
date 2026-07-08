@@ -305,7 +305,15 @@ class TestNativeApiPath(unittest.TestCase):
         self.assertTrue(_LEGACY_SUMMARY_KEYS.issubset(set(payload["summary"])))
         self.assertEqual(
             set(record) - _LEGACY_RECORD_KEYS,
-            {"status", "mapped", "unmapped", "fallback_used", "fallback_count", "dashboard_ids"},
+            {
+                "status",
+                "mapped",
+                "unmapped",
+                "unmapped_reasons",
+                "fallback_used",
+                "fallback_count",
+                "dashboard_ids",
+            },
         )
 
 

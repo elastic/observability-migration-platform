@@ -1006,8 +1006,11 @@ def native_dashboard_from_report(dashboard: dict[str, Any]) -> tuple[NativeDashb
     carries no ``section``/``controls`` structure.
     """
     title = str(dashboard.get("title") or "migrated dashboard")
-    native = NativeDashboard(title=title)
+    filters, dropped_filters = map_yaml_filters(dashboard.get("filters"))
+    native = NativeDashboard(title=title, filters=filters)
     counts = NativeMappingCounts()
+    if dropped_filters:
+        counts.add_reason(_DROPPED_FILTER_REASON, dropped_filters)
     for panel in dashboard.get("panels", []):
         if not isinstance(panel, dict):
             continue
@@ -1196,24 +1199,200 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
     return {"type": "esql_control", "config": esql_config}
 
 
+_DROPPED_FILTER_REASON = "dropped_unsupported_dashboard_filter"
+
+
+def _unwrap_negate(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Split a ``kb-dashboard-core`` filter dict into ``(body, negated)``.
+
+    A ``NegateFilter`` is ``{"not": <filter>}`` only -- per the schema it
+    carries no ``disabled``/``alias`` (or anything else) of its own; those live
+    on the wrapped inner filter. So callers must read ``disabled``/``alias``
+    from the returned ``body``, never from the ``{"not": ...}`` wrapper, or a
+    disabled/aliased negated filter loses those attributes (a disabled filter
+    would silently ship as an active constraint).
+    """
+    inner = raw.get("not")
+    if isinstance(inner, dict):
+        return inner, True
+    return raw, False
+
+
+def _yaml_filter_condition(raw: Any, *, negate: bool = False) -> dict[str, Any] | None:
+    """Map one leaf ``kb-dashboard-core`` filter dict to the Dashboards API's
+    ``condition`` shape (``exists`` / ``is`` / ``is_one_of`` / ``range``).
+
+    Returns ``None`` (rather than emitting a degenerate condition) when the
+    leaf is malformed -- a missing/empty ``field`` on a phrase/phrases/range
+    filter, or a non-list ``in`` value -- so callers drop and count it instead
+    of shipping a filter the API would reject or, worse, silently char-split a
+    string ``in`` into per-character terms.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if "exists" in raw:
+        field = str(raw["exists"])
+        if not field:
+            return None
+        condition: dict[str, Any] = {"field": field, "operator": "exists"}
+    elif "equals" in raw:
+        field = str(raw.get("field") or "")
+        if not field:
+            return None
+        condition = {"field": field, "operator": "is", "value": raw["equals"]}
+    elif "in" in raw:
+        field = str(raw.get("field") or "")
+        values = raw["in"]
+        if not field or not isinstance(values, list):
+            return None
+        condition = {"field": field, "operator": "is_one_of", "value": list(values)}
+    elif any(key in raw for key in ("gte", "lte", "gt", "lt")):
+        field = str(raw.get("field") or "")
+        if not field:
+            return None
+        value = {key: raw[key] for key in ("gte", "lte", "gt", "lt") if key in raw}
+        condition = {"field": field, "operator": "range", "value": value}
+    else:
+        return None
+    if negate:
+        condition["negate"] = True
+    return condition
+
+
+def _yaml_group_member(raw: Any) -> dict[str, Any] | None:
+    """Map one active member of an ``and``/``or`` group to the API's nested
+    (type-less) condition/group shape.
+
+    Returns ``None`` when the member cannot be represented there -- e.g. a
+    ``not`` wrapping a nested group, a malformed leaf, or a ``dsl`` (the nested
+    group shape carries neither a ``negate`` slot for groups nor a ``dsl``
+    branch). :func:`_yaml_group_conditions` then drops the *whole* group rather
+    than emit a partial ``and``/``or`` whose meaning silently differs from the
+    source (a shorter ``and`` matches strictly more documents). Disabled
+    members are filtered out by :func:`_yaml_group_conditions` before we get
+    here.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("not"), dict):
+        return _yaml_filter_condition(raw["not"], negate=True)
+    leaf = _yaml_filter_condition(raw)
+    if leaf is not None:
+        return leaf
+    operator = "and" if "and" in raw else "or" if "or" in raw else ""
+    if operator:
+        conditions = _yaml_group_conditions(raw.get(operator))
+        if conditions is not None:
+            return {"operator": operator, "conditions": conditions}
+    return None
+
+
+def _yaml_group_conditions(children: Any) -> list[dict[str, Any]] | None:
+    """Map an ``and``/``or`` child list to nested conditions, all-or-nothing.
+
+    Returns ``None`` if the list is malformed or *any* active member is
+    unrepresentable, so the caller drops the whole filter -- a partially mapped
+    ``and``/``or`` would silently broaden or narrow the constraint. Disabled
+    members are skipped (an inactive filter never constrained the query, and
+    the nested shape has no ``disabled`` slot to carry it), which is why a
+    dropped disabled member is *not* treated as an unrepresentable one.
+    """
+    if not isinstance(children, list):
+        return None
+    conditions: list[dict[str, Any]] = []
+    for child in children:
+        # A negated member carries ``disabled`` on its wrapped inner filter,
+        # so unwrap before checking (see :func:`_unwrap_negate`).
+        if isinstance(child, dict) and _unwrap_negate(child)[0].get("disabled"):
+            continue
+        mapped = _yaml_group_member(child)
+        if mapped is None:
+            return None
+        conditions.append(mapped)
+    return conditions or None
+
+
+def map_yaml_filter(raw: Any, dropped: list[str]) -> dict[str, Any] | None:
+    """Map one top-level YAML dashboard ``filters[]`` entry to the Dashboards
+    API's as-code filter shape (``condition`` / ``group`` / ``dsl``).
+
+    A top-level ``not`` is preserved via the wrapper's ``negate`` slot -- for a
+    leaf *and* for a group. Anything the typed API's ``filters`` schema cannot
+    express (a group with any unrepresentable member, a ``not`` wrapping a
+    group *nested inside* another group, or an otherwise unrecognized entry) is
+    dropped whole and recorded in ``dropped`` rather than silently mixed into
+    the payload -- callers surface the drop count (see the upload warning in
+    ``app/cli.py``) so a filtered dashboard never uploads with fewer filters
+    than the source without warning.
+    """
+    if not isinstance(raw, dict):
+        dropped.append(_DROPPED_FILTER_REASON)
+        return None
+
+    body, negate = _unwrap_negate(raw)
+    # ``disabled``/``alias`` live on the filter itself (``body``), not on a
+    # ``{"not": ...}`` wrapper -- see :func:`_unwrap_negate`.
+    disabled = bool(body.get("disabled"))
+    label = body.get("alias")
+
+    condition = _yaml_filter_condition(body)
+    if condition is not None:
+        mapped: dict[str, Any] = {"type": "condition", "condition": condition}
+    elif isinstance(body.get("dsl"), dict):
+        mapped = {"type": "dsl", "dsl": body["dsl"], "params": None}
+    elif "and" in body or "or" in body:
+        operator = "and" if "and" in body else "or"
+        conditions = _yaml_group_conditions(body.get(operator))
+        if conditions is None:
+            dropped.append(_DROPPED_FILTER_REASON)
+            return None
+        mapped = {"type": "group", "group": {"operator": operator, "conditions": conditions}}
+    else:
+        dropped.append(_DROPPED_FILTER_REASON)
+        return None
+
+    if negate:
+        mapped["negate"] = True
+    if disabled:
+        mapped["disabled"] = True
+    if isinstance(label, str) and label:
+        mapped["label"] = label
+    return mapped
+
+
+def map_yaml_filters(filters: Any) -> tuple[list[dict[str, Any]], int]:
+    """Map a YAML dashboard's top-level ``filters`` list to the Dashboards
+    API's as-code shape. Returns ``(mapped_filters, dropped_count)``."""
+    if not isinstance(filters, list):
+        return [], 0
+    dropped: list[str] = []
+    mapped = [result for raw in filters if (result := map_yaml_filter(raw, dropped)) is not None]
+    return mapped, len(dropped)
+
+
 def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboard, NativeMappingCounts]:
     """Build a :class:`NativeDashboard` from one kb-dashboard-core YAML dashboard.
 
-    Reconstructs nested ``section`` blocks into native API sections and
-    dashboard-level ``controls`` into ``pinned_panels`` -- capabilities the
-    flat migration report cannot express (see
-    :func:`native_dashboard_from_report`). The 100-item caps (top-level and
-    per-section, controls, and combined total) are enforced by
-    :meth:`NativeDashboard.enforce_item_cap` plus the control-budget gate below.
+    Reconstructs nested ``section`` blocks into native API sections,
+    dashboard-level ``controls`` into ``pinned_panels``, and dashboard-level
+    ``filters`` into the API's as-code filter shape -- capabilities the flat
+    migration report cannot express (see :func:`native_dashboard_from_report`).
+    The 100-item caps (top-level and per-section, controls, and combined
+    total) are enforced by :meth:`NativeDashboard.enforce_item_cap` plus the
+    control-budget gate below.
     """
     title = str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard")
     description = dashboard.get("description")
+    filters, dropped_filters = map_yaml_filters(dashboard.get("filters"))
     native = NativeDashboard(
         title=title,
         description=str(description) if description else "",
         dashboard_id=_stable_dashboard_id(dashboard),
+        filters=filters,
     )
     counts = NativeMappingCounts()
+    if dropped_filters:
+        counts.add_reason(_DROPPED_FILTER_REASON, dropped_filters)
     next_y = 0
 
     for panel in dashboard.get("panels", []) or []:

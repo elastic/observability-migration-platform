@@ -871,6 +871,225 @@ def test_native_dashboard_from_yaml_reconstructs_sections():
     assert counts.sections == 1
 
 
+def test_native_dashboard_from_yaml_preserves_phrase_filter():
+    dashboard = {
+        "name": "Filtered Dashboard",
+        "filters": [{"field": "data_stream.dataset", "equals": "prometheus"}],
+        "panels": [_leaf({"type": "metric", "query": "FROM metrics-*", "primary": {"field": "count"}}, "Count")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {"type": "condition", "condition": {"field": "data_stream.dataset", "operator": "is", "value": "prometheus"}},
+    ]
+    payload = native.to_api_payload()
+    assert payload["filters"] == native.filters
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
+def test_native_dashboard_from_yaml_maps_exists_phrases_and_range_filters():
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"exists": "host.name"},
+            {"field": "service.name", "in": ["api", "worker"]},
+            {"field": "duration", "gte": 10, "lte": 100},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, _counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {"type": "condition", "condition": {"field": "host.name", "operator": "exists"}},
+        {
+            "type": "condition",
+            "condition": {"field": "service.name", "operator": "is_one_of", "value": ["api", "worker"]},
+        },
+        {
+            "type": "condition",
+            "condition": {"field": "duration", "operator": "range", "value": {"gte": 10, "lte": 100}},
+        },
+    ]
+
+
+def test_native_dashboard_from_yaml_maps_negated_and_group_filters():
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"not": {"field": "status", "equals": "error"}},
+            {"and": [{"field": "env", "equals": "prod"}, {"exists": "host.name"}]},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {
+            "type": "condition",
+            "condition": {"field": "status", "operator": "is", "value": "error"},
+            "negate": True,
+        },
+        {
+            "type": "group",
+            "group": {
+                "operator": "and",
+                "conditions": [
+                    {"field": "env", "operator": "is", "value": "prod"},
+                    {"field": "host.name", "operator": "exists"},
+                ],
+            },
+        },
+    ]
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
+def test_native_dashboard_from_yaml_drops_unsupported_filter_with_reason():
+    # A ``not`` wrapping a nested ``and``/``or`` *inside* another group's
+    # conditions list has no ``negate`` slot in the API's recursive group
+    # schema (only the top-level group wrapper and leaf conditions have one).
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"and": [{"not": {"and": [{"field": "a", "equals": 1}]}}]},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == []
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) >= 1
+
+
+def test_native_dashboard_from_yaml_preserves_top_level_negated_group():
+    # A top-level ``not`` wrapping a group IS representable: the wrapper carries
+    # ``negate`` for groups exactly as it does for leaf conditions.
+    dashboard = {
+        "name": "D",
+        "filters": [{"not": {"and": [{"field": "env", "equals": "prod"}]}}],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {
+            "type": "group",
+            "group": {"operator": "and", "conditions": [{"field": "env", "operator": "is", "value": "prod"}]},
+            "negate": True,
+        },
+    ]
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
+def test_native_dashboard_from_yaml_omits_disabled_group_member_without_dropping():
+    # A disabled member is inactive; it must not become an active constraint,
+    # and omitting it (the nested shape has no ``disabled`` slot) is not a
+    # semantic gap, so it must not be counted as a dropped filter.
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"and": [{"field": "env", "equals": "prod"}, {"field": "host", "equals": "a", "disabled": True}]},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {
+            "type": "group",
+            "group": {"operator": "and", "conditions": [{"field": "env", "operator": "is", "value": "prod"}]},
+        },
+    ]
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
+def test_native_dashboard_from_yaml_drops_whole_group_with_unrepresentable_member():
+    # An ``and`` with one unrepresentable member must drop the WHOLE filter --
+    # emitting only the surviving conjunct would silently match a broader set.
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"and": [{"field": "env", "equals": "prod"}, {"dsl": {"match_all": {}}}]},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == []
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) >= 1
+
+
+def test_native_dashboard_from_yaml_drops_malformed_leaf_without_crashing():
+    # A non-list ``in`` and a field-less ``equals`` must be dropped+counted,
+    # never crash the build or char-split a string into per-character terms.
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"field": "svc", "in": "api"},
+            {"equals": "prod"},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == []
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 2
+
+
+def test_native_dashboard_from_report_preserves_filters():
+    # Report-path parity: dashboard-level filters must not be silently dropped
+    # on the report path either.
+    dashboard = {
+        "title": "D",
+        "filters": [{"field": "data_stream.dataset", "equals": "prometheus"}],
+        "panels": [],
+    }
+    native, _counts = api.native_dashboard_from_report(dashboard)
+    assert native.filters == [
+        {"type": "condition", "condition": {"field": "data_stream.dataset", "operator": "is", "value": "prometheus"}},
+    ]
+
+
+def test_native_dashboard_from_yaml_negated_filter_reads_disabled_and_alias_from_inner():
+    # A NegateFilter is ``{not: <filter>}`` only (schema: NegateFilter has no
+    # ``disabled``/``alias`` of its own); those live on the wrapped filter. A
+    # disabled negated filter must stay marked disabled (inactive), never be
+    # shipped as an active NOT constraint, and its inner alias must survive.
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"not": {"field": "host", "equals": "db1", "disabled": True, "alias": "not db1"}},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {
+            "type": "condition",
+            "condition": {"field": "host", "operator": "is", "value": "db1"},
+            "negate": True,
+            "disabled": True,
+            "label": "not db1",
+        },
+    ]
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
+def test_native_dashboard_from_yaml_skips_disabled_negated_group_member():
+    # A disabled negated group member carries ``disabled`` on its inner filter;
+    # it is inactive and must be skipped, leaving only the active conjunct --
+    # not emitted as an active NOT constraint that narrows the query.
+    dashboard = {
+        "name": "D",
+        "filters": [
+            {"and": [
+                {"field": "env", "equals": "prod"},
+                {"not": {"field": "host", "equals": "db1", "disabled": True}},
+            ]},
+        ],
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.filters == [
+        {
+            "type": "group",
+            "group": {"operator": "and", "conditions": [{"field": "env", "operator": "is", "value": "prod"}]},
+        },
+    ]
+    assert counts.reasons.get("dropped_unsupported_dashboard_filter", 0) == 0
+
+
 def test_build_dashboard_payload_from_yaml_matches_native_dashboard_to_api_payload():
     dashboard = {
         "name": "D",

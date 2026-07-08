@@ -338,6 +338,10 @@ class KibanaTargetAdapter(TargetAdapter):
             _fallback(str(yaml_file))
         mapped = sum(r.mapped for r in results)
         unmapped = sum(r.unmapped for r in results)
+        unmapped_reasons: dict[str, int] = {}
+        for r in results:
+            for reason, count in (r.unmapped_reasons or {}).items():
+                unmapped_reasons[reason] = unmapped_reasons.get(reason, 0) + int(count)
         if len(results) == 1:
             status = results[0].status
         elif results:
@@ -370,6 +374,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "status": status,
             "mapped": mapped,
             "unmapped": unmapped,
+            "unmapped_reasons": unmapped_reasons,
             "fallback_used": bool(fallback_state["used"]),
             "fallback_count": int(fallback_state["count"]),
             "dashboard_ids": dashboard_ids,
@@ -485,6 +490,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 "status": record["status"],
                 "mapped": record["mapped"],
                 "unmapped": record["unmapped"],
+                "unmapped_reasons": record.get("unmapped_reasons", {}),
                 "fallback_used": record["fallback_used"],
                 "dashboard_ids": record["dashboard_ids"],
             }

@@ -792,6 +792,32 @@ class TestPayloadAndValidation:
         assert len(findings) == 1
         assert findings[0].category == "unsupported_by_api_oracle"
 
+    def test_build_dashboard_payload_submits_dashboard_filters(self) -> None:
+        # Regression guard: the live conformance oracle must actually POST the
+        # dashboard-level ``filters`` block (mapped through the production
+        # mapper) so a filter shape Kibana rejects is caught, rather than the
+        # filters silently never being part of the validated payload.
+        report = {
+            "dashboards": [
+                {
+                    "title": "D",
+                    "filters": [{"field": "data_stream.dataset", "equals": "prometheus"}],
+                    "panels": [_panel()],
+                }
+            ]
+        }
+        payload, _findings = dashboards_api.build_dashboard_payload(report)
+        assert payload["filters"] == [
+            {
+                "type": "condition",
+                "condition": {"field": "data_stream.dataset", "operator": "is", "value": "prometheus"},
+            },
+        ]
+
+    def test_build_dashboard_payload_omits_filters_when_absent(self) -> None:
+        payload, _findings = dashboards_api.build_dashboard_payload(_report([_panel()]))
+        assert "filters" not in payload
+
     def test_unsupported_budget_can_fail_low_coverage(self) -> None:
         payload, findings = dashboards_api.build_dashboard_payload(
             _report([_panel(), _panel(chart_type="legacy_metric"), _panel(chart_type="legacy_metric")])

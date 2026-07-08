@@ -273,6 +273,7 @@ class NativeDashboard:
     description: str = ""
     items: list[NativeItem] = field(default_factory=list)
     controls: list[NativeControl] = field(default_factory=list)
+    filters: list[dict[str, Any]] = field(default_factory=list)
     dashboard_id: str = ""
 
     def enforce_item_cap(
@@ -321,6 +322,8 @@ class NativeDashboard:
             payload["description"] = self.description
         if self.controls:
             payload["pinned_panels"] = [control.to_api_dict() for control in self.controls]
+        if self.filters:
+            payload["filters"] = self.filters
         return payload
 
 

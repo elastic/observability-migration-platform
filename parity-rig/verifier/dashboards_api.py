@@ -1055,10 +1055,17 @@ def api_panel_from_report_panel(
 def build_dashboard_payload(report: dict[str, Any]) -> tuple[dict[str, Any], list[Finding]]:
     panels: list[dict[str, Any]] = []
     findings: list[Finding] = []
+    filters: list[dict[str, Any]] = []
     title = ""
     for dash in report.get("dashboards", []):
         title = title or str(dash.get("title") or "migration conformance")
         dashboard_title = str(dash.get("title") or "")
+        # Include dashboard-level filters (mapped through the production mapper)
+        # so the live conformance submit actually exercises the filter shape --
+        # otherwise a filter block Kibana rejects would never be part of the
+        # validated payload and the gate could not catch it.
+        mapped_filters, _dropped = production_dashboards_api.map_yaml_filters(dash.get("filters"))
+        filters.extend(mapped_filters)
         for panel in dash.get("panels", []):
             if not isinstance(panel, dict):
                 continue
@@ -1066,7 +1073,10 @@ def build_dashboard_payload(report: dict[str, Any]) -> tuple[dict[str, Any], lis
             findings.extend(panel_findings)
             if api_panel is not None:
                 panels.append(api_panel)
-    return {"title": f"vf-conformance-{title}", "panels": panels}, findings
+    payload: dict[str, Any] = {"title": f"vf-conformance-{title}", "panels": panels}
+    if filters:
+        payload["filters"] = filters
+    return payload, findings
 
 
 def mapped_panel_count(payload: dict[str, Any]) -> int:
