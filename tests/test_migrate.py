@@ -1587,6 +1587,383 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("TBUCKET", translated.esql_query)
         self.assertNotIn("FROM metrics-*", translated.esql_query)
 
+    # --- OTel Collector (prometheusreceiver) metrics.<name> fallback (#270) ---
+    #
+    # The OTel Collector's `metrics-prometheusreceiver.otel*` indices store
+    # metrics as `metrics.<name>` but ship OTel-shaped labels (resource/data-
+    # point attributes), never `labels.<name>`. That means they never satisfy
+    # the prometheus_native profile's dual-signal guard (metrics.* AND labels.*)
+    # tested above, so schema_profile() stays None for this shape. Without a
+    # fallback, resolve_metric_field returned the bare name, and Kibana rejected
+    # the resulting `WHERE <bare> IS NOT NULL` with "Invalid input types for IS
+    # NOT NULL" because the bare field genuinely doesn't exist on the index.
+
+    def test_resolve_metric_field_prefixes_when_target_advertises_metrics_dot_field(self):
+        """When schema_profile() is None (OTel-shaped labels, not labels.*) but
+        the live target advertises the exact `metrics.<name>` field and not the
+        bare name, resolve_metric_field must still prefix it."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+        self.assertEqual(
+            self.resolver.resolve_metric_field("elasticsearch_jvm_gc_collection_seconds_sum"),
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum",
+        )
+
+    def test_resolve_metric_field_leaves_bare_name_when_prefixed_field_absent(self):
+        """Guard: arbitrary custom indices without a matching `metrics.<name>`
+        field must be unaffected — no prefix is invented."""
+        self.seed_field_caps({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("some_custom_metric"),
+            "some_custom_metric",
+        )
+
+    def test_resolve_metric_field_prefers_bare_name_when_both_present(self):
+        """Source-faithful: if the bare name is also a real field (e.g. dual-
+        shipping), keep using it rather than switching to the prefixed form."""
+        self.seed_field_caps({
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total"),
+            "http_requests_total",
+        )
+
+    def test_translator_emits_metrics_prefix_where_clause_for_otel_collector_shape(self):
+        """End-to-end: the exact panel/query shape from issue #270 must emit
+        `WHERE metrics.<name> IS NOT NULL`, not the bare name that Kibana
+        rejects with 'Invalid input types for IS NOT NULL'."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        translated = self.translate("elasticsearch_jvm_gc_collection_seconds_sum")
+        self.assertIn(
+            "WHERE metrics.elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL",
+            translated.esql_query,
+        )
+        self.assertNotIn("WHERE elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL", translated.esql_query)
+
+    def test_is_counter_uses_metrics_prefix_fallback_field_cap(self):
+        """is_counter() must check the fallback-prefixed `metrics.<name>`
+        capability when the bare field doesn't exist on an OTel Collector index.
+        Uses metric names without a `_total`/`_sum`/`_bucket`-style suffix so the
+        name-heuristic short-circuit in is_counter() can't mask a broken
+        field-cap fallback."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_indices_indexing_time_seconds": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.elasticsearch_process_cpu_percent": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+        })
+        self.assertTrue(self.resolver.is_counter("elasticsearch_indices_indexing_time_seconds"))
+        self.assertFalse(self.resolver.is_counter("elasticsearch_process_cpu_percent"))
+
+    # --- Native PROMQL path metrics.<name> prefix (#270) ---
+    #
+    # The native PROMQL command (`PROMQL index=... value=(<expr>)`) embeds the
+    # original PromQL expression, whose bare metric names find no field on an
+    # OTel Collector index — the panel renders empty (no error, unlike the ES|QL
+    # path). build_native_promql_query must rewrite each metric selector to its
+    # resolved `metrics.<name>` field. ES's PROMQL command accepts the dotted
+    # selector inside functions (verified live on issue #270).
+
+    def _otel_resolver(self, fields):
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        resolver._discovery_attempted = True
+        resolver._field_cache = fields
+        resolver._discovered_mappings = {}
+        return resolver
+
+    def _native_profile_resolver(self, fields):
+        """A resolver whose field cache trips the `prometheus_native` profile
+        (both `metrics.<name>` and `labels.<name>` present). On that profile
+        resolve_metric_field returns `metrics.<name>` unconditionally for the
+        preflight contract — so the native-PROMQL rewrite must gate on the field
+        cache itself, not on the resolver's return value alone."""
+        return self._otel_resolver(fields)
+
+    def test_native_profile_does_not_prefix_label_matcher_or_grouping_keys(self):
+        """Regression (#270 review): under the `prometheus_native` profile,
+        labels live under `labels.<name>` — there is no `metrics.<label>` field.
+        The rewrite must touch only the metric selector, leaving label-matcher
+        keys and `by(...)` grouping tokens bare so the PROMQL command still
+        matches labels and groups correctly."""
+        resolver = self._native_profile_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "labels.instance": {"keyword": {"aggregatable": True}},
+        })
+        # Precondition: this cache is detected as the native profile, whose
+        # resolve_metric_field prefixes *any* token unconditionally.
+        self.assertEqual(resolver._current_schema_profile(), "prometheus_native")
+        self.assertEqual(resolver.resolve_metric_field("instance"), "metrics.instance")
+        q = panels.build_native_promql_query(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance)',
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn(
+            'sum(rate(metrics.http_requests_total{instance="i-1"}[5m])) by (instance)',
+            q,
+        )
+        self.assertNotIn("metrics.instance", q)
+
+    def test_native_promql_prefixes_exact_name_matcher_value(self):
+        """Regression (#270 review): ``{__name__="foo"}`` is the metric-name
+        matcher — equivalent to selecting ``foo`` — so its exact value gets the
+        same field-cache-gated ``metrics.`` prefix a bare selector would."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="metrics.http_requests_total"})', q)
+
+    def test_native_promql_prefixes_name_matcher_alongside_other_labels(self):
+        """The ``__name__`` value is rewritten; a sibling label matcher key is
+        not (it is a real label, not a metric)."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total", job="api"}',
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('{__name__="metrics.http_requests_total", job="api"}', q)
+        self.assertNotIn('metrics.job', q)
+
+    def test_native_promql_leaves_regex_name_matcher_bare(self):
+        """A regex ``__name__=~`` matcher value cannot be safely prefixed
+        (prefixing a regex is fragile), so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__=~"http.*"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__=~"http.*"})', q)
+        self.assertNotIn('metrics.http', q)
+
+    def test_native_promql_leaves_negative_name_matcher_bare(self):
+        """A ``__name__!=`` matcher selects everything *but* the named metric;
+        prefixing its value would change meaning, so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__!="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__!="http_requests_total"})', q)
+        self.assertNotIn('metrics.http_requests_total', q)
+
+    def test_native_promql_leaves_name_matcher_bare_when_prefixed_field_absent(self):
+        """Same gate as bare selectors: an index storing the metric bare (no
+        ``metrics.<name>``) is untouched — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="some_custom_metric"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="some_custom_metric"})', q)
+        self.assertNotIn('metrics.some_custom_metric', q)
+
+    def test_native_promql_does_not_prefix_label_key_that_collides_with_metric(self):
+        """Regression (#270 review): a label-matcher key must never be rewritten
+        even when a ``metrics.<key>`` field happens to exist in the target (a
+        label name colliding with a metric name). Only the selector position is
+        a metric reference; the brace contents are label keys/values."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            'http_requests_total{job="api"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=(metrics.http_requests_total{job="api"})', q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_does_not_prefix_grouping_label_colliding_with_metric(self):
+        """A ``by(...)`` grouping label colliding with a metric field must stay
+        bare — it names an output dimension, not a metric selector."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.instance": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (instance)",
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (instance)", q)
+        self.assertNotIn("metrics.instance", q)
+
+    def test_native_promql_does_not_prefix_agg_operator_in_modifier_before_args_form(self):
+        """Regression (#270 review): in the ``sum by (...) (...)`` form the
+        aggregation operator is NOT immediately followed by ``(`` (the modifier
+        comes first), so the function-call guard misses it. It must never be
+        rewritten even when a colliding ``metrics.sum`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum by (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum by (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
+    def test_native_promql_does_not_prefix_without_agg_operator_before_args(self):
+        """Same for the ``sum without (...) (...)`` form."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum without (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum without (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
+    def test_native_promql_does_not_prefix_offset_keyword_colliding_with_metric(self):
+        """The ``offset`` modifier keyword must not be rewritten even when a
+        ``metrics.offset`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.offset": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "http_requests_total offset 5m", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("metrics.http_requests_total offset 5m", q)
+        self.assertNotIn("metrics.offset", q)
+
+    def test_native_promql_prefixes_bare_metric_on_otel_collector_shape(self):
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "elasticsearch_jvm_gc_collection_seconds_sum",
+            index="metrics-prometheusreceiver.otel*",
+            resolver=resolver,
+        )
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", q)
+        self.assertNotIn("value=(elasticsearch_jvm_gc_collection_seconds_sum)", q)
+
+    def test_native_promql_prefixes_metric_inside_functions(self):
+        """The dotted field must land on the metric selector only — not on the
+        `sum`/`rate` function names or the `by` grouping label."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (job)",
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (job)", q)
+        self.assertNotIn("metrics.sum", q)
+        self.assertNotIn("metrics.rate", q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_leaves_bare_metric_when_prefixed_field_absent(self):
+        """Guard: an index that stores the metric bare (no `metrics.<name>`) is
+        unaffected — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            "some_custom_metric", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(some_custom_metric)", q)
+        self.assertNotIn("metrics.some_custom_metric", q)
+
+    def test_native_promql_does_not_prefix_label_values(self):
+        """A metric name appearing inside a label *value* string must not be
+        rewritten — only the selector position is a field reference."""
+        resolver = self._otel_resolver({
+            "metrics.up": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            'up{job="up"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(metrics.up{job=\"up\"})", q)
+        # The label value "up" stays a literal string, not metrics.up.
+        self.assertNotIn('"metrics.up"', q)
+
+    def test_native_promql_no_resolver_is_unchanged_passthrough(self):
+        q = panels.build_native_promql_query("foo", index="metrics-*")
+        self.assertIn("value=(foo)", q)
+        self.assertNotIn("metrics.foo", q)
+
+    def test_translate_panel_native_promql_emits_metrics_prefix_end_to_end(self):
+        """End-to-end via translate_panel with native PROMQL enabled: the OTel
+        Collector panel must emit `value=(metrics.<name>)`, closing the native
+        half of #270 (the ES|QL half is covered above)."""
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.rule_pack.native_promql = True
+        self.rule_pack.runtime_features = {
+            "promql_command_v0": {"supported": True, "confidence": "verified"}
+        }
+        panel = {
+            "type": "timeseries",
+            "title": "ES JVM GC",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": "elasticsearch_jvm_gc_collection_seconds_sum"}],
+        }
+        _yaml_panel, result = migrate.translate_panel(
+            panel,
+            datasource_index="metrics-prometheusreceiver.otel*",
+            esql_index="metrics-prometheusreceiver.otel*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        self.assertIn("PROMQL", result.esql_query)
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", result.esql_query)
+
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
             "sum(increase(foo_total[$aggregation_interval])) by (instance)",

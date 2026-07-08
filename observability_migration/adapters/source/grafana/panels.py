@@ -966,6 +966,209 @@ def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=N
     return cleaned
 
 
+# A PromQL string literal (label value); its contents must never be rewritten.
+_PROMQL_STRING_LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+# A candidate PromQL identifier: a metric name, function name, keyword, or label
+# key. Anchored so it never matches inside a larger identifier or an already
+# dot-qualified name (`attributes.job` — the `job` is skipped).
+_PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
+# Vector-matching / aggregation modifiers that introduce a parenthesised list of
+# *label* names (`by (a, b)`, `on(x) group_left(y)`), never metric selectors.
+_PROMQL_GROUPING_MODIFIERS = frozenset(
+    {"by", "without", "on", "ignoring", "group_left", "group_right"}
+)
+# Aggregation operators. In the usual `sum(...)` form they are caught by the
+# function-call guard (identifier followed by `(`), but in the modifier-before-
+# args form (`sum by (job) (metric)`) the operator is followed by `by`/`without`
+# instead, so it must be reserved explicitly.
+_PROMQL_AGG_OPERATORS = frozenset(
+    {
+        "sum", "min", "max", "avg", "group", "count", "count_values",
+        "stddev", "stdvar", "topk", "bottomk", "quantile", "limitk", "limit_ratio",
+    }
+)
+# PromQL words that read as identifiers but are never metric selectors, so they
+# must not be prefixed even if a colliding `metrics.<word>` field exists. The
+# grouping modifiers are included for the case where they appear without a
+# following `(` (`a * group_left b`).
+_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | frozenset(
+    {"offset", "bool", "and", "or", "unless", "atan2", "start", "end", "inf", "nan"}
+)
+
+
+def _prefix_native_metric_fields(expr, resolver):
+    """Rewrite bare metric selectors in a native PROMQL expression to their
+    resolved ``metrics.<name>`` field (issue #270).
+
+    OTel Collector (``prometheusreceiver``) indices store each metric under a
+    ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
+    field and the panel renders empty. Only a token in *metric-selector*
+    position is rewritten; the scan tracks PromQL structure so that identifiers
+    which merely look like metric names are protected regardless of the target's
+    field caps:
+
+    - label-matcher keys and values inside ``{...}``;
+    - grouping labels inside a modifier's parens (``by (x)``, ``on(y)``,
+      ``group_left(z)``);
+    - reserved words (``offset``/``bool``/``and``/``or``/``unless``/…);
+    - function names (any identifier directly followed by ``(``);
+    - string literals (label values).
+
+    The one label position that *is* rewritten is the ``__name__`` metric-name
+    matcher: ``{__name__="foo"}`` is equivalent to selecting ``foo``, so its
+    *exact*-match value takes the same field-cache-gated prefix. Regex
+    (``=~``) and negative (``!=``/``!~``) ``__name__`` matchers are left bare —
+    prefixing a regex is fragile and negation would change the selection.
+
+    Both guards matter and neither is sufficient alone. A ``metrics.<token>``
+    field can legitimately exist for a *label* name that collides with a metric
+    name in the target, so ``resolve_metric_field`` / ``field_exists`` cannot
+    distinguish a selector from a label key — only the structural position can.
+    Conversely, ``resolve_metric_field`` returns ``metrics.<name>``
+    unconditionally under the ``prometheus_native`` profile (for the preflight
+    contract), so the resolved prefix is still confirmed against the field cache
+    (``field_exists``) before it is applied.
+
+    Deliberately runs on the *emitted* expression string, after AST analysis
+    (counter/gauge detection, group-column shape) has already read the bare
+    names — the resolver is keyed on the bare metric name, and the PromQL parser
+    would choke on a dotted metric selector.
+    """
+    if resolver is None or not expr:
+        return expr
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if not callable(resolve):
+        return expr
+    field_exists = getattr(resolver, "field_exists", None)
+
+    def _prefixed_field_is_indexed(name):
+        # Confirm ``metrics.<name>`` is a real field and the bare token is not,
+        # so we never invent a prefix for an index that stores the metric bare.
+        # When the resolver can't answer (no ``field_exists`` / empty cache),
+        # fall back to the resolver's decision.
+        if not callable(field_exists):
+            return True
+        prefixed = field_exists(f"metrics.{name}")
+        if prefixed is None:
+            return True
+        return bool(prefixed) and not field_exists(name)
+
+    def _resolve_selector(name, tail):
+        # A trailing `(` marks a function call, never a metric selector.
+        if tail.lstrip()[:1] == "(":
+            return None
+        if name in _PROMQL_RESERVED_WORDS:
+            return None
+        try:
+            resolved = resolve(name)
+        except Exception:
+            return None
+        if resolved != f"metrics.{name}":
+            return None
+        return resolved if _prefixed_field_is_indexed(name) else None
+
+    def _rewrite_name_matcher_value(literal_text):
+        # `{__name__="foo"}` is the metric-name matcher — equivalent to selecting
+        # ``foo`` — so its *exact*-match value takes the same field-cache-gated
+        # ``metrics.`` prefix a bare selector would. Only plain (non-regex)
+        # values reach here; the gate still confirms the prefixed field exists
+        # and the bare name does not, so this is a no-op on bare-metric targets.
+        quote = literal_text[:1]
+        if quote not in "\"'" or len(literal_text) < 2:
+            return literal_text
+        value = literal_text[1:-1]
+        resolved = _resolve_selector(value, "")
+        return f"{quote}{resolved}{quote}" if resolved is not None else literal_text
+
+    out = []
+    i = 0
+    n = len(expr)
+    brace_depth = 0
+    # `__name__` exact-match matcher tracking: `name_key_pending` after the
+    # ``__name__`` key, `name_value_exact` once an exact ``=`` (not ``=~``/
+    # ``!=``/``!~``) confirms the next string literal is the metric name.
+    name_key_pending = False
+    name_value_exact = False
+    # One flag per open paren: True when the paren is a grouping-label list, so
+    # its contents are labels, not metrics. `expect_grouping` arms the next `(`
+    # after a grouping modifier keyword.
+    paren_is_grouping = []
+    expect_grouping = False
+    while i < n:
+        ch = expr[i]
+        if ch in "\"'":
+            literal = _PROMQL_STRING_LITERAL_RE.match(expr, i)
+            if literal:
+                text = literal.group(0)
+                out.append(
+                    _rewrite_name_matcher_value(text) if name_value_exact else text
+                )
+                name_value_exact = False
+                i = literal.end()
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            brace_depth = max(0, brace_depth - 1)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            paren_is_grouping.append(expect_grouping)
+            expect_grouping = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if paren_is_grouping:
+                paren_is_grouping.pop()
+            out.append(ch)
+            i += 1
+            continue
+        ident = _PROMQL_IDENT_RE.match(expr, i)
+        if ident:
+            name = ident.group(1)
+            protected = brace_depth > 0 or (
+                bool(paren_is_grouping) and paren_is_grouping[-1]
+            )
+            resolved = None if protected else _resolve_selector(name, expr[ident.end():])
+            out.append(resolved if resolved is not None else name)
+            # Arm grouping only when a bare modifier keyword is immediately
+            # followed by its paren list; any other identifier clears it.
+            expect_grouping = name in _PROMQL_GROUPING_MODIFIERS
+            # A `__name__` key inside `{...}` arms an exact-value rewrite; any
+            # other identifier ends a pending matcher.
+            name_key_pending = brace_depth > 0 and name == "__name__"
+            name_value_exact = False
+            i = ident.end()
+            continue
+        # Any other character (operators, brackets, whitespace).
+        if name_key_pending and ch == "=":
+            # Exact `=`, unless it is the `=~` regex matcher (never rewritten).
+            name_value_exact = expr[i + 1:i + 2] != "~"
+            name_key_pending = False
+        elif name_key_pending and ch == "!":
+            # `!=` / `!~`: negative matcher — prefixing would change meaning.
+            name_key_pending = False
+        elif not ch.isspace():
+            # Any other non-space token ends a pending `__name__` matcher.
+            name_key_pending = False
+            name_value_exact = False
+        # Only whitespace may sit between a grouping modifier and its `(`;
+        # anything else cancels a pending grouping expectation.
+        if not ch.isspace():
+            expect_grouping = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _extract_legend_labels(legend_format):
     """Parse ``{{label}}`` placeholders from a Grafana legendFormat string."""
     if not legend_format or legend_format in ("__auto", ""):
@@ -1007,7 +1210,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False, regex_default_params=None, step=None):
+                              instant=False, regex_default_params=None, step=None,
+                              resolver=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1036,6 +1240,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
     )
+    cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
@@ -1420,7 +1625,8 @@ def _translate_panel_native_promql(
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
                                              instant=instant,
-                                             regex_default_params=regex_default_params)
+                                             regex_default_params=regex_default_params,
+                                             resolver=resolver)
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -1523,7 +1729,7 @@ def _translate_panel_native_promql(
 def _translate_multi_target_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes,
-    panel_inventory, targets_with_expr,
+    panel_inventory, targets_with_expr, resolver=None,
 ):
     """Combine multiple PromQL targets into a single native PROMQL panel.
 
@@ -1565,7 +1771,10 @@ def _translate_multi_target_native_promql(
             ),
         )
         had_bare_variable = had_bare_variable or bare
+        # Parse the bare form for AST analysis, then rewrite metric selectors to
+        # their `metrics.<name>` field for the emitted command (issue #270).
         target_fragments.append(_parse_fragment(cleaned or expr))
+        cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -2407,7 +2616,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             multi_result = _translate_multi_target_native_promql(
                 panel, yaml_panel, title, panel_type, kibana_type,
                 datasource, datasource_index, rule_pack, panel_notes,
-                panel_inventory, targets_with_expr,
+                panel_inventory, targets_with_expr, resolver=resolver,
             )
             if multi_result is not None:
                 return multi_result
