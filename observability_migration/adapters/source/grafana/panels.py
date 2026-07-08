@@ -913,10 +913,23 @@ _GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
 # a windowless form for them is not confirmed and could emit an invalid query.
 # The selector body forbids ``(``/``)`` so a range-on-nonselector shape (already
 # rejected upstream) is never rewritten here.
+#
+# ``\s*`` before the ``{`` tolerates upstream dashboards that space out the
+# selector (``metric {job="api"}``); the fixed-window fallback below collapses
+# that space, and this rewrite runs first, so without it #273 would silently
+# miss the spaced form and freeze it to ``[5m]``.
+#
+# The trailing negative lookahead leaves a range vector that carries an
+# ``offset`` / ``@`` modifier alone: ``rate(foo[$__rate_interval] offset 5m)``
+# must not become ``rate(foo offset 5m)`` (a windowless-with-modifier form that
+# is not confirmed and drops the range before the modifier). Skipping the match
+# lets it fall through to the fixed-window path -> ``rate(foo[5m] offset 5m)``,
+# the same valid query the pre-#273 code emitted.
 _RATE_INCREASE_ADAPTIVE_WINDOW_RE = re.compile(
     r"(\b(?:rate|increase)\s*\(\s*"
-    r"[A-Za-z_:][A-Za-z0-9_:]*(?:\{[^{}]*\})?)"
+    r"[A-Za-z_:][A-Za-z0-9_:]*(?:\s*\{[^{}]*\})?)"
     r"\s*\[\s*" + _GRAFANA_ADAPTIVE_INTERVAL_MACRO + r"\s*\]"
+    r"(?!\s*(?:offset\b|@))"
 )
 
 
@@ -1173,6 +1186,11 @@ def _clean_promql_for_native_with_state(
     # Some upstream dashboards contain whitespace between a metric name and its
     # selector/range, e.g. ``node_filesystem_avail_bytes {..}``, which ES rejects.
     expr = re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*)\s+([\[{])", r"\1\2", expr)
+    # Same gap after a label-selector close brace, e.g. ``foo{job="api"} [5m]``.
+    # This shows up on the fixed-window path (explicit windows, or an adaptive
+    # macro kept fixed because of a trailing offset/@ modifier, issue #273), so
+    # normalize it too rather than emit a malformed ``} [`` range.
+    expr = re.sub(r"\}\s+([\[{])", r"}\1", expr)
 
     # Remove any remaining bare $variable tokens (e.g. in arithmetic).
     # Multiplicative identity preserves magnitude better than 0.

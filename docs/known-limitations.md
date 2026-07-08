@@ -38,7 +38,10 @@ notes so operators know what to check by hand.
   collapse an adaptive macro to a fixed `1m` window, since a windowless form for
   them is not confirmed; a coarse scrape combined with a tight `irate` window can
   still yield empty buckets on the seeded/test path (production scrape rates
-  avoid this). Alert-rule migration is unaffected — alerts keep their explicit
+  avoid this). A `rate()`/`increase()` whose range vector also carries an
+  `offset` or `@` modifier (`rate(x[$__rate_interval] offset 5m)`) likewise keeps
+  a fixed window, since a windowless form combined with those modifiers is not
+  confirmed. Alert-rule migration is unaffected — alerts keep their explicit
   or default `step=`.
 - **`topk()` / `bottomk()`** — `topk` is approximated as a **latest-bucket**
   ES|QL top-N (per-series latest value, then ranked); `bottomk` per-series
