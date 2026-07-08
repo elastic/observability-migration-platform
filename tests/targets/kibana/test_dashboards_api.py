@@ -1298,6 +1298,61 @@ def test_upload_yaml_files_fallback_receives_only_rejected_dashboard():
     session.put.assert_called_once()
 
 
+def test_upload_yaml_files_zero_leaf_with_controls_falls_back():
+    # A dashboard whose panels all fail to map but that still carries a mapped
+    # control is degenerate: controls filter nothing without panels, so
+    # uploading it would create a panel-less dashboard while silently dropping
+    # the source panels. The emptiness gate keys only on leaf panels (not
+    # pinned_panels), so this must be classified "empty" and routed to the
+    # legacy-import fallback rather than PUT.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yaml_path = Path(tmpdir) / "dash.yaml"
+        yaml_path.write_text(
+            "dashboards:\n"
+            "- name: ControlsOnly\n"
+            "  panels:\n"
+            "  - title: Broken\n"
+            "    esql:\n"
+            "      type: sankey\n"
+            "      query: FROM metrics-*\n"
+            "  controls:\n"
+            "  - type: esql\n"
+            "    label: instance\n"
+            "    variable_name: instance\n"
+            "    query: FROM metrics-* | STATS x\n",
+            encoding="utf-8",
+        )
+
+        # Guard against a vacuous test: the payload must genuinely be the
+        # zero-leaf-but-has-controls shape this regression targets.
+        payload, _counts, _reasons = api.build_dashboard_payload_from_yaml(
+            {
+                "name": "ControlsOnly",
+                "panels": [{"title": "Broken", "esql": {"type": "sankey", "query": "FROM metrics-*"}}],
+                "controls": [
+                    {"type": "esql", "label": "instance", "variable_name": "instance", "query": "FROM metrics-* | STATS x"}
+                ],
+            }
+        )
+        assert not api._payload_has_leaf_panels(payload)
+        assert payload.get("pinned_panels")
+
+        session = mock.Mock()
+        fallback_calls = []
+
+        def fallback(path, dashboard):
+            fallback_calls.append((Path(path).name, dashboard["name"]))
+
+        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+            results = api.upload_yaml_files(
+                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
+            )
+
+    assert results[0].status == "empty"
+    assert fallback_calls == [("dash.yaml", "ControlsOnly")]
+    session.put.assert_not_called()
+
+
 def test_upload_yaml_files_retries_transient_5xx_before_succeeding():
     # A slow/overloaded cluster can return a transient 503 on an otherwise
     # valid payload. Without a retry, this permanently downgrades a good
