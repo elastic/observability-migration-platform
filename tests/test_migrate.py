@@ -6036,6 +6036,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(controls[0]["field"], "host")
         panel_result = result.yaml_panel_results[0]
         self.assertEqual(panel_result.status, "migrated")
+        self.assertEqual(panel_result.operational_ir.status, "migrated")
+        self.assertEqual(panel_result.operational_ir.confidence, panel_result.confidence)
         self.assertEqual(result.migrated, 1)
         self.assertEqual(result.migrated_with_warnings, 0)
         self.assertNotIn(
@@ -8896,6 +8898,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             '100 * sum(redis_db_keys{instance=~"$instance"})',
             '1 - avg(redis_db_keys{instance=~"$instance"})',
             '(100 * sum(redis_db_keys{instance=~"$instance"}))',
+            '(sum(redis_db_keys{instance=~"$instance"})) * 100',
+            '(sum(redis_db_keys{instance=~"$instance"})) / 100',
             '-(sum(redis_db_keys{instance=~"$instance"}))',
             # Label-preserving function wrappers around an ungrouped aggregation
             # keep the collapsed shape, so inference must not widen them either.
@@ -8905,6 +8909,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             'round(-sum(redis_db_keys{instance=~"$instance"}))',
             'clamp_max((sum(redis_db_keys{instance=~"$instance"})), 100)',
             '100 * clamp_max(sum(redis_db_keys{instance=~"$instance"}), 5)',
+            'clamp_max((sum(redis_db_keys{instance=~"$instance"})) * 100, 5)',
         ):
             target = {
                 "expr": expr,

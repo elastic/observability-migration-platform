@@ -521,6 +521,44 @@ def _strip_wrapping_parentheses(expr):
     return text
 
 
+def _peel_leading_parenthesized_arithmetic_operand(text):
+    """Return a leading parenthesized operand from scalar arithmetic.
+
+    ``(sum(...)) * 100`` preserves the label shape of the left vector operand,
+    just like ``100 * sum(...)``. Peeling that balanced left operand lets the
+    aggregation guard see collapsed aggregations hidden by the parentheses.
+    """
+    text = str(text or "").strip()
+    if not text.startswith("("):
+        return text
+    depth = 0
+    quote = ""
+    escaped = False
+    for idx, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                rest = text[idx + 1:].lstrip()
+                if rest.startswith(("+", "-", "*", "/", "%")):
+                    return text[1:idx].strip()
+                return text
+            if depth < 0:
+                return text
+    return text
+
+
 def _peel_leading_function_label_operand(text):
     """Return the label-preserving vector operand of a leading function call.
 
@@ -593,6 +631,9 @@ def _allows_dashboard_label_inference(expr):
             return False
         peeled = _strip_wrapping_parentheses(
             _PROMQL_LEADING_SCALAR_RE.sub("", text, count=1)
+        )
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_parenthesized_arithmetic_operand(peeled)
         )
         match = _PROMQL_LEADING_FUNC_RE.match(peeled)
         if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
@@ -5228,8 +5269,9 @@ def _rewrite_variable_warnings(panel_results, covered_control_refs, resolver=Non
 
     ``PanelResult.reasons`` carries the translation warnings.
     """
+    rewritten_panel_results = []
     if not covered_control_refs:
-        return
+        return rewritten_panel_results
     for pr in panel_results:
         original_count = len(pr.reasons)
         pr.reasons = [
@@ -5249,6 +5291,8 @@ def _rewrite_variable_warnings(panel_results, covered_control_refs, resolver=Non
         if pr.status == "migrated_with_warnings" and not pr.reasons:
             pr.status = "migrated"
             pr.confidence = max(pr.confidence, 0.85)
+        rewritten_panel_results.append(pr)
+    return rewritten_panel_results
 
 
 def _normalized_text_panel_content(panel):
@@ -6084,11 +6128,19 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         resolver=controls_resolver,
         rule_pack=rule_pack,
     )
-    _rewrite_variable_warnings(
+    rewritten_panel_results = _rewrite_variable_warnings(
         result.panel_results,
         _covered_control_variable_refs(controls),
         resolver=controls_resolver,
     )
+    for panel_result in rewritten_panel_results:
+        panel_result.operational_ir = build_operational_ir(
+            panel_result,
+            dashboard_title=result.dashboard_title,
+            dashboard_uid=result.dashboard_uid,
+            source_file=result.source_file,
+            folder_title=result.folder_title,
+        )
     recompute_result_counts(result)
     controls = _strip_internal_control_metadata(controls)
 
