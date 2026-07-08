@@ -8986,6 +8986,38 @@ class TranslatorRegressionTests(unittest.TestCase):
                 expr,
             )
 
+    def test_translation_hints_infer_for_label_preserving_topk(self):
+        """topk/bottomk preserve input series labels, so dashboard label
+        inference should still recover their per-series breakdown."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            'topk(5, rate(http_requests_total{job="$job"}[5m]))',
+            'bottomk(5, rate(http_requests_total{job="$job"}[5m]))',
+            'sort_desc(topk(5, rate(http_requests_total{job="$job"}[5m])))',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"http_requests_total": ["job"]},
+            )
+
+            self.assertEqual(hints.get("preferred_group_labels"), ["job"], expr)
+            self.assertEqual(
+                hints.get("preferred_group_labels_origin"),
+                "dashboard_inferred",
+                expr,
+            )
+
     def test_grouped_rate_outer_avg_is_not_a_warning(self):
         translated = self.translate(
             "rate(http_requests_total[5m])",

@@ -472,15 +472,16 @@ _PROMQL_LEADING_SCALAR_RE = re.compile(
 )
 # Leading ``func(`` call. A PromQL vector-transform function (``clamp_max``,
 # ``abs``, ``round`` …) preserves the label set of its vector operand, which is
-# always its first argument, so recursing into that argument exposes a wrapped
-# aggregation to the prefix guard. Aggregation functions are excluded so the
-# aggregation-prefix check fires on them directly instead.
+# always its first argument. ``topk``/``bottomk`` preserve the labels of their
+# selected input series, whose vector operand is the second argument. Recursing
+# into those operands exposes wrapped aggregations to the prefix guard.
 _PROMQL_LEADING_FUNC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _PROMQL_LABEL_PRESERVING_FUNCS = frozenset({
     "abs", "ceil", "clamp", "clamp_max", "clamp_min", "exp", "floor",
     "label_join", "label_replace", "ln", "log2", "log10", "round", "sgn",
     "sort", "sort_desc", "sqrt", "timestamp",
 })
+_PROMQL_LABEL_PRESERVING_AGG_FUNCS = frozenset({"topk", "bottomk"})
 _PROMQL_UNLABELED_FUNCS = frozenset({
     "absent", "absent_over_time", "pi", "scalar", "time", "vector",
 })
@@ -520,30 +521,32 @@ def _strip_wrapping_parentheses(expr):
     return text
 
 
-def _peel_leading_function_first_arg(text):
-    """Return the first argument of a leading non-aggregation function call.
+def _peel_leading_function_label_operand(text):
+    """Return the label-preserving vector operand of a leading function call.
 
     PromQL vector-transform functions (``clamp_max``, ``abs``, ``round``,
     ``label_replace`` …) preserve the label set of their vector operand — always
-    the first argument — so the collapsed/widened shape flows from that operand.
-    Returns ``text`` unchanged when it is not a function call, when the function
-    is an aggregation (left for the aggregation-prefix guard), or when the
+    the first argument. ``topk``/``bottomk`` also preserve input labels, but their
+    vector operand is the second argument after the scalar limit. Returns ``text``
+    unchanged when it is not a label-preserving function call or when the
     parentheses are unbalanced.
     """
     match = _PROMQL_LEADING_FUNC_RE.match(text)
     if not match:
         return text
     function_name = match.group(1).lower()
-    if (
-        function_name in _PROMQL_AGG_FUNCS
-        or function_name not in _PROMQL_LABEL_PRESERVING_FUNCS
-    ):
+    if function_name in _PROMQL_LABEL_PRESERVING_FUNCS:
+        operand_index = 0
+    elif function_name in _PROMQL_LABEL_PRESERVING_AGG_FUNCS:
+        operand_index = 1
+    else:
         return text
     open_idx = match.end() - 1  # position of the '('
     depth = 0
     quote = ""
     escaped = False
-    first_arg_end = None
+    args = []
+    arg_start = open_idx + 1
     for idx in range(open_idx, len(text)):
         char = text[idx]
         if quote:
@@ -561,10 +564,13 @@ def _peel_leading_function_first_arg(text):
         elif char in (")", "]", "}"):
             depth -= 1
             if depth == 0:
-                end = first_arg_end if first_arg_end is not None else idx
-                return text[open_idx + 1:end].strip()
-        elif char == "," and depth == 1 and first_arg_end is None:
-            first_arg_end = idx
+                args.append(text[arg_start:idx].strip())
+                if len(args) > operand_index:
+                    return args[operand_index]
+                return text
+        elif char == "," and depth == 1:
+            args.append(text[arg_start:idx].strip())
+            arg_start = idx + 1
     return text  # unbalanced — leave untouched
 
 
@@ -592,7 +598,7 @@ def _allows_dashboard_label_inference(expr):
         if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
             return False
         peeled = _strip_wrapping_parentheses(
-            _peel_leading_function_first_arg(peeled)
+            _peel_leading_function_label_operand(peeled)
         )
         if peeled == text:
             break
