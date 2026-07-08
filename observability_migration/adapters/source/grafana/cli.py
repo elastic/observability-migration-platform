@@ -52,6 +52,9 @@ from observability_migration.targets.kibana.compile import (
     sync_result_queries_to_yaml,
     validate_compiled_layout,
 )
+from observability_migration.targets.kibana.dashboards_api import (
+    upload_warnings_from_reasons,
+)
 from observability_migration.targets.kibana.serverless import (
     delete_dashboards as serverless_delete_dashboards,
 )
@@ -2299,6 +2302,9 @@ def main(argv: list[str] | None = None):
                 output = upload_result["output"]
                 result.uploaded = ok
                 result.upload_error = "" if ok else output
+                result.upload_warnings = upload_warnings_from_reasons(
+                    upload_result.get("unmapped_reasons", {})
+                )
                 result.uploaded_space = upload_space or target_space
                 result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
@@ -2306,6 +2312,8 @@ def main(argv: list[str] | None = None):
                 if not ok:
                     for line in output.strip().splitlines()[:10]:
                         print(f"    {line}")
+                for warning in result.upload_warnings:
+                    print(f"    warning: {warning}", file=sys.stderr)
 
     smoke_merge_summary = {}
     integrated_smoke_output = ""

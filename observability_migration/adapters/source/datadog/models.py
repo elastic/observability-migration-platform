@@ -457,6 +457,7 @@ class DashboardResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    upload_warnings: list[str] = field(default_factory=list)
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     kibana_saved_object_id: str = ""
@@ -510,11 +511,12 @@ class DashboardResult:
                 "status": "pass" if not self.layout_error else "fail",
                 "error": self.layout_error or "",
             }
-        upload_status = {"status": "not_run", "error": ""}
+        upload_status = {"status": "not_run", "error": "", "warnings": []}
         if self.upload_attempted or self.upload_error:
             upload_status = {
                 "status": "pass" if self.uploaded and not self.upload_error else "fail",
                 "error": self.upload_error or "",
+                "warnings": list(self.upload_warnings or []),
             }
         smoke_status = {"status": "not_run", "error": ""}
         if self.smoke_attempted or self.smoke_error:

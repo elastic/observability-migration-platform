@@ -1202,6 +1202,50 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
 _DROPPED_FILTER_REASON = "dropped_unsupported_dashboard_filter"
 
 
+def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
+    """True if an API payload contains at least one leaf panel.
+
+    ``payload["panels"]`` holds both leaf panels (each carrying a ``type``) and
+    sections (no ``type`` discriminator, their leaves nested under a ``panels``
+    list). A payload whose only items are empty sections has zero leaves and
+    must count as empty so the upload path routes it to the legacy-import
+    fallback instead of creating a dashboard of empty collapsibles with the
+    source panels silently dropped.
+    """
+    for item in payload.get("panels") or []:
+        if not isinstance(item, dict):
+            continue
+        if "type" in item:
+            return True
+        if any(isinstance(sub, dict) for sub in (item.get("panels") or [])):
+            return True
+    return False
+
+
+def upload_warnings_from_reasons(unmapped_reasons: Any) -> list[str]:
+    """Render user-facing upload warnings from a native mapper's unmapped-reason
+    histogram.
+
+    The typed upload silently omits dashboard-level filters it can't express;
+    surfacing that here lets every ``--upload`` caller warn instead of
+    reporting a clean upload while quietly broadening the queried dataset.
+    """
+    warnings: list[str] = []
+    if not isinstance(unmapped_reasons, dict):
+        return warnings
+    raw = unmapped_reasons.get(_DROPPED_FILTER_REASON, 0)
+    try:
+        dropped_filters = int(raw)
+    except (TypeError, ValueError):
+        dropped_filters = 0
+    if dropped_filters > 0:
+        warnings.append(
+            f"dropped {dropped_filters} unsupported dashboard filter(s); "
+            "affected panels may query a broader dataset than the source"
+        )
+    return warnings
+
+
 def _unwrap_negate(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Split a ``kb-dashboard-core`` filter dict into ``(body, negated)``.
 
@@ -1712,7 +1756,7 @@ def upload_native_dashboard(
     )
     payload = dashboard.to_api_payload()
     _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
-    if not payload["panels"] and not payload.get("pinned_panels"):
+    if not _payload_has_leaf_panels(payload) and not payload.get("pinned_panels"):
         res.status = "empty"
         return res
 
@@ -1768,7 +1812,7 @@ def upload_yaml_files(
                 unmapped=counts["unmapped"],
                 unmapped_reasons=dict(reasons),
             )
-            if not payload["panels"] and not payload.get("pinned_panels"):
+            if not _payload_has_leaf_panels(payload) and not payload.get("pinned_panels"):
                 res.status = "empty"
                 if fallback is not None:
                     fallback(path, dashboard)
@@ -1827,5 +1871,6 @@ __all__ = [
     "native_dashboard_from_yaml",
     "upload_native_dashboard",
     "upload_report",
+    "upload_warnings_from_reasons",
     "upload_yaml_files",
 ]

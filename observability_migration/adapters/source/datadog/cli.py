@@ -53,6 +53,7 @@ from observability_migration.core.verification.disposition import (
     validation_failure_self_heals,
 )
 from observability_migration.targets.kibana.compile import validate_compiled_layout
+from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
 from .extract import (
@@ -1118,12 +1119,17 @@ def _upload_all_dashboards(
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
+        dr.upload_warnings = upload_warnings_from_reasons(
+            upload_result.get("unmapped_reasons", {})
+        )
         dr.uploaded_space = upload_space or target_space
         dr.uploaded_kibana_url = upload_result["kibana_url"]
         if upload_result["success"]:
             print(f"    Uploaded: {stem}")
         else:
             print(f"    UPLOAD FAILED: {stem}: {dr.upload_error[:200]}")
+        for warning in dr.upload_warnings:
+            print(f"    warning: {warning}", file=sys.stderr)
 
 
 def _build_smoke_dashboard_indexes(
