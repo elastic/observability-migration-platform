@@ -1,9 +1,8 @@
 title: Processes State
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: area
 dimension: time_bucket
 metrics: ['node_processes_state']
 mode: stacked
 axis_title: counter
-warning: Variable-driven label filters applied via Kibana dashboard controls

@@ -5,5 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['kube_pod_status_qos_class']
 breakdown: qos_class
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Panel has 2 PromQL targets but only 1 could be migrated

@@ -647,7 +647,8 @@ is unreachable or inputs are invalid, `1` on ingest errors, and `0` otherwise.
 `--purge-foreign-streams` to drop non-seeder streams overlapping the contract
 wildcards before seeding, `--no-recreate` to ingest without recreating
 templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
-metric kinds.
+metric kinds. Progress (batch-flush counts, bulk-retry/split notices) prints to
+stderr as the ingest runs; pass `--quiet` to suppress it.
 
 ### Compare (side-by-side parity)
 
@@ -683,6 +684,9 @@ the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labe
   --window-minutes 60 \
   --report-out comparison_report.json
 ```
+
+Progress (panel counts as they're compared, the report path) prints to stderr
+as the run progresses; pass `--quiet` to suppress it.
 
 `--artifact-dir` is required and repeatable (each directory must contain
 `verification_packets.json`). `--es-url`/`--api-key` default to
@@ -1089,13 +1093,25 @@ dashboard scoping via `--dashboard-ids` before any Elastic target exists.
 ## Validation / Verification CLIs
 
 ```bash
+# Scope validation to just the dashboards a migration uploaded (recommended).
+# --dashboards-from reads a migration detailed report or a prior smoke report and
+# validates only those dashboards — by uploaded saved-object ID when the artifact
+# carries one, otherwise by title. This keeps runs practical on busy spaces (#198).
 .venv/bin/grafana-validate-uploaded \
   --kibana-url "$KIBANA_ENDPOINT" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --dashboards-from migration_output/dashboards/migration_report.json \
   --output upload_smoke_report.json
 
 .venv/bin/grafana-generate-corpus --help
 ```
+
+Scope flags are also available for ad-hoc runs: `--dashboard-id` /
+`--dashboard-title` (repeatable) restrict to specific dashboards. With no scope
+flags the validator inspects **every** dashboard in the space, prints an
+explicit `WARNING` that it is doing so, and skips `[DELETED]` placeholder
+dashboards (pass `--include-deleted` to validate those too). The run prints
+per-dashboard `[i/N]` progress before writing the final report.
 
 ## Tested Alert Upload Flow
 

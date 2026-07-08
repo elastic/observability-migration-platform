@@ -1,7 +1,6 @@
 title: Traffic Distribution
 grafana_type: piechart
-status: migrated_with_warnings
+status: migrated
 chart_type: pie
 metrics: ['http_requests_total']
 breakdowns: ['handler']
-warning: Variable-driven label filters applied via Kibana dashboard controls

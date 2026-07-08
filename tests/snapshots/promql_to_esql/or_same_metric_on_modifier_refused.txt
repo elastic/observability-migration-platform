@@ -1,0 +1,5 @@
+source: http_requests_total{status=~"4.."} or on(instance) http_requests_total{status=~"5.."}
+feasibility: not_feasible
+warning: PromQL 'or' with an on()/ignoring() vector-matching modifier: the union must match series by the modifier's label key, which the ES|QL COALESCE rewrite cannot reproduce; marked for manual review so right-operand series are not over-reported
+---
+

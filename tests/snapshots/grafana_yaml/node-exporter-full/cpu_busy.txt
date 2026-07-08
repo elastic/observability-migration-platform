@@ -7,5 +7,4 @@ gauge_shape: arc
 gauge_range: [0, 100]
 gauge_thresholds: 85:rgba(50, 172, 45, 0.97), 95:rgba(237, 129, 40, 0.89), 100:rgba(245, 54, 54, 0.9)
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

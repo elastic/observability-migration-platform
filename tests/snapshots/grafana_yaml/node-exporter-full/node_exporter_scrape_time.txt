@@ -1,9 +1,8 @@
 title: Node Exporter Scrape Time
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: area
 dimension: time_bucket
 metrics: ['node_scrape_collector_duration_seconds']
 mode: stacked
 axis_title: seconds
-warning: Variable-driven label filters applied via Kibana dashboard controls

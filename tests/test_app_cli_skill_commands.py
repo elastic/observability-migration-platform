@@ -12,7 +12,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -670,6 +670,49 @@ class SeedSampleDataSubcommandTests(unittest.TestCase):
             cli.main(["seed-sample-data", "--artifact-dir", artifact_dir, "--api-key", "k"])
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_progress_prints_to_stderr_by_default_and_quiet_suppresses_it(self):
+        from observability_migration.app import cli
+
+        class FakeSummary:
+            ok = 5
+            errors = 0
+            docs_per_stream = {"logs-generic-default": 5}
+            error_samples: list = []
+
+        def fake_seed(artifact_dirs, request, *, on_progress=None, **kwargs):
+            if on_progress is not None:
+                on_progress("ingested 5 docs so far (errors=0)")
+            return FakeSummary()
+
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "seed_sample_data", side_effect=fake_seed),
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main([
+                    "seed-sample-data", "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test", "--api-key", "k",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertIn("seed:", stderr.getvalue())
+
+            stderr_quiet = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "seed_sample_data", side_effect=fake_seed),
+                redirect_stderr(stderr_quiet),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main([
+                    "seed-sample-data", "--artifact-dir", artifact_dir,
+                    "--es-url", "https://es.test", "--api-key", "k", "--quiet",
+                ])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(stderr_quiet.getvalue(), "")
+
 
 class RemoveSampleDataSubcommandTests(unittest.TestCase):
     def _patch(self, cli, captured):
@@ -796,6 +839,101 @@ class CompareSubcommandTests(unittest.TestCase):
             report = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(report["summary"]["panels"], 1)
             self.assertEqual(report["panels"][0]["verdict"], "STRICT_PASS")
+
+    def test_progress_prints_panel_counts_and_report_path_unless_quiet(self):
+        from observability_migration.app import cli
+
+        class V:
+            def __init__(self, verdict):
+                self._v = verdict
+                self.max_relative_error = 0.0
+                self.compared_points = 3
+                self.notes = []
+                self.skipped_reason = ""
+                self.fail_reason = ""
+                self.translated_error = ""
+                self.native_error = ""
+                self.native_series = 1
+                self.translated_series = 1
+                self.common_series = 1
+            def verdict(self):
+                return self._v
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "go_goroutines", "translated_query": "TS metrics-*", "semantic_gate": "Green"},
+            ])
+            out = Path(tmp) / "comparison_report.json"
+
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V("STRICT_PASS")),
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test",
+                          "--api-key", "k", "--report-out", str(out)])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertIn("comparing 1 panels across 1 dashboards", stderr.getvalue())
+            self.assertIn("processed 1/1 panels", stderr.getvalue())
+            self.assertIn(f"report written to {out}", stderr.getvalue())
+
+            stderr_quiet = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V("STRICT_PASS")),
+                redirect_stderr(stderr_quiet),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main(["compare", "--artifact-dir", str(art), "--es-url", "https://es.test",
+                          "--api-key", "k", "--report-out", str(out), "--quiet"])
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(stderr_quiet.getvalue(), "")
+
+    def test_verify_compare_runner_drives_run_compare_without_quiet_attr(self):
+        # Regression for issue #199: the verify --run-compare seam builds a
+        # SimpleNamespace with no `quiet` field and calls _run_compare, so a
+        # bare `args.quiet` read there aborts the whole verify run. Drive the
+        # real _verify_compare_runner -> _run_compare path (not a stub) and
+        # confirm it completes.
+        from observability_migration.app import cli
+
+        class V:
+            def __init__(self, verdict):
+                self._v = verdict
+                self.max_relative_error = 0.0
+                self.compared_points = 3
+                self.notes = []
+                self.skipped_reason = ""
+                self.fail_reason = ""
+                self.translated_error = ""
+                self.native_error = ""
+                self.native_series = 1
+                self.translated_series = 1
+                self.common_series = 1
+            def verdict(self):
+                return self._v
+
+        with tempfile.TemporaryDirectory() as tmp:
+            art = self._artifact_dir(tmp, [
+                {"dashboard": "D", "panel": "P1", "source_language": "promql",
+                 "source_query": "go_goroutines", "translated_query": "TS metrics-*", "semantic_gate": "Green"},
+            ])
+            runner = cli._verify_compare_runner(SimpleNamespace())
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(cli, "make_es_request", return_value="REQ"),
+                mock.patch.object(cli, "native_promql_available", return_value=True),
+                mock.patch.object(cli, "compare_panel", return_value=V("STRICT_PASS")),
+                redirect_stderr(stderr),
+            ):
+                result = runner(artifact_dir=str(art), es_url="https://es.test", api_key="k", index="")
+            self.assertTrue(result["ran"], result)
+            self.assertEqual(result["summary"]["panels"], 1)
 
     def test_compare_structural_only_when_no_oracle(self):
         from observability_migration.app import cli

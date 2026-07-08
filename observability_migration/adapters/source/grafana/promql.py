@@ -553,6 +553,12 @@ class FormulaPlan:
     # gaps). The translator uses this to emit the correct set-union note instead
     # of the same-bucket arithmetic caveat.
     set_or_fill: bool = False
+    # Set when ``expr`` is a same-metric PromQL ``or`` rewritten as a single
+    # fetch with a unified WHERE OR clause (see
+    # ``_try_rewrite_set_or_same_metric``). This is an exact rewrite, not an
+    # approximation, so the translator must skip the same-bucket arithmetic
+    # caveat for it too.
+    set_or_where: bool = False
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -1566,6 +1572,12 @@ def _copy_fragment_summary(target, source):
         "inner_group",
         "join_labels",
         "offset",
+        # A stripped ``X or vector(N)`` fallback tags its surviving operand so
+        # the translator can warn about the dropped zero-fill. That survivor is
+        # frequently wrapped in an aggregation (``sum(X or vector(0))``), which
+        # rebuilds the fragment via this copy; carry the flag through so the
+        # warning is not lost on the wrapped shape (issue #252 review).
+        "or_vector_fallback",
         "post_filter",
         "quantile_phi",
         "start_matchers",
@@ -1812,10 +1824,16 @@ def _ast_call_fragment(node, expr):
     if func_name == "label_replace" and len(child_frags) == 5:
         value_frag = child_frags[0]
         string_args = [f.extra.get("string_value") for f in child_frags[1:]]
-        if (
-            all(s is not None for s in string_args)
-            and not value_frag.extra.get("not_feasible_reasons")
-        ):
+        # A bare ``vector(N)`` value is itself "not feasible" standalone, but
+        # that is exactly the shape of the ``or`` zero-fill idiom Grafana
+        # dashboards use to label a fallback value (e.g.
+        # ``X or on() label_replace(vector(0), "status", "0", "", "")``).
+        # Let it through here so ``_is_vector_fallback_operand`` can still
+        # recognize and strip it in ``_strip_or_vector_fallback`` below.
+        value_ok = not value_frag.extra.get(
+            "not_feasible_reasons"
+        ) or _is_vector_fallback_operand(value_frag)
+        if all(s is not None for s in string_args) and value_ok:
             dst, replacement, src, regex = string_args
             result = _copy_fragment_summary(
                 _new_fragment(expr, family="label_replace"), value_frag
@@ -2367,15 +2385,22 @@ def _restore_sanitized_labels(frag, label_map):
 
 
 def _is_vector_fallback_operand(frag):
-    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback.
+    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback,
+    including one wrapped in ``label_replace(vector(N), ...)``.
 
     ``vector(N)`` has no series labels; in ``X or vector(N)`` it only fills the
     gaps where ``X`` has no data with the constant ``N``. It is not a metric in
     its own right, so when it is the fallback side of an ``or`` we can drop it
-    (issue #66 Pattern A).
+    (issue #66 Pattern A). Dashboards commonly wrap the fallback in
+    ``label_replace(...)`` to stamp a label onto the synthetic zero row (e.g.
+    ``X or on() label_replace(vector(0), "status", "0", "", "")``); that label
+    only matters for the vector's own (dropped) series, so unwrap through it
+    the same way (issue #252).
     """
     if frag is None:
         return False
+    if frag.family == "label_replace":
+        return _is_vector_fallback_operand(frag.extra.get("lr_inner_frag"))
     if frag.extra.get("call_name") != "vector":
         return False
     reasons = frag.extra.get("not_feasible_reasons") or []
@@ -3041,12 +3066,13 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pac
 def gauge_default_agg_warning(group_fields, metric, default_agg):
     """Honest warning for the default-aggregation gauge path.
 
-    With grouping labels present, the aggregator is a faithful per-series intra-bucket
-    downsample. Without any labels, multiple series collapse into a single line — say so,
-    and include the token ``drop`` so ``build_query_ir`` records it as a semantic loss.
+    With grouping labels present, the aggregator is a faithful per-series
+    intra-bucket downsample, not a migration warning. Without any labels,
+    multiple series collapse into a single line — say so, and include the token
+    ``drop`` so ``build_query_ir`` records it as a semantic loss.
     """
     if group_fields:
-        return f"No explicit aggregation; using {default_agg} per series (faithful gauge downsample)"
+        return ""
     return (
         f"Collapsed all series of `{metric}` into a single {default_agg} line; the source "
         "selector has no series labels (no legend, by(), or dashboard reference), so per-series "
@@ -3150,7 +3176,9 @@ def _build_measure_spec(
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             stats_expr = f"{default_agg}({metric_field})"
-            warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+            warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+            if warning:
+                warnings.append(warning)
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
@@ -3161,7 +3189,9 @@ def _build_measure_spec(
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
-                warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+                warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+                if warning:
+                    warnings.append(warning)
     elif frag.family == "simple_agg":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:
@@ -3228,10 +3258,6 @@ def _build_measure_spec(
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
-            warnings.append(
-                f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
-                "when grouping TS functions by label fields"
-            )
         else:
             stats_expr = _apply_outer_agg(outer, inner_expr, frag) if outer else inner_expr
     elif frag.family == "scaled_agg":
@@ -3668,6 +3694,20 @@ def _try_rewrite_set_or_same_metric(
     if not left_frag or not right_frag:
         return None
 
+    # A bare ``or`` matches on the full label set, so two operands with
+    # disjoint matchers never collide and their union is exactly the OR of
+    # their filters. A modifier that *narrows* the match key — ``on(...)`` /
+    # ``ignoring(...)`` with labels, or a label-less ``on()`` (matches on the
+    # empty set) — makes PromQL suppress a right-hand series wherever the left
+    # shares the matched labels, even when a differing label (e.g. ``status``)
+    # makes them logically distinct. A flat WHERE-OR keeps both and
+    # over-includes the suppressed rows, so it is no longer exact (issue #252
+    # review). Reuse the shared predicate so a non-narrowing modifier such as a
+    # label-less ``ignoring()`` (equivalent to the full-label-set match) still
+    # takes the exact rewrite; it also walks the whole ``or`` chain.
+    if _or_chain_has_vector_matching(frag):
+        return None
+
     # Recurse first into a left-leaning ``or`` chain so ``A or A or A``
     # works.
     operand_frags = []
@@ -3818,6 +3858,7 @@ def _try_rewrite_set_or_same_metric(
         specs=[new_spec],
         expr=new_spec.final_alias,
         warnings=list(new_spec.warnings),
+        set_or_where=True,
     )
 
 

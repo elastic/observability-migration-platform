@@ -1,0 +1,9 @@
+title: Count by class
+grafana_type: gauge
+status: migrated_with_warnings
+chart_type: gauge
+metric: http_requests_total
+gauge_shape: arc
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+warning: Panel has 7 PromQL targets but only 1 could be migrated

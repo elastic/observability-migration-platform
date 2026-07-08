@@ -2067,6 +2067,37 @@ class TestBuildRuleParams(unittest.TestCase):
         self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
         self.assertEqual(params["timeField"], "@timestamp")
 
+    def test_grafana_prometheus_alert_prefixes_metric_on_otel_target(self):
+        """Regression (#270 review): the alert native-PROMQL path must apply the
+        same ``metrics.<name>`` prefix as dashboards when a resolver is supplied
+        and the target advertises the prefixed field. Without it, migrated alerts
+        silently query the missing bare field on OTel Collector indices."""
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+        resolver = SchemaResolver(RulePackConfig())
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "metrics.node_cpu_seconds_total": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        }
+        resolver._discovered_mappings = {}
+
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(
+            ir, data_view="metrics-prometheusreceiver.otel*", resolver=resolver
+        )
+        esql = params["esqlQuery"]["esql"]
+        self.assertIn("rate(metrics.node_cpu_seconds_total{mode=\"idle\"}", esql)
+        # The aggregation operator, grouping label, and label-matcher key stay bare.
+        self.assertNotIn("metrics.avg", esql)
+        self.assertNotIn("metrics.instance", esql)
+        self.assertNotIn("metrics.mode", esql)
+
     def test_es_query_params_set_time_field_for_datadog(self):
         from observability_migration.adapters.source.datadog.field_map import load_profile
 

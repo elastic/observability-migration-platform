@@ -7,7 +7,6 @@ metrics: ['System_Processes_executing_in_kernel_mode', 'User_Normal_processes_ex
 mode: percentage
 axis_title: percentage
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Variable-driven label filters applied via Kibana dashboard controls
 warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 warning: Dropped 1 incompatible target(s); showing 7 mergeable targets

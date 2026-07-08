@@ -571,6 +571,20 @@ class SchemaResolver:
             # contract layer can surface missing fields via preflight.
             return f"metrics.{metric_name}"
         if profile != "prometheus_remote_write":
+            # OTel Collector (`prometheusreceiver`) indices store metrics under
+            # `metrics.<name>` but ship OTel-shaped labels (resource/data-point
+            # attributes) rather than `labels.<name>`, so they never satisfy the
+            # `prometheus_native` profile's dual-signal guard above. When the
+            # live target actually advertises the prefixed field — and not the
+            # bare name — emit it; otherwise this is unchanged passthrough.
+            # Without this, panels error with "Invalid input types for IS NOT
+            # NULL" because the bare field doesn't exist (issue #270).
+            if (
+                self._field_cache
+                and metric_name not in self._field_cache
+                and f"metrics.{metric_name}" in self._field_cache
+            ):
+                return f"metrics.{metric_name}"
             return metric_name
         if self._field_cache and metric_name in self._field_cache:
             return metric_name

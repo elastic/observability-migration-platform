@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,7 @@ def seed_sample_data(
     no_recreate: bool = False,
     purge_foreign: bool = False,
     metric_kind_overrides: dict[str, str] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> IngestSummary:
     """Build a contract from artifacts, set up streams, and ingest synthetic docs."""
     contract = _build_contract(artifact_dirs, metric_kind_overrides)
@@ -204,6 +206,7 @@ def seed_sample_data(
         ),
         request,
         batch_docs=batch_docs,
+        on_progress=on_progress,
     )
 
 

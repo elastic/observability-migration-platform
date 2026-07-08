@@ -6,6 +6,4 @@ dimension: time_bucket
 metrics: ['CurrEstab_TCP_connections_for_which_the_current_state_is_either_ESTABLISHED_or_CLOSE_WAIT', 'MaxConn_Limit_on_the_total_number_of_TCP_connections_the_entity_can_support_Dynamic_is_1']
 breakdown: instance
 axis_title: connections
-warning: Variable-driven label filters applied via Kibana dashboard controls
-warning: No explicit aggregation; using AVG per series (faithful gauge downsample)
 warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged

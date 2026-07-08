@@ -35,7 +35,9 @@ class CommandContractDocTests(unittest.TestCase):
 
     def test_command_contract_does_not_advertise_dead_unified_flags(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
-        self.assertNotIn("--include", text)
+        # Guard the dead bare `--include` unified selector without tripping on
+        # real, distinct flags such as the smoke validator's `--include-deleted`.
+        self.assertNotRegex(text, r"--include(?![-\w])")
         self.assertNotIn("--alert-dry-run", text)
         self.assertNotIn("obs-migrate migrate --list-dashboards", text)
 

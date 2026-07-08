@@ -16,7 +16,12 @@ import yaml
 from observability_migration.core.assets.operational import build_operational_ir
 from observability_migration.core.assets.query import QueryIR, build_query_ir, infer_output_shape
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.core.reporting.report import MigrationResult, PanelResult, _panel_query_index
+from observability_migration.core.reporting.report import (
+    MigrationResult,
+    PanelResult,
+    _panel_query_index,
+    recompute_result_counts,
+)
 from observability_migration.core.verification.field_capabilities import assess_field_usage
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_yaml
 from observability_migration.targets.kibana.emit.display import (
@@ -403,6 +408,7 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         and not preferred_group_labels
         and metric_series_labels
         and not expr_has_explicit_grouping(target.get("expr", ""))
+        and _allows_dashboard_label_inference(target.get("expr", ""))
     ):
         inferred = _inferred_labels_for_target(target, metric_series_labels)
         if inferred:
@@ -446,6 +452,200 @@ _PROMQL_AGG_FUNCS = frozenset({
     "sum", "avg", "min", "max", "count", "stddev", "stdvar",
     "topk", "bottomk", "quantile", "group",
 })
+_PROMQL_AGG_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    + "|".join(sorted(_PROMQL_AGG_FUNCS, key=len, reverse=True))
+    + r")\b(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(",
+    re.IGNORECASE,
+)
+_PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
+    r"^\s*(?P<label>[A-Za-z_][A-Za-z0-9_\.:-]*)\s*(?P<op>=~|!~|!=|=)\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)\s*$",
+    re.DOTALL,
+)
+# Leading unary sign (``-sum(...)``) or scalar operand + arithmetic operator
+# (``100 * sum(...)``, ``1 - avg(...)``). Peeling these exposes the inner
+# aggregation so the prefix guard still fires on collapsed expressions wrapped
+# in unary/scalar arithmetic. A PromQL metric name can never start with a digit,
+# so stripping a leading number is unambiguous.
+_PROMQL_LEADING_SCALAR_RE = re.compile(
+    r"^\s*(?:[-+]|(?:\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*[-+*/%])",
+)
+# Leading ``func(`` call. A PromQL vector-transform function (``clamp_max``,
+# ``abs``, ``round`` …) preserves the label set of its vector operand, which is
+# always its first argument. ``topk``/``bottomk`` preserve the labels of their
+# selected input series, whose vector operand is the second argument. Recursing
+# into those operands exposes wrapped aggregations to the prefix guard.
+_PROMQL_LEADING_FUNC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_PROMQL_LABEL_PRESERVING_FUNCS = frozenset({
+    "abs", "ceil", "clamp", "clamp_max", "clamp_min", "exp", "floor",
+    "label_join", "label_replace", "ln", "log2", "log10", "round", "sgn",
+    "sort", "sort_desc", "sqrt", "timestamp",
+})
+_PROMQL_LABEL_PRESERVING_AGG_FUNCS = frozenset({"topk", "bottomk"})
+_PROMQL_UNLABELED_FUNCS = frozenset({
+    "absent", "absent_over_time", "pi", "scalar", "time", "vector",
+})
+
+
+def _strip_wrapping_parentheses(expr):
+    text = str(expr or "").strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        wraps_entire_expr = True
+        quote = ""
+        escaped = False
+        for idx, char in enumerate(text):
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and idx != len(text) - 1:
+                    wraps_entire_expr = False
+                    break
+                if depth < 0:
+                    wraps_entire_expr = False
+                    break
+        if not wraps_entire_expr or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def _peel_leading_parenthesized_arithmetic_operand(text):
+    """Return a leading parenthesized operand from scalar arithmetic.
+
+    ``(sum(...)) * 100`` preserves the label shape of the left vector operand,
+    just like ``100 * sum(...)``. Peeling that balanced left operand lets the
+    aggregation guard see collapsed aggregations hidden by the parentheses.
+    """
+    text = str(text or "").strip()
+    if not text.startswith("("):
+        return text
+    depth = 0
+    quote = ""
+    escaped = False
+    for idx, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                rest = text[idx + 1:].lstrip()
+                if rest.startswith(("+", "-", "*", "/", "%")):
+                    return text[1:idx].strip()
+                return text
+            if depth < 0:
+                return text
+    return text
+
+
+def _peel_leading_function_label_operand(text):
+    """Return the label-preserving vector operand of a leading function call.
+
+    PromQL vector-transform functions (``clamp_max``, ``abs``, ``round``,
+    ``label_replace`` …) preserve the label set of their vector operand — always
+    the first argument. ``topk``/``bottomk`` also preserve input labels, but their
+    vector operand is the second argument after the scalar limit. Returns ``text``
+    unchanged when it is not a label-preserving function call or when the
+    parentheses are unbalanced.
+    """
+    match = _PROMQL_LEADING_FUNC_RE.match(text)
+    if not match:
+        return text
+    function_name = match.group(1).lower()
+    if function_name in _PROMQL_LABEL_PRESERVING_FUNCS:
+        operand_index = 0
+    elif function_name in _PROMQL_LABEL_PRESERVING_AGG_FUNCS:
+        operand_index = 1
+    else:
+        return text
+    open_idx = match.end() - 1  # position of the '('
+    depth = 0
+    quote = ""
+    escaped = False
+    args = []
+    arg_start = open_idx + 1
+    for idx in range(open_idx, len(text)):
+        char = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char in ("(", "[", "{"):
+            depth += 1
+        elif char in (")", "]", "}"):
+            depth -= 1
+            if depth == 0:
+                args.append(text[arg_start:idx].strip())
+                if len(args) > operand_index:
+                    return args[operand_index]
+                return text
+        elif char == "," and depth == 1:
+            args.append(text[arg_start:idx].strip())
+            arg_start = idx + 1
+    return text  # unbalanced — leave untouched
+
+
+def _allows_dashboard_label_inference(expr):
+    """Return True when dashboard-wide label inference can safely add grouping.
+
+    An ungrouped PromQL aggregation collapses its input to a single (scalar)
+    series, so re-widening it with inferred labels changes the intended series
+    shape. The guard therefore blocks inference for such expressions — including
+    ones wrapped in unary/scalar arithmetic (``-sum(...)``, ``100 * sum(...)``,
+    ``1 - avg(...)``) or label-preserving function calls
+    (``clamp_max(sum(...), 100)``, ``abs(sum(...))``), which all keep the
+    collapsed shape — by peeling leading signs/scalar operands and non-aggregation
+    function wrappers before checking for an aggregation prefix.
+    """
+    text = _strip_wrapping_parentheses(expr)
+    while True:
+        match = _PROMQL_LEADING_FUNC_RE.match(text)
+        if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
+            return False
+        peeled = _strip_wrapping_parentheses(
+            _PROMQL_LEADING_SCALAR_RE.sub("", text, count=1)
+        )
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_parenthesized_arithmetic_operand(peeled)
+        )
+        match = _PROMQL_LEADING_FUNC_RE.match(peeled)
+        if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
+            return False
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_function_label_operand(peeled)
+        )
+        if peeled == text:
+            break
+        text = peeled
+    return not _PROMQL_AGG_PREFIX_RE.search(text)
 
 
 def _coalesce_panel_title(panel, panel_analysis=None):
@@ -967,6 +1167,209 @@ def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=N
     return cleaned
 
 
+# A PromQL string literal (label value); its contents must never be rewritten.
+_PROMQL_STRING_LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+# A candidate PromQL identifier: a metric name, function name, keyword, or label
+# key. Anchored so it never matches inside a larger identifier or an already
+# dot-qualified name (`attributes.job` — the `job` is skipped).
+_PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
+# Vector-matching / aggregation modifiers that introduce a parenthesised list of
+# *label* names (`by (a, b)`, `on(x) group_left(y)`), never metric selectors.
+_PROMQL_GROUPING_MODIFIERS = frozenset(
+    {"by", "without", "on", "ignoring", "group_left", "group_right"}
+)
+# Aggregation operators. In the usual `sum(...)` form they are caught by the
+# function-call guard (identifier followed by `(`), but in the modifier-before-
+# args form (`sum by (job) (metric)`) the operator is followed by `by`/`without`
+# instead, so it must be reserved explicitly.
+_PROMQL_AGG_OPERATORS = frozenset(
+    {
+        "sum", "min", "max", "avg", "group", "count", "count_values",
+        "stddev", "stdvar", "topk", "bottomk", "quantile", "limitk", "limit_ratio",
+    }
+)
+# PromQL words that read as identifiers but are never metric selectors, so they
+# must not be prefixed even if a colliding `metrics.<word>` field exists. The
+# grouping modifiers are included for the case where they appear without a
+# following `(` (`a * group_left b`).
+_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | frozenset(
+    {"offset", "bool", "and", "or", "unless", "atan2", "start", "end", "inf", "nan"}
+)
+
+
+def _prefix_native_metric_fields(expr, resolver):
+    """Rewrite bare metric selectors in a native PROMQL expression to their
+    resolved ``metrics.<name>`` field (issue #270).
+
+    OTel Collector (``prometheusreceiver``) indices store each metric under a
+    ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
+    field and the panel renders empty. Only a token in *metric-selector*
+    position is rewritten; the scan tracks PromQL structure so that identifiers
+    which merely look like metric names are protected regardless of the target's
+    field caps:
+
+    - label-matcher keys and values inside ``{...}``;
+    - grouping labels inside a modifier's parens (``by (x)``, ``on(y)``,
+      ``group_left(z)``);
+    - reserved words (``offset``/``bool``/``and``/``or``/``unless``/…);
+    - function names (any identifier directly followed by ``(``);
+    - string literals (label values).
+
+    The one label position that *is* rewritten is the ``__name__`` metric-name
+    matcher: ``{__name__="foo"}`` is equivalent to selecting ``foo``, so its
+    *exact*-match value takes the same field-cache-gated prefix. Regex
+    (``=~``) and negative (``!=``/``!~``) ``__name__`` matchers are left bare —
+    prefixing a regex is fragile and negation would change the selection.
+
+    Both guards matter and neither is sufficient alone. A ``metrics.<token>``
+    field can legitimately exist for a *label* name that collides with a metric
+    name in the target, so ``resolve_metric_field`` / ``field_exists`` cannot
+    distinguish a selector from a label key — only the structural position can.
+    Conversely, ``resolve_metric_field`` returns ``metrics.<name>``
+    unconditionally under the ``prometheus_native`` profile (for the preflight
+    contract), so the resolved prefix is still confirmed against the field cache
+    (``field_exists``) before it is applied.
+
+    Deliberately runs on the *emitted* expression string, after AST analysis
+    (counter/gauge detection, group-column shape) has already read the bare
+    names — the resolver is keyed on the bare metric name, and the PromQL parser
+    would choke on a dotted metric selector.
+    """
+    if resolver is None or not expr:
+        return expr
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if not callable(resolve):
+        return expr
+    field_exists = getattr(resolver, "field_exists", None)
+
+    def _prefixed_field_is_indexed(name):
+        # Confirm ``metrics.<name>`` is a real field and the bare token is not,
+        # so we never invent a prefix for an index that stores the metric bare.
+        # When the resolver can't answer (no ``field_exists`` / empty cache),
+        # fall back to the resolver's decision.
+        if not callable(field_exists):
+            return True
+        prefixed = field_exists(f"metrics.{name}")
+        if prefixed is None:
+            return True
+        return bool(prefixed) and not field_exists(name)
+
+    def _resolve_selector(name, tail):
+        # A trailing `(` marks a function call, never a metric selector.
+        if tail.lstrip()[:1] == "(":
+            return None
+        if name in _PROMQL_RESERVED_WORDS:
+            return None
+        try:
+            resolved = resolve(name)
+        except Exception:
+            return None
+        if resolved != f"metrics.{name}":
+            return None
+        return resolved if _prefixed_field_is_indexed(name) else None
+
+    def _rewrite_name_matcher_value(literal_text):
+        # `{__name__="foo"}` is the metric-name matcher — equivalent to selecting
+        # ``foo`` — so its *exact*-match value takes the same field-cache-gated
+        # ``metrics.`` prefix a bare selector would. Only plain (non-regex)
+        # values reach here; the gate still confirms the prefixed field exists
+        # and the bare name does not, so this is a no-op on bare-metric targets.
+        quote = literal_text[:1]
+        if quote not in "\"'" or len(literal_text) < 2:
+            return literal_text
+        value = literal_text[1:-1]
+        resolved = _resolve_selector(value, "")
+        return f"{quote}{resolved}{quote}" if resolved is not None else literal_text
+
+    out = []
+    i = 0
+    n = len(expr)
+    brace_depth = 0
+    # `__name__` exact-match matcher tracking: `name_key_pending` after the
+    # ``__name__`` key, `name_value_exact` once an exact ``=`` (not ``=~``/
+    # ``!=``/``!~``) confirms the next string literal is the metric name.
+    name_key_pending = False
+    name_value_exact = False
+    # One flag per open paren: True when the paren is a grouping-label list, so
+    # its contents are labels, not metrics. `expect_grouping` arms the next `(`
+    # after a grouping modifier keyword.
+    paren_is_grouping = []
+    expect_grouping = False
+    while i < n:
+        ch = expr[i]
+        if ch in "\"'":
+            literal = _PROMQL_STRING_LITERAL_RE.match(expr, i)
+            if literal:
+                text = literal.group(0)
+                out.append(
+                    _rewrite_name_matcher_value(text) if name_value_exact else text
+                )
+                name_value_exact = False
+                i = literal.end()
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            brace_depth = max(0, brace_depth - 1)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            paren_is_grouping.append(expect_grouping)
+            expect_grouping = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if paren_is_grouping:
+                paren_is_grouping.pop()
+            out.append(ch)
+            i += 1
+            continue
+        ident = _PROMQL_IDENT_RE.match(expr, i)
+        if ident:
+            name = ident.group(1)
+            protected = brace_depth > 0 or (
+                bool(paren_is_grouping) and paren_is_grouping[-1]
+            )
+            resolved = None if protected else _resolve_selector(name, expr[ident.end():])
+            out.append(resolved if resolved is not None else name)
+            # Arm grouping only when a bare modifier keyword is immediately
+            # followed by its paren list; any other identifier clears it.
+            expect_grouping = name in _PROMQL_GROUPING_MODIFIERS
+            # A `__name__` key inside `{...}` arms an exact-value rewrite; any
+            # other identifier ends a pending matcher.
+            name_key_pending = brace_depth > 0 and name == "__name__"
+            name_value_exact = False
+            i = ident.end()
+            continue
+        # Any other character (operators, brackets, whitespace).
+        if name_key_pending and ch == "=":
+            # Exact `=`, unless it is the `=~` regex matcher (never rewritten).
+            name_value_exact = expr[i + 1:i + 2] != "~"
+            name_key_pending = False
+        elif name_key_pending and ch == "!":
+            # `!=` / `!~`: negative matcher — prefixing would change meaning.
+            name_key_pending = False
+        elif not ch.isspace():
+            # Any other non-space token ends a pending `__name__` matcher.
+            name_key_pending = False
+            name_value_exact = False
+        # Only whitespace may sit between a grouping modifier and its `(`;
+        # anything else cancels a pending grouping expectation.
+        if not ch.isspace():
+            expect_grouping = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _extract_legend_labels(legend_format):
     """Parse ``{{label}}`` placeholders from a Grafana legendFormat string."""
     if not legend_format or legend_format in ("__auto", ""):
@@ -1008,7 +1411,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False, regex_default_params=None, step=None):
+                              instant=False, regex_default_params=None, step=None,
+                              resolver=None):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1037,6 +1441,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
     )
+    cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
@@ -1421,7 +1826,8 @@ def _translate_panel_native_promql(
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
                                              instant=instant,
-                                             regex_default_params=regex_default_params)
+                                             regex_default_params=regex_default_params,
+                                             resolver=resolver)
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -1525,7 +1931,7 @@ def _translate_panel_native_promql(
 def _translate_multi_target_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes,
-    panel_inventory, targets_with_expr,
+    panel_inventory, targets_with_expr, resolver=None,
 ):
     """Combine multiple PromQL targets into a single native PROMQL panel.
 
@@ -1567,7 +1973,10 @@ def _translate_multi_target_native_promql(
             ),
         )
         had_bare_variable = had_bare_variable or bare
+        # Parse the bare form for AST analysis, then rewrite metric selectors to
+        # their `metrics.<name>` field for the emitted command (issue #270).
         target_fragments.append(_parse_fragment(cleaned or expr))
+        cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -2422,7 +2831,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             multi_result = _translate_multi_target_native_promql(
                 panel, yaml_panel, title, panel_type, kibana_type,
                 datasource, datasource_index, rule_pack, panel_notes,
-                panel_inventory, targets_with_expr,
+                panel_inventory, targets_with_expr, resolver=resolver,
             )
             if multi_result is not None:
                 return multi_result
@@ -4159,7 +4568,16 @@ def _collect_regex_default_param_names(variables):
     return names
 
 
-def _build_esql_param_control(variable_name, label, field_name, data_view, default=None, metric_field=None):
+def _build_esql_param_control(
+    variable_name,
+    label,
+    field_name,
+    data_view,
+    default=None,
+    metric_field=None,
+    source_field="",
+    include_internal_metadata=False,
+):
     """Build an ES|QL parameter-binding control (issue #107).
 
     When the target supports the ``promql_label_matcher_params`` capability the
@@ -4187,6 +4605,10 @@ def _build_esql_param_control(variable_name, label, field_name, data_view, defau
         "query": _esql_values_control_query(field_name, data_view, metric_field=metric_field),
         "multiple": False,
     }
+    if include_internal_metadata:
+        control[_CONTROL_RESOLVED_FIELD_NAME] = field_name
+        if source_field:
+            control[_CONTROL_SOURCE_FIELD_NAME] = source_field
     if default not in (None, ""):
         control["default"] = default
     return control
@@ -4324,6 +4746,8 @@ def query_variable_rule(context):
             data_view=context.data_view,
             default=_variable_default_selection(context.variable),
             metric_field=metric_field,
+            source_field=source_field,
+            include_internal_metadata=True,
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
             context.trace.append(
@@ -4412,6 +4836,7 @@ def translate_variables(
     rule_pack=None,
     resolver=None,
     repeat_variable_names=None,
+    include_variable_names=False,
 ):
     rule_pack = rule_pack or RulePackConfig()
     controls = []
@@ -4426,7 +4851,42 @@ def translate_variables(
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
         if context.control:
-            controls.append(context.control)
+            control = dict(context.control)
+            if include_variable_names and var.get("name"):
+                control[_CONTROL_SOURCE_VARIABLE_NAME] = var.get("name")
+                if context.source_field:
+                    control[_CONTROL_SOURCE_FIELD_NAME] = context.source_field
+            elif not include_variable_names:
+                control.pop(_CONTROL_RESOLVED_FIELD_NAME, None)
+                control.pop(_CONTROL_SOURCE_FIELD_NAME, None)
+            controls.append(control)
+    return controls
+
+
+def _covered_control_variable_refs(controls):
+    refs: set[tuple[str, str]] = set()
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        variable_name = control.get("variable_name") or control.get(_CONTROL_SOURCE_VARIABLE_NAME)
+        if not variable_name:
+            continue
+        for field_name in (
+            control.get("field"),
+            control.get(_CONTROL_RESOLVED_FIELD_NAME),
+            control.get(_CONTROL_SOURCE_FIELD_NAME),
+        ):
+            if field_name:
+                refs.add((str(variable_name), str(field_name)))
+    return refs
+
+
+def _strip_internal_control_metadata(controls):
+    for control in controls or []:
+        if isinstance(control, dict):
+            control.pop(_CONTROL_SOURCE_VARIABLE_NAME, None)
+            control.pop(_CONTROL_RESOLVED_FIELD_NAME, None)
+            control.pop(_CONTROL_SOURCE_FIELD_NAME, None)
     return controls
 
 
@@ -4523,6 +4983,8 @@ def _ensure_param_controls(
                 data_view=data_view,
                 default=_variable_default_selection(variable),
                 metric_field=metric_field,
+                source_field=source_field,
+                include_internal_metadata=True,
             )
         )
     return controls
@@ -5021,15 +5483,9 @@ def _collect_repeat_variable_names(dashboard):
 _DROPPED_VARS_WARNING = "Dropped variable-driven label filters during migration"
 _DROPPED_LOGQL_LABEL_WARNING = "Dropped variable-driven LogQL label filters during migration"
 _DROPPED_LOGQL_TEXT_WARNING = "Dropped variable-driven LogQL text filter during migration"
-_CONTROLS_VARS_WARNING = (
-    "Variable-driven label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_LABEL_WARNING = (
-    "Variable-driven LogQL label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_TEXT_WARNING = (
-    "Variable-driven LogQL text filter applied via Kibana dashboard controls"
-)
+_CONTROL_SOURCE_VARIABLE_NAME = "_source_variable_name"
+_CONTROL_SOURCE_FIELD_NAME = "_source_field_name"
+_CONTROL_RESOLVED_FIELD_NAME = "_resolved_field_name"
 
 
 def _pre_scan_control_variables(template_list):
@@ -5047,25 +5503,151 @@ def _pre_scan_control_variables(template_list):
     return names
 
 
-_WARNING_REWRITE_MAP = {
-    _DROPPED_VARS_WARNING: _CONTROLS_VARS_WARNING,
-    _DROPPED_LOGQL_LABEL_WARNING: _CONTROLS_LOGQL_LABEL_WARNING,
-    _DROPPED_LOGQL_TEXT_WARNING: _CONTROLS_LOGQL_TEXT_WARNING,
+_CONTROL_COVERED_VARIABLE_WARNINGS = {
+    _DROPPED_VARS_WARNING,
+    _DROPPED_LOGQL_LABEL_WARNING,
 }
 
 
-def _rewrite_variable_warnings(panel_results, control_variable_names):
-    """Replace 'Dropped variable-driven …' with a controls-aware message.
+def _template_var_name_from_matcher_value(value):
+    text = str(value or "").strip()
+    name = grafana_template_var_name(text)
+    if name:
+        return name
+    unanchored = text
+    if unanchored.startswith("^"):
+        unanchored = unanchored[1:]
+    if unanchored.endswith("$") and not unanchored.endswith("\\$"):
+        unanchored = unanchored[:-1]
+    return grafana_template_var_name(unanchored)
+
+
+def _selector_metric_name_before_brace(text, brace_idx):
+    prefix = str(text or "")[:brace_idx].rstrip()
+    match = re.search(r"([A-Za-z_:][A-Za-z0-9_:]*)$", prefix)
+    return match.group(1) if match else ""
+
+
+def _resolve_metric_field_for_warning_coverage(metric_name, resolver):
+    if not metric_name or not resolver:
+        return None
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    if resolve_metric is None:
+        return metric_name
+    try:
+        return resolve_metric(metric_name) or metric_name
+    except Exception:
+        return metric_name
+
+
+def _resolve_label_field_for_warning_coverage(label, metric_name, resolver):
+    if not label:
+        return ""
+    if not resolver:
+        return label
+    metric_field = _resolve_metric_field_for_warning_coverage(metric_name, resolver)
+    try:
+        resolved = resolver.resolve_label(label, metric_field=metric_field)
+    except Exception:
+        resolved = label
+    return resolved or ""
+
+
+def _source_label_matcher_variable_coverage(expr, resolver=None):
+    matcher_ref_alternatives: list[set[tuple[str, str]]] = []
+    has_uncoverable_matcher = False
+    text = str(expr or "")
+    idx = 0
+    while idx < len(text):
+        if text[idx] != "{":
+            idx += 1
+            continue
+        end = idx + 1
+        quote = ""
+        escaped = False
+        while end < len(text):
+            char = text[end]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "}":
+                break
+            end += 1
+        if end >= len(text) or text[end] != "}":
+            break
+        selector = text[idx + 1:end]
+        metric_name = _selector_metric_name_before_brace(text, idx)
+        for matcher_text in _split_top_level_csv(selector):
+            match = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+            if not match:
+                continue
+            name = _template_var_name_from_matcher_value(match.group("value"))
+            if name and not name.startswith("__"):
+                if match.group("op") in {"!=", "!~"}:
+                    has_uncoverable_matcher = True
+                else:
+                    raw_label = match.group("label")
+                    field_name = _resolve_label_field_for_warning_coverage(
+                        raw_label,
+                        metric_name,
+                        resolver,
+                    )
+                    alternatives = {(name, raw_label)}
+                    if field_name:
+                        alternatives.add((name, field_name))
+                    matcher_ref_alternatives.append(alternatives)
+        idx = end + 1
+    return matcher_ref_alternatives, has_uncoverable_matcher
+
+
+def _panel_result_variable_warning_is_covered(panel_result, covered_control_refs, resolver=None):
+    source_ref_alternatives, has_uncoverable_matcher = _source_label_matcher_variable_coverage(
+        panel_result.promql_expr,
+        resolver=resolver,
+    )
+    if has_uncoverable_matcher:
+        return False
+    return bool(source_ref_alternatives) and all(
+        bool(alternatives & covered_control_refs)
+        for alternatives in source_ref_alternatives
+    )
+
+
+def _rewrite_variable_warnings(panel_results, covered_control_refs, resolver=None):
+    """Clear variable-drop warnings once dashboard controls cover them.
 
     ``PanelResult.reasons`` carries the translation warnings.
     """
-    if not control_variable_names:
-        return
+    rewritten_panel_results = []
+    if not covered_control_refs:
+        return rewritten_panel_results
     for pr in panel_results:
-        for i, w in enumerate(pr.reasons):
-            replacement = _WARNING_REWRITE_MAP.get(w)
-            if replacement:
-                pr.reasons[i] = replacement
+        original_count = len(pr.reasons)
+        pr.reasons = [
+            w
+            for w in pr.reasons
+            if (
+                w not in _CONTROL_COVERED_VARIABLE_WARNINGS
+                or not _panel_result_variable_warning_is_covered(
+                    pr,
+                    covered_control_refs,
+                    resolver=resolver,
+                )
+            )
+        ]
+        if len(pr.reasons) == original_count:
+            continue
+        if pr.status == "migrated_with_warnings" and not pr.reasons:
+            pr.status = "migrated"
+            pr.confidence = max(pr.confidence, 0.85)
+        rewritten_panel_results.append(pr)
+    return rewritten_panel_results
 
 
 def _normalized_text_panel_content(panel):
@@ -5767,7 +6349,6 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     metric_series_labels = build_metric_series_labels(dashboard)
 
     variables = dashboard.get("templating", {}).get("list", [])
-    control_variable_names = _pre_scan_control_variables(variables)
     # Record which ``?var`` params default to the regex match-all so both the
     # ES|QL and native PROMQL matcher emitters loosen equality matchers on
     # All/multi variables into regex matches and render data on first load
@@ -5883,9 +6464,6 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # completeness: every one needs a binding control, and any variable that
     # became a control should no longer be reported as a dropped filter.
     emitted_params = _collect_emitted_param_names(flat_panels)
-    _rewrite_variable_warnings(
-        result.panel_results, control_variable_names | emitted_params
-    )
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -5895,6 +6473,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+        include_variable_names=True,
     )
     controls = _ensure_param_controls(
         controls,
@@ -5904,6 +6483,21 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         resolver=controls_resolver,
         rule_pack=rule_pack,
     )
+    rewritten_panel_results = _rewrite_variable_warnings(
+        result.panel_results,
+        _covered_control_variable_refs(controls),
+        resolver=controls_resolver,
+    )
+    for panel_result in rewritten_panel_results:
+        panel_result.operational_ir = build_operational_ir(
+            panel_result,
+            dashboard_title=result.dashboard_title,
+            dashboard_uid=result.dashboard_uid,
+            source_file=result.source_file,
+            folder_title=result.folder_title,
+        )
+    recompute_result_counts(result)
+    controls = _strip_internal_control_metadata(controls)
 
     yaml_doc = {
         "dashboards": [
