@@ -12970,7 +12970,12 @@ class NativePromqlTests(unittest.TestCase):
         panel = self._make_panel("avg_over_time(cpu_usage[10m])")
         _yaml_panel, result = self.translate_panel(panel)
         self.assertIn("PROMQL", result.esql_query)
-        self.assertIn("step=1m", result.esql_query)
+        # Migrated dashboard panel: adaptive resolution, no baked-in step (#272).
+        self.assertNotIn("step=", result.esql_query)
+        self.assertNotIn("time=?_tend", result.esql_query)
+        # avg_over_time is not rate()/increase(), so its explicit window stays
+        # verbatim (only rate/increase go windowless, issue #273).
+        self.assertIn("avg_over_time(cpu_usage[10m])", result.esql_query)
 
     # ── query builder ──
 
@@ -13009,6 +13014,93 @@ class NativePromqlTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
         q = build_native_promql_query('node_filesystem_avail_bytes {instance="node-1"}', index="metrics-*")
         self.assertIn('node_filesystem_avail_bytes{instance="node-1"}', q)
+
+    # ── adaptive step (#272) and adaptive rate window (#273) ──
+
+    def test_adaptive_step_omits_step_param(self):
+        """Issue #272: a range dashboard panel opts into ``adaptive_step`` so no
+        ``step=`` is baked in; Elastic sizes the resolution to the view. The
+        range command still emits the ``step`` time column."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query("up", index="metrics-*", kibana_type="line", adaptive_step=True)
+        self.assertTrue(q.startswith("PROMQL index=metrics-*"))
+        self.assertNotIn("step=", q)
+        self.assertNotIn("time=?_tend", q)
+        self.assertIn("value=(up)", q)
+
+    def test_adaptive_step_ignored_for_instant_tile(self):
+        """An instant tile carries no step at all, so ``adaptive_step`` is a
+        no-op there: it stays ``time=?_tend`` with no ``step=``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "up", index="metrics-*", kibana_type="metric", instant=True, adaptive_step=True
+        )
+        self.assertIn("time=?_tend", q)
+        self.assertNotIn("step=", q)
+
+    def test_explicit_step_wins_over_adaptive_step(self):
+        """An explicit ``step`` (e.g. a migrated alert honoring the source query
+        interval, #209) is always honored even if ``adaptive_step`` is set."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "up", index="metrics-*", kibana_type="line", step="30s", adaptive_step=True
+        )
+        self.assertIn("step=30s", q)
+
+    def test_adaptive_rate_interval_emits_windowless_rate(self):
+        """Issue #273: ``rate(x[$__rate_interval])`` from Grafana carries adaptive
+        intent, so a dashboard panel emits a windowless ``rate(x)`` (window sized
+        to the step) rather than freezing a fixed ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[$__rate_interval])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total))", q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("step=", q)
+
+    def test_adaptive_increase_interval_emits_windowless_increase(self):
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'increase(container_memory_cache{pod="p"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(increase(container_memory_cache{pod="p"}))', q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_explicit_rate_window_preserved_verbatim_when_adaptive(self):
+        """Issue #273: a pinned explicit window is kept exactly, even on the
+        adaptive dashboard path — only ``$__rate_interval`` goes windowless."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[5m])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
+
+    def test_adaptive_window_only_applies_to_rate_and_increase(self):
+        """Only ``rate``/``increase`` have a confirmed windowless form. Another
+        range function with an adaptive macro keeps a fixed window so the emitted
+        query stays valid."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "avg_over_time(cpu_usage[$__interval])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(avg_over_time(cpu_usage[1m]))", q)
+        self.assertNotIn("$__interval", q)
+
+    def test_adaptive_rate_window_fixed_on_instant_tile(self):
+        """A windowless rate needs a step to size its lookback; an instant tile
+        has none, so its rate window stays fixed even with ``adaptive_step``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[$__rate_interval])",
+            index="metrics-*", kibana_type="metric", instant=True, adaptive_step=True,
+        )
+        self.assertIn("time=?_tend", q)
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
 
     def test_native_promql_rejects_double_bracket_label_variable(self):
         self.assertFalse(panels.can_use_native_promql('rate(foo{instance=~"[[instance]]"}[5m])'))

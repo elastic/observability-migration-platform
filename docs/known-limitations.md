@@ -21,10 +21,25 @@ notes so operators know what to check by hand.
   to `TO_DOUBLE` regardless, but a bare counter reference with an un-inferrable
   name can still mistype offline. The live `--es-url` path resolves this from
   field caps; prefer it for production migrations.
-- **Native PROMQL `$__interval`** — the native-PROMQL cleaner resolves
-  `$__interval` to a fixed `1m`. Fine for typical scrape rates; a very coarse
-  scrape interval combined with a tight `irate` window can yield empty buckets
-  on the seeded/test path (production scrape rates avoid this).
+- **Native PROMQL adaptive resolution parity** — migrated native-PROMQL range
+  dashboard panels are emitted with **no baked-in `step=`** (Elastic sizes the
+  resolution to the dashboard time range at view time, #272) and a
+  `rate()`/`increase()` whose Grafana source used an adaptive window macro
+  (`$__rate_interval` / `$__interval`) is emitted **windowless** so its lookback
+  tracks the view too (#273). This stays adaptive like Grafana but is not
+  bit-for-bit identical: Elastic's windowless form uses a window equal to the
+  step, while Grafana's `$__rate_interval` is deliberately a bit wider
+  (`max(step + scrape_interval, 4 × scrape_interval)`), so expect a small
+  magnitude delta and watch for empty points when the auto-sized window is
+  narrower than the scrape interval (a window narrower than the data resolution
+  returns no data — Grafana's floor prevents this; the windowless form does
+  not). Explicit windows (`rate(x[5m])`) are preserved verbatim. Range functions
+  other than `rate`/`increase` (`irate`, `*_over_time`, `delta`, …) still
+  collapse an adaptive macro to a fixed `1m` window, since a windowless form for
+  them is not confirmed; a coarse scrape combined with a tight `irate` window can
+  still yield empty buckets on the seeded/test path (production scrape rates
+  avoid this). Alert-rule migration is unaffected — alerts keep their explicit
+  or default `step=`.
 - **`topk()` / `bottomk()`** — `topk` is approximated as a **latest-bucket**
   ES|QL top-N (per-series latest value, then ranked); `bottomk` per-series
   selection requires manual redesign.

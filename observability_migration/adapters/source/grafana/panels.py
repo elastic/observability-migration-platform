@@ -695,6 +695,30 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
+# Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
+# $__auto_interval_*). Grafana sizes these from the panel width and selected time
+# range at view time, i.e. they encode "size the lookback to the view", not a
+# fixed duration. The final ``(?![\w])`` keeps ``$__interval`` from matching the
+# prefix of a longer custom variable like ``$__interval_ms``.
+_GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
+    r"(?:\$__rate_interval|\$__interval|\$interval|\$__auto_interval_\w+)(?![\w])"
+)
+# A ``rate(...)`` / ``increase(...)`` whose range-selector window is one of those
+# adaptive macros: ``rate(metric{labels}[$__rate_interval])``. The vector
+# selector (group 1) is preserved and the ``[<macro>]`` window is dropped so the
+# native PROMQL command emits a *windowless* rate/increase, letting Elastic size
+# the lookback to the step at view time (issue #273). Only ``rate``/``increase``
+# are matched: Elastic's windowless form is confirmed for those two; other range
+# functions (``irate``, ``*_over_time``, ``delta`` …) keep a fixed window because
+# a windowless form for them is not confirmed and could emit an invalid query.
+# The selector body forbids ``(``/``)`` so a range-on-nonselector shape (already
+# rejected upstream) is never rewritten here.
+_RATE_INCREASE_ADAPTIVE_WINDOW_RE = re.compile(
+    r"(\b(?:rate|increase)\s*\(\s*"
+    r"[A-Za-z_:][A-Za-z0-9_:]*(?:\{[^{}]*\})?)"
+    r"\s*\[\s*" + _GRAFANA_ADAPTIVE_INTERVAL_MACRO + r"\s*\]"
+)
+
 
 def _strip_promql_string_literals(expr):
     text = str(expr or "")
@@ -901,12 +925,28 @@ def _promql_has_known_server_bug(expr):
 
 
 def _clean_promql_for_native_with_state(
-    expr, runtime_features=None, regex_default_params=None
+    expr, runtime_features=None, regex_default_params=None, adaptive_window=False
 ):
     """Strip Grafana template variables from a PromQL expression so it can be
-    sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
+    sent to the ES PROMQL engine which does not know about ``$var`` syntax.
+
+    When *adaptive_window* is set, a ``rate``/``increase`` whose window is a
+    Grafana adaptive macro (``$__rate_interval`` etc.) is emitted *windowless*
+    so Elastic sizes the lookback to the view at query time, preserving
+    Grafana's adaptive behavior instead of freezing a fixed window (issue #273).
+    Explicit numeric windows (``[5m]``) are always kept verbatim. This form does
+    not parse under ``promql-parser`` (windowless rate is a type error there), so
+    callers that still need to parse the expression must clean without this flag.
+    """
     had_bare_variable = False
     expr = substitute_grafana_range_macros(expr)
+    # #273: a Grafana adaptive-window macro on rate()/increase() means "size the
+    # lookback to the view", so drop the window and let the native PROMQL command
+    # pick it from the step. Runs before the fixed-window substitution below so
+    # the macro never collapses to a frozen ``[5m]`` first. Explicit windows and
+    # other range functions fall through to the fixed-window handling.
+    if adaptive_window:
+        expr = _RATE_INCREASE_ADAPTIVE_WINDOW_RE.sub(r"\1", expr)
     # Replace $__rate_interval / $__interval with the window from the
     # expression itself, falling back to 5m.
     window_match = re.search(r"\[(\d+[smhd])\]", expr)
@@ -957,11 +997,14 @@ def _clean_promql_for_native_with_state(
     return expr, had_bare_variable
 
 
-def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=None):
+def _clean_promql_for_native(
+    expr, runtime_features=None, regex_default_params=None, adaptive_window=False
+):
     cleaned, _ = _clean_promql_for_native_with_state(
         expr,
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
+        adaptive_window=adaptive_window,
     )
     return cleaned
 
@@ -1211,7 +1254,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
                               instant=False, regex_default_params=None, step=None,
-                              resolver=None):
+                              resolver=None, adaptive_step=False):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1235,10 +1278,16 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     """
     if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
+    # A windowless rate()/increase() only makes sense on a range query, whose
+    # step Elastic auto-sizes; an instant tile has no step, so keep its window
+    # fixed. So the adaptive window (#273) rides on the adaptive step (#272) and
+    # applies only to range dashboard panels (``adaptive_step`` and not instant).
+    adaptive_window = adaptive_step and not instant
     cleaned = _clean_promql_for_native(
         promql_expr,
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
+        adaptive_window=adaptive_window,
     )
     cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
@@ -1250,16 +1299,32 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     # (issues #127, #102); everything else is a range plot. ``time=?_tend`` is
     # opt-in: callers that post-process the ``step`` column (e.g. the alert
     # ``LAST(value, step)`` reduction) leave ``instant`` False to keep ``step=``.
-    # Range callers may pass an explicit ``step`` (e.g. a migrated Grafana alert
-    # honoring the source query interval, issue #209); when omitted the
-    # documented default keeps the historical resolution.
-    step_value = str(step).strip() if step else _DEFAULT_NATIVE_PROMQL_STEP
-    selector = "time=?_tend" if instant else f"step={step_value}"
+    #
+    # Range resolution follows this precedence:
+    #   1. instant           -> ``time=?_tend`` (no step column)
+    #   2. explicit ``step`` -> ``step=<value>`` (e.g. a migrated Grafana alert
+    #      honoring the source query interval, issue #209)
+    #   3. ``adaptive_step`` -> omit ``step=`` so Elastic sizes the resolution
+    #      from the dashboard time range at view time, matching Grafana's
+    #      ``$__interval`` auto-bucketing instead of freezing a fixed step
+    #      (issue #272). The command still emits the ``step`` time column.
+    #   4. otherwise         -> the documented ``step=1m`` default, preserving
+    #      historical behavior for direct callers that opt into neither.
+    if instant:
+        selector = "time=?_tend"
+    elif step:
+        selector = f"step={str(step).strip()}"
+    elif adaptive_step:
+        selector = ""
+    else:
+        selector = f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
+
+    header = f"PROMQL index={index}" + (f" {selector}" if selector else "")
 
     if kibana_type in ("metric", "gauge"):
-        return f'PROMQL index={index} {selector} value=({cleaned})'
+        return f'{header} value=({cleaned})'
 
-    base = f'PROMQL index={index} {selector} value=({cleaned})'
+    base = f'{header} value=({cleaned})'
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
@@ -1619,6 +1684,12 @@ def _translate_panel_native_promql(
         _target_summary_mode(panel_type, target)
         and kibana_type not in ("line", "bar", "area")
     )
+    # Dashboard panels opt into adaptive resolution: a range plot emits no
+    # ``step=`` so Kibana/Elastic re-buckets it to the dashboard time range like
+    # Grafana (#272), and a rate()/increase() over ``$__rate_interval`` is
+    # emitted windowless so its lookback tracks the view too (#273). Instant
+    # tiles ignore both (they carry no step). Alerts never take this path — they
+    # call ``build_native_promql_query`` directly with an explicit/default step.
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
@@ -1626,7 +1697,8 @@ def _translate_panel_native_promql(
                                              runtime_features=runtime_features,
                                              instant=instant,
                                              regex_default_params=regex_default_params,
-                                             resolver=resolver)
+                                             resolver=resolver,
+                                             adaptive_step=True)
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -1763,18 +1835,29 @@ def _translate_multi_target_native_promql(
         # a visible ``WHERE … RLIKE ?var`` clause (issue #230).
         if _promql_label_matcher_has_template_variable(expr):
             return None
+        regex_default = getattr(
+            rule_pack, "_regex_default_param_names", frozenset()
+        )
+        # Parse the fixed-window form (windowless rate is a type error under
+        # promql-parser), but emit the adaptive/windowless form: these panels are
+        # always range XY charts, so their rate()/increase() over
+        # ``$__rate_interval`` tracks the view like Grafana (#273).
         cleaned, bare = _clean_promql_for_native_with_state(
             expr,
             runtime_features=runtime_features,
-            regex_default_params=getattr(
-                rule_pack, "_regex_default_param_names", frozenset()
-            ),
+            regex_default_params=regex_default,
+        )
+        emit_cleaned, _ = _clean_promql_for_native_with_state(
+            expr,
+            runtime_features=runtime_features,
+            regex_default_params=regex_default,
+            adaptive_window=True,
         )
         had_bare_variable = had_bare_variable or bare
         # Parse the bare form for AST analysis, then rewrite metric selectors to
         # their `metrics.<name>` field for the emitted command (issue #270).
         target_fragments.append(_parse_fragment(cleaned or expr))
-        cleaned = _prefix_native_metric_fields(cleaned, resolver)
+        emit_cleaned = _prefix_native_metric_fields(emit_cleaned, resolver)
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -1782,12 +1865,14 @@ def _translate_multi_target_native_promql(
         legend = legend.replace('"', '\\"')
 
         parts.append(
-            f'label_replace({cleaned}, "__series", "{legend}", "", "")'
+            f'label_replace({emit_cleaned}, "__series", "{legend}", "", "")'
         )
 
     combined_expr = " or ".join(parts)
-    step = _DEFAULT_NATIVE_PROMQL_STEP
-    promql_query = f"PROMQL index={index} step={step} value=({combined_expr})"
+    # #272: omit ``step=`` so Kibana/Elastic re-buckets the overlay to the
+    # dashboard time range at view time; the command still emits a ``step``
+    # column for the x-axis.
+    promql_query = f"PROMQL index={index} value=({combined_expr})"
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
     # ES|QL translation; a data/field gap keeps native (issue #158).
