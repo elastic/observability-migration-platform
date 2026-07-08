@@ -16,8 +16,9 @@ from typing import Any
 import requests
 
 from observability_migration.core.http import apply_tls
-from observability_migration.core.mapping import AUTOMATED_TIER, DRAFT_REVIEW_TIER
+from observability_migration.core.mapping import AUTOMATED_TIER, CUSTOM_THRESHOLD_RULE_TYPE, DRAFT_REVIEW_TIER
 from observability_migration.targets.kibana.compile import kibana_url_for_space
+from observability_migration.targets.kibana.serverless import ensure_data_view
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ def create_rules_from_payloads(
     timeout: int = 15,
     verify: bool | str = True,
     create_rule_fn: Any | None = None,
+    ensure_data_view_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Create Kibana alerting rules from a batch of emitted rule payloads.
 
@@ -491,8 +493,20 @@ def create_rules_from_payloads(
     dict
         Summary document suitable for serialization, with `created`, `failed`,
         `skipped`, per-item details, and the preflight snapshot used.
+
+    Notes
+    -----
+    Custom Threshold (`observability.rules.custom_threshold`) rule params
+    carry a data view TITLE in `searchConfiguration.index` (see
+    `core.mapping.build_custom_threshold_rule_params`), but the rule type
+    requires an actual Kibana data view id there -- unlike Index Threshold,
+    whose `index` param is a raw index pattern string. Before creating each
+    such rule, this ensures the data view exists and rewrites `index` to the
+    created id (mirrors the dashboards-api `data_view_id` resolution).
     """
     creator = create_rule_fn or create_rule
+    ensure_view = ensure_data_view_fn or ensure_data_view
+    resolved_data_view_ids: dict[str, str] = {}
     tiers = creatable_tiers if creatable_tiers is not None else DEFAULT_CREATABLE_TIERS
     preflight_unreachable = _preflight_unreachable(preflight)
     items = _normalize_rule_items(rule_items)
@@ -574,13 +588,35 @@ def create_rules_from_payloads(
         if _tier_requires_review(tier) and review_marker_tag and review_marker_tag not in tags:
             tags.append(review_marker_tag)
 
+        params = payload.get("params") or {}
+        if rule_type_id == CUSTOM_THRESHOLD_RULE_TYPE:
+            search_configuration = params.get("searchConfiguration")
+            index_title = str(search_configuration.get("index") or "") if isinstance(search_configuration, dict) else ""
+            if index_title:
+                if index_title not in resolved_data_view_ids:
+                    data_view = ensure_view(
+                        kibana_url,
+                        title=index_title,
+                        api_key=api_key,
+                        space_id=space_id,
+                        timeout=timeout,
+                        verify=verify,
+                    )
+                    resolved_data_view_ids[index_title] = str((data_view or {}).get("id") or index_title)
+                resolved_id = resolved_data_view_ids[index_title]
+                if resolved_id != index_title:
+                    params = {
+                        **params,
+                        "searchConfiguration": {**search_configuration, "index": resolved_id},
+                    }
+
         response = creator(
             kibana_url,
             rule_type_id=rule_type_id,
             name=rule_name,
             consumer=str(payload.get("consumer", "stackAlerts") or "stackAlerts"),
             schedule_interval=str((payload.get("schedule") or {}).get("interval", "1m") or "1m"),
-            params=payload.get("params") or {},
+            params=params,
             actions=payload.get("actions") or [],
             enabled=bool(enabled),
             tags=tags,

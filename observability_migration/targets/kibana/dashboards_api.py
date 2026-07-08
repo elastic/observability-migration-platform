@@ -1472,6 +1472,29 @@ def _put_with_retry(
     return None, last_error or "request failed after retries"
 
 
+def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: dict[str, str] | None) -> None:
+    """Rewrite ``pinned_panels[].config.data_view_id`` from title to Kibana id.
+
+    ``map_yaml_control`` copies a control's YAML ``data_view``/``data_view_id``
+    (a title such as ``metrics-*``) straight through with no lookup. Kibana
+    may assign a different id for that title (e.g. a wildcard pattern), so
+    without this rewrite the typed API rejects the control and the whole
+    dashboard falls back to legacy import. ``data_view_ids`` maps
+    title -> created id, as returned by :func:`ensure_migration_data_views`.
+    """
+    if not data_view_ids:
+        return
+    for control in payload.get("pinned_panels") or []:
+        if not isinstance(control, dict):
+            continue
+        config = control.get("config")
+        if not isinstance(config, dict):
+            continue
+        current = config.get("data_view_id")
+        if isinstance(current, str) and current in data_view_ids:
+            config["data_view_id"] = data_view_ids[current]
+
+
 def upload_native_dashboard(
     dashboard: NativeDashboard,
     kibana_url: str,
@@ -1482,13 +1505,16 @@ def upload_native_dashboard(
     timeout: int = 60,
     native_stats: dict[str, Any] | None = None,
     dashboard_id: str = "",
+    data_view_ids: dict[str, str] | None = None,
 ) -> UploadResult:
     """Deploy one pre-built :class:`NativeDashboard` via the typed API.
 
     Source translators can hand the emitted native artifact straight to upload
     instead of forcing a disk YAML reparse. YAML remains available as the
     legacy/debug fallback artifact, but this path makes the in-memory IR the
-    canonical native payload for Grafana/Datadog CLI uploads.
+    canonical native payload for Grafana/Datadog CLI uploads. ``data_view_ids``
+    (title -> created id) resolves data-view-backed pinned controls before
+    upload; see :func:`_resolve_pinned_panel_data_view_ids`.
     """
     stats = native_stats if isinstance(native_stats, dict) else {}
     raw_reasons = stats.get("reasons")
@@ -1506,6 +1532,7 @@ def upload_native_dashboard(
         unmapped_reasons=reasons,
     )
     payload = dashboard.to_api_payload()
+    _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
     if not payload["panels"] and not payload.get("pinned_panels"):
         res.status = "empty"
         return res
@@ -1533,6 +1560,7 @@ def upload_yaml_files(
     verify: bool | str = True,
     timeout: int = 60,
     fallback: Any = None,
+    data_view_ids: dict[str, str] | None = None,
 ) -> list[UploadResult]:
     """Deploy each dashboard in each kb-dashboard-core YAML file via the typed API.
 
@@ -1541,6 +1569,8 @@ def upload_yaml_files(
     file may contain one or more dashboards. ``fallback`` (optional) is called
     ``fallback(yaml_path, dashboard)`` when a dashboard's typed payload is rejected, so
     callers can route it through the legacy ``kb-dashboard-cli`` ``_import`` path.
+    ``data_view_ids`` (title -> created id) resolves data-view-backed pinned
+    controls before upload; see :func:`_resolve_pinned_panel_data_view_ids`.
     """
     session = _session(api_key, verify=verify)
     base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
@@ -1552,6 +1582,7 @@ def upload_yaml_files(
             doc = yaml.safe_load(handle)
         for dashboard in _iter_yaml_dashboards(doc):
             payload, counts, reasons = build_dashboard_payload_from_yaml(dashboard)
+            _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
             res = UploadResult(
                 dashboard=str(dashboard.get("name") or dashboard.get("title") or ""),
                 mapped=counts["mapped"],

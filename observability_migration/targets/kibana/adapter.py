@@ -305,6 +305,7 @@ class KibanaTargetAdapter(TargetAdapter):
             fallback_state["output"].append(out)
             return ok, out
 
+        data_view_ids = _data_view_id_lookup(data_views)
         if native_dashboard is not None:
             results = [
                 dashboards_api.upload_native_dashboard(
@@ -314,6 +315,7 @@ class KibanaTargetAdapter(TargetAdapter):
                     space_id=space_id,
                     verify=verify,
                     native_stats=native_dashboard_stats,
+                    data_view_ids=data_view_ids,
                 )
             ]
             if results[0].status == "rejected":
@@ -326,6 +328,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 space_id=space_id,
                 verify=verify,
                 fallback=_fallback,
+                data_view_ids=data_view_ids,
             )
         # Defensive compatibility: the current helper calls fallback per empty
         # dashboard with a dashboard payload, but older/mocked helpers may only

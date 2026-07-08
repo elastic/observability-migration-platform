@@ -8,13 +8,20 @@ YAML section reconstruction, control -> ``pinned_panels`` mapping, the
 ``field`` -> ``column`` translation, and the >100-panel sectioning cap.
 """
 
+import json
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 import requests
 
-from observability_migration.core.assets.native_dashboard import NativeDashboard, NativeSection
+from observability_migration.core.assets.native_dashboard import (
+    NativeControl,
+    NativeDashboard,
+    NativeGrid,
+    NativePanel,
+    NativeSection,
+)
 from observability_migration.targets.kibana import dashboards_api as api
 
 # --------------------------------------------------------------------------- #
@@ -1216,6 +1223,104 @@ def test_upload_native_dashboard_reports_rejected_when_every_attempt_raises():
     assert session.put.call_count == 3
     assert result.status == "rejected"
     assert "timed out" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# Native control data_view_id resolution (PR #278 review regression)
+# --------------------------------------------------------------------------- #
+
+def test_upload_native_dashboard_resolves_pinned_control_data_view_id():
+    native_dashboard = NativeDashboard(
+        title="Has Control",
+        dashboard_id="has-control",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        controls=[
+            NativeControl(
+                type="options_list_control",
+                config={"title": "Service", "data_view_id": "metrics-*", "field_name": "service.name"},
+            )
+        ],
+    )
+    response = mock.Mock(status_code=201)
+    response.json.return_value = {"id": "has-control"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(
+            native_dashboard,
+            "https://kibana.example",
+            api_key="k",
+            # Kibana assigned a different id than the wildcard title used in YAML.
+            data_view_ids={"metrics-*": "generated-id"},
+        )
+
+    assert result.status == "created"
+    sent = json.loads(session.put.call_args[1]["data"])
+    assert sent["pinned_panels"][0]["config"]["data_view_id"] == "generated-id"
+
+
+def test_upload_native_dashboard_leaves_data_view_id_unchanged_without_mapping():
+    native_dashboard = NativeDashboard(
+        title="Has Control",
+        dashboard_id="has-control",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        controls=[
+            NativeControl(
+                type="options_list_control",
+                config={"title": "Service", "data_view_id": "metrics-*", "field_name": "service.name"},
+            )
+        ],
+    )
+    response = mock.Mock(status_code=201)
+    response.json.return_value = {"id": "has-control"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(native_dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "created"
+    sent = json.loads(session.put.call_args[1]["data"])
+    assert sent["pinned_panels"][0]["config"]["data_view_id"] == "metrics-*"
+
+
+def test_upload_yaml_files_resolves_pinned_control_data_view_id():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yaml_path = Path(tmpdir) / "dash.yaml"
+        yaml_path.write_text(
+            "dashboards:\n"
+            "- name: Has Control\n"
+            "  panels:\n"
+            "  - title: Count\n"
+            "    esql:\n"
+            "      type: metric\n"
+            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
+            "      primary: {field: count}\n"
+            "  controls:\n"
+            "  - type: options\n"
+            "    label: Service\n"
+            "    data_view: metrics-*\n"
+            "    field: service.name\n",
+            encoding="utf-8",
+        )
+        response = mock.Mock(status_code=201)
+        response.json.return_value = {"id": "has-control"}
+        session = mock.Mock()
+        session.put.return_value = response
+
+        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+            results = api.upload_yaml_files(
+                [str(yaml_path)],
+                "https://kibana.example",
+                api_key="k",
+                # Kibana assigned a different id than the wildcard title used in YAML.
+                data_view_ids={"metrics-*": "generated-id"},
+            )
+
+    assert results[0].status == "created"
+    sent = json.loads(session.put.call_args[1]["data"])
+    assert sent["pinned_panels"][0]["config"]["data_view_id"] == "generated-id"
 
 
 # --------------------------------------------------------------------------- #

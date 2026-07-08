@@ -379,6 +379,48 @@ class TestUploadDashboardNativePath(unittest.TestCase):
         self.assertEqual(result["status"], "updated")
         self.assertEqual(result["dashboard_ids"], ["direct-ir"])
 
+    def test_upload_dashboard_passes_resolved_data_view_ids_to_native_upload(self):
+        # Regression test for PR #278 review: a data-view-backed control's
+        # `data_view_id` must be resolved from the created data view's title
+        # to its Kibana-assigned id (which can differ for wildcard titles),
+        # on the native path -- not just the legacy `_prepare_upload_yaml`
+        # path. Verifies the adapter wires the title->id lookup through to
+        # `upload_native_dashboard`; the lookup's own rewrite logic is
+        # covered directly in test_dashboards_api.py.
+        native_dashboard = NativeDashboard(
+            title="Direct IR",
+            dashboard_id="direct-ir",
+            items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = Path(tmpdir) / "dash.yaml"
+            yaml_path.write_text("dashboards:\n- name: Stale YAML\n  panels: []\n", encoding="utf-8")
+            out_dir = Path(tmpdir) / "compiled"
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                # Kibana assigned a different id than the wildcard title used in YAML controls.
+                return_value=[{"id": "generated-id", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_dashboard",
+                return_value=UploadResult(dashboard="Direct IR", dashboard_id="direct-ir", status="updated", mapped=1),
+            ) as native_api:
+                KibanaTargetAdapter().upload_dashboard(
+                    yaml_path,
+                    out_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    use_dashboards_api=True,
+                    native_dashboard=native_dashboard,
+                    native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+                )
+
+        native_api.assert_called_once()
+        self.assertEqual(
+            native_api.call_args.kwargs["data_view_ids"],
+            {"metrics-*": "generated-id"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
