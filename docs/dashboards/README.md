@@ -6,6 +6,20 @@ Dashboard authoring flow for local migration work:
   Regenerates `docs/dashboards/schema.json` from `kb-dashboard-core`.
   If `npx` is available, it also writes `docs/dashboards/schema.toon` for easier schema browsing.
 
+- `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>`
+  Fetches/checks the typed Kibana Dashboards API OpenAPI bundle for
+  `/api/dashboards`. This is the native API schema refresh path; it is separate
+  from the YAML bridge schema above because the Dashboards API is still
+  technical preview and its full schemas may be hosted outside the standard
+  Kibana OpenAPI bundle. The current native IR enforces the documented limits:
+  1,000 top-level dashboard items, 1,000 panels per section, 100 pinned
+  controls, and 1,000 total panels/sections/controls.
+
+- `KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema`
+  CI-friendly wrapper around the same native schema check. It requires the URL
+  or local path explicitly so ordinary lint/test runs do not depend on live
+  network availability.
+
 - Dashboard YAML lint and compiled-layout validation now run **automatically**
   inside `obs-migrate compile`/`migrate` (in-process, via
   `observability_migration.targets.kibana.{lint,layout}`). They no longer have

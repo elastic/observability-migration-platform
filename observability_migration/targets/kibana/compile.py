@@ -331,6 +331,20 @@ def sync_result_queries_to_yaml(result, yaml_path):
         Path(yaml_path).write_text(
             yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
         )
+        if getattr(result, "native_dashboard", None) is not None:
+            # Deferred import: dashboards_api.py imports kibana_url_for_space
+            # from this module, so a module-level import here would cycle.
+            # Rebuild from the same in-memory `dashboard` dict just written
+            # to disk, so the native IR can never drift from post-validation
+            # fixes (placeholder rewrites, corrected queries/indexes).
+            from observability_migration.targets.kibana.dashboards_api import (
+                native_dashboard_from_yaml,
+            )
+
+            native_dashboard, native_counts = native_dashboard_from_yaml(dashboard)
+            result.native_dashboard = native_dashboard
+            native_counts_dict, native_reasons = native_counts.as_dicts()
+            result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
     return updated
 
 

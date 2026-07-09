@@ -23,6 +23,7 @@ from observability_migration.core.reporting.report import (
     recompute_result_counts,
 )
 from observability_migration.core.verification.field_capabilities import assess_field_usage
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_yaml
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
     enrich_yaml_panel_display,
@@ -1957,6 +1958,7 @@ def _translate_panel_native_promql(
     yaml_panel["esql"] = native_panel
     enrich_yaml_panel_display(yaml_panel, panel)
     _label_native_promql_value_metric(yaml_panel, title=title, legend_format=legend_format)
+    _apply_series_override_axes(yaml_panel, panel, [])
 
     notes = list(panel_notes) + ["Native PROMQL: original PromQL reused via ES|QL PROMQL command"]
 
@@ -2313,6 +2315,7 @@ def metric_panel_rule(context):
     context.yaml_panel["esql"] = _build_esql_metric_panel(
         context.translation.esql_query,
         metric_col=context.translation.output_metric_field or None,
+        panel=context.panel,
     )
     context.handled = True
     return "mapped to metric panel"
@@ -2894,20 +2897,32 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     dropped_count = len(targets_with_expr) - migrated_target_count
     if dropped_count > 0:
         dropped_exprs = [
-            t.promql_expr
+            t.metadata.get("target_source_expr") or t.promql_expr
             for t in translations
-            if t.promql_expr and t.metadata.get("target_ref_id") not in migrated_refs
+            if t.metadata.get("target_ref_id") not in migrated_refs
+            and (t.metadata.get("target_source_expr") or t.promql_expr)
         ]
-        has_windows = any("windows_" in e for e in dropped_exprs)
+        windows_dropped_count = sum(1 for e in dropped_exprs if "windows_" in e)
+        # Only claim "dropped targets are Windows-specific" when every dropped
+        # target actually is one — a dashboard commonly carries one PromQL
+        # target per OS (Linux node_exporter vs. windows_exporter) alongside
+        # other, unrelated targets. If just some of the drops are
+        # Windows-specific, saying so unqualified implies the rest of the
+        # loss is also OS-irrelevant and hides a real gap (e.g. a Linux
+        # node_exporter target dropped for a genuine grouping mismatch).
+        if dropped_exprs and windows_dropped_count == len(dropped_exprs):
+            windows_suffix = " (dropped targets are Windows-specific)"
+        elif windows_dropped_count > 0:
+            windows_suffix = f" ({windows_dropped_count} of the dropped targets are Windows-specific)"
+        else:
+            windows_suffix = ""
         if migrated_target_count > 1:
             msg = f"Dropped {dropped_count} incompatible target(s); showing {migrated_target_count} mergeable targets"
-            if has_windows:
-                msg += " (dropped targets are Windows-specific)"
+            msg += windows_suffix
             _append_unique(primary.warnings, msg)
         elif migrated_target_count == 1:
             msg = f"Panel has {len(targets_with_expr)} PromQL targets but only 1 could be migrated"
-            if has_windows:
-                msg += " (dropped targets are Windows-specific)"
+            msg += windows_suffix
             _append_unique(primary.warnings, msg)
 
     if primary.feasibility == "not_feasible" or not primary.esql_query:
@@ -3519,6 +3534,60 @@ def _build_gauge_color_mapping(panel, minimum=None, maximum=None):
     return color
 
 
+def _build_metric_color_mapping(panel, minimum=None, maximum=None):
+    """Like ``_build_gauge_color_mapping`` but for metric/stat panels, which
+    (unlike gauges) have no inherent axis domain: a top threshold step with no
+    configured ``max`` still needs a color band, just an open-ended one.
+
+    ``ColorThreshold.up_to`` requires a real number for every band (the YAML
+    schema has no "open-ended" marker), so the unbounded top band gets a
+    placeholder. It doesn't distort the rendered colors: the target mapper
+    (``dashboards_api._api_color``) only uses a threshold's ``up_to`` to
+    derive the *next* band's lower edge — the last band's own ``up_to`` is
+    never turned into an upper bound, so any number at or above its own
+    ``current_value`` is a safe stand-in.
+    """
+    steps = sorted(
+        _gauge_threshold_steps(panel),
+        key=lambda step: float("-inf") if step.get("value") is None else step.get("value"),
+    )
+    if not steps:
+        return None
+    thresholds = []
+    for index, step in enumerate(steps):
+        color = step.get("color")
+        if not color:
+            continue
+        current_value = step.get("value")
+        if maximum is not None and current_value is not None and current_value >= maximum:
+            continue
+        next_value = steps[index + 1].get("value") if index + 1 < len(steps) else maximum
+        is_placeholder = next_value is None
+        if is_placeholder:
+            next_value = current_value if current_value is not None else (minimum or 0.0)
+        if maximum is not None and next_value > maximum:
+            next_value = maximum
+        if minimum is not None and next_value < minimum:
+            next_value = minimum
+        if thresholds and next_value <= thresholds[-1]["up_to"]:
+            if not is_placeholder:
+                continue
+            # Placeholder band (open-ended top, no configured max): its
+            # ``up_to`` is discarded downstream anyway, so nudge it strictly
+            # above the previous cutoff instead of dropping the band outright.
+            prev = thresholds[-1]["up_to"]
+            next_value = prev + (abs(prev) * 1e-6 or 1e-6)
+        thresholds.append({"up_to": next_value, "color": color})
+    if not thresholds:
+        return None
+    color = {"thresholds": thresholds}
+    if minimum is not None:
+        color["range_min"] = minimum
+    if maximum is not None:
+        color["range_max"] = maximum
+    return color
+
+
 def _ensure_bucket_sort(esql):
     if not esql or esql.lstrip().startswith("PROMQL "):
         return esql
@@ -3682,14 +3751,51 @@ def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
     return yaml_panel
 
 
-def _build_esql_metric_panel(esql, metric_col=None):
+def _metric_threshold_color(panel):
+    """Map a Grafana stat/single-value panel's threshold steps to a Kibana
+    metric ``primary.color`` (``MetricChartColor``: ``apply_to`` +
+    ``thresholds``/``range_min``/``range_max``).
+
+    Grafana stat panels color the value (or its background) by ``thresholds``;
+    Kibana metric panels express the same via ``MetricChartColor``, the same
+    ascending-``up_to`` threshold-band shape gauges use (``_build_gauge_color_
+    mapping``), plus an ``apply_to`` mode. ``colorMode: none`` means Grafana
+    explicitly disables value coloring, so we emit nothing in that case.
+    """
+    if not panel:
+        return None
+    options = panel.get("options") if isinstance(panel.get("options"), dict) else {}
+    color_mode = str(options.get("colorMode") or "").strip().lower()
+    if color_mode == "none":
+        return None
+    # A lone base step (``value: None``) is Grafana's default color, not a
+    # threshold rule; without a real numeric boundary there is nothing to color
+    # by, so emitting a bound-less single-band color would only force a constant
+    # (often un-mapped) hue that misrepresents the panel.
+    if not any(step.get("value") is not None for step in _gauge_threshold_steps(panel)):
+        return None
+    defaults = _panel_field_defaults(panel)
+    minimum = _coerce_number(defaults.get("min"))
+    maximum = _coerce_number(defaults.get("max"))
+    color = _build_metric_color_mapping(panel, minimum=minimum, maximum=maximum)
+    if not color:
+        return None
+    color["apply_to"] = "background" if color_mode.startswith("background") else "value"
+    return color
+
+
+def _build_esql_metric_panel(esql, metric_col=None, panel=None):
     esql = _ensure_bucket_sort(esql)
     if not metric_col:
         metric_col, _ = _extract_esql_columns(esql)
+    primary = {"field": metric_col}
+    color = _metric_threshold_color(panel)
+    if color:
+        primary["color"] = color
     return {
         "type": "metric",
         "query": esql,
-        "primary": {"field": metric_col},
+        "primary": primary,
     }
 
 
@@ -4297,6 +4403,22 @@ def _build_esql_datatable_panel(esql, metric_col=None, metric_fields=None, by_co
     }
     if by_cols:
         panel["breakdowns"] = [{"field": c} for c in by_cols]
+    else:
+        # A dimensionless summary-collapsed table (e.g. an instant/alerts query
+        # reduced to a single row) still keeps its time column in the query
+        # output (``| KEEP time_bucket, <metric>``) but drops it from
+        # group_fields. Without a breakdown the datatable shows only the metric
+        # and hides *when* the value is from, so surface the leftover time
+        # column as a date row. Grouped tables keep their real breakdowns above
+        # and intentionally omit the collapsed time to avoid a redundant column.
+        metric_names = {m for m in metric_fields if m}
+        shape = _extract_esql_shape(esql)
+        time_cols = [
+            c for c in shape.projected_fields
+            if _is_time_like_output_field(c) and c not in metric_names
+        ]
+        if time_cols:
+            panel["breakdowns"] = [{"field": time_cols[0], "data_type": "date"}]
     return panel
 
 
@@ -4777,14 +4899,38 @@ def textbox_variable_rule(context):
 
 @VARIABLE_TRANSLATORS.register("interval_variable", priority=25)
 def interval_variable_rule(context):
-    """Grafana interval and custom-interval variables are handled by Kibana's
-    time picker and auto-bucketing; no explicit control is needed."""
-    var_type = context.variable.get("type", "")
-    if var_type not in ("interval", "custom"):
+    """Grafana interval variables are handled by Kibana's time picker and
+    auto-bucketing; no explicit control is needed."""
+    if context.variable.get("type") != "interval":
         return None
     name = context.variable.get("name", "")
     context.handled = True
-    return f"skipped {var_type} variable {name} (handled by Kibana time picker)"
+    return f"skipped interval variable {name} (handled by Kibana time picker)"
+
+
+@VARIABLE_TRANSLATORS.register("custom_variable", priority=26)
+def custom_variable_rule(context):
+    """Grafana ``custom`` variables (static comma-separated value lists) have
+    no query semantics of their own, so no dropdown control is generated
+    here. If the variable is referenced as ``$var``/``?var`` in a panel
+    query, ``_ensure_param_controls`` (issue #131) synthesizes a binding
+    control after translation; a custom variable that is never referenced in
+    a query has nothing to bind and is genuinely dropped.
+
+    This must NOT claim the value is "handled by Kibana's time picker" (that
+    is only true for ``interval`` variables, not arbitrary custom lists such
+    as ArgoCD's health_status/sync_status) — see interval_variable_rule.
+    """
+    if context.variable.get("type") != "custom":
+        return None
+    name = context.variable.get("name", "")
+    context.handled = True
+    context.trace.append(
+        f"custom variable '{name}' has no direct Kibana control by itself; "
+        "it becomes an ES|QL parameter-binding control if referenced as "
+        f"${name} in a panel query, otherwise it is dropped"
+    )
+    return f"noted custom variable {name} (control depends on query usage)"
 
 
 def translate_variables(
@@ -6493,6 +6639,16 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     output_path = Path(output_dir) / f"{safe_name}.yaml"
     with open(output_path, "w") as f:
         yaml.dump(yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+
+    # Native Dashboards API artifact, built from this exact in-memory YAML
+    # doc (before any re-parse), so it can never drift from what was just
+    # written to disk. This is additive: the YAML file remains the on-disk
+    # bridge artifact; `result.native_dashboard` is the typed-API-shaped IR
+    # for callers (upload, verification) that want it directly.
+    native_dashboard, native_counts = native_dashboard_from_yaml(yaml_doc["dashboards"][0])
+    result.native_dashboard = native_dashboard
+    native_counts_dict, native_reasons = native_counts.as_dicts()
+    result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
 
     return result, output_path
 

@@ -21,7 +21,7 @@ statuses: {'not_feasible': 2, 'ok': 12, 'requires_manual': 2, 'skipped': 6, 'war
 - title='Datadog note 8663159993822306'; kind=markdown
 - title='Datadog note 183855449379928'; kind=markdown
 - title='Requests: reading, writing, waiting'; kind=esql; type=line; dimension=time_bucket; metrics=['requests_reading', 'requests_writing', 'requests_waiting']; breakdowns=[]; primary=; metric=
-- title='Change in overall requests per second'; kind=esql; type=datatable; dimension=; metrics=['current_value', 'previous_value']; breakdowns=['service.name']; primary=; metric=
+- title='Change in overall requests per second'; kind=esql; type=datatable; dimension=; metrics=['value', 'current_value', 'previous_value']; breakdowns=['service.name']; primary=; metric=
 - title='Datadog note 4851971395880802'; kind=markdown
 - title='Dropped connections per second'; kind=esql; type=line; dimension=time_bucket; metrics=['connections_dropped']; breakdowns=[]; primary=; metric=
 - title='Active connections per second'; kind=esql; type=line; dimension=time_bucket; metrics=['connections']; breakdowns=[]; primary=; metric=

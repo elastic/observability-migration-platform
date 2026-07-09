@@ -4,10 +4,10 @@ widgets: 29
 panels: 23
 controls: 3
 filters: 0
-statuses: {'ok': 9, 'requires_manual': 2, 'skipped': 6, 'warning': 12}
+statuses: {'ok': 9, 'requires_manual': 1, 'skipped': 6, 'warning': 13}
 - title='Datadog note 2451661469305854'; kind=markdown
 - title='Datadog note 6085654256880802'; kind=markdown
-- title='Incoming Success Rate (non-5xx responses)'; kind=markdown
+- title='Incoming Success Rate (non-5xx responses)'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['haproxy_service']; primary=; metric=
 - title='Incoming Requests Volume'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Errors by Service'; kind=esql; type=pie; dimension=; metrics=['query1_query2']; breakdowns=['service.name']; primary=; metric=
 - title='Frontend Response codes'; kind=esql; type=line; dimension=time_bucket; metrics=['f_2xx', 'f_1xx', 'f_3xx', 'f_4xx', 'f_5xx', 'other']; breakdowns=[]; primary=; metric=

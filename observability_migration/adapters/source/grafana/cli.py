@@ -52,6 +52,9 @@ from observability_migration.targets.kibana.compile import (
     sync_result_queries_to_yaml,
     validate_compiled_layout,
 )
+from observability_migration.targets.kibana.dashboards_api import (
+    upload_warnings_from_reasons,
+)
 from observability_migration.targets.kibana.serverless import (
     delete_dashboards as serverless_delete_dashboards,
 )
@@ -403,7 +406,22 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--upload",
         action="store_true",
-        help="Upload compiled dashboards to Kibana",
+        help="Upload dashboards to Kibana (typed Dashboards API by default)",
+    )
+    parser.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (POST /api/dashboards)."
+        ),
+    )
+    parser.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--kibana-url",
@@ -2232,6 +2250,7 @@ def main(argv: list[str] | None = None):
                 print(f"    {line}")
 
     target_space = detect_space_id_from_kibana_url(args.kibana_url) or "default"
+    use_dashboards_api = not getattr(args, "legacy_import", False)
     if args.upload and args.ensure_data_views:
         _ensure_grafana_data_views(args)
     if args.upload:
@@ -2240,7 +2259,10 @@ def main(argv: list[str] | None = None):
         upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
         target_adapter = KibanaTargetAdapter()
         upload_blocker = ""
-        if any(getattr(result, "layout_validated", None) and result.layout_error for result in results):
+        if not use_dashboards_api and any(
+            getattr(result, "layout_validated", None) and result.layout_error
+            for result in results
+        ):
             upload_blocker = "Upload skipped because compiled dashboard layout validation failed."
 
         if upload_blocker:
@@ -2255,23 +2277,34 @@ def main(argv: list[str] | None = None):
                 result.upload_attempted = True
                 if yaml_path is None:
                     continue
-                if yaml_path.stem not in compiled_ok_stems:
+                if not use_dashboards_api and yaml_path.stem not in compiled_ok_stems:
                     result.uploaded = False
                     result.upload_error = "Upload skipped because this dashboard did not compile."
                     print(f"  - {yaml_path.name} skipped (dashboard did not compile)")
                     continue
+                upload_kwargs: dict[str, Any] = {
+                    "kibana_url": args.kibana_url,
+                    "space_id": upload_space,
+                    "kibana_api_key": args.kibana_api_key,
+                    "verify": verify,
+                    "use_dashboards_api": use_dashboards_api,
+                }
+                native_dashboard = getattr(result, "native_dashboard", None) if use_dashboards_api else None
+                if native_dashboard is not None:
+                    upload_kwargs["native_dashboard"] = native_dashboard
+                    upload_kwargs["native_dashboard_stats"] = getattr(result, "native_dashboard_stats", None)
                 upload_result = target_adapter.upload_dashboard(
                     yaml_path,
                     compiled_dir / yaml_path.stem,
-                    kibana_url=args.kibana_url,
-                    space_id=upload_space,
-                    kibana_api_key=args.kibana_api_key,
-                    verify=verify,
+                    **upload_kwargs,
                 )
                 ok = upload_result["success"]
                 output = upload_result["output"]
                 result.uploaded = ok
                 result.upload_error = "" if ok else output
+                result.upload_warnings = upload_warnings_from_reasons(
+                    upload_result.get("unmapped_reasons", {})
+                )
                 result.uploaded_space = upload_space or target_space
                 result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
@@ -2279,6 +2312,8 @@ def main(argv: list[str] | None = None):
                 if not ok:
                     for line in output.strip().splitlines()[:10]:
                         print(f"    {line}")
+                for warning in result.upload_warnings:
+                    print(f"    warning: {warning}", file=sys.stderr)
 
     smoke_merge_summary = {}
     integrated_smoke_output = ""
@@ -2481,7 +2516,7 @@ def main(argv: list[str] | None = None):
             for title, err in failed_validations[:20]:
                 print(f"  {title}: {err[:120]}")
 
-    if any(not ok for _, ok, _output in compile_results):
+    if (not args.upload or not use_dashboards_api) and any(not ok for _, ok, _output in compile_results):
         raise SystemExit(1)
 
 

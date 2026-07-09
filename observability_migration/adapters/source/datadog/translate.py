@@ -310,7 +310,27 @@ def _translate_single_metric(
         reducer = top_config.reducer
 
     if plan.kibana_type == "metric" and spec.group_fields:
-        raise ValueError("metric widget with grouped query needs a reducing formula")
+        # A single-value (query_value) widget with a `by {}` grouping computes
+        # one value per group, but a Kibana metric tile shows a single number.
+        # Rather than failing the whole panel, degrade to a ranked summary
+        # table (one value per group) — the same approximation the Grafana
+        # grouped-stat path uses and the top()-on-timeseries case below.
+        plan.kibana_type = "table"
+        _append_unique_warning(
+            result,
+            "Grouped single-value widget approximated as a summary table "
+            "(one value per group); a metric tile shows only a single number",
+        )
+        return _build_categorical_esql(
+            spec.index,
+            spec.where_str,
+            spec.agg_expr,
+            spec.group_fields,
+            sort_field="value",
+            sort_order="DESC",
+            limit=100,
+            reducer=reducer,
+        )
     if is_heatmap and not spec.group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
     if is_partition and not spec.group_fields:
@@ -476,9 +496,17 @@ def _translate_formula_metric_widget(
         if len(formulas) != 1:
             raise ValueError("metric widgets support exactly one translated formula")
         if used_specs[0].group_fields:
-            raise _RequiresManualError(
-                "grouped query used in a scalar (query_value) widget — "
-                "reduce to a single value or convert to a table panel"
+            # A formula-based query_value grouped `by {}` computes one value
+            # per group; a scalar metric tile cannot show that. Degrade to a
+            # ranked summary table (mirrors the non-formula grouped
+            # query_value path in `_translate_single_metric`) instead of
+            # failing the whole panel.
+            plan.kibana_type = "table"
+            _append_unique_warning(
+                result,
+                "Grouped single-value formula widget approximated as a "
+                "summary table (one value per group); a metric tile shows "
+                "only a single number",
             )
     if plan.kibana_type == "heatmap" and not used_specs[0].group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
@@ -804,7 +832,7 @@ def _build_metric_query_spec(
         index=field_map.metric_index,
         where_str=" AND ".join(where_clauses),
         group_fields=group_fields,
-        agg_expr=_format_agg_expr(es_agg, es_metric, mq),
+        agg_expr=_format_agg_expr(es_agg, es_metric, mq, is_counter=is_counter_metric_field(metric_cap)),
         mq=mq,
         es_metric=es_metric,
         tag_where_str=tag_where,
@@ -1845,13 +1873,26 @@ def _build_categorical_esql(
     return "\n".join(lines)
 
 
-def _format_agg_expr(agg: str, metric_field: str, mq: MetricQuery | None = None) -> str:
+def _format_agg_expr(
+    agg: str, metric_field: str, mq: MetricQuery | None = None, is_counter: bool = False,
+) -> str:
     metric_expr = _esql_identifier(metric_field)
     if mq and mq.as_rate and (mq.space_agg or "").lower() == "count":
         expr = 'COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1)'
     elif mq and (mq.as_rate or _needs_rate(mq)):
         expr = _rate_approx_expr(metric_field, mq)
     else:
+        # A TSDS counter-typed field is rejected by every plain (non-rate)
+        # ES|QL numeric aggregation -- "must be [... numeric except ...
+        # counter types]" -- even though the source Datadog widget asked for
+        # a perfectly ordinary sum/avg/min/max (Datadog's own backend has no
+        # such restriction). TO_DOUBLE() is a lossless identity cast for a
+        # numeric counter field; it only strips the ES|QL counter tag so the
+        # aggregation the dashboard actually requested is allowed to run.
+        # Skip it for COUNT(...), which counts non-null docs regardless of
+        # field type and never hits this restriction.
+        if is_counter and agg != "COUNT":
+            metric_expr = f"TO_DOUBLE({metric_expr})"
         if "%" in agg:
             expr = agg.replace("%", metric_expr)
         elif agg == "COUNT":

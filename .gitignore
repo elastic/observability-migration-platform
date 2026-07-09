@@ -15,6 +15,7 @@ env/
 
 # Local agent scratch
 .tmp/
+.tmp-dashboard-screenshots/
 
 # IDE / Editor
 .vscode/

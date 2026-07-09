@@ -34,6 +34,16 @@ GRAFANA_UNIT_TO_YAML: dict[str, dict[str, Any]] = {
     "Kbits": {"type": "bits", "suffix": "/s"},
     "Mbits": {"type": "bits", "suffix": "/s"},
     "Gbits": {"type": "bits", "suffix": "/s"},
+    # NOTE: intentionally a bare ``{"type": "duration"}`` -- the kb-dashboard-core
+    # YAML schema's per-panel format definitions (``ESQLMetricFormat`` et al,
+    # see docs/dashboards/schema.json) do not accept ``from``/``to`` at all
+    # ("Extra inputs are not permitted"), so adding them here would break the
+    # legacy kb-dashboard-cli compile path. The typed Dashboards API's OWN
+    # multi-column format schema does require ``from``/``to``, but
+    # ``targets.kibana.dashboards_api._api_format`` already defaults them
+    # independently for that path (Kibana's own DurationFormat defaults:
+    # ``from: "seconds"``, ``to: "humanize"``) regardless of what a YAML
+    # panel's format block carries, so nothing needs to be duplicated here.
     "s": {"type": "duration"},
     "ms": {"type": "number", "suffix": " ms", "decimals": 1},
     "µs": {"type": "number", "suffix": " µs", "decimals": 0},

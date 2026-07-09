@@ -1310,6 +1310,29 @@ def binary_expr_family_rule(context):
                 "has no honest ES|QL translation; marked not_feasible",
             )
             return "set operator not feasible"
+        if op_lower in ("+", "-", "*", "/"):
+            # ``_build_formula_plan`` returned None because at least one
+            # operand contains a nested pattern it cannot honestly express
+            # (e.g. an outer aggregation wrapping a set operator or a
+            # vector-matching join it can't line up — the "windows or
+            # linux-only zero-fill" idiom seen in Kubernetes mixed-OS
+            # dashboards: ``sum(rate(A)) + on(ns) (sum(rate(B) * on(...)
+            # group_left(...) C) or D * 0)``). Falling through to the
+            # generic fragment_extract fallback below would silently keep
+            # only one bare metric name from one operand and drop the rest
+            # of the arithmetic entirely — a much larger semantic gap than
+            # a normal approximation. Mark not_feasible instead so the gap
+            # is visible rather than hidden in an unexplained partial value.
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            _append_unique(
+                context.warnings,
+                f"PromQL '{frag.binary_op}' arithmetic where an operand contains a "
+                "nested set operator or vector-matching join that cannot be safely "
+                "combined; marked for manual review so data is not silently dropped",
+            )
+            return "arithmetic operand unsupported; marked not_feasible"
         return None
 
     if plan.specs:

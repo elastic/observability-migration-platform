@@ -95,6 +95,10 @@ package installed. Outputs land under `/tmp/mig-to-kbn-e2e/` (Grafana) and
 ### Schema and analysis helpers
 
 - `generate_dashboard_schema.sh` — regenerate the dashboard YAML JSON schema
+- `fetch_dashboards_api_schema.py` — fetch/check the latest Kibana OpenAPI
+  bundle for the typed Dashboards API (`/api/dashboards`); pass
+  `--require-full-schema` in CI with the external Dashboards API bundle to
+  catch redirect-only/stale schema sources
 - `generate_telemetry_contract.py` — emit the telemetry field contract
 
 ### Release and repo hygiene

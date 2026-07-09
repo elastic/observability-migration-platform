@@ -4,8 +4,9 @@
 .DEFAULT_GOAL := help
 
 PYTHON := .venv/bin/python
+KIBANA_DASHBOARDS_API_SCHEMA_URL ?=
 
-.PHONY: help sync licenses test test-e2e lint typecheck
+.PHONY: help sync licenses test test-e2e lint typecheck check-native-schema
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,3 +38,13 @@ lint: sync ## Run ruff linter and source header check
 
 typecheck: sync ## Run targeted mypy type checks
 	$(PYTHON) -m mypy
+
+check-native-schema: sync ## Check full Kibana Dashboards API OpenAPI schema
+	@test -n "$(KIBANA_DASHBOARDS_API_SCHEMA_URL)" || ( \
+	  echo "KIBANA_DASHBOARDS_API_SCHEMA_URL must point at the full Dashboards API OpenAPI YAML/JSON bundle"; \
+	  exit 2; \
+	)
+	$(PYTHON) scripts/fetch_dashboards_api_schema.py \
+	  --check-only \
+	  --require-full-schema \
+	  --url "$(KIBANA_DASHBOARDS_API_SCHEMA_URL)"

@@ -1117,7 +1117,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         self.assertTrue(summary_md_exists)
         self.assertFalse(schema_report_exists)
 
-    def test_upload_routes_through_kibana_target_adapter(self):
+    def test_native_upload_routes_through_kibana_target_adapter_even_if_legacy_compile_fails(self):
         rule_pack = SimpleNamespace(
             logs_index="",
             native_promql=False,
@@ -1149,14 +1149,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             yaml_path.write_text("dashboards: []\n", encoding="utf-8")
             return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
 
-        def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo-dashboard"
-            compiled_leaf.mkdir(parents=True, exist_ok=True)
-            (compiled_leaf / "compiled_dashboards.ndjson").write_text(
-                "{}\n",
-                encoding="utf-8",
-            )
-            return [("demo-dashboard.yaml", True, "")]
+        def _fake_compile_all(_yaml_dir, _compiled_dir):
+            return [("demo-dashboard.yaml", False, "legacy compile failed")]
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli,
@@ -1274,6 +1268,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             space_id="shadow",
             kibana_api_key="secret",
             verify=True,
+            use_dashboards_api=True,
         )
 
     def test_lint_failure_skips_only_failing_yaml_before_compile(self):

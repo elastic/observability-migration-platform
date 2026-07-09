@@ -65,6 +65,7 @@ class MigrationResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    upload_warnings: list = field(default_factory=list)
     kibana_saved_object_id: str = ""
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
@@ -78,6 +79,11 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    # NativeDashboard IR built from the same in-memory YAML doc that gets
+    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml).
+    # Not JSON-serialized directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -250,11 +256,12 @@ def _stage_summary(completed, error):
 
 
 def build_runtime_summary(result):
-    upload_status = {"status": "not_run", "error": ""}
+    upload_status = {"status": "not_run", "error": "", "warnings": []}
     if getattr(result, "upload_attempted", False) or getattr(result, "upload_error", ""):
         upload_status = {
             "status": "pass" if getattr(result, "uploaded", False) and not getattr(result, "upload_error", "") else "fail",
             "error": getattr(result, "upload_error", "") or "",
+            "warnings": list(getattr(result, "upload_warnings", []) or []),
         }
     return {
         "yaml_lint": _stage_summary(getattr(result, "yaml_linted", None), getattr(result, "yaml_lint_error", "")),

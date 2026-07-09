@@ -26,6 +26,7 @@ For the concrete implementation follow-up in this repo, see
 | ES\|QL shape helpers | `observability_migration/targets/kibana/emit/esql_utils.py` | Field extraction and query-shape helpers |
 | Registered target adapter | `observability_migration/targets/kibana/adapter.py` | Shared `TargetAdapter` for compile/upload/smoke/cluster orchestration |
 | Compile / upload / layout validation | `observability_migration/targets/kibana/compile.py` | Resolves `kb-dashboard-cli` installed-first (uvx fallback); lint/layout run in-process |
+| Native Dashboards API upload | `observability_migration/targets/kibana/dashboards_api.py` | Default typed `PUT /api/dashboards/{id}` deploy path with per-dashboard legacy fallback |
 | Serverless API helpers | `observability_migration/targets/kibana/serverless.py` | Serverless-safe dashboard listing, data view CRUD, deletion workaround |
 | Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit |
 | Unified compile / upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate compile`, `obs-migrate upload`, `obs-migrate cluster` |
@@ -39,13 +40,16 @@ functions:
 
 - `compile_yaml()` and `compile_all()` compile dashboard YAML to NDJSON.
 - `upload_yaml()` compiles and uploads a dashboard through `kb-dashboard-cli`.
+- `dashboards_api.upload_yaml_files()` maps YAML directly to Kibana's typed
+  Dashboards API and upserts with stable dashboard IDs, with caller-provided
+  legacy fallback for rejected or empty dashboards.
 - `lint_dashboard_yaml()` runs the in-process YAML lint gate
   (`observability_migration.targets.kibana.lint`).
 - `validate_compiled_layout()` runs the in-process layout validator
   (`observability_migration.targets.kibana.layout`).
 - `sync_result_queries_to_yaml()` keeps emitted YAML aligned with post-validation query rewrites.
 
-Compilation and upload shell out to `kb-dashboard-cli`, resolved
+Compilation and the default upload path shell out to `kb-dashboard-cli`, resolved
 **installed-first**: if the console script is on `PATH` (the `[kibana]` extra,
 installed via `pip install ".[kibana]"`, which requires Python 3.12+) it is
 used directly; otherwise the runtime falls back to a pinned
@@ -60,12 +64,24 @@ kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
 uvx --from kb-dashboard-cli==0.4.1 kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
 ```
 
+The native API path is the **default** on `obs-migrate upload`,
+`obs-migrate migrate`, `grafana-migrate`, and `datadog-migrate`. It maps the
+emitted YAML to typed API panels (sections, controls, markdown, and all 11
+ES\|QL visualization families) and uses `PUT /api/dashboards/{id}` for
+idempotent deploys. If one dashboard in a YAML file is rejected or contains no
+API-mappable content, the adapter writes a temporary single-dashboard YAML and
+falls that dashboard back to the legacy `kb-dashboard-cli` import path. Pass
+`--legacy-import` to force the legacy compile+import path for every dashboard.
+
 ### `obs-migrate upload` Input Shape
 
-`obs-migrate upload` expects a directory of **dashboard YAML files**. Internally
-it recompiles each YAML through the same installed-first `kb-dashboard-cli`
-resolution path, which means the upload step does not consume the NDJSON written by
-`obs-migrate compile`. The accepted shapes are:
+`obs-migrate upload` expects a directory of **dashboard YAML files**. By default
+it maps each YAML directly to Kibana's typed Dashboards API and only falls back
+to the installed-first `kb-dashboard-cli` compiler for rejected dashboards, which
+means the upload step does not consume the NDJSON written by
+`obs-migrate compile`. With `--legacy-import`, it recompiles every YAML through
+the `kb-dashboard-cli` resolution path and imports the resulting saved objects.
+The accepted shapes are:
 
 - A directory containing `*.yaml` dashboard files directly (e.g. `migration_output/dashboards/yaml`).
 - A dashboard artifacts directory that holds a `yaml/` subdirectory (e.g. `migration_output/dashboards`).

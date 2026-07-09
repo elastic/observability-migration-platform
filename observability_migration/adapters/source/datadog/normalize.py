@@ -85,8 +85,17 @@ def _normalize_widget(
     if not queries and widget_type in ("log_stream", "list_stream"):
         queries = _extract_log_stream_queries(defn)
 
+    # Datadog stores conditional formats either at the widget definition level
+    # or (more commonly for query_value/query_table) per request. Gather both,
+    # preserving list order, since the target color resolution depends on it.
+    raw_conditional_formats = list(defn.get("conditional_formats", []))
+    for request in defn.get("requests", []):
+        if isinstance(request, dict):
+            raw_conditional_formats.extend(request.get("conditional_formats", []))
     conditional_formats = []
-    for cf in defn.get("conditional_formats", []):
+    for cf in raw_conditional_formats:
+        if not isinstance(cf, dict):
+            continue
         conditional_formats.append(ConditionalFormat(
             comparator=cf.get("comparator", ""),
             value=cf.get("value", 0),
@@ -182,7 +191,15 @@ def _extract_from_request(
     widget_type: str = "",
 ) -> None:
     request_name_map: dict[str, str] = {}
-    for raw_q in req.get("queries", []):
+    raw_queries = req.get("queries", [])
+    if not raw_queries and isinstance(req.get("query"), dict):
+        # A `distribution` widget's histogram request (request_type:
+        # "histogram") nests its single query definition under a singular
+        # `query` dict instead of the `queries` array every other widget
+        # type uses. Without this, the widget's only query is silently
+        # dropped and the panel falls back to "no queries found".
+        raw_queries = [req["query"]]
+    for raw_q in raw_queries:
         original_name = raw_q.get("name", f"query{len(queries)}") or f"query{len(queries)}"
         name = original_name
         if name in seen_names:

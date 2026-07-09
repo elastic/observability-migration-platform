@@ -19,7 +19,9 @@ from typing import Any
 
 import yaml
 
+from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.core.reporting.report import _panel_query_index
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_yaml
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
@@ -74,7 +76,7 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
 )
 
 
-def generate_dashboard_yaml(
+def _build_dashboard_yaml_doc(
     dashboard: NormalizedDashboard,
     results: list[TranslationResult],
     data_view: str = "metrics-*",
@@ -83,8 +85,13 @@ def generate_dashboard_yaml(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
-) -> str:
-    """Generate a complete kb-dashboard YAML string for a dashboard."""
+) -> dict[str, Any]:
+    """Build the kb-dashboard-core YAML document dict for one dashboard.
+
+    Shared by :func:`generate_dashboard_yaml` (the YAML string bridge) and
+    :func:`generate_dashboard_artifacts` (which also derives a
+    :class:`NativeDashboard` from this exact doc), so the two never drift.
+    """
     panels = []
     result_map = {r.widget_id: r for r in results}
 
@@ -145,8 +152,64 @@ def generate_dashboard_yaml(
         doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(doc)
+    return doc
 
+
+def generate_dashboard_yaml(
+    dashboard: NormalizedDashboard,
+    results: list[TranslationResult],
+    data_view: str = "metrics-*",
+    *,
+    metrics_dataset_filter: str = "",
+    logs_dataset_filter: str = "",
+    logs_index: str = "logs-*",
+    field_map: FieldMapProfile | None = None,
+) -> str:
+    """Generate a complete kb-dashboard YAML string for a dashboard."""
+    doc = _build_dashboard_yaml_doc(
+        dashboard,
+        results,
+        data_view,
+        metrics_dataset_filter=metrics_dataset_filter,
+        logs_dataset_filter=logs_dataset_filter,
+        logs_index=logs_index,
+        field_map=field_map,
+    )
     return yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def generate_dashboard_artifacts(
+    dashboard: NormalizedDashboard,
+    results: list[TranslationResult],
+    data_view: str = "metrics-*",
+    *,
+    metrics_dataset_filter: str = "",
+    logs_dataset_filter: str = "",
+    logs_index: str = "logs-*",
+    field_map: FieldMapProfile | None = None,
+) -> tuple[str, NativeDashboard, dict[str, Any]]:
+    """Generate both the YAML bridge string and its NativeDashboard IR.
+
+    The :class:`NativeDashboard` is built from the exact same in-memory YAML
+    doc the string is dumped from, so the two artifacts can never drift from
+    each other. Returns ``(yaml_string, native_dashboard, native_stats)``
+    where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
+    ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
+    """
+    doc = _build_dashboard_yaml_doc(
+        dashboard,
+        results,
+        data_view,
+        metrics_dataset_filter=metrics_dataset_filter,
+        logs_dataset_filter=logs_dataset_filter,
+        logs_index=logs_index,
+        field_map=field_map,
+    )
+    yaml_string = yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    native_dashboard, counts = native_dashboard_from_yaml(doc["dashboards"][0])
+    counts_dict, reasons = counts.as_dicts()
+    stats: dict[str, Any] = {**counts_dict, "reasons": reasons}
+    return yaml_string, native_dashboard, stats
 
 
 def _iter_leaf_panels(panels: list[dict[str, Any]]):
@@ -250,8 +313,20 @@ def _build_controls_from_template_vars(
             "field": es_field,
             "multiple": len(tv.defaults) > 1 or tv.default == "*",
         }
+        preselected = _template_var_preselected(tv)
+        if preselected:
+            control["preselected"] = preselected
         controls.append(control)
     return controls
+
+
+def _template_var_preselected(tv: TemplateVariable) -> list[str]:
+    values = [str(value) for value in tv.defaults if str(value) and str(value) != "*"]
+    if values:
+        return values
+    if tv.default and tv.default != "*":
+        return [str(tv.default)]
+    return []
 
 
 def _panel_data_index(panel: dict[str, Any]) -> str:
@@ -431,11 +506,19 @@ def _build_esql_panel(
                 for field in keep_fields
             ]
         else:
+            if widget.widget_type == "change" and "value" not in metrics:
+                # A change widget ranks by the computed delta `value` (the SORT
+                # key), which STATS-based inference misses because it is an EVAL
+                # alias. Surface it as the leading metric so the ranked delta —
+                # the whole point of the widget — is actually displayed.
+                metrics = ["value", *metrics]
             if metrics:
                 esql_block["metrics"] = [
                     _metric_config(widget, result, m)
                     for m in metrics
                 ]
+                if widget.widget_type == "change" and esql_block["metrics"][0]["field"] == "value":
+                    esql_block["metrics"][0]["label"] = "Change"
             non_time_dims = [d for d in dims if "time" not in d.lower() and "bucket" not in d.lower()]
             if non_time_dims:
                 esql_block["breakdowns"] = [_dimension_config(b) for b in non_time_dims]
@@ -475,7 +558,27 @@ def _build_esql_panel(
             esql_block["x_axis"] = _dimension_config(dims[0])
         else:
             esql_block["x_axis"] = _dimension_config("@timestamp", data_type="date")
-        if other_dims:
+        if len(other_dims) >= 2:
+            # The heatmap Y axis is a single field, but the query groups by two
+            # (or more) explicit categorical tags the user chose (e.g. service +
+            # host). Using only the first merges distinct buckets, so composite
+            # the grouping tags into one synthetic Y column instead of dropping
+            # the rest.
+            new_query, y_field = _composite_y_column(esql_block["query"], other_dims)
+            esql_block["query"] = new_query
+            result.esql_query = new_query
+            y_cfg: dict[str, Any] = {"field": y_field}
+            label = " / ".join(lbl for lbl in (_pretty_field_label(d) for d in other_dims) if lbl)
+            if label:
+                y_cfg["label"] = label
+            esql_block["y_axis"] = y_cfg
+            warning = (
+                "Heatmap grouped by multiple tags "
+                f"({', '.join(other_dims)}); composited into a single Y axis column"
+            )
+            if warning not in result.warnings:
+                result.warnings.append(warning)
+        elif other_dims:
             esql_block["y_axis"] = _dimension_config(other_dims[0])
         esql_block.setdefault("appearance", {})["legend"] = {
             "visible": "show",
@@ -1253,6 +1356,41 @@ def _infer_keep_fields(query: str) -> list[str]:
         for part in _split_by_clause(keep_clause)
         if part.strip()
     ]
+
+
+def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> tuple[str, str]:
+    """Splice a composite Y column into a heatmap query.
+
+    Builds ``| EVAL <name> = CONCAT(COALESCE(TO_STRING(d1), ""), " / ", …)`` from
+    the grouping dimensions and inserts it just before the trailing ``KEEP`` (so
+    the composite is a real output column), adding ``<name>`` to that ``KEEP``.
+    When the query has no ``KEEP`` stage the ``EVAL`` is appended after the last
+    ``STATS`` stage. Returns ``(new_query, column_name)``.
+    """
+    concat_args: list[str] = []
+    for index, dim in enumerate(dims):
+        if index:
+            concat_args.append('" / "')
+        concat_args.append(f'COALESCE(TO_STRING({dim}), "")')
+    eval_stage = f"| EVAL {name} = CONCAT({', '.join(concat_args)})"
+
+    stages = [line.strip() for line in query.splitlines() if line.strip()]
+    keep_idx = None
+    for index, stage in enumerate(stages):
+        if stage.upper().startswith("| KEEP "):
+            keep_idx = index
+    if keep_idx is not None:
+        keep_body = stages[keep_idx][len("| KEEP "):].strip()
+        stages[keep_idx] = f"| KEEP {keep_body}, {name}"
+        stages.insert(keep_idx, eval_stage)
+    else:
+        stats_indices = [
+            index for index, stage in enumerate(stages)
+            if stage.upper().startswith("| STATS ") or stage.upper().startswith("STATS ")
+        ]
+        insert_at = (stats_indices[-1] + 1) if stats_indices else len(stages)
+        stages.insert(insert_at, eval_stage)
+    return "\n".join(stages), name
 
 
 def _dimension_config(field: str, data_type: str | None = None) -> dict[str, Any]:

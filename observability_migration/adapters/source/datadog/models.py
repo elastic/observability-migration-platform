@@ -457,6 +457,7 @@ class DashboardResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    upload_warnings: list[str] = field(default_factory=list)
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     kibana_saved_object_id: str = ""
@@ -470,6 +471,13 @@ class DashboardResult:
     verification_summary: dict[str, int] = field(default_factory=dict)
     alert_results: list = field(default_factory=list)
     alert_summary: dict = field(default_factory=dict)
+    # NativeDashboard IR built from the same in-memory YAML doc that gets
+    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml
+    # / generate.generate_dashboard_artifacts). Mirrors
+    # MigrationResult.native_dashboard on the Grafana side. Not JSON-serialized
+    # directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
     def recompute_counts(self) -> None:
         self.migrated = 0
@@ -503,11 +511,12 @@ class DashboardResult:
                 "status": "pass" if not self.layout_error else "fail",
                 "error": self.layout_error or "",
             }
-        upload_status = {"status": "not_run", "error": ""}
+        upload_status = {"status": "not_run", "error": "", "warnings": []}
         if self.upload_attempted or self.upload_error:
             upload_status = {
                 "status": "pass" if self.uploaded and not self.upload_error else "fail",
                 "error": self.upload_error or "",
+                "warnings": list(self.upload_warnings or []),
             }
         smoke_status = {"status": "not_run", "error": ""}
         if self.smoke_attempted or self.smoke_error:

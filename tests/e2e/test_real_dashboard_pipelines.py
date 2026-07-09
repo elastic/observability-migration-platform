@@ -275,9 +275,9 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         total_panels = len(yaml_doc["dashboards"][0].get("panels") or [])
         self.assertGreater(total_panels, 20)
 
-    def test_issue_144_percentile_and_max_emit_aggregated_lens_metrics(self):
+    def test_issue_144_percentile_and_max_emit_native_esql_metrics(self):
         """Issue #144: percentile/max timeseries must emit schema-valid
-        aggregated Lens metrics (never an aggregation+field XYLensFormulaMetric).
+        native ES|QL metrics (never a legacy Lens formula metric).
         """
         _, results, _, yaml_doc = _translate_datadog_raw(ISSUE_144_PERCENTILE_DASHBOARD)
 
@@ -299,19 +299,24 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
             "p99 by service": 99,
         }
         for title, pct in expected_percentiles.items():
-            metric = panels[title]["lens"]["metrics"][0]
-            self.assertEqual(metric["aggregation"], "percentile", title)
-            self.assertEqual(metric["percentile"], pct, title)
-            self.assertIn("field", metric, title)
-            # The bug emitted a formula-typed metric; ensure we do not.
-            self.assertNotIn("formula", metric, title)
+            panel = panels[title]
+            self.assertNotIn("lens", panel, title)
+            self.assertEqual(panel["esql"]["type"], "line", title)
+            self.assertIn(
+                f"PERCENTILE(trace_http_request_duration, {pct})",
+                panel["esql"]["query"],
+                title,
+            )
+            self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket", title)
+            self.assertEqual([metric["field"] for metric in panel["esql"]["metrics"]], ["value"], title)
 
-        max_metric = panels["Max duration"]["lens"]["metrics"][0]
-        self.assertEqual(max_metric["aggregation"], "max")
-        self.assertNotIn("formula", max_metric)
+        max_panel = panels["Max duration"]
+        self.assertNotIn("lens", max_panel)
+        self.assertIn("MAX(trace_http_request_duration)", max_panel["esql"]["query"])
 
-        avg_metric = panels["Avg duration"]["lens"]["metrics"][0]
-        self.assertEqual(avg_metric["aggregation"], "average")
+        avg_panel = panels["Avg duration"]
+        self.assertNotIn("lens", avg_panel)
+        self.assertIn("AVG(trace_http_request_duration)", avg_panel["esql"]["query"])
 
 
 @unittest.skipUnless(shutil.which("uvx"), "uvx is required for compile smoke tests")
