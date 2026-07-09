@@ -3131,7 +3131,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate("sum(conflicted_metric)")
 
         self.assertEqual(translated.source_type, "FROM")
-        self.assertIn("SUM(conflicted_metric)", translated.esql_query)
+        # Issue #245: a field with conflicting exact types across indices makes
+        # ES|QL reject even a bare reference ("ambiguities in index mappings"),
+        # so the aggregation must cast to double regardless of source routing.
+        self.assertIn("SUM(TO_DOUBLE(conflicted_metric))", translated.esql_query)
 
     def test_native_promql_panel_records_promql_contract(self):
         self.rule_pack.native_promql = True

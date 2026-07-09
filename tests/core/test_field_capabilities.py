@@ -38,6 +38,36 @@ class TestFieldCapabilities(unittest.TestCase):
         self.assertTrue(is_searchable_field(capability))
         self.assertTrue(is_aggregatable_field(capability))
 
+    def test_conflicting_kind_across_indices_prefers_counter(self):
+        # Issue #245: dual-shipped/inconsistently-ingested indices can map the
+        # same field name with disagreeing time_series_metric kinds (e.g. a
+        # Cassandra JMX-exporter field that is a plain long+counter in one
+        # index and a gauge double in another). Discarding the disagreement
+        # (the old "" fallback) let counter detection miss a genuine counter;
+        # a counter signal from any index must win the tie.
+        capability = field_capability_from_es_field_caps(
+            "cassandra_stats",
+            {
+                "double": {"searchable": True, "aggregatable": True, "time_series_metric": "gauge"},
+                "long": {"searchable": True, "aggregatable": True, "time_series_metric": "counter"},
+            },
+        )
+        self.assertEqual(capability.time_series_metric_kind, "counter")
+        self.assertTrue(is_counter_metric_field(capability))
+        self.assertTrue(has_conflicting_types(capability))
+
+    def test_disagreeing_non_counter_kinds_stay_unknown(self):
+        # When kinds disagree but neither is "counter", there is still no
+        # single authoritative answer, so the kind stays unresolved.
+        capability = field_capability_from_es_field_caps(
+            "weird_field",
+            {
+                "double": {"searchable": True, "aggregatable": True, "time_series_metric": "gauge"},
+                "long": {"searchable": True, "aggregatable": True, "time_series_metric": "label"},
+            },
+        )
+        self.assertEqual(capability.time_series_metric_kind, "")
+
     def test_field_caps_preserves_conflicting_types(self):
         capability = field_capability_from_es_field_caps(
             "status",

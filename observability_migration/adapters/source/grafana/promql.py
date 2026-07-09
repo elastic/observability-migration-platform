@@ -260,7 +260,7 @@ _COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
 
 
 def _counter_safe_metric_arg(
-    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False
+    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False, force_cast=False
 ):
     """Cast a counter metric to double for ES|QL functions that reject counters.
 
@@ -271,9 +271,16 @@ def _counter_safe_metric_arg(
     directly, so they are never cast; an authoritative gauge (``counter_refuted``)
     is left unchanged to avoid needless cast / snapshot churn.
 
+    ``force_cast`` (issue #245) casts regardless of counter status — pass
+    ``True`` when the target maps this field with conflicting types across
+    indices, which can make ES|QL reject the bare form regardless of which
+    aggregation is applied. Callers should compute it with
+    :func:`_counter_unsafe_cast_needed`. It has no effect on
+    RATE/IRATE/INCREASE, which cannot be cast without changing their meaning.
+
     This is the shared counter-safe helper used by both the direct/topk family
-    rules (via the translate.py import) and the composed binary measure-spec /
-    join-ratio paths below, so degraded-range casting stays consistent.
+    rules and the composed binary measure-spec / join-ratio paths below, so
+    degraded-range casting stays consistent.
     """
     if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
         return metric_expr
@@ -281,7 +288,7 @@ def _counter_safe_metric_arg(
         (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
         and not counter_refuted
     )
-    if is_counter or counter_source:
+    if is_counter or counter_source or force_cast:
         return f"TO_DOUBLE({metric_expr})"
     return metric_expr
 
@@ -295,6 +302,62 @@ def _counter_refuted(resolver, metric):
         return False
     refutes = getattr(resolver, "refutes_counter", None)
     return bool(refutes(metric)) if callable(refutes) else False
+
+
+def _metric_has_conflicting_types(resolver, metric):
+    """True when the live target maps ``metric``'s field with different exact
+    types across indices (e.g. ``long`` in one dual-shipped index and
+    ``double`` in another). ES|QL rejects a bare reference to such a field
+    ("ambiguities in index mappings"); an explicit cast is the documented fix.
+    Silent (False) when offline or the resolver lacks the capability (#245)."""
+    if resolver is None or not metric:
+        return False
+    has_conflicts = getattr(resolver, "has_conflicting_types", None)
+    return bool(has_conflicts(metric)) if callable(has_conflicts) else False
+
+
+def _conflicting_type_cast_warning(metric, resolver):
+    """Warning for defensively casting a metric whose target field is mapped
+    with different exact types across indices (#245) -- e.g. ``long`` in one
+    dual-shipped index and ``double`` in another. A bare reference to such a
+    field is rejected by ES|QL ("ambiguities in index mappings"); the emitted
+    query casts to double instead so it can still run."""
+    conflicting_types = []
+    field_capability = getattr(resolver, "field_capability", None) if resolver else None
+    if callable(field_capability):
+        capability = field_capability(metric)
+        conflicting_types = list(getattr(capability, "conflicting_types", None) or [])
+    types_desc = f" ({', '.join(conflicting_types)})" if conflicting_types else ""
+    return (
+        f"Target field '{metric}' is mapped with conflicting types{types_desc} "
+        "across indices; cast to double so the query can still run. Align the "
+        "ingest mapping for this field to remove the ambiguity."
+    )
+
+
+def _counter_unsafe_cast_needed(metric, resolver):
+    """True when a counter-unsafe aggregation over ``metric`` needs a
+    defensive cast/wrap rather than a bare reference: the target maps the
+    field with conflicting types across indices (issue #245), which can make
+    ES|QL reject the bare form ("ambiguities in index mappings") regardless
+    of which aggregation is applied.
+
+    Deliberately narrower than the general "counter status unproven" case
+    (issue #148, see :func:`_counter_type_uncertainty_warning`): that bucket
+    is the offline/no-live-caps default for the vast majority of migrations
+    and panels, and already has its own keep-the-query-and-warn behavior that
+    a large, deliberately-asserted test corpus depends on. Conflicting live
+    field-caps, by contrast, are a rare, concrete, target-verified signal —
+    safe to act on unconditionally."""
+    return _metric_has_conflicting_types(resolver, metric)
+
+
+def _counter_unsafe_cast_warning(metric, resolver):
+    """The warning to surface alongside the defensive cast/wrap triggered by
+    :func:`_counter_unsafe_cast_needed`."""
+    if _metric_has_conflicting_types(resolver, metric):
+        return _conflicting_type_cast_warning(metric, resolver)
+    return None
 
 
 # Outer aggregations ES|QL rejects directly on counter_long/counter_double
@@ -355,9 +418,15 @@ def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver)
     if range_func not in {"rate", "irate", "increase"}:
         return False
     if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
-        # Trust the source unless the user's rule pack explicitly pins gauge.
+        # Trust the source unless the user's rule pack explicitly pins gauge,
+        # or the field's own mapping is too ambiguous for RATE/IRATE to run at
+        # all (issue #245): a field with conflicting exact types across
+        # indices can't be guaranteed counter_* in every index, and staying
+        # source-faithful there just trades a "not counter" 400 for an
+        # "ambiguities in index mappings" one. Degrade to the gauge analogue,
+        # which the conflicting-types cast below can still make runnable.
         declared_gauge = getattr(resolver, "declared_gauge", None) if resolver else None
-        return bool(declared_gauge and declared_gauge(metric))
+        return bool(declared_gauge and declared_gauge(metric)) or _metric_has_conflicting_types(resolver, metric)
     return True
 
 
@@ -392,9 +461,14 @@ def resolve_counter_range_translation(range_func, metric, is_counter, resolver, 
         fallback_func, template = _gauge_fallback_for_counter_range_func(range_func)
         # The degraded form is also counter-unsafe, so when the target cannot
         # prove the field is a gauge (offline / field absent from caps) flag the
-        # counter_long risk instead of asserting it "is typed as gauge".
-        uncertainty = _counter_type_uncertainty_warning(metric, resolver)
-        warning = uncertainty if uncertainty else template.format(metric=metric)
+        # counter_long risk instead of asserting it "is typed as gauge". A
+        # cross-index type conflict (#245) gets its own, more accurate warning
+        # naming the actual problem (mapping ambiguity, not counter/gauge).
+        if _metric_has_conflicting_types(resolver, metric):
+            warning = _conflicting_type_cast_warning(metric, resolver)
+        else:
+            uncertainty = _counter_type_uncertainty_warning(metric, resolver)
+            warning = uncertainty if uncertainty else template.format(metric=metric)
         return fallback_func, warning, is_counter
     warning = None
     if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
@@ -3213,6 +3287,20 @@ def _build_measure_spec(
             # outer aggregation operates on raw cumulative values, not rates.
             inner_expr = f"LAST_OVER_TIME({metric_field})"
             warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+        elif (
+            frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS
+            and _counter_unsafe_cast_needed(frag.metric, resolver)
+        ):
+            # Issue #245: the target maps this field with conflicting types
+            # across indices, so SUM/MAX/MIN/AVG/STDDEV/QUANTILE may reject
+            # the bare field at runtime ("ambiguities in index mappings").
+            # TO_DOUBLE is valid under either FROM or TS (unlike
+            # LAST_OVER_TIME, a TS-only function), so it defends the
+            # aggregation without disturbing the source/bucket already chosen
+            # above, instead of gambling on a bare aggregation.
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            inner_expr = f"TO_DOUBLE({metric_field})"
+            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
         else:
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             inner_expr = metric_field
@@ -3253,7 +3341,14 @@ def _build_measure_spec(
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=_counter_unsafe_cast_needed(frag.metric, resolver),
         )
+        if (
+            not is_counter
+            and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and _counter_unsafe_cast_needed(frag.metric, resolver)
+        ):
+            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
         inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
@@ -3282,7 +3377,14 @@ def _build_measure_spec(
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=_counter_unsafe_cast_needed(frag.metric, resolver),
         )
+        if (
+            not is_counter
+            and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and _counter_unsafe_cast_needed(frag.metric, resolver)
+        ):
+            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
         stats_expr = _apply_outer_agg(
             esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )

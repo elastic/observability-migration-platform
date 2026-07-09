@@ -1306,6 +1306,120 @@ class TestCounterLongAggregationWarning(unittest.TestCase):
         )
 
 
+class TestConflictingTypeAcrossIndices(unittest.TestCase):
+    """Issue #245: dual-shipped/inconsistently-ingested indices can map the
+    same field name with conflicting type information. Two distinct failure
+    shapes fall out of this:
+
+    - A metric is counter-typed in one index and gauge-typed in another (e.g.
+      a Cassandra JMX-exporter field like ``cassandra_stats``): the disagreement
+      used to make ``is_counter()`` confidently say "not a counter", emitting
+      a bare SUM/MAX/SUM_OVER_TIME that ES|QL rejects with no warning at all.
+    - A metric has genuinely conflicting *exact* types (e.g. ``long`` in one
+      index, ``double`` in another) with no counter signal at all: nothing
+      checked this before, so the bare field reference hit ES|QL's
+      "ambiguities in index mappings" error.
+    """
+
+    @staticmethod
+    def _live_resolver(field_cache):
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = dict(field_cache)
+        resolver._discovery_status = "ok"
+        return resolver
+
+    def test_conflicting_kind_is_detected_as_counter(self):
+        # One index types it counter (via plain long + time_series_metric),
+        # another types it a gauge double. The counter signal must win.
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        self.assertTrue(resolver.is_counter("cassandra_stats"))
+        self.assertFalse(resolver.refutes_counter("cassandra_stats"))
+
+    def test_conflicting_kind_bare_max_uses_last_over_time(self):
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        ctx = _translate("max(cassandra_stats)", resolver=resolver)
+        self.assertIn("MAX(LAST_OVER_TIME(cassandra_stats))", ctx.esql_query)
+        self.assertNotIn("MAX(cassandra_stats)", ctx.esql_query)
+
+    def test_conflicting_kind_sum_over_time_casts_to_double(self):
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        ctx = _translate("sum_over_time(cassandra_stats[5m])", resolver=resolver)
+        self.assertIn("SUM_OVER_TIME(TO_DOUBLE(cassandra_stats), 5m)", ctx.esql_query)
+
+    def test_conflicting_exact_type_bare_max_casts_to_double(self):
+        # Pure long-vs-double mismatch, no counter signal anywhere: is_counter
+        # stays False, but the bare field is still unsafe to reference directly.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        self.assertFalse(resolver.is_counter("process_virtual_memory_max_bytes"))
+        self.assertTrue(resolver.has_conflicting_types("process_virtual_memory_max_bytes"))
+        ctx = _translate("max(process_virtual_memory_max_bytes)", resolver=resolver)
+        self.assertIn("MAX(TO_DOUBLE(process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_irate_degrades_and_casts(self):
+        # irate() cannot be cast (it requires the raw counter type), so a
+        # conflicting-type field must degrade to the gauge analogue, which can
+        # then be cast to resolve the mapping ambiguity.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("irate(process_virtual_memory_max_bytes[5m])", resolver=resolver)
+        self.assertNotIn("IRATE(", ctx.esql_query)
+        self.assertIn("AVG_OVER_TIME(TO_DOUBLE(process_virtual_memory_max_bytes), 5m)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_no_conflict_leaves_bare_aggregation_unchanged(self):
+        # A clean, single-typed gauge field must not be cast -- no needless
+        # snapshot churn for the overwhelmingly common case.
+        resolver = self._live_resolver(
+            {"node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("max(node_load1)", resolver=resolver)
+        self.assertIn("MAX(node_load1)", ctx.esql_query)
+        self.assertEqual(ctx.warnings, [])
+
+
 # =========================================================================
 # Happy Path PromQL Bucket
 # =========================================================================

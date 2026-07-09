@@ -46,6 +46,8 @@ from .promql import (
     _can_use_direct_ts_gauge,
     _collapse_summary_ts_query,
     _counter_type_uncertainty_warning,
+    _counter_unsafe_cast_needed,
+    _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
     _format_scalar_value,
     _frag_eval_line,
@@ -130,6 +132,7 @@ def _counter_safe_metric_arg(
     source_range_func: str | None = None,
     *,
     counter_refuted: bool = False,
+    force_cast: bool = False,
 ) -> str:
     """Cast a counter metric to double for ES|QL functions that reject counters,
     so the emitted query executes instead of failing at runtime.
@@ -145,6 +148,10 @@ def _counter_safe_metric_arg(
       gauge field-caps say otherwise. So when the offline heuristic merely
       *guessed* "gauge" and we degraded ``increase()`` -> ``MAX_OVER_TIME``, the
       stored field is still a counter and the bare metric would be rejected.
+    - the caller passes ``force_cast=True`` (issue #245) -- the target maps
+      this field with conflicting types across indices, which can make ES|QL
+      reject the bare form regardless of which aggregation is applied.
+      Compute it with :func:`_counter_unsafe_cast_needed`.
 
     The cast is skipped for counter-consuming ES|QL functions
     (``RATE``/``IRATE``/``INCREASE``), which take the raw counter, and for a
@@ -158,7 +165,7 @@ def _counter_safe_metric_arg(
         (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
         and not counter_refuted
     )
-    if is_counter or counter_source:
+    if is_counter or counter_source or force_cast:
         return f"TO_DOUBLE({metric_expr})"
     return metric_expr
 
@@ -1688,6 +1695,13 @@ def scaled_agg_family_rule(context):
         _append_unique(context.warnings, counter_warning)
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+    cast_needed = _counter_unsafe_cast_needed(frag.metric, resolver)
+    if (
+        not is_counter
+        and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+        and cast_needed
+    ):
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
 
     context.parser_backend = "fragment"
     context.source_type = "TS"
@@ -1700,7 +1714,7 @@ def scaled_agg_family_rule(context):
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
-    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})', frag)}"
+    stats_line = f"| STATS {alias} = {_agg_stats_expr(esql_outer, f'{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=cast_needed)}, {frag.range_window})', frag)}"
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
@@ -2102,7 +2116,14 @@ def range_agg_family_rule(context):
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
 
-    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window})"
+    cast_needed = _counter_unsafe_cast_needed(frag.metric, resolver)
+    if (
+        not is_counter
+        and (esql_inner_name or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+        and cast_needed
+    ):
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
+    inner_expr = f"{esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=cast_needed)}, {frag.range_window})"
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = f"AVG({inner_expr})"
@@ -2392,6 +2413,19 @@ def simple_agg_family_rule(context):
         # function to get the raw cumulative value, then apply the outer aggregation.
         inner_expr = f"LAST_OVER_TIME({physical_metric})"
         _append_unique(context.warnings, "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+    elif (
+        frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS
+        and _counter_unsafe_cast_needed(frag.metric, resolver)
+    ):
+        # Issue #245: the target maps this field with conflicting types
+        # across indices, so SUM/MAX/MIN/AVG/STDDEV/QUANTILE may reject the
+        # bare field at runtime ("ambiguities in index mappings"). TO_DOUBLE
+        # is valid under either FROM or TS (unlike LAST_OVER_TIME, a TS-only
+        # function), so it defends the aggregation without disturbing the
+        # source/bucket already chosen above, instead of gambling on a bare
+        # aggregation.
+        inner_expr = f"TO_DOUBLE({physical_metric})"
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
     else:
         inner_expr = physical_metric
         # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
