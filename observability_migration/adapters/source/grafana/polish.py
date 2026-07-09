@@ -281,6 +281,22 @@ def apply_metadata_polish(
     with yaml_path.open("w") as fh:
         yaml.safe_dump(yaml_doc, fh, sort_keys=False, allow_unicode=True, width=120)
 
+    if (applied.get("panel_titles") or applied.get("control_labels")) and getattr(result, "native_dashboard", None) is not None:
+        # Panel titles and control labels flow into the native IR's
+        # panel/pinned-control config (see map_yaml_panel/map_yaml_control in
+        # dashboards_api.py). Rebuild from this same in-memory `dashboard`
+        # dict just written to disk, so a --polish-metadata --upload run
+        # can't ship the pre-polish IR (mirrors the rebuild in
+        # targets.kibana.compile.sync_result_queries_to_yaml).
+        from observability_migration.targets.kibana.dashboards_api import (
+            native_dashboard_from_yaml,
+        )
+
+        native_dashboard, native_counts = native_dashboard_from_yaml(dashboard)
+        result.native_dashboard = native_dashboard
+        native_counts_dict, native_reasons = native_counts.as_dicts()
+        result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
+
     result.metadata_polish = {
         "mode": applied.get("mode", "heuristic"),
         "dashboard_title": dashboard.get("name", ""),

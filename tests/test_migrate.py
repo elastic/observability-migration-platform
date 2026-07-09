@@ -29,6 +29,7 @@ from observability_migration.adapters.source.grafana import (
 from observability_migration.core.reporting import report as report
 from observability_migration.core.verification import disposition as disposition
 from observability_migration.targets.kibana import compile as compile_module
+from observability_migration.targets.kibana import dashboards_api
 
 migrate = SimpleNamespace(
     RulePackConfig=rules.RulePackConfig,
@@ -1307,16 +1308,31 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertGreater(value_filter_idx, value_stats_idx)
 
-    def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
+    def test_grouped_rate_or_irate_formula_with_series_count_denominator_is_not_feasible(self):
+        """A three-level formula — ``(sum(rate(X) or irate(X)) by(ns)) /
+        count(Y) by(ns) * 100`` — cannot be honestly reduced by
+        ``_build_formula_plan``: the numerator's ``or`` spans different range
+        functions on the *same* series (not a plain aggregate) and the
+        denominator's ``count(Y) by(ns)`` is a series-count (nested_agg)
+        pattern that ``_build_measure_spec`` does not model as a formula
+        operand. Before the operand-safety fix, both those per-operand
+        failures fell through to the single top-level ``fragment_extract``
+        fallback, which discarded the division, the ``* 100`` scaling, and
+        the ``or`` entirely — silently emitting a bare ``AVG(RATE(x))`` with
+        no relationship to the source "CPU busy %" formula (a materially
+        larger semantic gap than a normal approximation). It must now be
+        marked ``not_feasible`` instead of emitting that unrelated number."""
         translated = self.translate(
             '(sum(rate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[$interval]) '
             'or irate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[5m])) by (node_name)) '
             '/ count(node_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}) by (node_name) * 100'
         )
 
-        self.assertEqual(translated.feasibility, "feasible")
-        self.assertIn("AVG(RATE(process_cpu_seconds_total, 5m))", translated.esql_query)
-        self.assertNotIn("= RATE(process_cpu_seconds_total, 5m) BY", translated.esql_query)
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("arithmetic" in w and "manual review" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_resolver_for_index_propagates_es_api_key(self):
         """Alternate-index resolvers (used for controls and logs) must inherit
@@ -4195,6 +4211,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("rate(node_cpu_seconds_total", by_ref["A"]["source_expr"])
         self.assertIn("primary target only", by_ref["B"].get("unsupported_reason", ""))
 
+    def test_mixed_windows_and_non_windows_drops_are_not_mislabeled_windows_only(self):
+        """When a panel drops both a Windows-specific target AND an unrelated
+        non-Windows target, the warning must not claim the drops are
+        "Windows-specific" — that phrasing implies nothing of value was lost
+        for a Linux-only cluster and hides the real, unrelated gap."""
+        panel = {
+            "id": 104,
+            "type": "stat",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'sum(rate(node_cpu_seconds_total{mode!="idle"}[5m]))', "refId": "Real Linux"},
+                {"expr": 'sum(rate(windows_cpu_time_total{mode!="idle"}[5m]))', "refId": "Real Windows"},
+                {"expr": 'sum(kube_pod_container_resource_requests{resource="cpu"})', "refId": "Requests"},
+                {"expr": 'sum(kube_pod_container_resource_limits{resource="cpu"})', "refId": "Limits"},
+                {"expr": "sum(machine_cpu_cores)", "refId": "Total"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        combined = " ".join(result.reasons)
+        self.assertNotIn("(dropped targets are Windows-specific)", combined)
+        self.assertTrue(
+            any("of the dropped targets are Windows-specific" in w for w in result.reasons),
+            f"expected a qualified mixed-drop warning, got: {result.reasons}",
+        )
+
+    def test_all_windows_drops_keep_unqualified_windows_specific_message(self):
+        """When every dropped target really is Windows-specific, the simpler
+        unqualified message is accurate and should be kept as-is."""
+        panel = {
+            "id": 105,
+            "type": "graph",
+            "title": "CPU Usage 2",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": ('sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) '
+                          '/ on(instance) sum by (instance) (rate(node_cpu_seconds_total[5m]))'),
+                 "refId": "A"},
+                {"expr": 'avg(sum by (core) (rate(windows_cpu_time_total{mode!="idle"}[5m])))',
+                 "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        self.assertTrue(
+            any("(dropped targets are Windows-specific)" in w for w in result.reasons),
+            f"expected unqualified Windows-specific warning, got: {result.reasons}",
+        )
+
     def test_multi_target_live_gauge_with_divergent_filters_keeps_all_series(self):
         self.seed_field_caps(
             {
@@ -4717,16 +4781,22 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_scalar_wrapped_nested_count_denominator_merges_with_rate_numerator(self):
+        # The canonical node_exporter "CPU busy % = per-mode rate / core count"
+        # idiom (e.g. the "CPU"/"CPU Basic" panels in the node-exporter-full
+        # dashboard). The numerator needs TS (counter irate); the denominator
+        # is a plain COUNT_DISTINCT(cpu) with no time-series-specific
+        # semantics, so it can share the numerator's TS source instead of
+        # being forced onto FROM (which can never merge with a TS sibling).
         expr = (
             'sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__rate_interval])) '
             '/ scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertEqual(translated.feasibility, "not_feasible")
-        self.assertTrue(
-            any("divergent filters/groupings" in w for w in translated.warnings),
-            translated.warnings,
-        )
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("TS metrics", translated.esql_query)
+        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
+        self.assertIn('IRATE(CASE((mode == "system")', translated.esql_query)
+        self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
         # sum(increase(A) / increase(B)) computes a per-element ratio then
@@ -5449,6 +5519,84 @@ class TranslatorRegressionTests(unittest.TestCase):
             panel.visual_ir.presentation.config["query"],
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
+
+    def test_sync_result_queries_to_yaml_rebuilds_stale_native_dashboard(self):
+        # Regression test for PR #278 review: a --validate --upload run must
+        # not upload the pre-validation native IR after ES|QL fixes have been
+        # applied. sync_result_queries_to_yaml is the last point where
+        # `result` is aligned with the corrected YAML before upload, so it
+        # must rebuild `result.native_dashboard` in place.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+
+            # Simulate the pre-validation native IR built at translation time,
+            # from the same (stale) dashboard doc that is about to be fixed.
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+            stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+            self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
+
+            updated = migrate.sync_result_queries_to_yaml(result, path)
+
+        self.assertTrue(updated)
+        rebuilt_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+        self.assertEqual(rebuilt_query, "FROM metrics-prometheus-synthetic\n| LIMIT 10")
+
+    def test_sync_result_queries_to_yaml_leaves_missing_native_dashboard_alone(self):
+        # Callers that never set result.native_dashboard (e.g. legacy-only
+        # runs) must not trip the rebuild path or its deferred import.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            updated = migrate.sync_result_queries_to_yaml(result, path)
+
+        self.assertTrue(updated)
+        self.assertIsNone(result.native_dashboard)
 
     def test_sync_result_queries_to_yaml_adds_controls_for_new_params(self):
         result = migrate.MigrationResult("Dashboard", "uid")
@@ -8542,6 +8690,87 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(emitted.visual_ir.title, "Foo Total")
         self.assertEqual(manual.title, "Manual Panel")
 
+    def test_apply_metadata_polish_rebuilds_stale_native_dashboard(self):
+        # Regression test: metadata polish runs before --validate/--upload
+        # and rewrites panel titles/control labels into YAML, but the native
+        # IR was already built from the pre-polish doc. A --polish-metadata
+        # --upload run must not ship the pre-polish title on the native path.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+
+            # Simulate the pre-polish native IR built at translation time,
+            # from the same (stale) dashboard doc that is about to be polished.
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+            stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+            self.assertEqual(stale_title, "graph")
+
+            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        rebuilt_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+        self.assertEqual(rebuilt_title, "Foo Total")
+
+    def test_apply_metadata_polish_leaves_missing_native_dashboard_alone(self):
+        # Callers that never set result.native_dashboard must not trip the
+        # rebuild path or its deferred import.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        self.assertIsNone(result.native_dashboard)
+
     def test_verification_packet_marks_green_for_clean_panel(self):
         dashboard = {
             "title": "Verified",
@@ -10115,6 +10344,13 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertIn("suffix", fmt)
 
     def test_unit_to_yaml_format_duration_seconds(self):
+        # A bare ``{type: duration}`` is the only shape the kb-dashboard-core
+        # YAML schema accepts here (``ESQLMetricFormat`` et al reject
+        # ``from``/``to`` outright). The typed Dashboards API's own
+        # multi-column format schema separately requires ``from``/``to``, but
+        # ``dashboards_api._api_format`` defaults those independently when
+        # mapping this YAML into the native API payload -- see
+        # test_dashboards_api.py::test_api_format_accepts_bare_duration.
         from observability_migration.targets.kibana.emit.display import grafana_unit_to_yaml_format
         fmt = grafana_unit_to_yaml_format("s")
         self.assertEqual(fmt, {"type": "duration"})

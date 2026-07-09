@@ -1722,6 +1722,87 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(result.visual_ir.title, yaml_panel["title"])
         self.assertEqual(result.query_ir.get("target_query"), query)
 
+    def test_native_promql_xy_visual_ir_carries_api_safe_display_metadata(self):
+        panel = _make_panel(
+            1,
+            "rate(http_requests_total[5m])",
+            panel_type="graph",
+            title="Traffic",
+        )
+        panel["targets"][0]["legendFormat"] = "Requests"
+        panel["legend"] = {"show": True, "rightSide": True}
+        panel["fieldConfig"] = {
+            "defaults": {
+                "unit": "Bps",
+                "min": 0,
+                "max": 100,
+                "custom": {
+                    "axisLabel": "Throughput",
+                    "scaleDistribution": {"type": "log"},
+                },
+            },
+            "overrides": [],
+        }
+        panel["yaxes"] = [
+            {"label": "Throughput", "format": "Bps", "min": 0, "max": 100},
+            {"label": "Error %", "format": "percent"},
+        ]
+        panel["seriesOverrides"] = [{"alias": "Requests", "yaxis": 2}]
+
+        yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        esql = yaml_panel["esql"]
+        metric = esql["metrics"][0]
+        self.assertEqual(metric["label"], "Requests")
+        self.assertEqual(metric["axis"], "right")
+        self.assertEqual(metric["format"]["suffix"], "%")
+        self.assertEqual(esql["legend"], {"visible": "show", "position": "right", "truncate_labels": 1})
+        self.assertEqual(esql["appearance"]["y_left_axis"]["title"], "Throughput")
+        self.assertEqual(
+            esql["appearance"]["y_left_axis"]["extent"],
+            {"mode": "custom", "min": 0.0, "max": 100.0},
+        )
+        self.assertEqual(result.visual_ir.presentation.config["metrics"][0]["axis"], "right")
+        self.assertEqual(result.visual_ir.presentation.config["appearance"], esql["appearance"])
+
+    def test_native_promql_gauge_visual_ir_carries_metric_color_bounds_and_shape(self):
+        panel = _make_panel(
+            2,
+            "max(cpu_usage_percent)",
+            panel_type="gauge",
+            title="CPU Usage",
+        )
+        panel["fieldConfig"] = {
+            "defaults": {
+                "unit": "percent",
+                "min": 0,
+                "max": 100,
+                "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                        {"color": "green", "value": None},
+                        {"color": "yellow", "value": 70},
+                        {"color": "red", "value": 90},
+                    ],
+                },
+            },
+            "overrides": [],
+        }
+
+        yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "gauge")
+        self.assertEqual(esql["metric"]["label"], "CPU Usage")
+        self.assertEqual(esql["metric"]["format"]["suffix"], "%")
+        self.assertEqual(esql["minimum"], {"field": "_gauge_min"})
+        self.assertEqual(esql["maximum"], {"field": "_gauge_max"})
+        self.assertEqual(esql["goal"], {"field": "_gauge_goal"})
+        self.assertEqual(esql["appearance"]["shape"], "arc")
+        self.assertEqual(esql["color"]["thresholds"][-1]["up_to"], 100)
+        self.assertNotIn("color", esql["metric"])
+        self.assertEqual(result.visual_ir.presentation.config["color"], esql["color"])
+
     def test_native_promql_grouped_multi_label_legend_uses_composite_breakdown(self):
         panel = _make_panel(
             1,

@@ -4,7 +4,7 @@ widgets: 43
 panels: 34
 controls: 1
 filters: 0
-statuses: {'ok': 15, 'requires_manual': 1, 'skipped': 9, 'warning': 18}
+statuses: {'ok': 13, 'requires_manual': 1, 'skipped': 9, 'warning': 20}
 - title='Datadog note 7601198205415224'; kind=markdown
 - title='Datadog note 7939246017097054'; kind=markdown
 - title='Averaged uptime'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
@@ -14,7 +14,7 @@ statuses: {'ok': 15, 'requires_manual': 1, 'skipped': 9, 'warning': 18}
 - title='Secondary count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Configsvr count'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Oplog usage'; kind=esql; type=line; dimension=time_bucket; metrics=['oplog_log_size', 'oplog_used_size']; breakdowns=[]; primary=; metric=
-- title='Maximum lag per replica set'; kind=lens; type=line; dimension=@timestamp; metrics=['mongodb_replset_optime_lag']; primary=
+- title='Maximum lag per replica set'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Datadog note 14'; kind=markdown
 - title='Maximum lag per replica set (widget 11)'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['replset_name']; primary=; metric=
 - title='Datadog note 21'; kind=markdown
@@ -23,7 +23,7 @@ statuses: {'ok': 15, 'requires_manual': 1, 'skipped': 9, 'warning': 18}
 - title='Datadog note 27'; kind=markdown
 - title='Datadog note 24'; kind=markdown
 - title='Number of page faults per host'; kind=esql; type=line; dimension=time_bucket; metrics=['query3']; breakdowns=[]; primary=; metric=
-- title='Data size per replica set'; kind=lens; type=line; dimension=@timestamp; metrics=['mongodb_stats_datasize']; primary=
+- title='Data size per replica set'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Read requests per second'; kind=esql; type=line; dimension=time_bucket; metrics=['getmore_operations', 'queries']; breakdowns=[]; primary=; metric=
 - title='Network I/O'; kind=esql; type=line; dimension=time_bucket; metrics=['received_network_traffic', 'sent_network_traffic']; breakdowns=[]; primary=; metric=
 - title='Write requests per second'; kind=esql; type=line; dimension=time_bucket; metrics=['delete_operations', 'insert_operations', 'update_operations']; breakdowns=[]; primary=; metric=

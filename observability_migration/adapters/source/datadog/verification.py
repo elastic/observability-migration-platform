@@ -124,7 +124,7 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     if kibana_type == "metric":
         add("native_metric_panel", 1, "preferred", "Single-value Datadog widgets map to Kibana metric-style panels")
         if backend == "lens":
-            add("lens_fallback", 2, "fallback", "Lens remains a valid fallback for aggregation-only metric widgets")
+            add("lens_fallback", 2, "fallback", "Lens is legacy-only; native Dashboards API upload requires ES|QL or markdown YAML")
     elif kibana_type == "table":
         if query_language == "datadog_log":
             add("discover_embed", 1, "preferred", "Log/event workflows often fit Discover-style tables best")
@@ -134,7 +134,7 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     elif kibana_type == "xy":
         add("native_esql_panel", 1, "preferred", "Time-series widgets should prefer native ES|QL visualizations")
         if backend == "lens":
-            add("lens_fallback", 2, "fallback", "Lens remains useful for simpler aggregation-only charts")
+            add("lens_fallback", 2, "fallback", "Lens is legacy-only; native Dashboards API upload requires ES|QL or markdown YAML")
     elif kibana_type == "partition":
         add("partition_chart", 1, "preferred", "Categorical Datadog widgets map to Kibana partition charts")
     elif kibana_type == "treemap":

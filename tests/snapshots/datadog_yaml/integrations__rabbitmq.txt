@@ -4,7 +4,7 @@ widgets: 47
 panels: 41
 controls: 3
 filters: 0
-statuses: {'not_feasible': 1, 'ok': 11, 'requires_manual': 6, 'skipped': 6, 'warning': 23}
+statuses: {'not_feasible': 1, 'ok': 12, 'requires_manual': 5, 'skipped': 6, 'warning': 23}
 - title='Datadog note 6507010436924774'; kind=markdown
 - title='Datadog note 7472223195597488'; kind=markdown
 - title='Datadog note 7225439286749620'; kind=markdown
@@ -42,7 +42,7 @@ statuses: {'not_feasible': 1, 'ok': 11, 'requires_manual': 6, 'skipped': 6, 'war
 - title='Incoming Messages by env, Producing Service'; kind=markdown
 - title='Outgoing Messages by env, Consuming Service'; kind=markdown
 - title='Top 10 p95 Message Size by env'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
-- title='Distribution of Message Size'; kind=markdown
+- title='Distribution of Message Size'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Datadog note 218491216894336'; kind=markdown
 - title='Count per Log Status'; kind=esql; type=line; dimension=time_bucket; metrics=['count']; breakdowns=[]; primary=; metric=
 - title='Error Logs for RabbitMQ'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=

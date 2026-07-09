@@ -327,7 +327,7 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("They accept the same `--input-mode {files,api}`", text)
         self.assertIn("`--source files|api`", text)
         self.assertIn("--no-compile", text)
-        self.assertIn("Upload still compiles", text)
+        self.assertIn("Upload deploys through Kibana's typed Dashboards API by default", text)
         self.assertIn("obs-migrate migrate --source <source> --input-mode files", text)
 
 

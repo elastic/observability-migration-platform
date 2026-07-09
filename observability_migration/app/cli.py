@@ -194,6 +194,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--validate", action="store_true")
     migrate.add_argument("--upload", action="store_true")
+    migrate.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Deploy dashboards via the legacy kb-dashboard-cli saved-objects "
+            "import instead of the default typed Kibana Dashboards API "
+            "(POST /api/dashboards). The native API is used by default; this "
+            "flag forces the older compile+import path."
+        ),
+    )
+    migrate.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     migrate.add_argument("--es-url", default="")
     migrate.add_argument("--es-api-key", default="")
     migrate.add_argument("--kibana-url", default="")
@@ -249,10 +266,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     upload_cmd = sub.add_parser(
         "upload",
-        help="Compile dashboard YAML to NDJSON and upload to Kibana",
+        help="Deploy dashboard YAML to Kibana via the typed Dashboards API",
         description=(
-            "Compile dashboard YAML (via kb-dashboard-cli) and upload the resulting "
-            f"NDJSON to Kibana. {_UPLOAD_SHAPE_HELP}"
+            "Deploy dashboard YAML to Kibana via the typed Dashboards API "
+            "(POST /api/dashboards) by default, with per-dashboard fallback to the "
+            "legacy kb-dashboard-cli saved-objects import. Pass --legacy-import to "
+            f"force the legacy compile+import path. {_UPLOAD_SHAPE_HELP}"
         ),
     )
     upload_group = upload_cmd.add_mutually_exclusive_group(required=True)
@@ -272,6 +291,21 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
+    upload_cmd.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (POST /api/dashboards)."
+        ),
+    )
+    upload_cmd.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
@@ -840,6 +874,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "legacy_import", False):
+        legacy_argv.append("--legacy-import")
     if args.es_url:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
@@ -942,6 +978,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "legacy_import", False):
+        legacy_argv.append("--legacy-import")
     if args.preflight:
         legacy_argv.append("--preflight")
     if getattr(args, "source_execution", False):
@@ -1034,7 +1072,7 @@ def _run_compile(args: Any) -> None:
 
 
 def _run_upload(args: Any) -> None:
-    """Compile YAML dashboards and upload them to Kibana via kb-dashboard-cli."""
+    """Deploy YAML dashboards to Kibana via the typed Dashboards API by default."""
     raw_path = getattr(args, "yaml_dir", None) or getattr(args, "compiled_dir", None) or ""
     if getattr(args, "compiled_dir", None) and not getattr(args, "yaml_dir", None):
         print(
@@ -1055,6 +1093,7 @@ def _run_upload(args: Any) -> None:
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
         verify=verify,
+        use_dashboards_api=not getattr(args, "legacy_import", False),
     )
     if not upload_payload["records"]:
         print(
@@ -1071,9 +1110,23 @@ def _run_upload(args: Any) -> None:
 
     for item in upload_payload["records"]:
         status = "OK" if item["success"] else "FAIL"
-        print(f"  [{status}] {item['yaml_file']}")
+        suffix = ""
+        if item.get("fallback_used"):
+            suffix = " (via legacy _import fallback)"
+        elif item.get("status"):
+            suffix = f" ({item['status']} via dashboards API)"
+        print(f"  [{status}] {item['yaml_file']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
+        dropped_filters = item.get("unmapped_reasons", {}).get(
+            "dropped_unsupported_dashboard_filter", 0
+        )
+        if dropped_filters:
+            print(
+                f"         warning: dropped {dropped_filters} unsupported dashboard "
+                "filter(s); affected panels may query a broader dataset than the source",
+                file=sys.stderr,
+            )
     if upload_payload["summary"]["uploaded_ok"] < upload_payload["summary"]["total"]:
         sys.exit(1)
 

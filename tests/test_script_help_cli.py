@@ -8,6 +8,7 @@ import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+MAKEFILE = ROOT / "Makefile"
 RUN_MIGRATION_SCRIPT = ROOT / "scripts" / "run_migration.sh"
 VALIDATE_PANEL_QUERIES_SCRIPT = ROOT / "scripts" / "validate_panel_queries.py"
 SETUP_TELEMETRY_DATA_SCRIPT = ROOT / "scripts" / "setup_telemetry_data.py"
@@ -17,6 +18,7 @@ SCRIPTS = [
     "audit_pipeline.py",
     "check_licenses.py",
     "create_grafana_test_alerts.py",
+    "fetch_dashboards_api_schema.py",
     "generate_alert_support_report.py",
     "generate_telemetry_contract.py",
     "setup_telemetry_data.py",
@@ -118,6 +120,13 @@ class ScriptHelpCliTests(unittest.TestCase):
                 combined_output,
                 msg=f"{script_name} did not emit usage text for --help",
             )
+
+    def test_makefile_exposes_native_dashboards_schema_check_target(self):
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertIn("check-native-schema:", makefile)
+        self.assertIn("fetch_dashboards_api_schema.py", makefile)
+        self.assertIn("KIBANA_DASHBOARDS_API_SCHEMA_URL", makefile)
 
 
 if __name__ == "__main__":

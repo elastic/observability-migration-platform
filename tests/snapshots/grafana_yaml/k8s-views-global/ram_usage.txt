@@ -5,4 +5,4 @@ chart_type: metric
 primary: computed_value
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
-warning: Panel has 5 PromQL targets but only 1 could be migrated (dropped targets are Windows-specific)
+warning: Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)

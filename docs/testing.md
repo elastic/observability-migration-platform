@@ -119,7 +119,7 @@ for both on Serverless). Full command examples are in `command-contract.md`.
 | Gate | Module | Proves |
 |---|---|---|
 | ES\|QL oracle | `verifier.live_validate` | Elasticsearch accepts the emitted ES\|QL (`real_bug` vs `data_gap`) |
-| Typed UI contract | `verifier.dashboards_api` | Kibana's native Dashboards API accepts the mapped panels (the converter handles XY, metric, gauge, pie, markdown today; `data_table` has no ES\|QL variant on 9.5.0) |
+| Typed UI contract | `verifier.dashboards_api` | Kibana's native Dashboards API accepts the mapped panels. The oracle maps all 11 ES\|QL visualization families the API exposes (`xy`, metric, gauge, heatmap, tag cloud, region map, data table, pie, mosaic, treemap, waffle), plus markdown. |
 | Render audit | `observability_migration.targets.kibana.render_audit_driver` | panels actually render in Kibana (see below) |
 | Numeric parity | `obs-migrate compare` + `verifier.corpus_gate` | native PROMQL and translated ES\|QL are numerically close |
 | Trend guard | `verifier.benchmark_gate` | success metrics + denominators don't drop vs a compatible baseline |

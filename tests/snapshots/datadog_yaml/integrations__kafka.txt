@@ -4,7 +4,7 @@ widgets: 55
 panels: 46
 controls: 3
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 4, 'skipped': 9, 'warning': 27}
+statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 3, 'skipped': 9, 'warning': 28}
 - title='Datadog image 5924016577024848'; kind=markdown
 - title='Datadog note 7914240170882312'; kind=markdown
 - title='Datadog note 8756831542082047'; kind=markdown
@@ -37,10 +37,10 @@ statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 4, 'skipped': 9, 'war
 - title='Incoming messages by env, producing service for $topic'; kind=markdown
 - title='Outgoing messages by env, consuming service for $topic'; kind=markdown
 - title='Top 10 p95 message size by env for $topic'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
-- title='Distribution of message size for $topic'; kind=markdown
+- title='Distribution of message size for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Datadog note 3441872316411158'; kind=markdown
 - title='ZK File Descriptors'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2']; breakdowns=[]; primary=; metric=
-- title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=service.name
+- title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=y_group
 - title='Pending Syncs (Leader)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Average Request Latency (widget 1648173259960202)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Outstanding Requests'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=host.name

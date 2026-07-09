@@ -615,13 +615,23 @@ class ControlInteraction:
 
 def extract_controls(report: dict) -> list[ControlInteraction]:
     """Extract the dashboard's controls (migrated template variables) from a
-    migration report / compiled dashboard dict."""
+    migration report / compiled dashboard dict.
+
+    Controls come in two YAML shapes: ES|QL parameter-binding controls
+    (``type: esql``) are keyed by ``variable_name``; ``options``/``range``
+    controls — the more common dashboard-level dropdown/slider filters
+    (Grafana ``query`` variables, Datadog template variables) — have no
+    ``variable_name`` and are instead keyed by the data-view ``field`` they
+    filter. Falling back to ``field`` here matters: without it, every
+    options/range control was silently excluded from the interaction audit
+    plan, leaving only the rarer ES|QL-param controls exercised.
+    """
     controls: list[ControlInteraction] = []
     for dashboard in report.get("dashboards", []):
         for control in dashboard.get("controls") or []:
             if not isinstance(control, dict):
                 continue
-            name = str(control.get("variable_name") or "")
+            name = str(control.get("variable_name") or control.get("field") or "")
             if not name:
                 continue
             controls.append(

@@ -779,7 +779,11 @@ class RemoveSampleDataSubcommandTests(unittest.TestCase):
     def test_missing_creds_returns_2(self):
         from observability_migration.app import cli
 
-        with tempfile.TemporaryDirectory() as artifact_dir, self.assertRaises(SystemExit) as ctx:
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            tempfile.TemporaryDirectory() as artifact_dir,
+            self.assertRaises(SystemExit) as ctx,
+        ):
             cli.main(["remove-sample-data", "--artifact-dir", artifact_dir, "--es-url", "https://es.test"])
         self.assertEqual(ctx.exception.code, 2)
 
