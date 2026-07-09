@@ -1960,15 +1960,24 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "gauge")
         self.assertIn("time=?_tend", esql["query"])
 
-    def test_timeseries_panel_keeps_range_step_query(self):
-        """A real time-series (line) panel must still use a ``step=`` range
-        query so it plots over time."""
+    def test_timeseries_panel_emits_adaptive_range_query(self):
+        """A real time-series (line) panel is a range plot, but a migrated
+        dashboard panel omits ``step=`` so Kibana/Elastic re-buckets it to the
+        dashboard time range like Grafana (issue #272). It must still be a range
+        query (no ``time=?_tend``) and keep the ``step`` time column as its
+        x-axis dimension."""
         panel = _make_panel(1, "rate(http_requests_total[5m])", panel_type="timeseries")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
-        query = yaml_panel["esql"]["query"]
-        self.assertIn("step=", query)
+        esql = yaml_panel["esql"]
+        query = esql["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        # #272: no baked-in resolution -> adaptive at view time.
+        self.assertNotIn("step=", query)
+        # Still a range query, not an instant snapshot.
         self.assertNotIn("time=?_tend", query)
+        # The range command still emits the ``step`` column for the x-axis.
+        self.assertEqual((esql.get("dimension") or {}).get("field"), "step")
 
     def test_build_native_promql_query_instant_opt_in_only(self):
         """The instant form is opt-in: callers that post-process the ``step``
@@ -2002,9 +2011,11 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertIn("time=?_tend", esql["query"])
         self.assertNotIn("step=", esql["query"])
 
-    def test_range_table_panel_keeps_step_query(self):
-        """A table panel WITHOUT ``instant`` stays a ``step=`` range query: it
-        is a normal range table, not an instant snapshot."""
+    def test_range_table_panel_emits_adaptive_range_query(self):
+        """A table panel WITHOUT ``instant`` is a normal range table, not an
+        instant snapshot. As a migrated dashboard panel it omits ``step=`` (auto
+        resolution, issue #272) while staying a range query (no
+        ``time=?_tend``)."""
         panel = _make_panel(
             1, "sum by (http.route) (rate(http_requests_total[5m]))",
             panel_type="table",
@@ -2013,7 +2024,8 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("step=", query)
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertNotIn("step=", query)
         self.assertNotIn("time=?_tend", query)
 
     def test_build_native_promql_query_instant_datatable(self):
@@ -2069,10 +2081,13 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         """Regression (#135 review): ``_target_summary_mode`` returns True
         unconditionally for ``bargauge``, but ``bargauge`` maps to the XY
         ``bar`` kibana type whose spec x-axes on the ``step`` time column. An
-        instant query emits no ``step``, so widening ``instant`` to summary-mode
-        must NOT reach ``bar``: doing so binds the x-axis to a phantom ``step``
-        column (the #127 failure mode). A native-path ``bargauge`` must keep its
-        ``step=`` range query and a valid ``step`` x-axis dimension."""
+        instant query emits no ``step`` column, so widening ``instant`` to
+        summary-mode must NOT reach ``bar``: doing so would bind the x-axis to a
+        phantom ``step`` column (the #127 failure mode). A native-path
+        ``bargauge`` must stay a range query (never ``time=?_tend``) with a valid
+        ``step`` x-axis dimension. The range command emits the ``step`` column
+        regardless of whether a ``step=`` resolution is pinned, so the migrated
+        dashboard panel omits it for adaptive bucketing (issue #272)."""
         panel = _make_panel(
             1, "rate(http_requests_total[5m])", panel_type="bargauge",
         )
@@ -2083,14 +2098,74 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         # Only assert the phantom-axis invariant when the native PROMQL path
         # actually handled this panel (PROMQL command emitted).
         if query.startswith("PROMQL"):
-            self.assertIn("step=", query)
+            # Must be a range query so the ``step`` x-axis column exists.
             self.assertNotIn("time=?_tend", query)
+            # Adaptive resolution: no baked-in ``step=`` (issue #272).
+            self.assertNotIn("step=", query)
             dimension = esql.get("dimension") or {}
-            if dimension.get("field") == "step":
-                self.assertIn(
-                    "step=", query,
-                    "bar x-axis binds to step but query emits no step column",
-                )
+            self.assertEqual(
+                dimension.get("field"), "step",
+                "bar x-axis must bind to the step time column",
+            )
+
+    def test_dashboard_rate_interval_panel_is_windowless_and_stepless(self):
+        """End-to-end (#272 + #273): a migrated line panel whose Grafana source
+        used ``rate(x[$__rate_interval])`` emits a windowless ``rate(x)`` with no
+        baked-in ``step=`` — fully adaptive like the Grafana original."""
+        panel = _make_panel(1, "rate(http_requests_total[$__rate_interval])")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertIn("value=(rate(http_requests_total))", query)
+        self.assertNotIn("$__rate_interval", query)
+        self.assertNotIn("[5m]", query)
+        self.assertNotIn("step=", query)
+        self.assertNotIn("time=?_tend", query)
+
+    def test_dashboard_explicit_rate_window_panel_keeps_window_but_drops_step(self):
+        """End-to-end (#273): a pinned explicit window survives verbatim while
+        the panel step still goes adaptive (#272)."""
+        panel = _make_panel(1, "rate(http_requests_total[5m])")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("value=(rate(http_requests_total[5m]))", query)
+        self.assertNotIn("step=", query)
+
+    def test_multi_target_overlay_is_windowless_and_stepless(self):
+        """The multi-target native overlay path (the ``label_replace + or``
+        fallback) also emits adaptive resolution: no ``step=`` (#272), windowless
+        rate for ``$__rate_interval`` targets, and explicit windows preserved
+        (#273). Exercised directly because the overlay is only reached as a
+        fallback when the ES|QL merge is not_feasible."""
+        panel = {
+            "id": 1, "type": "timeseries", "title": "Overlay", "targets": [],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        }
+        targets_with_expr = [
+            ({"expr": "rate(http_requests_total[$__rate_interval])", "refId": "A",
+              "legendFormat": "reqs", "datasource": {"type": "prometheus"}},
+             "rate(http_requests_total[$__rate_interval])"),
+            ({"expr": "rate(http_errors_total[5m])", "refId": "B",
+              "legendFormat": "errors", "datasource": {"type": "prometheus"}},
+             "rate(http_errors_total[5m])"),
+        ]
+        out = panels._translate_multi_target_native_promql(
+            panel, {}, "Overlay", "timeseries", "line",
+            {"type": "prometheus"}, "metrics-*", self.rp, [], {},
+            targets_with_expr, resolver=self.resolver,
+        )
+        self.assertIsNotNone(out)
+        yaml_panel, _ = out
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL index=metrics-*"), query)
+        self.assertNotIn("step=", query)
+        self.assertNotIn("$__rate_interval", query)
+        # $__rate_interval target -> windowless; explicit [5m] target -> kept.
+        self.assertIn('label_replace(rate(http_requests_total), "__series"', query)
+        self.assertIn('label_replace(rate(http_errors_total[5m]), "__series"', query)
 
 
 # =========================================================================
@@ -3606,6 +3681,34 @@ class TestNativePromqlLiveValidationFallback(unittest.TestCase):
             '{"type":"verification_exception","reason":"line 1:54: Unknown column [host]"}',
         )
         self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_validator_receives_adaptive_windowless_query(self):
+        """Regression (#272/#273): the live parse gate must validate the *actual*
+        emitted adaptive form — stepless and windowless — not a fixed-window
+        proxy. If the validator were handed a ``step=…``/``[5m]`` shape it could
+        pass while the real windowless query that ships to Kibana is never
+        checked (or vice-versa, a valid adaptive panel could wrongly degrade)."""
+        seen = []
+
+        def validator(query):
+            seen.append(query)
+            return True, ""
+
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = validator
+        _yaml, pr = _translate_panel(
+            _make_panel(1, "rate(http_requests_total[$__rate_interval])"),
+            rule_pack=rp,
+        )
+        # Panel stayed native (validator accepted the query).
+        self.assertTrue((getattr(pr, "esql_query", "") or "").startswith("PROMQL "))
+        # The validator saw the real adaptive output: windowless rate, no step.
+        self.assertTrue(seen, "native-PROMQL validator was never invoked")
+        validated = seen[-1]
+        self.assertIn("value=(rate(http_requests_total))", validated)
+        self.assertNotIn("$__rate_interval", validated)
+        self.assertNotIn("[5m]", validated)
+        self.assertNotIn("step=", validated)
 
 
 if __name__ == "__main__":
