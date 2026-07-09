@@ -899,10 +899,21 @@ _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 # Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
 # $__auto_interval_*). Grafana sizes these from the panel width and selected time
 # range at view time, i.e. they encode "size the lookback to the view", not a
-# fixed duration. The final ``(?![\w])`` keeps ``$__interval`` from matching the
-# prefix of a longer custom variable like ``$__interval_ms``.
+# fixed duration. Each spelling is accepted both unbraced (``$__rate_interval``)
+# and braced (``${__rate_interval}``) — Grafana treats the two as identical, so
+# the braced form carries the same adaptive intent (issue #273 review).
+_GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME = (
+    r"(?:__rate_interval|__interval|interval|__auto_interval_\w+)"
+)
+# The unbraced ``(?![\w])`` keeps ``$__interval`` from matching the prefix of a
+# longer custom variable like ``$__interval_ms``; the braced form is delimited by
+# ``}`` so the same over-match is impossible there.
 _GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
-    r"(?:\$__rate_interval|\$__interval|\$interval|\$__auto_interval_\w+)(?![\w])"
+    r"(?:\$"
+    + _GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME
+    + r"(?![\w])|\$\{\s*"
+    + _GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME
+    + r"\s*\})"
 )
 # A ``rate(...)`` / ``increase(...)`` whose range-selector window is one of those
 # adaptive macros: ``rate(metric{labels}[$__rate_interval])``. The vector
@@ -914,6 +925,12 @@ _GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
 # a windowless form for them is not confirmed and could emit an invalid query.
 # The selector body forbids ``(``/``)`` so a range-on-nonselector shape (already
 # rejected upstream) is never rewritten here.
+#
+# The vector selector accepts every shape ``can_use_native_promql`` does: a
+# metric name (``metric``), a metric name with a label set (``metric{job="api"}``),
+# or a selector-only vector with no leading metric name (``{__name__="m"}`` /
+# ``{job="api"}``). Without the selector-only branch #273 would silently freeze
+# those brace-only vectors to ``[5m]`` (issue #273 review).
 #
 # ``\s*`` before the ``{`` tolerates upstream dashboards that space out the
 # selector (``metric {job="api"}``); the fixed-window fallback below collapses
@@ -928,7 +945,7 @@ _GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
 # the same valid query the pre-#273 code emitted.
 _RATE_INCREASE_ADAPTIVE_WINDOW_RE = re.compile(
     r"(\b(?:rate|increase)\s*\(\s*"
-    r"[A-Za-z_:][A-Za-z0-9_:]*(?:\s*\{[^{}]*\})?)"
+    r"(?:[A-Za-z_:][A-Za-z0-9_:]*(?:\s*\{[^{}]*\})?|\{[^{}]*\}))"
     r"\s*\[\s*" + _GRAFANA_ADAPTIVE_INTERVAL_MACRO + r"\s*\]"
     r"(?!\s*(?:offset\b|@))"
 )

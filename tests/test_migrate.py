@@ -13838,6 +13838,93 @@ class NativePromqlTests(unittest.TestCase):
         self.assertIn('value=(rate(http_requests_total{job="api"}[5m] offset 1h))', q)
         self.assertNotIn("} [", q)
 
+    def test_adaptive_window_handles_name_selector_only_vector(self):
+        """Issue #273 review: a selector-only vector (``{__name__="..."}`` with no
+        leading metric identifier) is accepted by ``can_use_native_promql`` and
+        must go windowless on the adaptive dashboard path, not freeze to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({__name__="http_requests_total"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({__name__="http_requests_total"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_label_selector_only_vector(self):
+        """A selector-only vector matched purely by labels (``{job="api"}``) has
+        no leading metric name but is still native-supported, so it must stay
+        adaptive on the dashboard range path (issue #273 review)."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_braced_interval_macro(self):
+        """Issue #273 review: Grafana's braced macro spelling
+        (``${__rate_interval}``) carries the same adaptive intent as the unbraced
+        form, so it must go windowless rather than freeze to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[${__rate_interval}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total))", q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("__rate_interval", q)
+
+    def test_adaptive_window_handles_braced_interval_macro_sibling(self):
+        """The braced handling covers the sibling adaptive macros too, e.g.
+        ``${__interval}`` on an ``increase`` goes windowless instead of the
+        frozen ``[1m]`` default."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "increase(http_requests_total[${__interval}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(increase(http_requests_total))", q)
+        self.assertNotIn("[1m]", q)
+        self.assertNotIn("__interval", q)
+
+    def test_adaptive_window_handles_selector_only_with_braced_macro(self):
+        """The selector-only and braced-macro fixes compose: a purely
+        label-matched vector windowed by a braced macro still goes windowless."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[${__rate_interval}])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("__rate_interval", q)
+
+    def test_adaptive_window_keeps_fixed_range_for_selector_only_with_offset(self):
+        """The offset guard (issue #273 review) still applies to selector-only
+        vectors: an ``offset`` modifier forces the valid fixed-window fallback
+        rather than dropping the range before the modifier."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[$__rate_interval] offset 5m)',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}[5m] offset 5m))', q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_leaves_non_macro_braced_window_fixed(self):
+        """A braced *custom* variable window (not one of Grafana's adaptive
+        macros) must NOT be treated as adaptive: it keeps the fixed-window
+        fallback so the emitted rate stays a valid range query."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[${my_window}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
+
     def test_native_promql_rejects_double_bracket_label_variable(self):
         self.assertFalse(panels.can_use_native_promql('rate(foo{instance=~"[[instance]]"}[5m])'))
         with self.assertRaises(ValueError):
