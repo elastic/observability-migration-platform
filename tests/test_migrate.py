@@ -13925,6 +13925,59 @@ class NativePromqlTests(unittest.TestCase):
         )
         self.assertIn("value=(rate(http_requests_total[5m]))", q)
 
+    def test_adaptive_window_handles_brace_in_label_value(self):
+        """Issue #273 review: a quoted label value may itself contain ``{``/``}``
+        (a route template like ``route="/api/{id}"``). The adaptive rewrite must
+        scan past those braces inside the quoted value and still go windowless
+        rather than freeze the whole selector to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate(http_requests_total{route="/api/{id}"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_brace_in_label_value_selector_only(self):
+        """The brace-in-value scan also applies to selector-only vectors (no
+        leading metric name), e.g. ``{route="/api/{id}"}``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({route="/api/{id}"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({route="/api/{id}"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_brace_in_label_value_multi_label(self):
+        """A brace-bearing value alongside other matchers still goes windowless;
+        the scan must not stop at the first brace inside the quoted value."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}",method="GET"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn(
+            'value=(rate(http_requests_total{route="/api/{id}",method="GET"}))', q
+        )
+        self.assertNotIn("[5m]", q)
+
+    def test_adaptive_window_keeps_fixed_range_for_brace_value_with_offset(self):
+        """The offset guard still wins when the label value contains braces: the
+        vector falls back to the valid fixed-window form rather than dropping the
+        range before the modifier."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}"}[$__rate_interval] offset 5m)',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn(
+            'value=(rate(http_requests_total{route="/api/{id}"}[5m] offset 5m))', q
+        )
+        self.assertNotIn("$__rate_interval", q)
+
     def test_native_promql_rejects_double_bracket_label_variable(self):
         self.assertFalse(panels.can_use_native_promql('rate(foo{instance=~"[[instance]]"}[5m])'))
         with self.assertRaises(ValueError):

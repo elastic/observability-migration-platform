@@ -937,15 +937,29 @@ _GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
 # that space, and this rewrite runs first, so without it #273 would silently
 # miss the spaced form and freeze it to ``[5m]``.
 #
+# The label set is matched by ``_PROMQL_LABEL_SELECTOR`` (defined just below),
+# which is quote-aware so a value containing braces stays adaptive (#273 review).
+#
 # The trailing negative lookahead leaves a range vector that carries an
 # ``offset`` / ``@`` modifier alone: ``rate(foo[$__rate_interval] offset 5m)``
 # must not become ``rate(foo offset 5m)`` (a windowless-with-modifier form that
 # is not confirmed and drops the range before the modifier). Skipping the match
 # lets it fall through to the fixed-window path -> ``rate(foo[5m] offset 5m)``,
 # the same valid query the pre-#273 code emitted.
+#
+# A PromQL label set ``{...}`` whose quoted values may contain ``{``/``}`` (e.g.
+# ``{route="/api/{id}"}``). A naive ``[^{}]*`` stops at the first brace inside
+# such a value, so scan the body as double-/single-quoted string literals (with
+# escapes) or any char that is not a brace or quote. The alternatives are
+# mutually exclusive on their first char, so the outer ``*`` cannot backtrack
+# catastrophically.
+_PROMQL_LABEL_SELECTOR = (
+    r"\{(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^{}\"'])*\}"
+)
 _RATE_INCREASE_ADAPTIVE_WINDOW_RE = re.compile(
     r"(\b(?:rate|increase)\s*\(\s*"
-    r"(?:[A-Za-z_:][A-Za-z0-9_:]*(?:\s*\{[^{}]*\})?|\{[^{}]*\}))"
+    r"(?:[A-Za-z_:][A-Za-z0-9_:]*(?:\s*" + _PROMQL_LABEL_SELECTOR + r")?"
+    r"|" + _PROMQL_LABEL_SELECTOR + r"))"
     r"\s*\[\s*" + _GRAFANA_ADAPTIVE_INTERVAL_MACRO + r"\s*\]"
     r"(?!\s*(?:offset\b|@))"
 )
