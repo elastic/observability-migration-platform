@@ -1476,6 +1476,48 @@ class TestConflictingTypeAcrossIndices(unittest.TestCase):
             f"expected a conflicting-types warning, got {ctx.warnings}",
         )
 
+    def test_conflicting_exact_type_native_profile_physical_field_casts(self):
+        # Issue #245 follow-up: the conflict lives on the *resolved* physical
+        # field (prometheus_native's ``metrics.<metric>`` layout), not the
+        # bare logical PromQL name, which never appears in the live cache at
+        # all for this profile. The check must be profile-aware.
+        resolver = self._live_resolver(
+            {
+                "metrics.process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                },
+                "labels.job": {"keyword": {"type": "keyword"}},
+            }
+        )
+        ctx = _translate("max(process_virtual_memory_max_bytes)", resolver=resolver)
+        self.assertIn("MAX(TO_DOUBLE(metrics.process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_pre_aggregation_comparison_casts(self):
+        # Issue #245 follow-up: sum(metric > 0) runs the comparison filter
+        # and the outer aggregation on the same conflicting-type field
+        # through a dedicated code path (issue #148's pre_agg_filter branch)
+        # that bypassed the new cast entirely.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("sum(process_virtual_memory_max_bytes > 0)", resolver=resolver)
+        self.assertIn("WHERE TO_DOUBLE(process_virtual_memory_max_bytes) > 0", ctx.esql_query)
+        self.assertIn("SUM(TO_DOUBLE(process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
 
 # =========================================================================
 # Happy Path PromQL Bucket

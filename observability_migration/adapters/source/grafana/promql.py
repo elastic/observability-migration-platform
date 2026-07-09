@@ -306,48 +306,79 @@ def _counter_refuted(resolver, metric):
     return bool(refutes(metric)) if callable(refutes) else False
 
 
-def _metric_has_conflicting_types(resolver, metric):
-    """True when the live target maps ``metric``'s field with different exact
-    *numeric* types across indices (e.g. ``long`` in one dual-shipped index
-    and ``double`` in another). ES|QL rejects a bare reference to such a
-    field ("ambiguities in index mappings"); TO_DOUBLE is the documented fix
-    for a same-family numeric mismatch.
+def _resolve_conflicting_type_candidate(resolver, metric):
+    """Find the physical field -- ``metric`` itself, or a profile-resolved
+    counter/gauge variant -- that the live target maps with conflicting
+    *numeric* exact types across indices, if any (issue #245).
 
-    Deliberately excludes a conflict against a non-numeric type (e.g.
-    ``keyword`` alongside ``double``) -- that is a field-name collision
-    between two unrelated series, not the same metric stored inconsistently,
-    and casting a keyword value to double does not resolve it. Existing
-    behavior (keep the plain aggregation; other checks such as
-    ``is_numeric_field`` decide feasibility) is left untouched for that case.
+    Checks every candidate rather than trusting the caller to have already
+    resolved the right one: ``metric`` may be the raw PromQL name (e.g. the
+    shared RATE/IRATE/INCREASE degrade decision runs before the counter-vs-
+    gauge choice, and thus before any physical field is resolved) or it may
+    already be a caller-resolved physical field. Fleet ``prometheus.<metric>.
+    value``/``.counter`` and native ``metrics.<metric>`` layouts can carry
+    the conflict even when the bare logical name is absent from the live
+    cache entirely, so a raw-name-only check would silently miss them. If
+    ``metric`` is already a resolved physical field, re-resolving it through
+    ``resolve_metric_field`` just yields extra candidates that fail to match
+    and are harmlessly skipped.
 
-    Silent (False) when offline or the resolver lacks the capability (#245)."""
+    Returns ``(field_name, conflicting_types)`` for the first candidate with
+    a same-family numeric conflict, or ``(None, [])`` when there is none.
+    Excludes a conflict against a non-numeric type (e.g. ``keyword``
+    alongside ``double``) -- that is a field-name collision between two
+    unrelated series, not the same metric stored inconsistently, and casting
+    to double would not resolve it. Existing behavior (keep the plain
+    aggregation; other checks such as ``is_numeric_field`` decide
+    feasibility) is left untouched for that case. Returns ``(None, [])``
+    when offline or the resolver lacks the capability."""
     if resolver is None or not metric:
-        return False
+        return None, []
     has_conflicts = getattr(resolver, "has_conflicting_types", None)
-    if not callable(has_conflicts) or not has_conflicts(metric):
-        return False
     field_capability = getattr(resolver, "field_capability", None)
-    if not callable(field_capability):
-        return False
-    capability = field_capability(metric)
-    conflicting_types = getattr(capability, "conflicting_types", None) or []
-    return bool(conflicting_types) and all(t in NUMERIC_FIELD_TYPES for t in conflicting_types)
+    if not callable(has_conflicts) or not callable(field_capability):
+        return None, []
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    candidates = [metric]
+    if callable(resolve):
+        for prefer in ("counter", "gauge"):
+            candidate = resolve(metric, prefer=prefer)
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    for candidate in candidates:
+        if not has_conflicts(candidate):
+            continue
+        capability = field_capability(candidate)
+        conflicting_types = list(getattr(capability, "conflicting_types", None) or [])
+        if conflicting_types and all(t in NUMERIC_FIELD_TYPES for t in conflicting_types):
+            return candidate, conflicting_types
+    return None, []
+
+
+def _metric_has_conflicting_types(resolver, metric):
+    """True when ``metric`` (or a profile-resolved physical variant of it)
+    is mapped with different exact numeric types across indices (e.g.
+    ``long`` in one dual-shipped index and ``double`` in another). ES|QL
+    rejects a bare reference to such a field ("ambiguities in index
+    mappings"); TO_DOUBLE is the documented fix for a same-family numeric
+    mismatch. See :func:`_resolve_conflicting_type_candidate` for exactly
+    which candidates are checked and why."""
+    candidate, _ = _resolve_conflicting_type_candidate(resolver, metric)
+    return candidate is not None
 
 
 def _conflicting_type_cast_warning(metric, resolver):
-    """Warning for defensively casting a metric whose target field is mapped
-    with different exact types across indices (#245) -- e.g. ``long`` in one
-    dual-shipped index and ``double`` in another. A bare reference to such a
-    field is rejected by ES|QL ("ambiguities in index mappings"); the emitted
-    query casts to double instead so it can still run."""
-    conflicting_types = []
-    field_capability = getattr(resolver, "field_capability", None) if resolver else None
-    if callable(field_capability):
-        capability = field_capability(metric)
-        conflicting_types = list(getattr(capability, "conflicting_types", None) or [])
+    """Warning for defensively casting a metric whose target field (or a
+    profile-resolved variant of it) is mapped with conflicting types across
+    indices (#245) -- e.g. ``long`` in one dual-shipped index and ``double``
+    in another. A bare reference to such a field is rejected by ES|QL
+    ("ambiguities in index mappings"); the emitted query casts to double
+    instead so it can still run."""
+    candidate, conflicting_types = _resolve_conflicting_type_candidate(resolver, metric)
+    field_name = candidate or metric
     types_desc = f" ({', '.join(conflicting_types)})" if conflicting_types else ""
     return (
-        f"Target field '{metric}' is mapped with conflicting types{types_desc} "
+        f"Target field '{field_name}' is mapped with conflicting types{types_desc} "
         "across indices; cast to double so the query can still run. Align the "
         "ingest mapping for this field to remove the ambiguity."
     )
@@ -2632,7 +2663,7 @@ def _build_stats_call(
         is_counter,
         frag.range_func if frag else None,
         counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
-        force_cast=_counter_unsafe_cast_needed(frag.metric, resolver) if frag else False,
+        force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
     inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
     return _apply_outer_agg(esql_outer, inner_expr, frag)
@@ -3271,9 +3302,9 @@ def _build_measure_spec(
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             agg_arg = metric_field
-            if _counter_unsafe_cast_needed(frag.metric, resolver):
+            if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
-                warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
+                warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
             stats_expr = f"{default_agg}({agg_arg})"
             warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
             if warning:
@@ -3285,9 +3316,9 @@ def _build_measure_spec(
             default_agg = rule_pack.default_gauge_agg.upper()
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             agg_arg = metric_field
-            if _counter_unsafe_cast_needed(frag.metric, resolver):
+            if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
-                warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
+                warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
             stats_expr = f"{default_agg}({agg_arg})"
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
@@ -3310,6 +3341,7 @@ def _build_measure_spec(
         source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
+        gauge_metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
         if is_counter and frag.outer_agg != "count":
             metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
             # Bare counter aggregation: use LAST_OVER_TIME as inner function so the
@@ -3318,7 +3350,7 @@ def _build_measure_spec(
             warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
         elif (
             frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS
-            and _counter_unsafe_cast_needed(frag.metric, resolver)
+            and _counter_unsafe_cast_needed(gauge_metric_field, resolver)
         ):
             # Issue #245: the target maps this field with conflicting types
             # across indices, so SUM/MAX/MIN/AVG/STDDEV/QUANTILE may reject
@@ -3327,11 +3359,11 @@ def _build_measure_spec(
             # LAST_OVER_TIME, a TS-only function), so it defends the
             # aggregation without disturbing the source/bucket already chosen
             # above, instead of gambling on a bare aggregation.
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = gauge_metric_field
             inner_expr = f"TO_DOUBLE({metric_field})"
-            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
+            warnings.append(_counter_unsafe_cast_warning(gauge_metric_field, resolver))
         else:
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = gauge_metric_field
             inner_expr = metric_field
             # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
             # counter_long in ES fails with verification_exception. When the
@@ -3370,14 +3402,14 @@ def _build_measure_spec(
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
-            force_cast=_counter_unsafe_cast_needed(frag.metric, resolver),
+            force_cast=_counter_unsafe_cast_needed(metric_field, resolver),
         )
         if (
             not is_counter
             and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
-            and _counter_unsafe_cast_needed(frag.metric, resolver)
+            and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
-            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
@@ -3406,14 +3438,14 @@ def _build_measure_spec(
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
-            force_cast=_counter_unsafe_cast_needed(frag.metric, resolver),
+            force_cast=_counter_unsafe_cast_needed(metric_field, resolver),
         )
         if (
             not is_counter
             and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
-            and _counter_unsafe_cast_needed(frag.metric, resolver)
+            and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
-            warnings.append(_counter_unsafe_cast_warning(frag.metric, resolver))
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         stats_expr = _apply_outer_agg(
             esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )
@@ -3479,9 +3511,9 @@ def _build_measure_spec(
         bucket_expr = rule_pack.from_bucket if summary_mode else ""
         metric_field = _resolve_metric_field(resolver, start_metric, prefer="gauge")
         uptime_arg = metric_field
-        if _counter_unsafe_cast_needed(start_metric, resolver):
+        if _counter_unsafe_cast_needed(metric_field, resolver):
             uptime_arg = f"TO_DOUBLE({metric_field})"
-            warnings.append(_counter_unsafe_cast_warning(start_metric, resolver))
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         stats_expr = f"MAX({uptime_arg} * 1000)"
         eval_expr = f'DATE_DIFF("seconds", TO_DATETIME({alias}), NOW())'
     else:
