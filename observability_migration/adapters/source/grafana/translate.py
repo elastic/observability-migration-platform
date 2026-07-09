@@ -927,13 +927,17 @@ def uptime_family_rule(context):
     )
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{start_metric}_uptime_seconds")
     physical_metric = _resolve_metric_field(resolver, start_metric, prefer="gauge")
+    uptime_arg = physical_metric
+    if _counter_unsafe_cast_needed(start_metric, resolver):
+        uptime_arg = f"TO_DOUBLE({physical_metric})"
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(start_metric, resolver))
 
     context.parser_backend = "fragment"
     context.source_type = "FROM"
     context.metric_name = start_metric
     context.output_metric_field = result_alias
     context.output_group_fields = group_fields
-    stats_line = f"| STATS start_time_ms = MAX({physical_metric} * 1000)"
+    stats_line = f"| STATS start_time_ms = MAX({uptime_arg} * 1000)"
     if group_fields:
         stats_line += f" BY {', '.join(group_fields)}"
     context.esql_query = "\n".join(
@@ -1012,6 +1016,16 @@ def join_family_rule(context):
             right_prefer = "counter" if right_frag.range_func in {"rate", "irate", "increase"} and right_is_counter else "gauge"
             left_metric_field = _resolve_metric_field(resolver, left_frag.metric, prefer=left_prefer)
             right_metric_field = _resolve_metric_field(resolver, right_frag.metric, prefer=right_prefer)
+            for side_metric, side_is_counter, side_inner_func in (
+                (left_frag.metric, left_is_counter, left_inner_func),
+                (right_frag.metric, right_is_counter, right_inner_func),
+            ):
+                if (
+                    not side_is_counter
+                    and (side_inner_func or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+                    and _counter_unsafe_cast_needed(side_metric, resolver)
+                ):
+                    _append_unique(context.warnings, _counter_unsafe_cast_warning(side_metric, resolver))
 
             left_stats_call = _build_stats_call(
                 left_info["outer_agg"],
@@ -1165,6 +1179,10 @@ def join_family_rule(context):
         physical_metric = _resolve_metric_field(
             resolver, metric_name, prefer="counter" if is_counter else "gauge"
         )
+        join_agg_arg = physical_metric
+        if not is_counter and _counter_unsafe_cast_needed(metric_name, resolver):
+            join_agg_arg = f"TO_DOUBLE({physical_metric})"
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(metric_name, resolver))
 
         context.parser_backend = "fragment"
         context.source_type = source
@@ -1178,7 +1196,7 @@ def join_family_rule(context):
                 f"| WHERE {time_filter}",
                 *_build_where_lines(filters),
                 f"| WHERE {physical_metric} IS NOT NULL",
-                f"| STATS {metric_alias} = {default_agg}({physical_metric}) BY {by_clause}",
+                f"| STATS {metric_alias} = {default_agg}({join_agg_arg}) BY {by_clause}",
                 "| SORT time_bucket ASC",
             ]
         )
@@ -1233,7 +1251,14 @@ def join_family_rule(context):
             )
             if counter_warning:
                 _append_unique(context.warnings, counter_warning)
-            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric))}, {w})"
+            join_cast_needed = _counter_unsafe_cast_needed(left_frag.metric, resolver)
+            if (
+                not is_counter
+                and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+                and join_cast_needed
+            ):
+                _append_unique(context.warnings, _counter_unsafe_cast_warning(left_frag.metric, resolver))
+            inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric), force_cast=join_cast_needed)}, {w})"
         elif is_counter:
             inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
         else:
@@ -1455,7 +1480,14 @@ def topk_family_rule(context):
         )
         if counter_warning:
             _append_unique(context.warnings, counter_warning)
-        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric))
+        topk_cast_needed = _counter_unsafe_cast_needed(frag.metric, resolver)
+        if (
+            not is_counter
+            and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and topk_cast_needed
+        ):
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
+        inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=topk_cast_needed)
         inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
         stats_expr = _agg_stats_expr(
             OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
@@ -1463,9 +1495,13 @@ def topk_family_rule(context):
             frag,
         )
     else:
+        topk_agg_arg = physical_metric
+        if _counter_unsafe_cast_needed(frag.metric, resolver):
+            topk_agg_arg = f"TO_DOUBLE({physical_metric})"
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
         stats_expr = _agg_stats_expr(
             OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
-            physical_metric,
+            topk_agg_arg,
             frag,
         )
     limit = int(frag.extra.get("topk_limit") or 10)
@@ -1796,7 +1832,14 @@ def nested_agg_family_rule(context):
             _append_unique(context.warnings, counter_warning)
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric))}, {frag.range_window}))"
+        nested_cast_needed = _counter_unsafe_cast_needed(frag.metric, resolver)
+        if (
+            not is_counter
+            and (esql_inner_name or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and nested_cast_needed
+        ):
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
+        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=nested_cast_needed)}, {frag.range_window}))"
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
@@ -1821,8 +1864,12 @@ def nested_agg_family_rule(context):
         context.translation_complete = True
         return f"translated nested {frag.outer_agg} over {frag.range_func} expression"
 
+    nested_agg_arg = physical_metric
+    if inner_agg_name != "count" and _counter_unsafe_cast_needed(frag.metric, resolver):
+        nested_agg_arg = f"TO_DOUBLE({physical_metric})"
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
     first_stats_expr = (
-        f"{inner_alias} = {esql_inner_agg}({physical_metric})"
+        f"{inner_alias} = {esql_inner_agg}({nested_agg_arg})"
         if inner_agg_name != "count"
         else f"{inner_alias} = COUNT(*)"
     )
@@ -2541,7 +2588,11 @@ def simple_metric_family_rule(context):
         bucket = rp.ts_bucket
         default_agg = rp.default_gauge_agg.upper()
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = f"{default_agg}({physical_metric})"
+        agg_arg = physical_metric
+        if _counter_unsafe_cast_needed(frag.metric, resolver):
+            agg_arg = f"TO_DOUBLE({physical_metric})"
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
+        stats_expr = f"{default_agg}({agg_arg})"
         # No explicit PromQL aggregator was given; default to the gauge aggregator. With
         # grouping labels this is a faithful per-series downsample; without them it collapses
         # series and the warning says so (and is recorded as a semantic loss).
@@ -2554,7 +2605,11 @@ def simple_metric_family_rule(context):
         bucket = rp.from_bucket
         default_agg = rp.default_gauge_agg.upper()
         physical_metric = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-        stats_expr = f"{default_agg}({physical_metric})"
+        agg_arg = physical_metric
+        if _counter_unsafe_cast_needed(frag.metric, resolver):
+            agg_arg = f"TO_DOUBLE({physical_metric})"
+            _append_unique(context.warnings, _counter_unsafe_cast_warning(frag.metric, resolver))
+        stats_expr = f"{default_agg}({agg_arg})"
         if frag.extra.get("wrapped_scalar"):
             _append_unique(context.warnings, "Approximated scalar() as a direct metric value")
         else:
@@ -2773,7 +2828,11 @@ def stats_expression_rule(context):
         return f"built stats expression {context.stats_expr}"
 
     default_agg = context.rule_pack.default_gauge_agg.upper()
-    context.stats_expr = f"{default_agg}({physical_metric})"
+    default_agg_arg = physical_metric
+    if _counter_unsafe_cast_needed(context.metric_name, context.resolver):
+        default_agg_arg = f"TO_DOUBLE({physical_metric})"
+        _append_unique(context.warnings, _counter_unsafe_cast_warning(context.metric_name, context.resolver))
+    context.stats_expr = f"{default_agg}({default_agg_arg})"
     if context.inner_func:
         _append_unique(
             context.warnings,

@@ -1419,6 +1419,63 @@ class TestConflictingTypeAcrossIndices(unittest.TestCase):
         self.assertIn("MAX(node_load1)", ctx.esql_query)
         self.assertEqual(ctx.warnings, [])
 
+    def test_keyword_vs_double_conflict_is_not_treated_as_castable(self):
+        # A conflict against a non-numeric type (keyword) is a field-name
+        # collision between two unrelated series, not the same metric stored
+        # inconsistently -- casting to double would not resolve it, so the
+        # plain aggregation must be left alone.
+        resolver = self._live_resolver(
+            {
+                "ambiguous_gauge": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "keyword": {"type": "keyword"},
+                }
+            }
+        )
+        ctx = _translate("max(ambiguous_gauge)", resolver=resolver)
+        self.assertIn("MAX(ambiguous_gauge)", ctx.esql_query)
+
+    def test_conflicting_exact_type_plain_metric_panel_casts_to_double(self):
+        # Issue #245 follow-up: a bare metric panel with no explicit PromQL
+        # aggregator (the common "Instant" stat/gauge panel shape) goes
+        # through the implicit default-aggregation path, which must also
+        # defend against a cross-index numeric type conflict.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("process_virtual_memory_max_bytes", resolver=resolver)
+        self.assertIn("TO_DOUBLE(process_virtual_memory_max_bytes)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_topk_wrapped_rate_casts_to_double(self):
+        # Issue #245 follow-up: topk()/binary/nested composed paths route
+        # range functions through a different code path than a standalone
+        # panel and must get the same defensive cast, not just the warning
+        # text implying one happened.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("topk(5, rate(process_virtual_memory_max_bytes[5m]))", resolver=resolver)
+        self.assertNotIn("RATE(process_virtual_memory_max_bytes,", ctx.esql_query)
+        self.assertIn("AVG_OVER_TIME(TO_DOUBLE(process_virtual_memory_max_bytes), 5m)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
 
 # =========================================================================
 # Happy Path PromQL Bucket
