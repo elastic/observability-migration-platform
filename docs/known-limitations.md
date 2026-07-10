@@ -10,10 +10,34 @@ notes so operators know what to check by hand.
 
 - **`metric * on(instance,job) group_left(labels) <info_metric>{filters}` join
   idiom** — the common `*_info` label-enrichment join (e.g. RabbitMQ
-  `rabbitmq_identity_info`, kube-state `*_info`) is marked `not_feasible`
-  ("Aggregating over a PromQL vector-matching join requires manual redesign").
-  Panels using it ship a Migration Required placeholder and must be rebuilt in
-  Kibana. High-value future work, not a bug.
+  `rabbitmq_identity_info`, kube-state `*_info`) is now migrated when an outer
+  aggregation wraps it (`sum(metric * on(...) group_left(labels) <info_metric>)`):
+  the join is dropped and the aggregation runs over the primary metric alone,
+  with a warning that names the dropped partner metric, records the constant-`1`
+  assumption, and flags that primary series without a matching partner are kept
+  (PromQL would drop them, so counts/totals may differ) (issue #197). This is
+  gated to keep the approximation honest — it still ships a `not_feasible`
+  Migration Required placeholder, with a message naming the specific blocker,
+  when:
+  - the join partner's metric name doesn't match the `_info` naming convention
+    (configurable via the rule pack's `info_metric_suffixes`, default `["_info"]`)
+    — it isn't provably a constant `1`, so dropping it could change the numeric
+    value;
+  - the outer `by(...)`/`without(...)` clause needs a label that only exists via
+    the `group_left(...)` enrichment (not on the primary metric or the `on(...)`
+    match key) — there is nothing to group by for it once the join is dropped —
+    or names a non-`on(...)`-key label when a bare `group_left()` leaves the
+    enrichment set undeterminable (it can't be proven to survive on the primary
+    metric);
+  - it's a `group_right` join, a non-`*` operator, or a chained/multi-hop join
+    (e.g. `A * on(...) group_left(...) B * on(...) group_left(...) C`) — none of
+    these are supported yet.
+  Label filters on the join partner (e.g.
+  `rabbitmq_identity_info{rabbitmq_cluster="prod"}`) are dropped along with the
+  RHS. Where the filtered label doesn't also exist on the primary metric this can
+  broaden the aggregation to series the filter excluded (e.g. all clusters instead
+  of `prod`); the panel stays `feasible` but the warning explicitly names the
+  dropped filter so the risk is visible rather than silent.
 - **Offline counter inference** — when migrating **without** `--es-url`, a
   counter whose name carries no recognised suffix (`_total`, `_seconds_total`,
   …) and isn't proven by live field-caps may be typed as a gauge. The

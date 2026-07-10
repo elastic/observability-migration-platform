@@ -31,6 +31,21 @@ def _is_counter_fallback(metric_name, rule_pack):
     return any(metric_name.endswith(s) for s in suffixes)
 
 
+def _is_label_enrichment_metric(metric_name, rule_pack):
+    """Return True when ``metric_name`` matches the info-metric naming convention.
+
+    A Prometheus ``*_info`` metric (``node_uname_info``, ``rabbitmq_identity_info``,
+    ``kube_pod_info``, ...) is a gauge whose value is always ``1``, published
+    solely so its labels can be joined onto a real metric. A ``group_left`` join
+    against one is pure label enrichment (issue #197): dropping it and
+    aggregating the primary metric alone does not change the numeric value.
+    """
+    if not metric_name:
+        return False
+    suffixes = getattr(rule_pack, "info_metric_suffixes", ["_info"])
+    return any(metric_name.endswith(s) for s in suffixes)
+
+
 # ES|QL reserved keywords that are illegal as a *bare* column identifier (in
 # ``EVAL <id> =``, ``STATS <id> =``, ``KEEP <id>``). A Grafana legendFormat can
 # legitimately be one of these (e.g. HAProxy's "IN"/"OUT" data-transfer legend),
@@ -1731,6 +1746,27 @@ def _iter_fragment_children(frag):
     return children
 
 
+def _iter_pending_join_rhs_fragments(frag, _seen=None):
+    """Recursively yield every fragment carrying a ``pending_join_rhs_metric`` marker.
+
+    The safe-subset aggregated group_left join rewrite (issue #197) can end up
+    nested inside a larger expression — e.g. a ratio of two aggregated joins
+    parses as a top-level ``binary_expr`` whose operands are the reclassified
+    join fragments. A classifier that only inspects the top-level fragment
+    would miss the marker entirely, so walk the whole fragment tree.
+    """
+    if frag is None:
+        return
+    seen = _seen if _seen is not None else set()
+    if id(frag) in seen:
+        return
+    seen.add(id(frag))
+    if frag.extra.get("pending_join_rhs_metric") is not None:
+        yield frag
+    for child in _iter_fragment_children(frag):
+        yield from _iter_pending_join_rhs_fragments(child, seen)
+
+
 def _find_summary_fragment(frag):
     if not frag:
         return None
@@ -2089,6 +2125,69 @@ def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
     )
 
 
+def _join_not_eligible_reason(cardinality, binary_op):
+    """Explain why an aggregated vector-matching join can't use the safe-subset rewrite.
+
+    Only a ``group_left(...)`` (``ManyToOne``) multiplication join is eligible
+    (issue #197) — ``group_right`` and non-``*`` operators keep the pre-existing
+    conservative behavior, but with a message naming which condition failed
+    instead of one generic reason.
+    """
+    if binary_op != "*":
+        detail = f"a '{binary_op}' vector-matching join"
+    elif cardinality == "OneToMany":
+        detail = "a group_right(...) vector-matching join"
+    else:
+        detail = "an unrecognized vector-matching join"
+    return (
+        "Aggregating over a PromQL vector-matching join requires manual redesign; "
+        "only a group_left(...) label-enrichment multiplication join can be safely "
+        f"approximated today, and this is {detail}"
+    )
+
+
+def _join_by_clause_enrichment_reason(overlap_labels, enrichment_labels, rhs_metric, primary_metric):
+    """Explain why an outer by()/without() can't be satisfied after stripping the join RHS.
+
+    The overlapping label(s) only exist on the join's RHS (the ``group_left(...)``
+    include list) — dropping the RHS to keep the primary metric's value would
+    leave nothing to group by for them.
+    """
+    labels_text = ", ".join(overlap_labels)
+    return (
+        f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+        f"manual redesign: '{labels_text}' only exists via "
+        f"`group_left({', '.join(enrichment_labels)}) {rhs_metric}`, not on the primary "
+        f"metric '{primary_metric}'; rebuild this panel with a manual ES|QL lookup/enrich, "
+        "or drop that grouping dimension"
+    )
+
+
+def _render_label_matchers(matchers):
+    """Render label matchers as ``label op 'value'`` text for a warning message."""
+    return ", ".join(f"{m['label']}{m['op']}'{m['value']}'" for m in matchers or [])
+
+
+def _join_unverifiable_group_reason(labels, primary_metric):
+    """Explain why a by()/without() label can't be verified after stripping the RHS.
+
+    The ``group_left(...)`` include list couldn't be recovered (a bare
+    ``group_left()`` or an ambiguous nested modifier leaves the enrichment label
+    set empty), so a grouping label that isn't an ``on(...)`` match key can't be
+    proven to exist on the primary metric. Fail closed rather than emit a
+    ``STATS ... BY`` over a possibly-absent column (issue #197 review finding 3).
+    """
+    labels_text = ", ".join(labels)
+    return (
+        f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+        f"manual redesign: '{labels_text}' is not an on(...) match key and the "
+        "group_left(...) enrichment labels could not be determined, so it can't be "
+        f"proven to exist on the primary metric '{primary_metric}' once the join is "
+        "dropped; rebuild this panel with a manual ES|QL lookup/enrich, or drop that "
+        "grouping dimension"
+    )
+
+
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
@@ -2172,11 +2271,81 @@ def _ast_aggregate_fragment(node, expr):
         return frag
 
     if child.family == "join":
-        _append_not_feasible_reason(
-            frag,
-            "Aggregating over a PromQL vector-matching join requires manual redesign; "
-            "dropping the joined metric would change numeric values",
-        )
+        matching = child.extra.get("vector_matching") or {}
+        cardinality = matching.get("cardinality")
+        left_frag = child.extra.get("left_frag")
+        right_frag = child.extra.get("right_frag")
+
+        # Only a group_left(...) (ManyToOne) multiplication join is eligible for
+        # the safe-subset rewrite; group_right and other operators keep the
+        # conservative not_feasible behavior (issue #197 scope decision).
+        if cardinality != "ManyToOne" or child.binary_op != "*" or left_frag is None:
+            _append_not_feasible_reason(frag, _join_not_eligible_reason(cardinality, child.binary_op))
+            return frag
+
+        # An explicit by()/without() can only be honoured after dropping the RHS
+        # when every grouping label still exists on the primary metric.
+        enrichment_labels = list(child.extra.get("enrichment_labels", []) or [])
+        on_keys = set(matching.get("labels") or []) if matching.get("type") == "Include" else set()
+
+        # (a) A label carried only by the group_left(...) include list has nothing
+        # to group by once the RHS is dropped.
+        overlap = [label for label in frag.group_labels if label in enrichment_labels]
+        if overlap:
+            rhs_metric = right_frag.metric if right_frag else ""
+            _append_not_feasible_reason(
+                frag,
+                _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
+            )
+            return frag
+
+        # (b) When the include list couldn't be recovered (a bare ``group_left()``
+        # or an ambiguous nested modifier leaves ``enrichment_labels`` empty), any
+        # grouping label that isn't an on(...) match key can't be proven to exist
+        # on the primary metric. Fail closed rather than emit a STATS BY over a
+        # possibly-absent column (issue #197 review finding 3).
+        if not enrichment_labels:
+            unverifiable = [label for label in frag.group_labels if label not in on_keys]
+            if unverifiable:
+                _append_not_feasible_reason(
+                    frag, _join_unverifiable_group_reason(unverifiable, left_frag.metric)
+                )
+                return frag
+
+        # Structurally safe to strip the RHS and aggregate the primary metric
+        # alone — re-home the aggregation onto the join's left (primary)
+        # operand. ``frag.metric``/``matchers``/``range_func`` already carry
+        # left_frag's values (copied transitively via ``_copy_fragment_summary``
+        # at the top of this function), so only the family needs updating.
+        # Whether the RHS is actually a provable info-metric (not just any
+        # group_left partner) can't be checked here — rule_pack isn't available
+        # during parsing — so defer that to join_label_enrichment_check_rule at
+        # translation time, and stash the RHS metric name for it to check.
+        if left_frag.family == "range_agg" and left_frag.metric and not left_frag.outer_agg:
+            frag.family = "range_agg"
+        elif left_frag.family == "simple_metric" and left_frag.metric:
+            frag.family = "simple_agg"
+        else:
+            # The join's primary operand is itself a nested expression (a
+            # chained/multi-hop join, or another aggregate) — not safely
+            # approximated today.
+            _append_not_feasible_reason(
+                frag,
+                "Aggregating over a PromQL vector-matching join requires manual redesign; "
+                "the join's primary operand is itself a nested expression (chained/multi-hop "
+                "join), which isn't safely approximated today",
+            )
+            return frag
+        frag.extra["pending_join_rhs_metric"] = right_frag.metric if right_frag else ""
+        # Label matchers on the join partner (e.g. ``info{cluster="prod"}``) are
+        # dropped with the RHS. Where the label doesn't also exist on the primary
+        # metric that can broaden the aggregation to series the filter excluded —
+        # a numeric change in multi-value deployments. Per the design's accepted
+        # approximation we keep the panel feasible but stash the dropped filter
+        # text so join_label_enrichment_check_rule surfaces it in the warning
+        # rather than dropping it silently (issue #197 review finding 1).
+        if right_frag is not None and right_frag.matchers:
+            frag.extra["pending_join_rhs_filters"] = _render_label_matchers(right_frag.matchers)
         return frag
 
     # Handle aggregation over a binary expression between two time-series.
