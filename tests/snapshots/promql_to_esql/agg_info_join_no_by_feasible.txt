@@ -1,0 +1,10 @@
+source: sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info)
+feasibility: feasible
+warning: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+warning: Target field capabilities were unavailable, so the metric type of 'rabbitmq_queue_messages_ready' could not be verified. If it is stored as counter_long/counter_double in Elasticsearch, this panel may fail with a verification_exception (ES|QL forbids standard aggregations such as SUM/MAX/MIN/AVG on counter fields); most gauge fields are unaffected. Pin 'metric_kinds: rabbitmq_queue_messages_ready: counter' (or gauge) in the rule pack, or re-run with target field capabilities reachable, to resolve this.
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE rabbitmq_queue_messages_ready IS NOT NULL
+| STATS rabbitmq_queue_messages_ready = SUM(rabbitmq_queue_messages_ready) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

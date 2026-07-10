@@ -59,6 +59,8 @@ from .promql import (
     _grouping_parts,
     _inline_filters_into_stats_expr,
     _is_counter_fallback,
+    _is_label_enrichment_metric,
+    _iter_pending_join_rhs_fragments,
     _or_chain_has_vector_matching,
     _parse_fragment,
     _parse_logql_search,
@@ -758,6 +760,110 @@ def family_classifier_rule(context):
         context.metadata["fragment_family"] = frag.family
         return f"fragment family {frag.family} bypasses unsupported-pattern check"
     return None
+
+
+@QUERY_CLASSIFIERS.register("join_label_enrichment_check", priority=6)
+def join_label_enrichment_check_rule(context):
+    """Gate the safe-subset aggregated group_left join rewrite on the RHS metric name.
+
+    ``_ast_aggregate_fragment`` proves the rewrite structurally safe (a
+    group_left(...) multiplication join whose outer by()/without() doesn't need
+    an enrichment-only label) and stashes the join's RHS metric name in
+    ``pending_join_rhs_metric`` — but it can't check that name against
+    ``info_metric_suffixes`` because the rule pack isn't available during
+    parsing. Do that check here, now that ``context.rule_pack`` is in scope
+    (issue #197). The marker can be nested (e.g. a ratio of two aggregated
+    joins parses as a binary_expr wrapping two reclassified join operands), so
+    walk the whole fragment tree rather than only the top-level fragment.
+    """
+    frag = context.fragment
+    if not frag:
+        return None
+    pending_frags = list(_iter_pending_join_rhs_fragments(frag))
+    if not pending_frags:
+        return None
+    for pending_frag in pending_frags:
+        pending_metric = pending_frag.extra.get("pending_join_rhs_metric")
+        if not _is_label_enrichment_metric(pending_metric, context.rule_pack):
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            reason = (
+                f"Aggregating over a PromQL vector-matching join with '{pending_metric}' requires "
+                "manual redesign: not recognized as a label-only metric (no info_metric_suffixes "
+                "match, default '_info'); dropping it would change numeric values unless it always "
+                "evaluates to 1 — if it does, add its suffix to info_metric_suffixes in your rule pack"
+            )
+            _append_unique(context.warnings, reason)
+            return reason
+
+    # A by()/without() label that is neither an on(...) match key nor a
+    # group_left(...) enrichment label was assumed to survive on the primary
+    # metric. When live target field capabilities are available, verify that
+    # assumption: if the resolved grouping field is genuinely absent from the
+    # target, the STATS ... BY would fail at query time, so fail closed instead
+    # of shipping executable-but-broken ES|QL (issue #197 review).
+    resolver = context.resolver
+    if resolver is not None and getattr(resolver, "has_field_capabilities", None) and resolver.has_field_capabilities():
+        for pending_frag in pending_frags:
+            verify_labels = pending_frag.extra.get("pending_join_verify_labels") or []
+            if not verify_labels:
+                continue
+            primary_metric = pending_frag.metric or ""
+            metric_field = (
+                resolver.resolve_metric_field(primary_metric)
+                if primary_metric and hasattr(resolver, "resolve_metric_field")
+                else primary_metric
+            )
+            missing = []
+            for label in verify_labels:
+                resolved = resolver.resolve_label(label, metric_field=metric_field)
+                if not resolved or resolver.field_exists(resolved) is False:
+                    missing.append(label)
+            if missing:
+                context.feasibility = "not_feasible"
+                context.confidence = 0.0
+                labels_text = ", ".join(missing)
+                reason = (
+                    f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+                    f"manual redesign: after dropping the group_left(...) enrichment, '{labels_text}' "
+                    f"is not present on the primary metric '{primary_metric}' in the target schema "
+                    "(live field capabilities), so the grouping would fail at query time; rebuild "
+                    "this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension"
+                )
+                _append_unique(context.warnings, reason)
+                return reason
+
+    rhs_metrics = sorted(
+        {
+            pending_frag.extra.get("pending_join_rhs_metric")
+            for pending_frag in pending_frags
+            if pending_frag.extra.get("pending_join_rhs_metric")
+        }
+    )
+    rhs_text = ", ".join(f"'{metric}'" for metric in rhs_metrics) or "the join partner"
+    dropped_filters = sorted(
+        {
+            pending_frag.extra.get("pending_join_rhs_filters")
+            for pending_frag in pending_frags
+            if pending_frag.extra.get("pending_join_rhs_filters")
+        }
+    )
+    filter_clause = ""
+    if dropped_filters:
+        filter_clause = (
+            f" Label filters on the partner ({'; '.join(dropped_filters)}) were also dropped, "
+            "so the aggregation may span series (e.g. other clusters/namespaces) the original "
+            "query excluded."
+        )
+    _append_unique(
+        context.warnings,
+        f"Dropped group_left label-enrichment join on {rhs_text} (assumed a constant-1 "
+        "label-only metric by naming convention) and aggregated the primary metric alone."
+        f"{filter_clause} Primary series with no matching join partner are kept — PromQL "
+        "would drop them — so counts and totals may differ; verify the partner is truly a "
+        "label-only metric.",
+    )
+    return f"{len(pending_frags)} join(s) recognized as label-only; RHS stripped"
 
 
 @QUERY_CLASSIFIERS.register("unsupported_patterns", priority=10)

@@ -48,6 +48,17 @@ DEFAULT_COUNTER_SUFFIXES = [
     "_sum",
 ]
 
+# Canonical Prometheus "info metric" naming convention (``_info``): a gauge
+# whose value is always ``1``, published solely so its labels can be joined
+# onto a real metric (``node_uname_info``, ``rabbitmq_identity_info``,
+# ``kube_pod_info``, ...). A ``group_left``/``group_right`` join against one of
+# these is pure label enrichment — multiplying by it never changes the primary
+# metric's value — so it is safe to drop the join and aggregate the primary
+# metric alone (issue #197).
+DEFAULT_INFO_METRIC_SUFFIXES = [
+    "_info",
+]
+
 
 @dataclass
 class PatternRule:
@@ -113,6 +124,7 @@ class RulePackConfig:
     not_feasible_patterns: list = field(default_factory=lambda: _pattern_rules(DEFAULT_NOT_FEASIBLE_PATTERNS))
     warning_patterns: list = field(default_factory=lambda: _pattern_rules(DEFAULT_WARNING_PATTERNS))
     counter_suffixes: list = field(default_factory=lambda: list(DEFAULT_COUNTER_SUFFIXES))
+    info_metric_suffixes: list = field(default_factory=lambda: list(DEFAULT_INFO_METRIC_SUFFIXES))
     default_rate_window: str = "5m"
     default_gauge_agg: str = "AVG"
     # Migration default: target clusters we provision ingest metrics as TSDS, so when
@@ -243,6 +255,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
 
         for suffix in query_cfg.counter_suffixes:
             _append_unique(pack.counter_suffixes, suffix)
+        for suffix in query_cfg.info_metric_suffixes:
+            _append_unique(pack.info_metric_suffixes, suffix)
         for skip_type in panel_cfg.skip_types:
             _append_unique(pack.skip_panel_types, skip_type)
 
@@ -351,6 +365,7 @@ def build_rule_catalog(rule_pack: RulePackConfig) -> dict[str, Any]:
             "registries": {name: registry.describe() for name, registry in registries.items()},
             "rule_pack": {
                 "counter_suffixes": list(rule_pack.counter_suffixes),
+                "info_metric_suffixes": list(rule_pack.info_metric_suffixes),
                 "label_rewrites": dict(rule_pack.label_rewrites),
                 "label_candidates": dict(rule_pack.label_candidates),
                 "ignored_labels": list(rule_pack.ignored_labels),

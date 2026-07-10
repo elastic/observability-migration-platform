@@ -65,6 +65,7 @@ class QueryConfigModel(_StrictModel):
     not_feasible_patterns: list[PatternRuleModel] = Field(default_factory=list)
     warning_patterns: list[PatternRuleModel] = Field(default_factory=list)
     counter_suffixes: list[str] = Field(default_factory=list)
+    info_metric_suffixes: list[str] = Field(default_factory=list)
     default_rate_window: str | None = None
     default_gauge_agg: str | None = None
     ts_time_filter: str | None = None
@@ -158,6 +159,7 @@ def normalize_rule_pack_payload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "not_feasible_patterns",
                 "warning_patterns",
                 "counter_suffixes",
+                "info_metric_suffixes",
                 "label_rewrites",
                 "label_candidates",
                 "ignored_labels",
