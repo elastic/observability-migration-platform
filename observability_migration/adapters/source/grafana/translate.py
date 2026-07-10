@@ -795,6 +795,44 @@ def join_label_enrichment_check_rule(context):
             )
             _append_unique(context.warnings, reason)
             return reason
+
+    # A by()/without() label that is neither an on(...) match key nor a
+    # group_left(...) enrichment label was assumed to survive on the primary
+    # metric. When live target field capabilities are available, verify that
+    # assumption: if the resolved grouping field is genuinely absent from the
+    # target, the STATS ... BY would fail at query time, so fail closed instead
+    # of shipping executable-but-broken ES|QL (issue #197 review).
+    resolver = context.resolver
+    if resolver is not None and getattr(resolver, "has_field_capabilities", None) and resolver.has_field_capabilities():
+        for pending_frag in pending_frags:
+            verify_labels = pending_frag.extra.get("pending_join_verify_labels") or []
+            if not verify_labels:
+                continue
+            primary_metric = pending_frag.metric or ""
+            metric_field = (
+                resolver.resolve_metric_field(primary_metric)
+                if primary_metric and hasattr(resolver, "resolve_metric_field")
+                else primary_metric
+            )
+            missing = []
+            for label in verify_labels:
+                resolved = resolver.resolve_label(label, metric_field=metric_field)
+                if not resolved or resolver.field_exists(resolved) is False:
+                    missing.append(label)
+            if missing:
+                context.feasibility = "not_feasible"
+                context.confidence = 0.0
+                labels_text = ", ".join(missing)
+                reason = (
+                    f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+                    f"manual redesign: after dropping the group_left(...) enrichment, '{labels_text}' "
+                    f"is not present on the primary metric '{primary_metric}' in the target schema "
+                    "(live field capabilities), so the grouping would fail at query time; rebuild "
+                    "this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension"
+                )
+                _append_unique(context.warnings, reason)
+                return reason
+
     rhs_metrics = sorted(
         {
             pending_frag.extra.get("pending_join_rhs_metric")

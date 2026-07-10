@@ -2188,6 +2188,36 @@ def _join_unverifiable_group_reason(labels, primary_metric):
     )
 
 
+def _join_rhs_not_plain_selector_reason(right_frag):
+    """Explain why a non-selector join partner can't use the safe-subset rewrite.
+
+    The ``_info`` label-enrichment idiom always joins against a *plain vector
+    selector* (``... group_left(x) foo_info{...}``). A range/aggregate/function
+    wrapper — ``rate(foo_info[5m])``, ``sum(foo_info) by(...)``,
+    ``count(foo_info)`` — is not a constant-``1`` multiplier (its value can be a
+    rate, a sum, a count, or ``0``), so it must not be dropped even though its
+    summary metric name ends in ``_info`` (issue #197 review). We only look at
+    ``right_frag.metric`` (the summary), which alone can't distinguish these
+    shapes, so gate on the fragment family here.
+    """
+    shape = "a compound expression"
+    if right_frag is not None:
+        if right_frag.range_func:
+            shape = f"a {right_frag.range_func}(...) range expression"
+        elif right_frag.outer_agg:
+            shape = f"a {right_frag.outer_agg}(...) aggregate"
+        elif right_frag.extra.get("call_name"):
+            shape = f"a {right_frag.extra['call_name']}(...) call"
+        elif right_frag.family == "binary_expr":
+            shape = "a binary expression"
+    return (
+        "Aggregating over a PromQL vector-matching join requires manual redesign: the "
+        f"group_left(...) partner is {shape}, not a plain `<metric>_info{{...}}` vector "
+        "selector, so it is not a constant-1 label-only metric and dropping it would "
+        "change the numeric value"
+    )
+
+
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
@@ -2283,6 +2313,16 @@ def _ast_aggregate_fragment(node, expr):
             _append_not_feasible_reason(frag, _join_not_eligible_reason(cardinality, child.binary_op))
             return frag
 
+        # The label-enrichment idiom joins against a *plain vector selector* for
+        # the _info metric. A range/aggregate/function wrapper over an _info
+        # metric (rate(foo_info[5m]), sum(foo_info) by(...), count(foo_info)) is
+        # not a constant-1 multiplier, so it must not be stripped even though its
+        # summary metric ends in _info — the later suffix check only inspects the
+        # RHS metric name and can't tell these shapes apart (issue #197 review).
+        if right_frag is None or right_frag.family != "simple_metric" or not right_frag.metric:
+            _append_not_feasible_reason(frag, _join_rhs_not_plain_selector_reason(right_frag))
+            return frag
+
         # An explicit by()/without() can only be honoured after dropping the RHS
         # when every grouping label still exists on the primary metric.
         enrichment_labels = list(child.extra.get("enrichment_labels", []) or [])
@@ -2346,6 +2386,18 @@ def _ast_aggregate_fragment(node, expr):
         # rather than dropping it silently (issue #197 review finding 1).
         if right_frag is not None and right_frag.matchers:
             frag.extra["pending_join_rhs_filters"] = _render_label_matchers(right_frag.matchers)
+        # A by()/without() label that is neither an on(...) match key nor a
+        # group_left(...) enrichment label is assumed to exist on the primary
+        # metric. That assumption can't be checked at parse time (no rule pack /
+        # resolver), so record the labels for join_label_enrichment_check_rule to
+        # verify against a live schema when one is available (issue #197 review).
+        assumed_group_labels = [
+            label
+            for label in frag.group_labels
+            if label not in on_keys and label not in enrichment_labels
+        ]
+        if assumed_group_labels:
+            frag.extra["pending_join_verify_labels"] = assumed_group_labels
         return frag
 
     # Handle aggregation over a binary expression between two time-series.

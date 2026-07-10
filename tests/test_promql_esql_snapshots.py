@@ -312,6 +312,27 @@ CASES: list[tuple[str, str, str]] = [
         ),
         "timeseries",
     ),
+    # The join partner must be a PLAIN vector selector for the _info metric. A
+    # range/aggregate wrapper over an _info metric is not a constant-1 multiplier
+    # (its value is a rate / sum / count / 0), so it must NOT be dropped even
+    # though its summary metric name ends in _info — stays not_feasible (issue
+    # #197 review: only right_frag.metric suffix was checked before).
+    (
+        "agg_join_rate_info_rhs_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance) group_left(nodename) rate(node_uname_info[5m]))"
+        ),
+        "timeseries",
+    ),
+    (
+        "agg_join_agg_info_rhs_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance, job) group_left(nodename) sum(node_uname_info) by(instance, job))"
+        ),
+        "timeseries",
+    ),
     # --- correctness fix A: anchored template-var matcher parameterized -------
     # namespace=~"^$Namespace$" is equivalent to an exact full-value regex in
     # PromQL. ES|QL RLIKE already matches the whole value and treats ^/$ as

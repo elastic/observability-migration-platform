@@ -1,0 +1,5 @@
+source: sum(node_network_receive_bytes_total * on(instance, job) group_left(nodename) sum(node_uname_info) by(instance, job))
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join requires manual redesign: the group_left(...) partner is a sum(...) aggregate, not a plain `<metric>_info{...}` vector selector, so it is not a constant-1 label-only metric and dropping it would change the numeric value
+---
+
