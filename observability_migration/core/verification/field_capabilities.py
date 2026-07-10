@@ -99,6 +99,15 @@ def _infer_time_series_metric_kind(field_caps_entry: dict[str, dict]) -> str:
             time_series_metric = str(metadata.get("time_series_metric", "") or "").strip().lower()
             if time_series_metric:
                 kinds.add(time_series_metric)
+    # Issue #245: dual-shipped/inconsistently-ingested indices can disagree on
+    # kind for the same field name (e.g. one index maps it counter_long, another
+    # a plain gauge double). Discarding the signal on disagreement (returning
+    # "") let is_counter() fall through to the naming heuristic and confidently
+    # misclassify a genuine counter as a gauge. A counter signal from ANY index
+    # is authoritative here: ES|QL applies counter restrictions to that index's
+    # data regardless of what the others say, so "counter" must win ties.
+    if "counter" in kinds:
+        return "counter"
     if len(kinds) == 1:
         return next(iter(kinds))
     return ""
