@@ -6048,6 +6048,28 @@ class TestDatadogSummaryView(unittest.TestCase):
         nf = next(a for a in view.attention if a.status == "not_feasible")
         self.assertEqual(nf.source_query, "avg:trace.http.request{*}")
 
+    def test_default_no_compile_summary_does_not_report_compile_failure(self):
+        from observability_migration.adapters.source.datadog.report import (
+            build_summary_view,
+        )
+        from observability_migration.core.reporting.summary_md import render_markdown
+
+        result = self._result()
+        result.compiled = False
+        result.compile_error = ""
+        result.compiled_path = ""
+        result.layout_checked = False
+        result.layout_error = ""
+
+        view = build_summary_view([result], review_queue=[], run_id="dd-no-compile")
+        text = render_markdown(view)
+
+        self.assertEqual(view.totals.compiled_ok, 0)
+        self.assertEqual(view.totals.compiled_total, 0)
+        self.assertIn("compilation not run", text)
+        self.assertNotIn("0/1 compiled", text)
+        self.assertNotIn("Blocking errors", text)
+
 
 class TestDatadogWritesMarkdownSummary(unittest.TestCase):
     def test_offline_migration_writes_markdown_summary(self):
