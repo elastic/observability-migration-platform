@@ -2436,6 +2436,43 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("COUNT_DISTINCT(instance)", translated.esql_query or "")
 
+    def test_standalone_multi_exclusive_nested_count_stays_not_feasible(self):
+        """Standalone ``count by(job)(count by(job, instance, cpu)(node_cpu))``.
+
+        This is the same undercounting hazard as the ``/`` arithmetic form, but
+        it flows through ``translate.py::nested_agg_family_rule`` instead of the
+        formula/measure path in ``promql.py``. The outer count() counts distinct
+        ``(instance, cpu)`` tuples per job; collapsing to a single exclusive
+        label (``instance``) drops the ``cpu`` dimension and under-counts hosts
+        with multiple CPUs. Both paths must fail closed identically rather than
+        emit ``COUNT_DISTINCT(instance)`` (wrong math).
+        """
+        expr = "count by(job)(count by(job, instance, cpu)(node_cpu))"
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertNotIn("COUNT_DISTINCT", translated.esql_query or "")
+
+    def test_single_exclusive_nested_count_still_feasible(self):
+        """The single-exclusive shortcut stays faithful and must not regress.
+
+        ``count by(job, instance)(count by(job, instance, cpu)(node_cpu))`` has
+        exactly one exclusive inner label (``cpu``), so ``COUNT_DISTINCT(cpu)``
+        per ``(job, instance)`` is the correct translation. The multi-exclusive
+        fail-closed guard must not also reject this valid single-label case.
+        """
+        expr = "count by(job, instance)(count by(job, instance, cpu)(node_cpu))"
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query or "")
+
     def test_k8s_mixed_os_plus_prefers_linux_left_operand(self):
         """Kubernetes Views Global idiom: Linux sum + on(ns) (Windows join or 0*Linux).
 

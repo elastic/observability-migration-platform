@@ -7106,10 +7106,10 @@ Every panel marked `not_feasible` in the trace run (10 total):
 **Pattern analysis:**
 
 - **1×** Scope filter with template variable could not be bound exact
-- **1×** rate semantics approximated with delta over observed bucket 
+- **1×** rate semantics approximated with delta over observed bucket
 - **1×** translation error: multi-query widgets with different reques
 <!-- /GENERATED:NOT_FEASIBLE_BREAKDOWN -->
 
 ---
 
-*Last generated: 2026-07-13 08:53 UTC*
+*Last generated: 2026-07-13 10:29 UTC*

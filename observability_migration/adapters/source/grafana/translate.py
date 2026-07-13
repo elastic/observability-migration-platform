@@ -2098,6 +2098,28 @@ def nested_agg_family_rule(context):
             lbl for lbl in (frag.group_labels or []) if not str(lbl).startswith("label_")
         }
         exclusive_raw = [lbl for lbl in raw_inner_group if lbl not in outer_raw]
+        if len(exclusive_raw) > 1:
+            # The outer count() counts distinct *tuples* of every inner label
+            # that is not already an outer grouping key — e.g.
+            # ``count by(job)(count by(job, instance, cpu)(node_cpu))`` counts
+            # distinct ``(instance, cpu)`` pairs per job. ES|QL COUNT_DISTINCT
+            # takes a single field, so collapsing to one exclusive label
+            # (``exclusive_raw[0]``) would under-count whenever another exclusive
+            # label varies within a group (an instance with multiple CPUs).
+            # There is no faithful single-field expression, so fail closed as
+            # not_feasible rather than emit wrong math — this mirrors the
+            # formula/measure path guard in ``promql.py``.
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                "nested count(count(...)) over multiple exclusive inner labels "
+                f"({', '.join(exclusive_raw)}) counts distinct label tuples, which "
+                "ES|QL COUNT_DISTINCT (single-field) cannot express without "
+                "under-counting; requires manual redesign",
+            )
+            context.translation_complete = True
+            return "nested count(count()) over multiple exclusive inner labels"
         if exclusive_raw:
             count_field = (
                 resolver.resolve_label(exclusive_raw[0]) if resolver else exclusive_raw[0]

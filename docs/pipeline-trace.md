@@ -270,4 +270,4 @@ Verdict breakdown:
 
 ---
 
-*Last generated: 2026-07-13 08:53 UTC*
+*Last generated: 2026-07-13 10:29 UTC*

@@ -440,6 +440,18 @@ def _truncate(text: str, maxlen: int = 120) -> str:
     return text[:maxlen] + "..."
 
 
+def _fenced_code(text: str) -> str:
+    """Render *text* inside a fenced code block with no trailing whitespace.
+
+    Source/translated queries can carry trailing spaces (e.g. multi-target
+    PromQL joined with ``" ||| "`` where each target keeps a trailing space).
+    Emitting them verbatim makes the generated trace docs fail
+    ``git diff --check``, so strip per-line trailing whitespace here.
+    """
+    body = "\n".join(line.rstrip() for line in str(text).splitlines())
+    return f"```\n{body}\n```\n"
+
+
 def _render_query_ir(lines: list[str], qir: dict) -> None:
     if not qir:
         return
@@ -612,7 +624,7 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
 
                 lines.append(f"**Source ({p.source_panel_type}):**\n")
                 for sq in p.source_queries:
-                    lines.append(f"```\n{sq}\n```\n")
+                    lines.append(_fenced_code(sq))
 
                 if p.trace:
                     lines.append("**Pipeline trace:**\n")
@@ -628,7 +640,7 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
 
                 if p.translated_query:
                     lines.append(f"**Translated ({p.kibana_type}):**\n")
-                    lines.append(f"```\n{p.translated_query}\n```\n")
+                    lines.append(_fenced_code(p.translated_query))
 
                 if p.plan and p.source_type == "datadog":
                     lines.append("**Plan:**\n")
@@ -891,7 +903,8 @@ def _section_per_dashboard_traces(audits: list[DashboardAudit]) -> str:
                 lines.append(f"**Source ({p.source_panel_type}):**")
                 lines.append("")
                 for sq in p.source_queries:
-                    lines.append(f"```\n{sq}\n```")
+                    _sq = "\n".join(line.rstrip() for line in str(sq).splitlines())
+                    lines.append(f"```\n{_sq}\n```")
                     lines.append("")
 
                 if p.trace:
@@ -910,7 +923,8 @@ def _section_per_dashboard_traces(audits: list[DashboardAudit]) -> str:
                 if p.translated_query:
                     lines.append(f"**Translated ({p.kibana_type}):**")
                     lines.append("")
-                    lines.append(f"```\n{p.translated_query}\n```")
+                    _tq = "\n".join(line.rstrip() for line in str(p.translated_query).splitlines())
+                    lines.append(f"```\n{_tq}\n```")
                     lines.append("")
 
                 if p.plan and p.source_type == "datadog":
@@ -1069,7 +1083,7 @@ def _section_not_feasible_breakdown(audits: list[DashboardAudit]) -> str:
     reason_counts: dict[str, int] = {}
     for _, p in nf_panels:
         for w in p.warnings:
-            bucket = w[:60]
+            bucket = w[:60].rstrip()
             reason_counts[bucket] = reason_counts.get(bucket, 0) + 1
     if reason_counts:
         lines.append("")

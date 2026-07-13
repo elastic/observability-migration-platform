@@ -8187,7 +8187,7 @@ TS metrics-prometheus-*
 **Source (graph):**
 
 ```
-redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{instance=~"$instance"} 
+redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{instance=~"$instance"}
 ```
 
 **Pipeline trace:**
@@ -8454,7 +8454,7 @@ TS metrics-prometheus-*
 **Source (graph):**
 
 ```
-sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instance=~"$instance"})  ||| sum (redis_db_keys_expiring{instance=~"$instance"}) 
+sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instance=~"$instance"})  ||| sum (redis_db_keys_expiring{instance=~"$instance"})
 ```
 
 **Pipeline trace:**
@@ -8865,4 +8865,4 @@ Every panel marked `not_feasible` in the trace run (4 total):
 
 ---
 
-*Last generated: 2026-07-13 08:53 UTC*
+*Last generated: 2026-07-13 10:29 UTC*
