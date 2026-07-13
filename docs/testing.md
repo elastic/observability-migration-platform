@@ -142,11 +142,25 @@ failures that ES\|QL execution and the schema gate cannot see.
     **warn** (verify data/time window or a broken query).
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
-- **Interaction audit:** `extract_controls` → `build_interaction_plan` →
-  `audit_control_interactions` — changing a dashboard control must not break a
-  panel that rendered before.
+- **Interaction helpers:** `extract_controls` → `build_interaction_plan` →
+  `audit_control_interactions` compare snapshots before and after a control
+  change. They are unit-tested; the headless local CLI currently covers
+  identifier-control choices with separate default-state canary variants rather
+  than browser click automation.
 - **Self-test:** `tests/test_render_audit_selftest.py` — a clean canary must pass
-  and corrupting each panel must make the gate bite (proves it's not vacuous).
+  and corrupting each panel must make the gate bite (proves it's not vacuous). It
+  also pins the late-bound grouping case (issue #282): because a `by ($grouping)`
+  panel's breakdown binds the stable `grouping` alias (always present in its own
+  output), an "invalid column" there must be a hard `render_error`, never excused
+  as a field gap.
+- **Late-bound grouping canaries:** `build_late_bound_grouping_canary`
+  (`core/coverage/canary.py`) supplies three default-state variants that the
+  local render audit uploads (`run_render_audit_local.sh`), one each for
+  `exporter`, `transport`, and `receiver`. This proves every identifier choice
+  renders without brittle browser clicking, while each variant also covers the
+  `by (exporter, $grouping)` collision that degrades to concrete grouping. The
+  telemetry contract seeds every field-control choice and never treats
+  `??grouping` itself as a physical field.
 
 **Auth.** Serverless is behind cloud SAML SSO, which a fresh automated browser
 can't pass. Two options:

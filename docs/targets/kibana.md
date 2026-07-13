@@ -150,6 +150,22 @@ for backward compatibility and behaves identically to `--yaml-dir`, but its
 name is misleading because NDJSON input is never consumed; prefer
 `--artifact-dir`/`--yaml-dir` in new scripts.
 
+### Dashboard Controls (ES|QL `pinned_panels`)
+
+Source template variables become Kibana `pinned_panels` controls via
+`map_yaml_control`. ES|QL controls carry a `variable_type`:
+
+- **`values`** controls bind a value parameter (`WHERE field == ?var`). A
+  query-driven control maps to `VALUES_FROM_QUERY`; a fixed option list maps to
+  `STATIC_VALUES` (`available_options`).
+- **`fields`** controls bind an *identifier* parameter (`STATS ... BY ??var`)
+  for late-bound grouping (Grafana `by ($var)`, issue #282). The control's
+  selectable dimensions are carried under `choices` in the YAML/IR control and
+  map to a `STATIC_VALUES` ES|QL control with `variable_type: fields`. The lint
+  gate requires a `??var` identifier to be bound specifically by a `fields`
+  control — a same-named `values` control does **not** satisfy it, because a
+  value is not a valid identifier for `STATS ... BY`.
+
 ## Command Coverage
 
 Compile/upload/cluster command examples are centralized in `docs/command-contract.md`.

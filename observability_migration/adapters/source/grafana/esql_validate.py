@@ -20,7 +20,8 @@ from .rules import _append_unique, _merge_mapping_lists
 DEFAULT_TSTART_EXPR = "NOW() - 1 hour"
 DEFAULT_TEND_EXPR = "NOW()"
 _VALIDATION_WINDOW = timedelta(hours=1)
-_QUERY_PARAM_RE = re.compile(r"\?([A-Za-z_][A-Za-z0-9_]*)")
+_QUERY_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)([A-Za-z_][A-Za-z0-9_]*)")
+_QUERY_IDENTIFIER_PARAM_RE = re.compile(r"\?\?([A-Za-z_][A-Za-z0-9_]*)")
 # Native PROMQL source command (``PROMQL index=... time=?_tend value=(...)``).
 # Its ``time=`` / ``start=`` / ``end=`` selectors require a date-typed value,
 # so ``?_tstart`` / ``?_tend`` there must be bound as date params rather than
@@ -77,13 +78,20 @@ def _build_es_headers(es_api_key=None):
     return headers
 
 
-def _validation_params_for_query(query):
+def _validation_params_for_query(query, identifier_params=None):
     rendered = materialize_dashboard_time_query(query)
     names = []
     for name in _QUERY_PARAM_RE.findall(rendered or ""):
         if name not in names:
             names.append(name)
-    return [{name: _validation_param_value(rendered, name)} for name in names]
+    params = [{name: _validation_param_value(rendered, name)} for name in names]
+    identifier_defaults = identifier_params or {}
+    for name in _QUERY_IDENTIFIER_PARAM_RE.findall(rendered or ""):
+        if name in names or name not in identifier_defaults:
+            continue
+        names.append(name)
+        params.append({name: identifier_defaults[name]})
+    return params
 
 
 def _validation_time_bounds(now=None):
@@ -115,7 +123,10 @@ def _validation_param_value(query, name):
 
 def _has_dashboard_params(query):
     rendered = materialize_dashboard_time_query(query)
-    return bool(_QUERY_PARAM_RE.search(rendered or ""))
+    return bool(
+        _QUERY_PARAM_RE.search(rendered or "")
+        or _QUERY_IDENTIFIER_PARAM_RE.search(rendered or "")
+    )
 
 
 def _limit_query_for_validation(query, result_limit):
@@ -149,6 +160,7 @@ def _run_esql_query(
     session=None,
     timeout=15,
     result_limit=None,
+    identifier_params=None,
     verify: bool | str = True,
 ):
     """Execute ES|QL and return validation status plus lightweight result metadata."""
@@ -160,7 +172,7 @@ def _run_esql_query(
     try:
         client = session or requests
         payload = {"query": query}
-        params = _validation_params_for_query(query)
+        params = _validation_params_for_query(query, identifier_params=identifier_params)
         if params:
             payload["params"] = params
         post_kwargs = {
@@ -284,7 +296,7 @@ _NARROW_MAX_CANDIDATES = 10
 def _try_narrow_index_pattern(
     query, es_url, resolver, es_api_key=None, session=None,
     max_candidates=_NARROW_MAX_CANDIDATES, probe_timeout=_NARROW_PROBE_TIMEOUT,
-    result_limit=None,
+    result_limit=None, identifier_params=None,
 ):
     if not resolver or not es_url or not query:
         return None
@@ -312,6 +324,8 @@ def _try_narrow_index_pattern(
         }
         if result_limit is not None:
             run_kwargs["result_limit"] = result_limit
+        if identifier_params:
+            run_kwargs["identifier_params"] = identifier_params
         probe = _run_esql_query(narrowed, es_url, **run_kwargs)
         if probe["ok"] is True and probe["rows"] > 0:
             return {
@@ -498,7 +512,7 @@ def write_suggested_rule_pack(path, validation_summary):
 def validate_query_with_fixes(
     query, es_url, resolver, max_attempts=8, es_api_key=None,
     narrow_limit=_NARROW_MAX_CANDIDATES, narrow_timeout=_NARROW_PROBE_TIMEOUT,
-    result_limit=None,
+    result_limit=None, identifier_params=None,
     verify: bool | str = True,
 ):
     original_query = query
@@ -519,6 +533,8 @@ def validate_query_with_fixes(
         run_kwargs = {"es_api_key": api_key, "session": session}
         if result_limit is not None:
             run_kwargs["result_limit"] = result_limit
+        if identifier_params:
+            run_kwargs["identifier_params"] = identifier_params
         probe = _run_esql_query(current_query, es_url, **run_kwargs)
         ok = probe["ok"]
         err = probe["error"]
@@ -589,6 +605,7 @@ def validate_query_with_fixes(
                 max_candidates=narrow_limit,
                 probe_timeout=narrow_timeout,
                 result_limit=result_limit,
+                identifier_params=identifier_params,
             )
         if narrowed_query and narrowed_query["query"] not in seen_queries:
             fix_errors.append(err)

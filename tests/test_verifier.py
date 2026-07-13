@@ -306,6 +306,12 @@ class TestRunClusterQueryAutoparams:
         )
         assert params == [{"host": ""}]
 
+    def test_autoparams_does_not_treat_identifier_as_value_param(self):
+        params = collectors._autoparams_for_esql(
+            "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        assert params == []
+
     def test_run_cluster_query_omits_authorization_for_empty_key(self, monkeypatch):
         seen = {}
 

@@ -1010,6 +1010,11 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
   --output corpus.manifest.json
 ```
 
+`live_validate` reads identifier-control defaults from each panel's QueryIR, so
+queries containing `??field` are executed with the same selected field as the
+migrated dashboard. Validation deduplication includes those defaults; two
+otherwise identical queries with different selected fields are both checked.
+
 Fidelity ratchet and render audit:
 
 ```bash

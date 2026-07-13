@@ -101,7 +101,11 @@ def classify_error(text: str) -> str:
     return "other"
 
 
-def _merge_validation_params(query: str, collectors) -> list[dict[str, Any]]:
+def _merge_validation_params(
+    query: str,
+    collectors,
+    identifier_params: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Build the ``params`` list for the default runner.
 
     Auto-binds the query's ``?name`` placeholders (notably the Lens-injected
@@ -119,7 +123,10 @@ def _merge_validation_params(query: str, collectors) -> list[dict[str, Any]]:
     for entry in collectors._autoparams_for_esql(query):
         merged.update(entry)
     if _validation_params_for_query:
-        for entry in _validation_params_for_query(query):
+        for entry in _validation_params_for_query(
+            query,
+            identifier_params=identifier_params,
+        ):
             for name, value in entry.items():
                 if name in time_aliases and name in merged:
                     continue
@@ -135,6 +142,7 @@ def validate_query(
     panel_title: str = "",
     dashboard: str = "",
     runner: QueryRunner | None = None,
+    identifier_params: dict[str, str] | None = None,
 ) -> QueryResult:
     """Execute one query and classify the outcome."""
     if runner is None:
@@ -147,7 +155,11 @@ def validate_query(
         # uploaded-dashboard smoke bindings (``RLIKE ?var`` -> ``.*``, arithmetic
         # -> ``0``) so a query mixing control params and time params binds both and
         # is not mis-executed (and mis-classified as ``real_bug``).
-        params = _merge_validation_params(query, collectors)
+        params = _merge_validation_params(
+            query,
+            collectors,
+            identifier_params=identifier_params,
+        )
 
         def runner(es, key, q):
             return collectors.run_cluster_query(es, key, q, params=params or None)
@@ -168,23 +180,37 @@ def validate_query(
 def validate_queries(
     es_url: str,
     api_key: str,
-    items: Iterable[tuple[str, str, str]],
+    items: Iterable[
+        tuple[str, str, str]
+        | tuple[str, str, str, dict[str, str]]
+    ],
     *,
     runner: QueryRunner | None = None,
     dedup: bool = True,
 ) -> list[QueryResult]:
     """Validate ``(dashboard, panel_title, query)`` triples."""
-    seen: set[str] = set()
+    seen: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     out: list[QueryResult] = []
-    for dashboard, panel_title, query in items:
+    for item in items:
+        dashboard, panel_title, query = item[:3]
+        identifier_params = item[3] if len(item) > 3 and isinstance(item[3], dict) else {}
         q = (query or "").strip()
         if not q:
             continue
-        if dedup and q in seen:
+        signature = (q, tuple(sorted(identifier_params.items())))
+        if dedup and signature in seen:
             continue
-        seen.add(q)
+        seen.add(signature)
         out.append(
-            validate_query(es_url, api_key, q, panel_title=panel_title, dashboard=dashboard, runner=runner)
+            validate_query(
+                es_url,
+                api_key,
+                q,
+                panel_title=panel_title,
+                dashboard=dashboard,
+                runner=runner,
+                identifier_params=identifier_params,
+            )
         )
     return out
 
@@ -201,13 +227,15 @@ def summarize(results: list[QueryResult]) -> dict[str, Any]:
 # --------------------------------------------------------------------- #
 
 
-def queries_from_report(report: dict[str, Any]) -> list[tuple[str, str, str]]:
-    """Yield ``(dashboard, panel_title, emitted_query)`` from migration_report.json.
+def query_specs_from_report(
+    report: dict[str, Any],
+) -> list[tuple[str, str, str, dict[str, str]]]:
+    """Yield emitted queries plus ES|QL identifier-control defaults.
 
     Prefer the YAML-emitted query (visual_ir.presentation.config.query, which
     includes composite-legend EVALs etc.) over the bare translator esql.
     """
-    items: list[tuple[str, str, str]] = []
+    items: list[tuple[str, str, str, dict[str, str]]] = []
     for dash in report.get("dashboards", []):
         dtitle = str(dash.get("title") or "")
         for panel in dash.get("panels", []):
@@ -227,8 +255,32 @@ def queries_from_report(report: dict[str, Any]) -> list[tuple[str, str, str]]:
             if not query:
                 query = str(panel.get("esql_query") or panel.get("esql") or "")
             if query.strip():
-                items.append((dtitle, title, query))
+                query_ir = panel.get("query_ir") if isinstance(panel.get("query_ir"), dict) else {}
+                metadata = (
+                    query_ir.get("metadata")
+                    if isinstance(query_ir.get("metadata"), dict)
+                    else {}
+                )
+                raw_defaults = metadata.get("esql_identifier_param_defaults")
+                identifier_defaults = (
+                    {
+                        str(name): str(value)
+                        for name, value in raw_defaults.items()
+                        if name and value not in (None, "")
+                    }
+                    if isinstance(raw_defaults, dict)
+                    else {}
+                )
+                items.append((dtitle, title, query, identifier_defaults))
     return items
+
+
+def queries_from_report(report: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Yield backwards-compatible query triples from migration_report.json."""
+    return [
+        (dashboard, panel_title, query)
+        for dashboard, panel_title, query, _defaults in query_specs_from_report(report)
+    ]
 
 
 # --------------------------------------------------------------------- #
@@ -254,7 +306,7 @@ def _build_argparser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_argparser().parse_args(argv)
     report = json.loads((args.migration_out / "migration_report.json").read_text())
-    items = queries_from_report(report)
+    items = query_specs_from_report(report)
     results = validate_queries(args.es_url, args.api_key, items)
     summary = summarize(results)
     payload = {"summary": summary, "results": [r.to_jsonable() for r in results]}
@@ -280,6 +332,7 @@ __all__ = [
     "QueryRunner",
     "classify_error",
     "queries_from_report",
+    "query_specs_from_report",
     "summarize",
     "validate_queries",
     "validate_query",

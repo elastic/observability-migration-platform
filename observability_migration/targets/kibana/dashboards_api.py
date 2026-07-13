@@ -1189,7 +1189,15 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
             "selected_options": [str(option) for option in defaults],
         }
     else:
-        raw_options = control.get("available_options") or control.get("options") or []
+        # ``choices`` is the static field/function list for identifier controls
+        # (``variable_type: fields``); ``available_options`` is the values-control
+        # spelling. Both map to a STATIC_VALUES ES|QL control.
+        raw_options = (
+            control.get("choices")
+            or control.get("available_options")
+            or control.get("options")
+            or []
+        )
         options = [str(opt) for opt in raw_options] if isinstance(raw_options, list) else []
         esql_config = {
             "control_type": "STATIC_VALUES",

@@ -49,6 +49,7 @@ from .promql import (
     _counter_unsafe_cast_needed,
     _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
+    _expand_late_bound_group_by_terms,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -59,6 +60,7 @@ from .promql import (
     _grouping_parts,
     _inline_filters_into_stats_expr,
     _is_counter_fallback,
+    _is_esql_control_token,
     _is_label_enrichment_metric,
     _iter_pending_join_rhs_fragments,
     _left_operand_of_same_metric_range_fallback,
@@ -83,6 +85,7 @@ from .rules import (
     RulePackConfig,
     _append_unique,
 )
+from .runtime_features import binds_esql_named_params
 from .semantic_planner import RuntimeCapabilities, plan_grafana_metric_contract
 
 # Exact ES|QL renderings for PromQL elementwise math/trig wrappers. ``{m}`` is the
@@ -334,7 +337,13 @@ _RANK_TEMPLATE_LIMIT_RE = re.compile(
     r"\s*,",
     re.IGNORECASE,
 )
-_GROUPING_TEMPLATE_RE = re.compile(r"\b(?:by|without)\s*\((?P<labels>[^)]*)\)", re.IGNORECASE)
+_GROUPING_TEMPLATE_RE = re.compile(r"\b(?P<kw>by|without)\s*\((?P<labels>[^)]*)\)", re.IGNORECASE)
+# ``by (...)`` / ``without (...)`` clause, with any leading separator captured so
+# a clause that becomes empty (its only label was a template variable) can be
+# dropped cleanly without leaving a dangling space.
+_GROUPING_TEMPLATE_STRIP_RE = re.compile(
+    r"(?P<lead>\s*)\b(?P<kw>by|without)\s*\((?P<labels>[^)]*)\)", re.IGNORECASE
+)
 # A template variable used in function-call position (e.g. ``${metric:value}(...)``)
 # — dynamic function selection (rate/increase/…) that cannot be resolved offline.
 _TEMPLATE_FUNC_VAR_RE = re.compile(r"(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r")\s*\(")
@@ -413,6 +422,142 @@ def _rewrite_grouping_template_vars(expr: str) -> tuple[str, list[str], bool]:
         return _GROUPING_TEMPLATE_RE.sub(repl, segment)
 
     return _apply_outside_string_literals(expr, transform), dropped, fully_dynamic
+
+
+def _string_literal_spans(expr: str):
+    return [
+        (m.start(), m.end())
+        for m in re.finditer(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'', expr or "")
+    ]
+
+
+def _pos_in_spans(pos: int, spans) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _late_bound_group_choices(rule_pack, var_name):
+    """Return the resolved ES|QL field-control spec for a grouping template var.
+
+    Populated per-dashboard on the rule pack (``_late_bound_group_var_choices``)
+    from ``templating.list`` when the target binds ES|QL parameters. ``None``
+    means the variable is unknown/unresolvable, so the grouping stays
+    ``not_feasible`` (degrade gracefully) instead of emitting a control with no
+    selectable fields.
+    """
+    choices_map = getattr(rule_pack, "_late_bound_group_var_choices", None) or {}
+    spec = choices_map.get(var_name)
+    if isinstance(spec, dict) and spec.get("choices"):
+        return spec
+    return None
+
+
+def _strip_group_template_vars(expr: str, var_names) -> str:
+    """Remove late-bound grouping template variables from BY/WITHOUT clauses.
+
+    The variable is re-attached downstream as an ES|QL identifier control
+    (``STATS ... BY ??var``); stripping it here lets the concrete labels and the
+    rest of the expression translate normally. A clause whose only label was the
+    template variable is dropped entirely. Template text inside string literals
+    is left untouched (mirrors the guardrail's literal-aware detection).
+    """
+    if not expr or not var_names:
+        return expr
+    targets = set(var_names)
+    literal_spans = _string_literal_spans(expr)
+
+    def _rewrite(match):
+        if _pos_in_spans(match.start("kw"), literal_spans):
+            return match.group(0)
+        kept = []
+        for token in re.split(r"[\s,]+", (match.group("labels") or "").strip()):
+            if not token:
+                continue
+            var_match = _GRAFANA_TEMPLATE_VAR_RE.fullmatch(token)
+            if var_match and _template_var_name(var_match) in targets:
+                continue
+            kept.append(token)
+        if not kept:
+            return ""
+        return f"{match.group('lead')}{match.group('kw')} ({', '.join(kept)})"
+
+    return _GROUPING_TEMPLATE_STRIP_RE.sub(_rewrite, expr)
+
+
+def _try_defer_late_bound_grouping(context, stripped_expr):
+    """Attempt to defer a ``by ($var)`` grouping to a Kibana ES|QL field control.
+
+    Issue #282: a *pure* single positive grouping variable — ``by ($grouping)``
+    with no concrete label alongside it — becomes an interactive ES|QL
+    identifier/field control (``STATS ... BY grouping = ??grouping``) when the
+    target binds ES|QL parameters and the variable resolves to a set of
+    selectable fields. On success the token is stripped from the BY clause (it
+    is re-attached downstream as ``??var``), the variable is recorded on the
+    context, and a reason is returned.
+
+    Every richer shape is intentionally *not* deferred and returns ``None`` so
+    the caller falls back to the graceful strip/degrade path:
+
+    * A concrete label alongside the variable (``by (exporter, $grouping)``) —
+      one shared Lens breakdown accessor cannot safely follow a field control
+      whose choices may collide with the concrete grouping column, so the
+      concrete grouping is kept and the optional selector is dropped instead
+      (this is the fix for the collision / "invalid column" render error).
+    * ``without`` variables (ES|QL grouping is positive; an excluded dimension
+      has no faithful control), multiple variables (a single XY breakdown cannot
+      host several independent field controls), or an unresolvable/unsupported
+      target.
+    """
+    by_vars: list[str] = []
+    without_vars: list[str] = []
+    by_has_concrete = False
+    for grouping_match in _GROUPING_TEMPLATE_RE.finditer(stripped_expr):
+        kw = grouping_match.group("kw").lower()
+        labels = grouping_match.group("labels") or ""
+        clause_vars = [
+            _template_var_name(var_match)
+            for var_match in _GRAFANA_TEMPLATE_VAR_RE.finditer(labels)
+        ]
+        concrete = [
+            part
+            for part in re.split(r"[,\s]+", _GRAFANA_TEMPLATE_VAR_RE.sub("", labels))
+            if part
+        ]
+        if kw == "by":
+            for name in clause_vars:
+                if name not in by_vars:
+                    by_vars.append(name)
+            if concrete:
+                by_has_concrete = True
+        else:
+            for name in clause_vars:
+                if name not in without_vars:
+                    without_vars.append(name)
+
+    field_control_spec = (
+        _late_bound_group_choices(context.rule_pack, by_vars[0])
+        if len(by_vars) == 1
+        else None
+    )
+    deferrable = (
+        len(by_vars) == 1
+        and not without_vars
+        and not by_has_concrete
+        and binds_esql_named_params(context.rule_pack)
+        and field_control_spec is not None
+    )
+    if not deferrable:
+        return None
+
+    context.promql_expr = _strip_group_template_vars(context.promql_expr or "", by_vars)
+    recorded = context.metadata.setdefault("late_bound_group_vars", [])
+    for name in by_vars:
+        if name not in recorded:
+            recorded.append(name)
+    choices = list(field_control_spec.get("choices") or [])
+    default = field_control_spec.get("default") or (choices[0] if choices else None)
+    if default:
+        context.metadata.setdefault("esql_identifier_param_defaults", {})[by_vars[0]] = default
+    return "deferred BY template variable to ES|QL field control: " + _template_var_display(by_vars[0])
 
 
 @dataclass
@@ -752,11 +897,18 @@ def template_variable_guardrail_rule(context):
         )
         return "dynamic metric/label name requires manual redesign"
 
-    # A ``by``/``without`` clause with a template variable alongside concrete
-    # labels (``by (exporter $grouping)``): drop the optional selector token and
-    # keep the explicit grouping. A clause that is *only* a template variable
-    # has no resolvable dimension and stays not-feasible.
+    # A ``by``/``without`` clause with a Grafana template variable. Issue #282:
+    # a *pure* single positive grouping variable (``by ($grouping)`` with no
+    # concrete label) is deferred to a Kibana ES|QL identifier/field control when
+    # the target binds ES|QL parameters and the variable resolves to selectable
+    # fields. Everything else degrades gracefully: a variable alongside concrete
+    # labels (``by (exporter $grouping)``) drops the optional selector token and
+    # keeps the explicit grouping, and a clause that is *only* a template
+    # variable has no resolvable dimension and stays not-feasible.
     if _GROUPING_TEMPLATE_RE.search(expr) and _GRAFANA_TEMPLATE_VAR_RE.search(expr):
+        deferred = _try_defer_late_bound_grouping(context, expr)
+        if deferred is not None:
+            return deferred
         rewritten, dropped, fully_dynamic = _rewrite_grouping_template_vars(context.promql_expr or "")
         if fully_dynamic:
             var_match = _GRAFANA_TEMPLATE_VAR_RE.search(
@@ -802,6 +954,12 @@ def parse_fragment_rule(context):
     if context.feasibility == "not_feasible":
         return None
     context.fragment = _parse_fragment(context.clean_expr or context.promql_expr)
+    # Carry late-bound grouping variables (issue #282) onto the fragment as ES|QL
+    # identifier controls so ``_frag_group_labels`` re-attaches them to the
+    # STATS ... BY clause after the concrete labels resolve.
+    late_bound = context.metadata.get("late_bound_group_vars")
+    if late_bound and context.fragment is not None:
+        context.fragment.extra["late_bound_group_identifiers"] = [f"??{name}" for name in late_bound]
     parse_error = context.fragment.extra.get("parse_error")
     if parse_error:
         if context.query_language == "logql":
@@ -1193,7 +1351,7 @@ def uptime_family_rule(context):
     context.output_group_fields = group_fields
     stats_line = f"| STATS start_time_ms = MAX({uptime_arg} * 1000)"
     if group_fields:
-        stats_line += f" BY {', '.join(group_fields)}"
+        stats_line += f" BY {', '.join(_expand_late_bound_group_by_terms(group_fields, frag))}"
     context.esql_query = "\n".join(
         [
             f"FROM {context.index}",
@@ -1833,7 +1991,7 @@ def topk_family_rule(context):
             f"| WHERE {time_filter}",
             *_build_where_lines(filters),
             f"| WHERE {physical_metric} IS NOT NULL",
-            f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(group_fields)}",
+            f"| STATS _bucket_value = {stats_expr} BY {bucket}, {', '.join(_expand_late_bound_group_by_terms(group_fields, frag))}",
             "| SORT time_bucket ASC",
             f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
             f"| KEEP {', '.join(group_fields + ['value'])}",
@@ -2009,7 +2167,7 @@ def scaled_agg_family_rule(context):
     )
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     bucket = rp.ts_bucket
-    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
 
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
     esql_inner = AGG_FUNCTION_MAP.get(frag.range_func, frag.range_func.upper())
@@ -2405,7 +2563,7 @@ def histogram_quantile_family_rule(context):
     percentile_value = _format_scalar_value(round(phi * 100, 10))
     stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
-    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields)
+    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields, frag)
 
     parts = [
         f"TS {context.index}",
@@ -2527,7 +2685,7 @@ def range_agg_family_rule(context):
         stats_expr = _agg_stats_expr(outer, inner_expr, frag) if outer else inner_expr
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
-    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
     eval_line, final_alias = _frag_eval_line(alias, frag)
 
     context.parser_backend = "fragment"
@@ -2748,7 +2906,13 @@ def simple_agg_family_rule(context):
             context.output_group_fields = []
             lines.append(f"| STATS {alias} = {_agg_stats_expr(OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper()), pre_agg_metric_arg, frag)}")
         else:
-            group_by_parts = list(group_fields)
+            # This is a single-level aggregation, so a late-bound ``by ($var)``
+            # dimension aliases cleanly to a stable ES|QL field control
+            # (``grouping = ??grouping``) here too — mirror the main agg path so
+            # the guardrail's deferral is honored instead of degrading to
+            # not_feasible (issue #282). ``output_group_fields`` keeps the bare
+            # alias so the Lens breakdown binds the stable column.
+            group_by_parts = _expand_late_bound_group_by_terms(group_fields, frag)
             context.output_group_fields = list(group_fields)
             if not metric_like:
                 group_by_parts = [pre_bucket, *group_by_parts]
@@ -2843,7 +3007,7 @@ def simple_agg_family_rule(context):
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = _agg_stats_expr(outer, inner_expr, frag)
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
-    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
     eval_line, final_alias = _frag_eval_line(alias, frag)
 
     context.parser_backend = "fragment"
@@ -2976,7 +3140,7 @@ def simple_metric_family_rule(context):
 
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     eval_line, final_alias = _frag_eval_line(alias, frag)
-    group_by_parts, output_group = _grouping_parts(bucket, group_fields)
+    group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
 
     context.parser_backend = "fragment"
     context.source_type = source
@@ -3085,6 +3249,18 @@ def scalar_outer_agg_rule(context):
     return None
 
 
+def _resolve_labels_preserving_controls(resolver, labels):
+    """Resolve concrete labels while passing ES|QL control tokens through.
+
+    A late-bound grouping control (``??var``) is not a physical field, so it
+    must never be handed to ``resolver.resolve_labels`` (which would drop or
+    mangle it); it is preserved verbatim (issue #282).
+    """
+    controls = [label for label in labels if _is_esql_control_token(label)]
+    resolvable = [label for label in labels if not _is_esql_control_token(label)]
+    return resolver.resolve_labels(resolvable) + controls
+
+
 @QUERY_TRANSLATORS.register("resolve_labels", priority=45)
 def resolve_labels_rule(context):
     if context.translation_complete:
@@ -3092,9 +3268,11 @@ def resolve_labels_rule(context):
     if not context.resolver:
         return None
     original = list(context.group_labels)
-    context.group_labels = context.resolver.resolve_labels(context.group_labels)
+    context.group_labels = _resolve_labels_preserving_controls(context.resolver, context.group_labels)
     if context.output_group_fields:
-        context.output_group_fields = context.resolver.resolve_labels(context.output_group_fields)
+        context.output_group_fields = _resolve_labels_preserving_controls(
+            context.resolver, context.output_group_fields
+        )
     if original != context.group_labels:
         return f"resolved labels {original} -> {context.group_labels}"
     return None
@@ -3495,6 +3673,51 @@ def rendered_query_required_rule(context):
     context.confidence = 0.0
     _append_unique(context.warnings, "No ES|QL query was produced")
     return "missing ES|QL output"
+
+
+@QUERY_VALIDATORS.register("late_bound_group_control", priority=35)
+def late_bound_group_control_rule(context):
+    """Confirm each deferred grouping variable reached the query as ``??var``.
+
+    The guardrail strips ``by ($var)`` and records the variable (issue #282);
+    ``_frag_group_labels`` re-attaches it as an ES|QL identifier control. Only a
+    subset of query shapes route grouping through that seam, so if the emitted
+    query never gained the ``??var`` identifier the grouping dimension was
+    silently lost — revert to not_feasible with the original manual-redesign
+    reason rather than ship a query missing its grouping.
+    """
+    late_bound = context.metadata.get("late_bound_group_vars")
+    if not late_bound or context.feasibility == "not_feasible":
+        return None
+    query = context.esql_query or ""
+    identifier_names = set(re.findall(r"\?\?([A-Za-z][A-Za-z0-9_]*)", query))
+    value_names = set(
+        re.findall(r"(?<!\?)\?(?!\?)([A-Za-z][A-Za-z0-9_]*)", query)
+    )
+    dual_semantics = sorted(identifier_names & value_names)
+    if dual_semantics:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        for name in dual_semantics:
+            _append_unique(
+                context.warnings,
+                f"ES|QL parameter {name} is used as both value and field control; "
+                "one dashboard control cannot preserve both semantics",
+            )
+        return "late-bound grouping variable conflicts with a value parameter"
+    missing = [name for name in late_bound if f"??{name}" not in query]
+    if missing:
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        for name in missing:
+            _append_unique(
+                context.warnings,
+                f"BY/WITHOUT clause contains Grafana template variable ({_template_var_display(name)}); "
+                "grouping dimension is unknown at migration time and requires manual redesign",
+            )
+        return "late-bound grouping variable could not be represented as an ES|QL field control"
+    context.metadata["late_bound_group_controls"] = list(late_bound)
+    return "bound late grouping variable(s) to ES|QL field control: " + ", ".join(late_bound)
 
 
 def _collect_source_metrics(frag, seen=None, dedup=True):

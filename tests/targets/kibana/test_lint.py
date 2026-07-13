@@ -135,6 +135,73 @@ class UnboundParamGateTests(unittest.TestCase):
         ok, output = self._run(yaml_text)
         self.assertTrue(ok, msg=output)
 
+    def test_unbound_field_control_fails_with_field_control_message(self):
+        # Issue #282: a late-bound grouping identifier (``??var``) with no
+        # binding fields control must fail the gate with a field-control-specific
+        # message (not the misleading single-``?`` parameter wording).
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                panels:
+                  - title: Spans
+                    esql:
+                      query: "TS metrics-* | STATS v = SUM(x) BY t = TBUCKET(5 minute), grouping = ??grouping | SORT t ASC"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertFalse(ok, msg=output)
+        self.assertIn("unbound-esql-field-control", output)
+        self.assertIn("??grouping", output)
+
+    def test_field_control_with_matching_control_passes(self):
+        # A ``??var`` bound by a ``variable_type: fields`` control is clean and
+        # must not be double-reported as an unbound single-``?`` parameter.
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                controls:
+                  - type: esql
+                    variable_name: grouping
+                    variable_type: fields
+                    choices: [exporter, transport]
+                    default: exporter
+                panels:
+                  - title: Spans
+                    esql:
+                      query: "TS metrics-* | STATS v = SUM(x) BY t = TBUCKET(5 minute), grouping = ??grouping | SORT t ASC"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertTrue(ok, msg=output)
+
+    def test_values_control_does_not_bind_field_control(self):
+        # Issue #282: a ``??var`` identifier needs a fields control. A same-named
+        # ``variable_type: values`` control supplies a value, not an identifier
+        # for ``STATS ... BY ??var``, so the panel still fails to load — the gate
+        # must not treat it as a valid binding.
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                controls:
+                  - type: esql
+                    variable_name: grouping
+                    variable_type: values
+                    query: "FROM metrics-* | KEEP grouping"
+                    default: exporter
+                panels:
+                  - title: Spans
+                    esql:
+                      query: "TS metrics-* | STATS v = SUM(x) BY t = TBUCKET(5 minute), grouping = ??grouping | SORT t ASC"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertFalse(ok, msg=output)
+        self.assertIn("unbound-esql-field-control", output)
+        self.assertIn("??grouping", output)
+
 
 if __name__ == "__main__":
     unittest.main()

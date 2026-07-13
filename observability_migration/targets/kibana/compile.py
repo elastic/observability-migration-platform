@@ -275,7 +275,7 @@ def _pair_yaml_leaves_to_panel_results(leaf_panels, panel_results):
     return paired
 
 
-_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
 _INTERNAL_ESQL_PARAMS = {"_tstart", "_tend", "_job"}
 

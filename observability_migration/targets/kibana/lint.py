@@ -19,6 +19,12 @@ VALIDATION_TIMEOUT_SECONDS = 120
 # An ES|QL named parameter (``?var``), excluding engine-internal params
 # (``?_tstart`` / ``?_tend`` / ``?_job``) which are materialized at query time.
 _ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+# An ES|QL identifier/field control (``??var``): late-bound grouping (issue
+# #282) emits ``STATS ... BY ??var`` and needs a ``variable_type: fields``
+# control. The single-``?`` scanner would otherwise match the second ``?`` as a
+# plain param, so ``??`` tokens are detected explicitly and blanked before the
+# ``?`` scan to avoid a misleading duplicate finding.
+_ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 # Quoted string literals, stripped before scanning so a ``?`` inside a value
 # (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
@@ -98,12 +104,22 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
         if not isinstance(dashboard, dict):
             continue
         dashboard_name = str(dashboard.get("name") or "")
-        bound = {
-            str(control.get("variable_name"))
+        esql_controls = [
+            control
             for control in (dashboard.get("controls") or [])
             if isinstance(control, dict)
             and control.get("type") == "esql"
             and control.get("variable_name")
+        ]
+        bound = {str(control.get("variable_name")) for control in esql_controls}
+        # A ``??var`` identifier control must be bound specifically by a fields
+        # control; a same-named ``values`` control supplies a value, not an
+        # identifier for ``STATS ... BY ??var``, so the panel still fails to load
+        # (issue #282). Bind the ``??`` form only against fields controls.
+        field_bound = {
+            str(control.get("variable_name"))
+            for control in esql_controls
+            if control.get("variable_type") == "fields"
         }
         for panel in _iter_leaf_panels(dashboard.get("panels") or []):
             esql_config = panel.get("esql")
@@ -111,8 +127,14 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
             if not isinstance(query, str):
                 continue
             unquoted = _ESQL_QUOTED_RE.sub('""', query)
+            field_control_names = {
+                m.group("name") for m in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)
+            }
+            # Blank ``??var`` tokens so the single-``?`` scan does not re-flag
+            # them as plain ``?var`` params with a misleading message.
+            param_scan = _ESQL_FIELD_CONTROL_RE.sub("", unquoted)
             for name in sorted(
-                {m.group("name") for m in _ESQL_PARAM_RE.finditer(unquoted)} - bound
+                {m.group("name") for m in _ESQL_PARAM_RE.finditer(param_scan)} - bound
             ):
                 findings.append(
                     {
@@ -124,6 +146,21 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
                             f"panel query references ES|QL parameter ?{name} but no "
                             f"control binds it; the panel will fail with "
                             f'"Parameter [?{name}] value not found" (issue #131)'
+                        ),
+                    }
+                )
+            for name in sorted(field_control_names - field_bound):
+                findings.append(
+                    {
+                        "dashboard_name": dashboard_name,
+                        "panel_title": str(panel.get("title") or ""),
+                        "rule_id": "unbound-esql-field-control",
+                        "severity": "error",
+                        "message": (
+                            f"panel query references ES|QL field control ??{name} but "
+                            f"no control binds it; add a fields control "
+                            f"(variable_type: fields) for {name} or the panel will "
+                            f"fail to load (issue #282)"
                         ),
                     }
                 )

@@ -76,6 +76,19 @@ _ESQL_RESERVED_IDENTIFIERS = frozenset(
 )
 
 
+# Kibana ES|QL control-variable references. A single ``?`` prefixes a *value*
+# control (``WHERE field == ?var``); a double ``??`` prefixes an *identifier*
+# / field control (``STATS ... BY ??var``). Both are bound to a dashboard
+# control at view time and must be emitted verbatim — never backtick-quoted,
+# label-resolved, or dropped as if they were a concrete field name.
+_ESQL_CONTROL_TOKEN_RE = re.compile(r"^\?\??[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_esql_control_token(name) -> bool:
+    """True when *name* is an ES|QL control-variable reference (``?v`` / ``??v``)."""
+    return isinstance(name, str) and bool(_ESQL_CONTROL_TOKEN_RE.match(name))
+
+
 def _esql_field(name: str) -> str:
     """Backtick-quote an ES|QL field reference that contains special characters.
 
@@ -101,6 +114,11 @@ def _esql_identifier(name: str) -> str:
     legend label hints), since Kibana strips the backticks.
     """
     if not name:
+        return name
+    # A Kibana ES|QL control-variable reference (``?var`` value control or
+    # ``??var`` identifier/field control) is late-bound at view time; emit it
+    # verbatim so backticks never break the ``??var`` substitution.
+    if _is_esql_control_token(name):
         return name
     if re.search(r"[^a-zA-Z0-9_.]", name):
         escaped = name.replace("`", "\\`")
@@ -3055,7 +3073,83 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     )
     explicit = _filter_usable_group_fields(explicit, resolver)
     preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
-    return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+    merged = _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+    return _append_late_bound_group_identifiers(merged, frag)
+
+
+def _late_bound_group_alias(identifier: str) -> str:
+    """Stable output-column alias for a late-bound identifier control.
+
+    ``??grouping`` -> ``grouping``. The alias is the column the query emits and
+    the Lens breakdown accessor binds to; it must stay constant regardless of
+    which field the viewer selects (see ``_append_late_bound_group_identifiers``).
+    """
+    return identifier.lstrip("?")
+
+
+def _append_late_bound_group_identifiers(group_fields, frag):
+    """Append late-bound ES|QL identifier controls (``??var``) to a group list.
+
+    A Grafana ``by ($var)`` grouping names a dimension that is only chosen at
+    view time. The guardrail records the variable on the fragment as an
+    identifier control (``??var``); it must ride alongside the concrete group
+    fields into ``STATS ... BY`` (and any downstream ``KEEP``/collapse),
+    bypassing schema resolution and field filtering because it is not a physical
+    field but a control reference (issue #282).
+
+    The group list carries the *stable alias* (``grouping``) rather than the raw
+    control token (``??grouping``). ``STATS ... BY grouping = ??grouping`` names
+    the aggregated dimension deterministically, so the Lens breakdown accessor
+    resolves the same column whichever field the control selects. Emitting the
+    bare token instead would name the output column after the substituted field
+    (``exporter``/``transport``/...), which the fixed accessor can never match —
+    the panel then fails to render ("invalid column"). The alias -> token map is
+    recorded on the fragment so the primary ``BY`` clause can expand it while
+    downstream clauses keep referencing the bare alias.
+    """
+    identifiers = (frag.extra.get("late_bound_group_identifiers") or []) if frag else []
+    if not identifiers:
+        return group_fields
+    out = list(group_fields)
+    by_map = frag.extra.setdefault("late_bound_group_by_map", {})
+    for identifier in identifiers:
+        alias = _late_bound_group_alias(identifier)
+        # A concrete grouping label already occupies this column name (the
+        # variable is named after a real label, e.g. ``by (job, $job)``).
+        # Aliasing ``job = ??job`` would rebind the concrete ``job`` grouping to
+        # the control and silently drop the source dimension, so leave the token
+        # out: ``late_bound_group_control_rule`` then sees the ``??var`` missing
+        # from the query and degrades to not_feasible (issue #282 review).
+        if alias in out and by_map.get(alias) != identifier:
+            continue
+        by_map[alias] = identifier
+        if alias not in out:
+            out.append(alias)
+    return out
+
+
+def _expand_late_bound_group_by_terms(by_terms, frag):
+    """Render primary ``STATS ... BY`` terms, aliasing late-bound identifiers.
+
+    A late-bound grouping alias (recorded by
+    :func:`_append_late_bound_group_identifiers`) is emitted as
+    ``<alias> = ??var`` so the ES|QL identifier control binds at view time while
+    the aggregated column keeps a stable name. Every other term passes through
+    verbatim. Use this only at the *primary* ``BY`` clause that introduces the
+    grouping column; downstream ``KEEP``/``SORT``/collapse clauses reference the
+    bare alias (the column already exists by then).
+    """
+    by_map = (frag.extra.get("late_bound_group_by_map") or {}) if frag else {}
+    if not by_map:
+        return list(by_terms)
+    out = []
+    for term in by_terms:
+        token = by_map.get(term)
+        if token:
+            out.append(f"{_esql_identifier(term)} = {token}")
+        else:
+            out.append(term)
+    return out
 
 
 def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
@@ -3077,13 +3171,20 @@ def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
     )
 
 
-def _grouping_parts(bucket_expr, group_fields):
+def _grouping_parts(bucket_expr, group_fields, frag=None):
+    """Split group fields into ``BY``-clause parts and output column names.
+
+    ``by_parts`` feed the primary ``STATS ... BY`` (late-bound grouping aliases
+    expand to ``<alias> = ??var``); ``output_group_fields`` are the resulting
+    column names (bare aliases) used for breakdowns, KEEP and collapse. Pass
+    ``frag`` so late-bound identifier controls are aliased (issue #282).
+    """
     by_parts = []
     output_group_fields = []
     if bucket_expr:
         by_parts.append(bucket_expr)
         output_group_fields.append("time_bucket")
-    by_parts.extend(group_fields)
+    by_parts.extend(_expand_late_bound_group_by_terms(group_fields, frag))
     output_group_fields.extend(group_fields)
     return by_parts, output_group_fields
 
@@ -5305,6 +5406,7 @@ __all__ = [
     "_collapse_summary_ts_query",
     "_common_matchers",
     "_detect_outer_agg",
+    "_expand_late_bound_group_by_terms",
     "_extract_group_labels",
     "_format_scalar_value",
     "_frag_eval_line",
@@ -5314,6 +5416,7 @@ __all__ = [
     "_frag_has_incompatible_target_fields",
     "_grouping_parts",
     "_inline_filters_into_stats_expr",
+    "_is_esql_control_token",
     "_matcher_alias_suffix",
     "_parse_fragment",
     "_parse_logql_search",

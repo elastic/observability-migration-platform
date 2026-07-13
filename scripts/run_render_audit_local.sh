@@ -39,6 +39,13 @@ if [ -n "${INPUT_DIR:-}" ]; then
 else
   echo "-- generate kitchen-sink canary --"
   "$PY" -c "import json; from observability_migration.core.coverage.canary import build_grafana_canary; json.dump(build_grafana_canary(), open('$WORK/in/canary.json','w'))"
+  # Issue #282: also render-audit the late-bound grouping canary so the
+  # ``by ($grouping)`` field-control path (and the concrete+variable collision
+  # degrade) is exercised in a real Kibana render every nightly run.
+  echo "-- generate late-bound grouping canaries for every field choice (issue #282) --"
+  for grouping in exporter transport receiver; do
+    "$PY" -c "import json; from observability_migration.core.coverage.canary import build_late_bound_grouping_canary; json.dump(build_late_bound_grouping_canary(default_grouping='$grouping'), open('$WORK/in/late-bound-grouping-$grouping.json','w'))"
+  done
 fi
 
 echo "-- migrate + upload to local Kibana (security disabled, no key) --"
