@@ -24,6 +24,8 @@ from observability_migration.targets.kibana.interaction_scenarios import (
     ManifestError,
     NoiseAllowance,
     OptionPolicy,
+    _safe_step_id_component,
+    _stable_component_hash,
     build_execution_plan,
     load_scenario,
 )
@@ -714,6 +716,17 @@ def test_every_option_runs_from_a_fresh_baseline() -> None:
         ),
     ]
     assert all(step.reset_before for step in plan)
+    combo = plan[-1]
+    assert combo.id == "namespace-and-instance"
+
+
+def test_ordinary_option_ids_remain_key_equals_option() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1", "ns_2"))],
+    )
+    assert [step.id for step in plan] == ["namespace=ns_1", "namespace=ns_2"]
 
 
 def test_every_with_exclude_and_include_required_missing_metadata() -> None:
@@ -953,6 +966,53 @@ def test_plan_selections_are_immutable() -> None:
         step.selections["namespace"] = "mutated"  # type: ignore[index]
 
 
+def test_safe_step_ids_are_collision_resistant_and_deterministic() -> None:
+    scenario = _scenario((_control("namespace"),))
+    discovered = [DiscoveredControl("namespace", "namespace", ("a/b",))]
+
+    plan_first = build_execution_plan(scenario, discovered)
+    plan_second = build_execution_plan(scenario, discovered)
+    assert plan_first[0].id == plan_second[0].id
+
+    slug_id = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("a_b",))],
+    )[0].id
+    slash_id = plan_first[0].id
+
+    assert slug_id == "namespace=a_b"
+    assert slash_id == f"namespace=a_b_{_stable_component_hash('a/b')}"
+    assert slug_id != slash_id
+    assert dict(plan_first[0].selections) == {"namespace": "a/b"}
+
+
+def test_safe_step_ids_contain_no_slash_or_space() -> None:
+    scenario = _scenario((_control("path/to control"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("path/to control", "path", ("foo/bar baz",))],
+    )
+    step = plan[0]
+    assert "/" not in step.id
+    assert " " not in step.id
+    assert dict(step.selections) == {"path/to control": "foo/bar baz"}
+
+
+def test_unsafe_combination_id_is_sanitized_with_hash() -> None:
+    scenario = _scenario(
+        (_control("namespace"),),
+        (_combination("combo/with space", {"namespace": "ns_1"}),),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    combo = plan[-1]
+    assert combo.id == _safe_step_id_component("combo/with space")
+    assert combo.id != "combo/with space"
+    assert dict(combo.selections) == {"namespace": "ns_1"}
+
+
 def test_safe_deterministic_ids_for_special_characters() -> None:
     scenario = _scenario((_control("path"),))
     plan = build_execution_plan(
@@ -960,5 +1020,5 @@ def test_safe_deterministic_ids_for_special_characters() -> None:
         [DiscoveredControl("path", "path", ("foo/bar baz",))],
     )
     step = plan[0]
-    assert step.id == "path=foo_bar_baz"
+    assert step.id == f"path=foo_bar_baz_{_stable_component_hash('foo/bar baz')}"
     assert dict(step.selections) == {"path": "foo/bar baz"}

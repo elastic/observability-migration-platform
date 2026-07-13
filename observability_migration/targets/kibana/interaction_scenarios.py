@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -165,7 +166,7 @@ class InteractionStep:
     selections: Mapping[str, str]
     reset_before: bool = True
     control_key: str = ""
-    control_label: str = ""
+    label: str = ""
     capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE
     skipped_options: tuple[str, ...] = ()
     missing_declared_options: tuple[str, ...] = ()
@@ -173,14 +174,35 @@ class InteractionStep:
 
 _EMPTY_SELECTIONS: Mapping[str, str] = MappingProxyType({})
 
+_SAFE_STEP_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_ID_HASH_LENGTH = 8
 
-def _sanitize_step_id_component(value: str) -> str:
-    sanitized = re.sub(r"[^\w.-]+", "_", value.strip())
-    return sanitized or "empty"
+
+def _stable_component_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_ID_HASH_LENGTH]
+
+
+def _safe_step_id_component(value: str) -> str:
+    if _SAFE_STEP_ID_COMPONENT_RE.fullmatch(value):
+        return value
+    slug = re.sub(r"[^\w.-]+", "_", value.strip())
+    if not slug:
+        slug = "empty"
+    return f"{slug}_{_stable_component_hash(value)}"
 
 
 def _option_step_id(control_key: str, option: str) -> str:
-    return f"{control_key}={_sanitize_step_id_component(option)}"
+    return (
+        f"{_safe_step_id_component(control_key)}={_safe_step_id_component(option)}"
+    )
+
+
+def _gap_step_id(control_key: str, kind: str) -> str:
+    return f"{_safe_step_id_component(control_key)}:{kind}"
+
+
+def _combination_step_id(combination_id: str) -> str:
+    return _safe_step_id_component(combination_id)
 
 
 def _index_discovered_controls(
@@ -246,7 +268,7 @@ def _make_option_step(
         selections=MappingProxyType({control.key: option}),
         reset_before=True,
         control_key=control.key,
-        control_label=control.label,
+        label=control.label,
         capability=control.capability,
         skipped_options=skipped_options,
         missing_declared_options=missing_declared_options,
@@ -261,12 +283,12 @@ def _make_gap_step(
     missing_declared_options: tuple[str, ...] = (),
 ) -> InteractionStep:
     return InteractionStep(
-        id=f"{control.key}:{kind}",
+        id=_gap_step_id(control.key, kind),
         kind=kind,
         selections=_EMPTY_SELECTIONS,
         reset_before=True,
         control_key=control.key,
-        control_label=control.label,
+        label=control.label,
         capability=control.capability,
         skipped_options=skipped_options,
         missing_declared_options=missing_declared_options,
@@ -324,7 +346,7 @@ def build_execution_plan(
     for combination in scenario.combinations:
         steps.append(
             InteractionStep(
-                id=combination.id,
+                id=_combination_step_id(combination.id),
                 kind="combination",
                 selections=combination.selections,
                 reset_before=True,
