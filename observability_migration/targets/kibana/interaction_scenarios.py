@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -148,6 +148,190 @@ class DashboardScenario:
     controls: tuple[ControlScenario, ...]
     combinations: tuple[CombinationScenario, ...]
     noise_allowances: tuple[NoiseAllowance, ...]
+
+
+@dataclass(frozen=True)
+class DiscoveredControl:
+    key: str
+    label: str
+    options: tuple[str, ...]
+    selected: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InteractionStep:
+    id: str
+    kind: str  # option | combination | coverage_gap | missing_control | missing_option
+    selections: Mapping[str, str]
+    reset_before: bool = True
+    control_key: str = ""
+    control_label: str = ""
+    capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE
+    skipped_options: tuple[str, ...] = ()
+    missing_declared_options: tuple[str, ...] = ()
+
+
+_EMPTY_SELECTIONS: Mapping[str, str] = MappingProxyType({})
+
+
+def _sanitize_step_id_component(value: str) -> str:
+    sanitized = re.sub(r"[^\w.-]+", "_", value.strip())
+    return sanitized or "empty"
+
+
+def _option_step_id(control_key: str, option: str) -> str:
+    return f"{control_key}={_sanitize_step_id_component(option)}"
+
+
+def _index_discovered_controls(
+    discovered_controls: Sequence[DiscoveredControl],
+) -> dict[str, DiscoveredControl]:
+    indexed: dict[str, DiscoveredControl] = {}
+    for discovered in discovered_controls:
+        if discovered.key in indexed:
+            raise ManifestError(
+                f"duplicate discovered control key: {discovered.key}"
+            )
+        options = discovered.options
+        if len(options) != len(set(options)):
+            raise ManifestError(
+                f"duplicate discovered option for control {discovered.key!r}"
+            )
+        indexed[discovered.key] = discovered
+    return indexed
+
+
+def _skipped_options(
+    discovered_options: tuple[str, ...],
+    exclude: tuple[str, ...],
+) -> tuple[str, ...]:
+    exclude_set = set(exclude)
+    return tuple(option for option in discovered_options if option in exclude_set)
+
+
+def _missing_declared_options(
+    include: tuple[str, ...],
+    discovered_options: set[str],
+) -> tuple[str, ...]:
+    return tuple(option for option in include if option not in discovered_options)
+
+
+def _runnable_options(
+    policy: OptionPolicy,
+    discovered_options: tuple[str, ...],
+) -> tuple[str, ...]:
+    discovered_set = set(discovered_options)
+    exclude_set = set(policy.exclude)
+
+    if policy.strategy == "declared":
+        return tuple(
+            option
+            for option in policy.include
+            if option in discovered_set and option not in exclude_set
+        )
+
+    return tuple(option for option in discovered_options if option not in exclude_set)
+
+
+def _make_option_step(
+    control: ControlScenario,
+    option: str,
+    *,
+    skipped_options: tuple[str, ...],
+    missing_declared_options: tuple[str, ...],
+) -> InteractionStep:
+    return InteractionStep(
+        id=_option_step_id(control.key, option),
+        kind="option",
+        selections=MappingProxyType({control.key: option}),
+        reset_before=True,
+        control_key=control.key,
+        control_label=control.label,
+        capability=control.capability,
+        skipped_options=skipped_options,
+        missing_declared_options=missing_declared_options,
+    )
+
+
+def _make_gap_step(
+    control: ControlScenario,
+    kind: str,
+    *,
+    skipped_options: tuple[str, ...] = (),
+    missing_declared_options: tuple[str, ...] = (),
+) -> InteractionStep:
+    return InteractionStep(
+        id=f"{control.key}:{kind}",
+        kind=kind,
+        selections=_EMPTY_SELECTIONS,
+        reset_before=True,
+        control_key=control.key,
+        control_label=control.label,
+        capability=control.capability,
+        skipped_options=skipped_options,
+        missing_declared_options=missing_declared_options,
+    )
+
+
+def build_execution_plan(
+    scenario: DashboardScenario,
+    discovered_controls: Sequence[DiscoveredControl],
+) -> tuple[InteractionStep, ...]:
+    """Build an immutable, browser-independent interaction execution plan."""
+    discovered_by_key = _index_discovered_controls(discovered_controls)
+    steps: list[InteractionStep] = []
+
+    for control in scenario.controls:
+        discovered = discovered_by_key.get(control.key)
+        if discovered is None:
+            if control.capability in {
+                CapabilityCategory.MIGRATION_GAP,
+                CapabilityCategory.SOURCE_ONLY,
+            }:
+                steps.append(_make_gap_step(control, "coverage_gap"))
+            else:
+                steps.append(_make_gap_step(control, "missing_control"))
+            continue
+
+        skipped = _skipped_options(discovered.options, control.options.exclude)
+        missing = _missing_declared_options(
+            control.options.include,
+            set(discovered.options),
+        )
+        runnable = _runnable_options(control.options, discovered.options)
+
+        if not runnable:
+            steps.append(
+                _make_gap_step(
+                    control,
+                    "missing_option",
+                    skipped_options=skipped,
+                    missing_declared_options=missing,
+                )
+            )
+            continue
+
+        for option in runnable:
+            steps.append(
+                _make_option_step(
+                    control,
+                    option,
+                    skipped_options=skipped,
+                    missing_declared_options=missing,
+                )
+            )
+
+    for combination in scenario.combinations:
+        steps.append(
+            InteractionStep(
+                id=combination.id,
+                kind="combination",
+                selections=combination.selections,
+                reset_before=True,
+            )
+        )
+
+    return tuple(steps)
 
 
 def load_scenario(path: str | Path) -> DashboardScenario:

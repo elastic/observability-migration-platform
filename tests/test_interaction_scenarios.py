@@ -19,9 +19,12 @@ from observability_migration.targets.kibana.interaction_scenarios import (
     CombinationScenario,
     ControlScenario,
     DashboardScenario,
+    DiscoveredControl,
+    InteractionStep,
     ManifestError,
     NoiseAllowance,
     OptionPolicy,
+    build_execution_plan,
     load_scenario,
 )
 
@@ -625,3 +628,337 @@ def test_loaded_collections_are_immutable() -> None:
         selections["namespace"] = "mutated"  # type: ignore[index]
     with pytest.raises(TypeError):
         del selections["namespace"]  # type: ignore[attr-defined]
+
+
+# --- Execution plan (Task 4) ------------------------------------------------
+
+
+def _control(
+    key: str,
+    *,
+    capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE,
+    options: OptionPolicy | None = None,
+    label: str | None = None,
+) -> ControlScenario:
+    return ControlScenario(
+        label=label or key,
+        key=key,
+        adapter="esql_value",
+        capability=capability,
+        options=options or OptionPolicy(strategy="every"),
+        assertions=Assertions(),
+    )
+
+
+def _scenario(
+    controls: tuple[ControlScenario, ...],
+    combinations: tuple[CombinationScenario, ...] = (),
+) -> DashboardScenario:
+    return DashboardScenario(
+        version=1,
+        id="test",
+        title="Test",
+        source_kind="grafana",
+        source_path="p",
+        control_schema_path="",
+        dashboard_title="T",
+        time_from="",
+        time_to="",
+        controls=controls,
+        combinations=combinations,
+        noise_allowances=(),
+    )
+
+
+def _combination(
+    combination_id: str,
+    selections: dict[str, str],
+) -> CombinationScenario:
+    return CombinationScenario(
+        id=combination_id,
+        selections=MappingProxyType(selections),
+    )
+
+
+def test_every_option_runs_from_a_fresh_baseline() -> None:
+    scenario = _scenario(
+        (
+            _control("namespace"),
+            _control("instance"),
+        ),
+        (
+            _combination(
+                "namespace-and-instance",
+                {
+                    "namespace": "namespace_1",
+                    "instance": "service.instance.id_2",
+                },
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl("namespace", "namespace", ("ns_1", "ns_2"), ("ns_1",)),
+            DiscoveredControl("instance", "instance", ("redis_1", "redis_2"), ("redis_1",)),
+        ],
+    )
+    assert [(step.kind, dict(step.selections)) for step in plan] == [
+        ("option", {"namespace": "ns_1"}),
+        ("option", {"namespace": "ns_2"}),
+        ("option", {"instance": "redis_1"}),
+        ("option", {"instance": "redis_2"}),
+        (
+            "combination",
+            {"namespace": "namespace_1", "instance": "service.instance.id_2"},
+        ),
+    ]
+    assert all(step.reset_before for step in plan)
+
+
+def test_every_with_exclude_and_include_required_missing_metadata() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "namespace",
+                options=OptionPolicy(
+                    strategy="every",
+                    include=("required_missing", "ns_1"),
+                    exclude=("ns_2",),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1", "ns_2", "ns_3"))],
+    )
+    assert len(plan) == 2
+    assert [(step.kind, dict(step.selections)) for step in plan] == [
+        ("option", {"namespace": "ns_1"}),
+        ("option", {"namespace": "ns_3"}),
+    ]
+    for step in plan:
+        assert step.skipped_options == ("ns_2",)
+        assert step.missing_declared_options == ("required_missing",)
+
+
+def test_declared_include_order_and_absent_declared_option() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "region",
+                options=OptionPolicy(
+                    strategy="declared",
+                    include=("us-east", "eu-west", "missing-region"),
+                    exclude=("eu-west",),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("region", "region", ("ap-south", "us-east", "eu-west"))],
+    )
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "option"
+    assert dict(step.selections) == {"region": "us-east"}
+    assert step.skipped_options == ("eu-west",)
+    assert step.missing_declared_options == ("missing-region",)
+
+
+def test_no_runnable_declared_options_yields_missing_option() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "region",
+                options=OptionPolicy(
+                    strategy="declared",
+                    include=("us-east", "eu-west"),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("region", "region", ("ap-south",))],
+    )
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "missing_option"
+    assert step.id == "region:missing_option"
+    assert dict(step.selections) == {}
+    assert step.missing_declared_options == ("us-east", "eu-west")
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [CapabilityCategory.MIGRATION_GAP, CapabilityCategory.SOURCE_ONLY],
+)
+def test_gap_capability_absent_yields_coverage_gap(
+    capability: CapabilityCategory,
+) -> None:
+    scenario = _scenario((_control("legacy_filter", capability=capability),))
+    plan = build_execution_plan(scenario, [])
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "coverage_gap"
+    assert step.id == "legacy_filter:coverage_gap"
+    assert step.capability is capability
+    assert dict(step.selections) == {}
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [CapabilityCategory.MIGRATED_LIVE, CapabilityCategory.KIBANA_ONLY],
+)
+def test_live_capability_absent_yields_missing_control(
+    capability: CapabilityCategory,
+) -> None:
+    scenario = _scenario((_control("namespace", capability=capability),))
+    plan = build_execution_plan(scenario, [])
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "missing_control"
+    assert step.id == "namespace:missing_control"
+    assert step.capability is capability
+
+
+def test_discovered_controls_not_in_manifest_are_ignored() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl("namespace", "namespace", ("ns_1",)),
+            DiscoveredControl("orphan", "orphan", ("x",)),
+        ],
+    )
+    assert [(step.kind, dict(step.selections)) for step in plan] == [
+        ("option", {"namespace": "ns_1"}),
+    ]
+
+
+def test_duplicate_discovered_keys_reject() -> None:
+    scenario = _scenario((_control("namespace"),))
+    with pytest.raises(ManifestError, match="duplicate discovered control key"):
+        build_execution_plan(
+            scenario,
+            [
+                DiscoveredControl("namespace", "namespace", ("ns_1",)),
+                DiscoveredControl("namespace", "namespace duplicate", ("ns_2",)),
+            ],
+        )
+
+
+def test_duplicate_discovered_options_reject() -> None:
+    scenario = _scenario((_control("namespace"),))
+    with pytest.raises(ManifestError, match="duplicate discovered option"):
+        build_execution_plan(
+            scenario,
+            [DiscoveredControl("namespace", "namespace", ("ns_1", "ns_1"))],
+        )
+
+
+def test_browser_order_and_scenario_order_preserved() -> None:
+    scenario = _scenario(
+        (
+            _control("alpha"),
+            _control("beta"),
+            _control("gamma"),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl("gamma", "gamma", ("g3", "g1", "g2")),
+            DiscoveredControl("alpha", "alpha", ("a2", "a1")),
+            DiscoveredControl("beta", "beta", ("b1",)),
+        ],
+    )
+    assert [next(iter(step.selections.values()), None) for step in plan[:5]] == [
+        "a2",
+        "a1",
+        "b1",
+        "g3",
+        "g1",
+    ]
+
+
+def test_no_cartesian_combinations() -> None:
+    scenario = _scenario(
+        (
+            _control("namespace"),
+            _control("instance"),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl("namespace", "namespace", ("ns_1", "ns_2")),
+            DiscoveredControl("instance", "instance", ("redis_1", "redis_2")),
+        ],
+    )
+    option_steps = [step for step in plan if step.kind == "option"]
+    assert len(option_steps) == 4
+    assert all(len(step.selections) == 1 for step in option_steps)
+
+
+def test_combination_value_not_in_initial_options_is_retained() -> None:
+    scenario = _scenario(
+        (_control("namespace"), _control("instance")),
+        (
+            _combination(
+                "chained-selection",
+                {"namespace": "dynamic_ns", "instance": "dynamic_instance"},
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl("namespace", "namespace", ("ns_1",)),
+            DiscoveredControl("instance", "instance", ("redis_1",)),
+        ],
+    )
+    combo = plan[-1]
+    assert combo.kind == "combination"
+    assert combo.id == "chained-selection"
+    assert dict(combo.selections) == {
+        "namespace": "dynamic_ns",
+        "instance": "dynamic_instance",
+    }
+
+
+def test_empty_discovered_options_yields_missing_option() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ())],
+    )
+    assert len(plan) == 1
+    assert plan[0].kind == "missing_option"
+
+
+def test_plan_selections_are_immutable() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    step = plan[0]
+    assert isinstance(step, InteractionStep)
+    assert isinstance(step.selections, MappingProxyType)
+    with pytest.raises(TypeError):
+        step.selections["namespace"] = "mutated"  # type: ignore[index]
+
+
+def test_safe_deterministic_ids_for_special_characters() -> None:
+    scenario = _scenario((_control("path"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("path", "path", ("foo/bar baz",))],
+    )
+    step = plan[0]
+    assert step.id == "path=foo_bar_baz"
+    assert dict(step.selections) == {"path": "foo/bar baz"}
