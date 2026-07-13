@@ -103,6 +103,71 @@ def test_interaction_report_passes_when_all_migrated_live_pass():
     assert report.exit_code == 0
 
 
+def test_interaction_report_passes_for_kibana_only_capability_when_passed():
+    report = InteractionReport(
+        scenario="synthetic",
+        results=[
+            InteractionResult(
+                "multi_value=one",
+                InteractionStatus.PASS,
+                capability=CapabilityCategory.KIBANA_ONLY,
+            )
+        ],
+    )
+    assert report.status == "pass"
+    assert report.exit_code == 0
+
+
+def test_interaction_report_skipped_migrated_live_remains_pass():
+    report = InteractionReport(
+        scenario="redis",
+        results=[
+            InteractionResult(
+                "namespace=ns_1",
+                InteractionStatus.SKIPPED,
+                capability=CapabilityCategory.MIGRATED_LIVE,
+            )
+        ],
+    )
+    assert report.status == "pass"
+    assert report.exit_code == 0
+
+
+def test_interaction_report_explicit_warn_overrides_skipped_pass():
+    report = InteractionReport(
+        scenario="redis",
+        results=[
+            InteractionResult(
+                "namespace=ns_1",
+                InteractionStatus.SKIPPED,
+                capability=CapabilityCategory.MIGRATED_LIVE,
+            ),
+            InteractionResult(
+                "instance=redis_2",
+                InteractionStatus.WARN,
+                capability=CapabilityCategory.MIGRATED_LIVE,
+            ),
+        ],
+    )
+    assert report.status == "warn"
+    assert report.exit_code == 0
+
+
+def test_interaction_report_skipped_migration_gap_remains_warn():
+    report = InteractionReport(
+        scenario="synthetic",
+        results=[
+            InteractionResult(
+                "function=AVG",
+                InteractionStatus.SKIPPED,
+                capability=CapabilityCategory.MIGRATION_GAP,
+            )
+        ],
+    )
+    assert report.status == "warn"
+    assert report.exit_code == 0
+
+
 def test_interaction_report_to_dict_serializes_enums_recursively():
     finding = InteractionFinding(FailureClass.RENDER_ERROR, "panel failed")
     network = NetworkEvidence(endpoint="/internal/search/esql_async", method="POST", status=200)
@@ -172,6 +237,54 @@ def test_redact_evidence_preserves_url_port_query_and_fragment():
         }
     )
     assert value["url"] == "https://example.test:9200/api/search?q=cpu#panel-1"
+
+
+def test_redact_evidence_preserves_at_in_url_path_query_and_fragment():
+    value = redact_evidence(
+        {
+            "url": "https://example.test/users/alice@corp/search?q=tag@prod#panel@1",
+        }
+    )
+    assert value["url"] == "https://example.test/users/alice@corp/search?q=tag@prod#panel@1"
+
+
+def test_redact_evidence_strips_userinfo_without_corrupting_path_at_signs():
+    value = redact_evidence(
+        {
+            "url": "https://user:pass@example.test/users/alice@corp/search?q=tag@prod#panel@1",
+        }
+    )
+    assert value["url"] == "https://example.test/users/alice@corp/search?q=tag@prod#panel@1"
+
+
+def test_redact_evidence_redacts_contract_dataclasses_without_mutation():
+    network = NetworkEvidence(
+        endpoint="/internal/search/esql_async",
+        method="POST",
+        status=200,
+        url="https://user:pass@example.test/api/search",
+        headers={
+            "Authorization": "ApiKey secret",
+            "Content-Type": "application/json",
+        },
+    )
+    result = InteractionResult(
+        "instance=redis_2",
+        InteractionStatus.FAIL,
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        findings=[InteractionFinding(FailureClass.RENDER_ERROR, "panel failed")],
+        network=[network],
+        panels=[PanelEvidence(panel_id="panel-1", title="CPU", status="rendered")],
+    )
+    report = InteractionReport(scenario="redis", results=[result])
+
+    redacted = redact_evidence(report)
+
+    assert redacted["results"][0]["network"][0]["url"] == "https://example.test/api/search"
+    assert redacted["results"][0]["network"][0]["headers"]["Authorization"] == "[REDACTED]"
+    assert redacted["results"][0]["network"][0]["headers"]["Content-Type"] == "application/json"
+    assert network.url == "https://user:pass@example.test/api/search"
+    assert network.headers["Authorization"] == "ApiKey secret"
 
 
 def test_redact_evidence_preserves_tuple_and_list_structure():
@@ -246,3 +359,24 @@ def test_match_noise_allowance_rejects_empty_rationale():
         "rationale": "",
     }
     assert match_noise_allowance("/internal/security/user_profile", "GET", 404, [allowance]) is None
+
+
+def test_match_noise_allowance_rejects_whitespace_only_rationale():
+    allowance = {
+        "endpoint": "/internal/security/user_profile",
+        "method": "GET",
+        "status": 404,
+        "rationale": "   ",
+    }
+    assert match_noise_allowance("/internal/security/user_profile", "GET", 404, [allowance]) is None
+
+
+def test_match_noise_allowance_returns_stripped_rationale():
+    allowance = {
+        "endpoint": "/internal/security/user_profile",
+        "method": "GET",
+        "status": 404,
+        "rationale": "  optional profile feature absent locally  ",
+    }
+    rationale = match_noise_allowance("/internal/security/user_profile", "GET", 404, [allowance])
+    assert rationale == "optional profile feature absent locally"

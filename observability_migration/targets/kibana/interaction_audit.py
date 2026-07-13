@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 
 class InteractionStatus(str, Enum):
@@ -180,16 +181,29 @@ class InteractionReport:
 
 
 def _redact_url(value: str) -> str:
-    if "://" not in value or "@" not in value:
+    if "://" not in value:
         return value
-    scheme, remainder = value.split("://", 1)
-    credentials, _, location = remainder.rpartition("@")
-    if not credentials or credentials == location:
+    parts = urlsplit(value)
+    if "@" not in parts.netloc:
         return value
-    return f"{scheme}://{location}"
+    _userinfo, _separator, hostport = parts.netloc.rpartition("@")
+    if not hostport:
+        return value
+    return urlunsplit((parts.scheme, hostport, parts.path, parts.query, parts.fragment))
+
+
+_CONTRACT_EVIDENCE_TYPES = (
+    InteractionFinding,
+    NetworkEvidence,
+    PanelEvidence,
+    InteractionResult,
+    InteractionReport,
+)
 
 
 def redact_evidence(value: Any) -> Any:
+    if isinstance(value, _CONTRACT_EVIDENCE_TYPES):
+        return redact_evidence(value.to_dict())
     if isinstance(value, Mapping):
         return {
             key: "[REDACTED]"
@@ -230,7 +244,10 @@ def match_noise_allowance(
             continue
         if allowance_status != status:
             continue
-        if not rationale:
+        if rationale is None:
             continue
-        return str(rationale)
+        cleaned = str(rationale).strip()
+        if not cleaned:
+            continue
+        return cleaned
     return None
