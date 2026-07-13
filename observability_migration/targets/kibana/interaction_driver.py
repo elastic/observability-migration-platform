@@ -15,6 +15,7 @@ import re
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -566,6 +567,8 @@ class PageLike(Protocol):
     @property
     def url(self) -> str: ...
 
+    def screenshot(self, *, path: str, full_page: bool = ...) -> bytes: ...
+
 
 @runtime_checkable
 class LocatorLike(Protocol):
@@ -643,6 +646,8 @@ class BrowserAdapter(Protocol):
     def read_state(self, control: ControlScenario) -> ControlState: ...
 
     def clear_evidence(self) -> None: ...
+
+    def screenshot(self, path: str | Path) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -1556,6 +1561,15 @@ class PlaywrightKibanaBrowser:
         if self._collector._pending_requests():
             raise BrowserAdapterError("cannot clear evidence while requests are pending")
         self._collector.clear()
+
+    def screenshot(self, path: str | Path) -> bool:
+        target = Path(path)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._require_page().screenshot(path=str(target), full_page=True)
+        except Exception:
+            return False
+        return target.is_file() and target.stat().st_size > 0
 
     def settle(
         self,

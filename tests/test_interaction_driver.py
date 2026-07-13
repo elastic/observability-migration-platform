@@ -229,6 +229,22 @@ class FakePage:
         self.goto_calls.append((url, wait_until))
         self.url = url
 
+    def screenshot(self, *, path: str, full_page: bool = True) -> bytes:
+        del full_page
+        self._last_screenshot_path = path
+        self._screenshot_calls = getattr(self, "_screenshot_calls", 0) + 1
+        target = Path(path)
+        if getattr(self, "_screenshot_fail", False):
+            raise RuntimeError("screenshot failed")
+        if getattr(self, "_screenshot_empty", False):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"")
+            return b""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = b"\x89PNG\r\n\x1a\nfake"
+        target.write_bytes(payload)
+        return payload
+
     def get_by_role(
         self,
         role: str,
@@ -2085,3 +2101,37 @@ def test_capture_network_evidence_is_isolated_from_collector() -> None:
     assert "Authorization" not in second.network[0].headers
     assert "injected" not in second.network[0].params
     assert browser._collector._network[0].headers.get("Authorization") != "mutated"
+
+
+def test_screenshot_writes_png_and_returns_true(tmp_path: Path) -> None:
+    page = FakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    target = tmp_path / "nested" / "before.png"
+    assert browser.screenshot(target) is True
+    assert target.is_file()
+    assert target.stat().st_size > 0
+    assert page._screenshot_calls == 1
+
+
+def test_screenshot_returns_false_on_playwright_error(tmp_path: Path) -> None:
+    page = FakePage()
+    page._screenshot_fail = True
+    browser = PlaywrightKibanaBrowser(page)
+    target = tmp_path / "before.png"
+    assert browser.screenshot(target) is False
+
+
+def test_screenshot_returns_false_when_file_empty(tmp_path: Path) -> None:
+    page = FakePage()
+    page._screenshot_empty = True
+    browser = PlaywrightKibanaBrowser(page)
+    target = tmp_path / "before.png"
+    assert browser.screenshot(target) is False
+
+
+def test_screenshot_creates_parent_directory(tmp_path: Path) -> None:
+    page = FakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    target = tmp_path / "deep" / "nested" / "after.png"
+    assert browser.screenshot(target) is True
+    assert target.parent.is_dir()
