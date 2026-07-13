@@ -17,6 +17,7 @@ import pytest
 
 from observability_migration.targets.kibana.interaction_audit import CapabilityCategory
 from observability_migration.targets.kibana.interaction_driver import (
+    _MAX_PAGE_CAPTURE_TEXT,
     BrowserAdapterError,
     ControlNotFound,
     EsqlControlAdapter,
@@ -1919,3 +1920,168 @@ def test_settle_timeout_lists_only_post_cursor_pending() -> None:
     assert timeout.observation.pending_requests[0].panel_id == "panel-1"
     assert "panel-1" in timeout.reason
     assert "panel-0" not in timeout.reason
+
+
+def test_unrelated_body_churn_does_not_block_expected_panel_settle() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="stable output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    poll_count = 0
+    original_wait = page.wait_for_timeout
+
+    def wait_with_toast(ms: int) -> None:
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count >= 2:
+            page.body_text = "dashboard body with transient toast notification"
+            page._body.text = page.body_text
+        original_wait(ms)
+
+    page.wait_for_timeout = wait_with_toast  # type: ignore[method-assign]
+    result = browser.settle(
+        cursor,
+        ["panel-1"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=3),
+    )
+    assert result.panels[0].status == "stable"
+    assert "toast" in result.visible_text
+
+
+def test_body_churn_resets_empty_expected_settle() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock, body_text="initial dashboard body")
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-orphan")
+    page.emit_esql_response(request)
+    original_wait = page.wait_for_timeout
+
+    def wait_with_churning_body(ms: int) -> None:
+        page._body.text = f"dashboard body variant {len(page.wait_timeout_calls)}"
+        original_wait(ms)
+
+    page.wait_for_timeout = wait_with_churning_body  # type: ignore[method-assign]
+    with pytest.raises(SettleTimeout):
+        browser.settle(
+            cursor,
+            [],
+            policy=SettlePolicy(timeout_seconds=0.08, poll_interval_ms=10, stable_polls=2),
+        )
+
+
+def test_capture_bounds_page_visible_text_and_accessibility_snapshot() -> None:
+    huge = "x" * (_MAX_PAGE_CAPTURE_TEXT + 500)
+    page = InstrumentedFakePage(body_text=huge, a11y_snapshot=huge)
+    browser = PlaywrightKibanaBrowser(page)
+    observation = browser.capture([])
+    assert len(observation.visible_text) == _MAX_PAGE_CAPTURE_TEXT
+    assert len(observation.accessibility_snapshot) == _MAX_PAGE_CAPTURE_TEXT
+
+
+def test_settle_timeout_observation_page_fields_are_bounded() -> None:
+    clock = FakeClock()
+    huge = "z" * (_MAX_PAGE_CAPTURE_TEXT + 500)
+    page = _panel_page("panel-1", text="still loading", loading=True, clock=clock)
+    page.body_text = huge
+    page._body.text = huge
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    page.emit_esql_request("panel-1")
+    with pytest.raises(SettleTimeout) as exc_info:
+        browser.settle(
+            cursor,
+            ["panel-1"],
+            policy=SettlePolicy(timeout_seconds=0.05, poll_interval_ms=10, stable_polls=2),
+        )
+    observation = exc_info.value.observation
+    assert len(observation.visible_text) <= _MAX_PAGE_CAPTURE_TEXT
+    assert len(observation.accessibility_snapshot) <= _MAX_PAGE_CAPTURE_TEXT
+
+
+def test_clear_evidence_succeeds_when_no_pending() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    page.emit_console(FakeConsoleMessage(type="error", text="old error"))
+    browser.clear_evidence()
+    observation = browser.capture([])
+    assert observation.network == ()
+    assert observation.console_errors == ()
+
+
+def test_clear_evidence_rejects_when_requests_pending() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-1")
+    with pytest.raises(BrowserAdapterError, match="cannot clear evidence while requests are pending"):
+        browser.clear_evidence()
+
+
+def test_begin_step_cursor_resets_after_clear_evidence() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    page.emit_console(FakeConsoleMessage(type="error", text="stale"))
+    browser.clear_evidence()
+    cursor = browser.begin_step()
+    assert cursor.network_index == 0
+    assert cursor.console_index == 0
+    post_req = page.emit_esql_request("panel-2")
+    page.emit_esql_response(post_req)
+    observation = browser.capture([], cursor=cursor)
+    assert len(observation.network) == 1
+    assert observation.network[0].panel_id == "panel-2"
+
+
+def test_detach_finalizes_in_flight_network_evidence() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-1", opaque_id="in-flight")
+    browser.close()
+    evidence = browser._collector._network[0]
+    assert evidence.status == -1
+    assert "collector detached before response" in evidence.error
+    assert not browser._collector._pending
+
+
+def test_non_json_response_becomes_terminal_with_bounded_parse_error() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1")
+    page.emit_response(
+        FakeNetworkResponse(
+            request=request,
+            status=502,
+            json_error="Response body is not valid JSON",
+        )
+    )
+    observation = browser.capture(["panel-1"])
+    assert len(observation.network) == 1
+    assert observation.network[0].status == 502
+    assert "not valid JSON" in observation.network[0].error
+    assert observation.pending_requests == ()
+
+
+def test_capture_network_evidence_is_isolated_from_collector() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    first = browser.capture([], cursor=None)
+    first.network[0].headers["Authorization"] = "mutated"
+    first.network[0].params["injected"] = "value"
+    second = browser.capture([], cursor=None)
+    assert "Authorization" not in second.network[0].headers
+    assert "injected" not in second.network[0].params
+    assert browser._collector._network[0].headers.get("Authorization") != "mutated"

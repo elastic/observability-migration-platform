@@ -9,6 +9,7 @@ import so modules remain importable without the optional ``browser`` extra.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -118,6 +119,8 @@ class BrowserObservation:
 
 _MAX_BOUND_TEXT = 2048
 _MAX_CONSOLE_MESSAGE = 2048
+_MAX_PAGE_CAPTURE_TEXT = 32 * 1024
+_COLLECTOR_DETACHED_ERROR = "collector detached before response"
 _LOADING_TEXT_RE = re.compile(r"\b(loading|updating)\b", re.IGNORECASE)
 _LOADING_TEST_SUBJECTS = frozenset(
     {
@@ -134,6 +137,35 @@ def _bound_text(value: str, *, limit: int = _MAX_BOUND_TEXT) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[:limit]
+
+
+def _bound_page_capture(value: str) -> str:
+    """Bound full-page capture fields (``visible_text``, ``aria_snapshot``) at 32 KiB."""
+    text = str(value or "")
+    if len(text) <= _MAX_PAGE_CAPTURE_TEXT:
+        return text
+    return text[:_MAX_PAGE_CAPTURE_TEXT]
+
+
+def _clone_network_evidence(evidence: NetworkEvidence) -> NetworkEvidence:
+    """Return an isolated copy so observation mutation cannot corrupt collector state."""
+    return NetworkEvidence(
+        endpoint=evidence.endpoint,
+        method=evidence.method,
+        status=evidence.status,
+        url=evidence.url,
+        query=evidence.query,
+        headers=dict(evidence.headers),
+        body=copy.deepcopy(evidence.body),
+        panel_id=evidence.panel_id,
+        panel_title=evidence.panel_title,
+        opaque_id=evidence.opaque_id,
+        params=copy.deepcopy(evidence.params),
+        param_kinds=dict(evidence.param_kinds),
+        response_columns=evidence.response_columns,
+        row_count=evidence.row_count,
+        error=evidence.error,
+    )
 
 
 def _validate_settle_policy(policy: SettlePolicy) -> None:
@@ -282,6 +314,7 @@ class _NetworkEventCollector:
         self._listeners_attached = True
 
     def detach(self) -> None:
+        self._finalize_pending_requests(error=_COLLECTOR_DETACHED_ERROR)
         page = self._page
         if page is not None and hasattr(page, "off"):
             for event_name, handler in self._handlers.items():
@@ -292,6 +325,18 @@ class _NetworkEventCollector:
         self._page = None
         self._handlers = {}
         self._listeners_attached = False
+
+    def _finalize_pending_requests(self, *, error: str) -> None:
+        bounded_error = _bound_text(error, limit=_MAX_CONSOLE_MESSAGE)
+        for _request_id, (index, _started, _panel_id, _endpoint, _opaque_id) in list(
+            self._pending.items()
+        ):
+            self._network[index] = enrich_esql_response(
+                self._network[index],
+                status=-1,
+                body={},
+                error=bounded_error,
+            )
         self._pending.clear()
 
     def clear(self) -> None:
@@ -428,7 +473,7 @@ class _NetworkEventCollector:
 
     def network_since(self, cursor: CaptureCursor | None) -> tuple[NetworkEvidence, ...]:
         start = 0 if cursor is None else cursor.network_index
-        return tuple(self._network[start:])
+        return tuple(_clone_network_evidence(item) for item in self._network[start:])
 
     def console_since(self, cursor: CaptureCursor | None) -> tuple[str, ...]:
         start = 0 if cursor is None else cursor.console_index
@@ -596,6 +641,8 @@ class BrowserAdapter(Protocol):
     ) -> BrowserObservation: ...
 
     def read_state(self, control: ControlScenario) -> ControlState: ...
+
+    def clear_evidence(self) -> None: ...
 
     def close(self) -> None: ...
 
@@ -1491,8 +1538,8 @@ class PlaywrightKibanaBrowser:
         accessibility_snapshot = ""
         visible_text = ""
         if body.count() == 1:
-            accessibility_snapshot = body.aria_snapshot()
-            visible_text = body.inner_text()
+            accessibility_snapshot = _bound_page_capture(body.aria_snapshot())
+            visible_text = _bound_page_capture(body.inner_text())
         panels = tuple(_capture_panel_evidence(page, panel_id) for panel_id in expected_panels)
         return BrowserObservation(
             url=page.url,
@@ -1504,6 +1551,11 @@ class PlaywrightKibanaBrowser:
             console_errors=self._collector.console_since(cursor),
             pending_requests=self._collector._pending_requests_since(cursor),
         )
+
+    def clear_evidence(self) -> None:
+        if self._collector._pending_requests():
+            raise BrowserAdapterError("cannot clear evidence while requests are pending")
+        self._collector.clear()
 
     def settle(
         self,
@@ -1521,6 +1573,7 @@ class PlaywrightKibanaBrowser:
         previous_body: str | None = None
         previous_panel_fp: tuple[tuple[str, str, str], ...] | None = None
         previous_network_fp: tuple[tuple[int, str, str], ...] | None = None
+        track_body_stability = not expected_panels
 
         while self._clock() < deadline:
             observation = self.capture(expected_panels, cursor=cursor)
@@ -1548,10 +1601,18 @@ class PlaywrightKibanaBrowser:
 
             conditions_met = requests_ok and panels_ok
             if conditions_met:
-                if (
-                    previous_body is not None
-                    and observation.visible_text != previous_body
-                ) or (previous_panel_fp is not None and panel_fp != previous_panel_fp) or (previous_network_fp is not None and network_fp != previous_network_fp):
+                unstable = False
+                if expected_panels:
+                    if previous_panel_fp is not None and panel_fp != previous_panel_fp:
+                        unstable = True
+                    if previous_network_fp is not None and network_fp != previous_network_fp:
+                        unstable = True
+                elif track_body_stability:
+                    if previous_body is not None and observation.visible_text != previous_body:
+                        unstable = True
+                    if previous_network_fp is not None and network_fp != previous_network_fp:
+                        unstable = True
+                if unstable:
                     stable_count = 0
                 else:
                     stable_count += 1
@@ -1560,8 +1621,10 @@ class PlaywrightKibanaBrowser:
             else:
                 stable_count = 0
 
-            previous_body = observation.visible_text
-            previous_panel_fp = panel_fp
+            if track_body_stability:
+                previous_body = observation.visible_text
+            if expected_panels:
+                previous_panel_fp = panel_fp
             previous_network_fp = network_fp
 
             wait_for_timeout = getattr(page, "wait_for_timeout", None)
