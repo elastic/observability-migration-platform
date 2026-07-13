@@ -32,6 +32,7 @@ from observability_migration.targets.kibana.interaction_driver import (
     _adapter_for,
     _scoped_options_container,
     _searchbox,
+    _visible_action_menu,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (
     Assertions,
@@ -55,6 +56,8 @@ class FakeElement:
     aria_multiselectable: str = "false"
     data_multiselect: str = "false"
     data_selected_options: str = ""
+    data_panel_id: str = ""
+    data_test_embeddable_id: str = ""
     aria_valuemin: str = ""
     aria_valuemax: str = ""
     input_value: str = ""
@@ -65,6 +68,9 @@ class FakeElement:
     mounted: bool = True
     owner_name: str = ""
     linked_listbox: FakeElement | None = None
+    evaluate_sets: int = 0
+    fill_calls: int = 0
+    owner_panel_id: str = ""
 
 
 class FakeLocator:
@@ -93,6 +99,14 @@ class FakeLocator:
                 f"fill requires exactly one element, got {len(self._elements)}"
             )
         self._page._fill(self._elements[0], value)
+
+    def evaluate(self, expression: str, arg: Any = None) -> Any:
+        del expression
+        if len(self._elements) != 1:
+            raise ControlNotFound(
+                f"evaluate requires exactly one element, got {len(self._elements)}"
+            )
+        return self._page._evaluate_set(self._elements[0], arg)
 
     def press(self, key: str, **kwargs: Any) -> None:
         del kwargs
@@ -131,6 +145,8 @@ class FakeLocator:
             "aria-multiselectable": element.aria_multiselectable,
             "data-multiselect": element.data_multiselect,
             "data-selected-options": element.data_selected_options,
+            "data-panel-id": element.data_panel_id,
+            "data-test-embeddable-id": element.data_test_embeddable_id,
             "aria-valuemin": element.aria_valuemin,
             "aria-valuemax": element.aria_valuemax,
         }
@@ -153,6 +169,22 @@ class FakeLocator:
     def aria_snapshot(self) -> str:
         return "\n".join(element.text for element in self._elements)
 
+    @property
+    def evaluate_sets(self) -> int:
+        if len(self._elements) != 1:
+            raise ControlNotFound(
+                f"evaluate_sets requires exactly one element, got {len(self._elements)}"
+            )
+        return self._elements[0].evaluate_sets
+
+    @property
+    def fill_calls(self) -> int:
+        if len(self._elements) != 1:
+            raise ControlNotFound(
+                f"fill_calls requires exactly one element, got {len(self._elements)}"
+            )
+        return self._elements[0].fill_calls
+
 
 class FakePage:
     def __init__(
@@ -167,6 +199,7 @@ class FakePage:
         self.a11y_snapshot = a11y_snapshot
         self.goto_calls: list[tuple[str, str | None]] = []
         self.option_clicks: dict[str, int] = {}
+        self.field_suggestion_clicks: dict[str, int] = {}
         self._elements: list[FakeElement] = []
         self._body = FakeElement(role="document", text=body_text, selector="body")
         self._elements.append(self._body)
@@ -237,7 +270,16 @@ class FakePage:
                 matches.append(element)
             if selector.startswith('[data-panel-id="') and selector.endswith('"]'):
                 panel_id = selector[len('[data-panel-id="') : -2]
+                if element.data_panel_id == panel_id:
+                    matches.append(element)
                 if element.test_subj == f"dashboardPanel-{panel_id}":
+                    matches.append(element)
+            if selector.startswith('[data-test-embeddable-id="') and selector.endswith('"]'):
+                embeddable_id = selector[len('[data-test-embeddable-id="') : -2]
+                if element.data_test_embeddable_id == embeddable_id:
+                    matches.append(element)
+            if selector == '[data-test-subj="embeddablePanel"]':
+                if element.test_subj == "embeddablePanel":
                     matches.append(element)
             matches.extend(
                 child
@@ -261,12 +303,39 @@ class FakePage:
 
     def _unmount_all_listboxes(self) -> None:
         for element in self._elements:
-            if element.test_subj == "comboBoxOptionsList" or element.role == "listbox":
+            if element.role == "listbox" or element.test_subj == "comboBoxOptionsList":
                 element.mounted = False
             element.open = False
 
+    def _unmount_all_menus(self) -> None:
+        for element in self._elements:
+            if element.test_subj == "euiContextMenuPanel" or element.role == "menu":
+                element.mounted = False
+
     def _close_popovers(self) -> None:
         self._unmount_all_listboxes()
+
+    def _open_filter_editor(self) -> None:
+        field = FakeElement(
+            test_subj="filterFieldSuggestionList",
+            role="combobox",
+            input_value="",
+        )
+        self.add(field)
+        self.add(FakeElement(test_subj="filterValueInput", role="textbox", input_value=""))
+        self.add(FakeElement(test_subj="saveFilterButton", role="button", name="Save"))
+
+    def _mount_field_suggestions(self, field_name: str) -> None:
+        self._unmount_all_listboxes()
+        listbox = FakeElement(
+            role="listbox",
+            test_subj="filterFieldSuggestions",
+            mounted=True,
+        )
+        listbox.children.append(
+            FakeElement(role="option", name=field_name, text=field_name)
+        )
+        self.add(listbox)
 
     def _click(self, element: FakeElement) -> None:
         if element.role == "combobox":
@@ -276,6 +345,19 @@ class FakePage:
             self._close_popovers()
             return
         if element.role == "option":
+            if any(
+                candidate.test_subj == "filterFieldSuggestions" and candidate.mounted
+                for candidate in self._elements
+            ):
+                self.field_suggestion_clicks[element.text] = (
+                    self.field_suggestion_clicks.get(element.text, 0) + 1
+                )
+                field_el = next(
+                    e for e in self._elements if e.test_subj == "filterFieldSuggestionList"
+                )
+                field_el.input_value = element.text
+                self._unmount_all_listboxes()
+                return
             self.option_clicks[element.text] = self.option_clicks.get(element.text, 0) + 1
             combobox = self._combobox_for_option(element)
             if combobox is None:
@@ -307,9 +389,7 @@ class FakePage:
             self._close_popovers()
             return
         if element.test_subj == "addFilter":
-            self.add(FakeElement(test_subj="filterFieldSuggestionList", role="combobox"))
-            self.add(FakeElement(test_subj="filterValueInput", role="textbox"))
-            self.add(FakeElement(test_subj="saveFilterButton", role="button", name="Save"))
+            self._open_filter_editor()
             return
         if element.test_subj == "saveFilterButton":
             field_el = next(
@@ -324,12 +404,26 @@ class FakePage:
             )
             return
         if element.test_subj == "embeddablePanelAction-togglePanelActionMenu":
+            self._unmount_all_menus()
+            menu = FakeElement(
+                role="menu",
+                test_subj="euiContextMenuPanel",
+                mounted=True,
+                owner_panel_id=element.owner_panel_id,
+            )
+            menu.children.append(
+                FakeElement(
+                    test_subj="embeddablePanelAction-addPanelFilter",
+                    role="button",
+                    name="Create filter",
+                    owner_panel_id=element.owner_panel_id,
+                )
+            )
+            self.add(menu)
             element.open = True
             return
         if element.test_subj == "embeddablePanelAction-addPanelFilter":
-            self.add(FakeElement(test_subj="filterFieldSuggestionList", role="combobox"))
-            self.add(FakeElement(test_subj="filterValueInput", role="textbox"))
-            self.add(FakeElement(test_subj="saveFilterButton", role="button", name="Save"))
+            self._open_filter_editor()
             return
         if element.role == "button" and element.text:
             for existing in self._elements:
@@ -344,11 +438,22 @@ class FakePage:
             )
 
     def _fill(self, element: FakeElement, value: str) -> None:
+        element.fill_calls += 1
         if element.role == "slider" and not element.sticky:
             return
         element.input_value = value
         if element.role == "slider":
             element.text = value
+        if element.test_subj == "filterFieldSuggestionList":
+            self._mount_field_suggestions(value)
+
+    def _evaluate_set(self, element: FakeElement, value: Any) -> None:
+        element.evaluate_sets += 1
+        if element.role == "slider" and not element.sticky:
+            return
+        element.input_value = str(value)
+        if element.role == "slider":
+            element.text = str(value)
 
     def _press(self, element: FakeElement, key: str) -> None:
         if key == "Enter":
@@ -531,6 +636,27 @@ def test_esql_incompatible_warning_state_extraction() -> None:
     state = adapter.read_state()
     assert state.incompatible_warning == "Incompatible selections (2)"
     assert state.selected_count == 2
+
+
+def test_esql_special_character_option_select() -> None:
+    page = _esql_page(
+        combobox_name="owner",
+        options=['O"Brien', "plain"],
+        selected=["plain"],
+    )
+    EsqlControlAdapter(page).select(_control("owner", "owner", "esql_value"), 'O"Brien')
+    combobox = page.get_by_role("combobox", name="owner", exact=True)
+    assert combobox.get_attribute("data-selected-options") == 'O"Brien'
+    assert page.option_clicks['O"Brien'] == 1
+
+
+def test_esql_missing_option_with_special_characters_raises() -> None:
+    page = _esql_page(combobox_name="owner", options=["plain"])
+    with pytest.raises(OptionNotFound):
+        EsqlControlAdapter(page).select(
+            _control("owner", "owner", "esql_value"),
+            'missing"quote',
+        )
 
 
 def test_esql_verifies_operated_control_after_popover_unmounts() -> None:
@@ -775,6 +901,17 @@ def test_range_slider_sticky_failure_raises() -> None:
         )
 
 
+def test_range_slider_sets_each_handle_exactly_once_via_evaluate() -> None:
+    page = _range_slider_page(label="latency")
+    group = page.get_by_role("group", name="latency", exact=True)
+    sliders = group.get_by_role("slider")
+    RangeSliderAdapter(page).select(_control("latency", "latency", "range_slider"), "20..80")
+    assert sliders.nth(0).evaluate_sets == 1
+    assert sliders.nth(1).evaluate_sets == 1
+    assert sliders.nth(0).fill_calls == 0
+    assert sliders.nth(1).fill_calls == 0
+
+
 def _query_bar_page(*, query: str = "") -> FakePage:
     page = FakePage()
     page.add(
@@ -831,6 +968,17 @@ def test_filter_pill_field_value_action_and_verification() -> None:
     assert badge.count() == 1
     assert "service.name" in badge.inner_text()
     assert "api" in badge.inner_text()
+    assert page.field_suggestion_clicks["service.name"] == 1
+
+
+def test_filter_pill_selects_field_suggestion_once() -> None:
+    page = _filter_pill_page()
+    FilterPillAdapter(page).select(
+        _control("filter", "filter", "filter_pill"),
+        "host.name=web-01",
+    )
+    assert page.field_suggestion_clicks["host.name"] == 1
+    assert page.locator('[data-test-subj="filterFieldSuggestions"]').count() == 0
 
 
 def test_filter_pill_malformed_selection_raises() -> None:
@@ -871,25 +1019,34 @@ def test_time_range_exact_option_and_verification() -> None:
     assert "Last 24 hours" in display.inner_text()
 
 
-def _panel_filter_page(*, panel_id: str = "panel-1", missing_panel: bool = False) -> FakePage:
+def _panel_filter_page(
+    *,
+    panel_id: str = "panel-1",
+    missing_panel: bool = False,
+    identity: str = "dashboardPanel",
+) -> FakePage:
     page = FakePage()
     if not missing_panel:
-        panel = FakeElement(test_subj=f"dashboardPanel-{panel_id}")
+        if identity == "dashboardPanel":
+            panel = FakeElement(test_subj=f"dashboardPanel-{panel_id}")
+        elif identity == "data-test-embeddable-id":
+            panel = FakeElement(
+                test_subj="embeddablePanel",
+                data_test_embeddable_id=panel_id,
+            )
+        elif identity == "data-panel-id":
+            panel = FakeElement(data_panel_id=panel_id, test_subj="embeddablePanel")
+        else:
+            panel = FakeElement(test_subj=f"dashboardPanel-{panel_id}")
         panel.children.append(
             FakeElement(
                 test_subj="embeddablePanelAction-togglePanelActionMenu",
                 role="button",
                 name="Panel actions",
+                owner_panel_id=panel_id,
             )
         )
         page.add(panel)
-    page.add(
-        FakeElement(
-            test_subj="embeddablePanelAction-addPanelFilter",
-            role="button",
-            name="Create filter",
-        )
-    )
     return page
 
 
@@ -903,6 +1060,67 @@ def test_panel_filter_action_and_verification() -> None:
     assert badge.count() == 1
     assert "service.name" in badge.inner_text()
     assert "checkout" in badge.inner_text()
+    assert page.field_suggestion_clicks["service.name"] == 1
+
+
+def test_panel_filter_uses_data_test_embeddable_id() -> None:
+    page = _panel_filter_page(panel_id="abc-123", identity="data-test-embeddable-id")
+    PanelFilterAdapter(page).select(
+        _control("panel filter", "panel_filter", "panel_filter"),
+        "abc-123|host.name|web-01",
+    )
+    badge = page.locator('[data-test-subj="filterBadge"]')
+    assert badge.count() == 1
+    assert "host.name" in badge.inner_text()
+
+
+def test_panel_filter_ambiguous_panel_identity_raises() -> None:
+    page = FakePage()
+    page.add(FakeElement(test_subj="embeddablePanel", data_panel_id="dup"))
+    page.add(FakeElement(test_subj="embeddablePanel", data_panel_id="dup"))
+    with pytest.raises(ControlNotFound, match="ambiguous control"):
+        PanelFilterAdapter(page).select(
+            _control("panel filter", "panel_filter", "panel_filter"),
+            "dup|field|value",
+        )
+
+
+def test_visible_action_menu_ambiguous_open_menus_fail_closed() -> None:
+    page = FakePage()
+    page.add(FakeElement(test_subj="euiContextMenuPanel", role="menu"))
+    page.add(FakeElement(test_subj="euiContextMenuPanel", role="menu"))
+    with pytest.raises(ControlNotFound, match="menu: ambiguous"):
+        _visible_action_menu(page)
+
+
+def _multi_panel_filter_page() -> FakePage:
+    page = FakePage()
+    for panel_id in ("panel-a", "panel-b"):
+        panel = FakeElement(test_subj=f"dashboardPanel-{panel_id}")
+        panel.children.append(
+            FakeElement(
+                test_subj="embeddablePanelAction-togglePanelActionMenu",
+                role="button",
+                name="Panel actions",
+                owner_panel_id=panel_id,
+            )
+        )
+        page.add(panel)
+    return page
+
+
+def test_panel_filter_uses_target_panel_menu_not_other_panel() -> None:
+    page = _multi_panel_filter_page()
+    PanelFilterAdapter(page).select(
+        _control("panel filter", "panel_filter", "panel_filter"),
+        "panel-b|region|us-east",
+    )
+    menu = page.locator('[data-test-subj="euiContextMenuPanel"]')
+    assert menu.count() == 1
+    assert menu.inner_text() == ""
+    badge = page.locator('[data-test-subj="filterBadge"]')
+    assert "region" in badge.inner_text()
+    assert "us-east" in badge.inner_text()
 
 
 def test_panel_filter_malformed_selection_raises() -> None:
@@ -979,6 +1197,116 @@ def test_browser_close_is_idempotent() -> None:
     browser.close()
     browser.close()
     assert browser._closed is True
+
+
+def test_browser_read_state_preserves_esql_adapter_state() -> None:
+    page = _esql_page(
+        combobox_name="namespace",
+        options=["ns_1", "ns_2"],
+        selected=["ns_1"],
+    )
+    browser = PlaywrightKibanaBrowser(page)
+    control = _control("namespace", "namespace", "esql_value")
+    browser.discover(control)
+    browser.select(control, "ns_2")
+    state = browser.read_state(control)
+    assert state.selected_count == 1
+
+
+def test_browser_read_state_preserves_range_adapter_state() -> None:
+    page = _range_slider_page(label="latency")
+    browser = PlaywrightKibanaBrowser(page)
+    control = _control("latency", "latency", "range_slider")
+    browser.select(control, "20..80")
+    state = browser.read_state(control)
+    assert state.low_value == "20"
+    assert state.high_value == "80"
+
+
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.closed = False
+        self._context = _FakeContext()
+
+    def close(self) -> None:
+        self.closed = True
+
+    def new_context(self, **kwargs: Any) -> _FakeContext:
+        del kwargs
+        return self._context
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.pages: list[FakePage] = [FakePage()]
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def new_page(self) -> FakePage:
+        page = FakePage()
+        self.pages.append(page)
+        return page
+
+
+class _FakePlaywright:
+    def __init__(self) -> None:
+        self.stopped = False
+        self._context = _FakeContext()
+        self._browser = _FakeBrowser()
+
+    def start(self) -> _FakePlaywright:
+        return self
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    @property
+    def chromium(self) -> _FakePlaywright:
+        return self
+
+    def launch(self, **kwargs: Any) -> _FakeBrowser:
+        del kwargs
+        return self._browser
+
+    def launch_persistent_context(self, user_data_dir: str, **kwargs: Any) -> _FakeContext:
+        del user_data_dir, kwargs
+        return self._context
+
+
+def test_start_rejects_already_active_session() -> None:
+    browser = PlaywrightKibanaBrowser()
+    browser._playwright = object()
+    with pytest.raises(BrowserAdapterError, match="already active"):
+        browser.start()
+
+
+def test_lifecycle_close_restart_releases_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_playwright = _FakePlaywright()
+
+    def fake_sync_playwright() -> _FakePlaywright:
+        return fake_playwright
+
+    import playwright.sync_api
+
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", fake_sync_playwright)
+
+    browser = PlaywrightKibanaBrowser()
+    browser.start()
+    assert browser._closed is False
+    browser.close()
+    assert browser._closed is True
+    assert fake_playwright.stopped is True
+    assert fake_playwright._browser.closed is True
+
+    browser.start()
+    assert browser._closed is False
+    browser.close()
+    assert browser._closed is True
+    assert fake_playwright.stopped is True
 
 
 def test_module_imports_without_playwright(monkeypatch: pytest.MonkeyPatch) -> None:

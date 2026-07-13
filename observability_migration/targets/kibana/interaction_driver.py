@@ -126,6 +126,8 @@ class LocatorLike(Protocol):
 
     def locator(self, selector: str) -> LocatorLike: ...
 
+    def evaluate(self, expression: str, arg: Any = None) -> Any: ...
+
     def aria_snapshot(self) -> str: ...
 
 
@@ -149,6 +151,8 @@ class BrowserAdapter(Protocol):
 
     def capture(self, expected_panels: Collection[str]) -> BrowserObservation: ...
 
+    def read_state(self, control: ControlScenario) -> ControlState: ...
+
     def close(self) -> None: ...
 
 
@@ -171,8 +175,10 @@ _TEST_SUBJ_DATE_PICKER_TEXT = '[data-test-subj="superDatePickerstartDatePopoverB
 _TEST_SUBJ_OPTIONS_LIST_APPLY = '[data-test-subj="optionsListControlApplyButton"]'
 _TEST_SUBJ_PANEL_ACTIONS = '[data-test-subj="embeddablePanelAction-togglePanelActionMenu"]'
 _TEST_SUBJ_PANEL_FILTER_ACTION = '[data-test-subj="embeddablePanelAction-addPanelFilter"]'
+_TEST_SUBJ_CONTEXT_MENU = '[data-test-subj="euiContextMenuPanel"]'
 _TEST_SUBJ_COMBOBOX_POPOVER = '[data-test-subj="comboBoxOptionsList"]'
 _TEST_SUBJ_INCOMPATIBLE_WARNING = '[data-test-subj="esqlControlsIncompatibleSelectionsWarning"]'
+_TEST_SUBJ_EMBEDDABLE_PANEL = '[data-test-subj="embeddablePanel"]'
 
 _ROLE_COMBOBOX = "combobox"
 _ROLE_LISTBOX = "listbox"
@@ -181,6 +187,8 @@ _ROLE_SLIDER = "slider"
 _ROLE_SEARCHBOX = "searchbox"
 _ROLE_BUTTON = "button"
 _ROLE_GROUP = "group"
+_ROLE_MENU = "menu"
+_ROLE_TEXTBOX = "textbox"
 
 _INCOMPATIBLE_SELECTIONS_RE = re.compile(
     r"Incompatible selections\s*\((\d+)\)",
@@ -332,9 +340,6 @@ def _read_selected_option_texts(
 def _option_locator(page: PageLike, option_text: str) -> LocatorLike:
     scoped = _scoped_options_container(page)
     option = scoped.get_by_role(_ROLE_OPTION, name=option_text, exact=True)
-    if option.count() == 1:
-        return option
-    option = scoped.locator(f'[role="option"]:has-text("{option_text}")')
     return _require_exactly_one(option, description=f"option {option_text!r}")
 
 
@@ -412,14 +417,118 @@ def _parse_range_selection(selection: str) -> tuple[str, str]:
 
 
 def _panel_container(page: PageLike, panel_id: str) -> LocatorLike:
-    by_data_panel = page.locator(f'[data-panel-id="{panel_id}"]')
-    if by_data_panel.count() == 1:
-        return by_data_panel
-    by_test_subj = page.locator(f'[data-test-subj="dashboardPanel-{panel_id}"]')
-    return _require_exactly_one(
-        by_test_subj,
-        description=f"panel {panel_id!r}",
+    identity_selectors = (
+        f'[data-panel-id="{panel_id}"]',
+        f'[data-test-embeddable-id="{panel_id}"]',
+        f'[data-test-subj="dashboardPanel-{panel_id}"]',
     )
+    for selector in identity_selectors:
+        matches = page.locator(selector)
+        count = matches.count()
+        if count == 1:
+            return matches
+        if count > 1:
+            raise ControlNotFound(
+                f"panel {panel_id!r}: ambiguous control ({count} matches for {selector})"
+            )
+
+    embeddable_panels = page.locator(_TEST_SUBJ_EMBEDDABLE_PANEL)
+    matched: list[LocatorLike] = []
+    for index in range(embeddable_panels.count()):
+        candidate = embeddable_panels.nth(index)
+        panel_attr = candidate.get_attribute("data-panel-id")
+        embeddable_attr = candidate.get_attribute("data-test-embeddable-id")
+        if panel_attr == panel_id or embeddable_attr == panel_id:
+            matched.append(candidate)
+    if len(matched) == 1:
+        return matched[0]
+    if len(matched) > 1:
+        raise ControlNotFound(
+            f"panel {panel_id!r}: ambiguous embeddablePanel matches ({len(matched)})"
+        )
+    raise ControlNotFound(f"panel {panel_id!r}: control not found")
+
+
+def _visible_action_menu(page: PageLike) -> LocatorLike:
+    by_test_subj = page.locator(_TEST_SUBJ_CONTEXT_MENU)
+    count = by_test_subj.count()
+    if count == 1:
+        return by_test_subj
+    if count > 1:
+        raise ControlNotFound(
+            f"panel action menu: ambiguous control ({count} matches)"
+        )
+    by_role = page.get_by_role(_ROLE_MENU)
+    return _require_exactly_one(by_role, description="panel action menu")
+
+
+def _panel_filter_action(menu: LocatorLike) -> LocatorLike:
+    by_test_subj = menu.locator(_TEST_SUBJ_PANEL_FILTER_ACTION)
+    if by_test_subj.count() == 1:
+        return by_test_subj
+    if by_test_subj.count() > 1:
+        raise ControlNotFound(
+            f"panel filter action: ambiguous control ({by_test_subj.count()} matches)"
+        )
+    by_role = menu.get_by_role(
+        _ROLE_BUTTON,
+        name="Create filter",
+        exact=True,
+    )
+    return _require_exactly_one(by_role, description="panel filter action")
+
+
+def _filter_field_input(page: PageLike) -> LocatorLike:
+    by_test_subj = page.locator(_TEST_SUBJ_FILTER_FIELD)
+    count = by_test_subj.count()
+    if count == 1:
+        return by_test_subj
+    if count > 1:
+        raise ControlNotFound(f"filter field: ambiguous control ({count} matches)")
+    by_role = page.get_by_role(_ROLE_COMBOBOX)
+    return _require_exactly_one(by_role, description="filter field")
+
+
+def _filter_value_input(page: PageLike) -> LocatorLike:
+    by_test_subj = page.locator(_TEST_SUBJ_FILTER_VALUE)
+    if by_test_subj.count() == 1:
+        return by_test_subj
+    if by_test_subj.count() > 1:
+        raise ControlNotFound(
+            f"filter value: ambiguous control ({by_test_subj.count()} matches)"
+        )
+    by_role = page.get_by_role(_ROLE_TEXTBOX)
+    return _require_exactly_one(by_role, description="filter value")
+
+
+def _select_exact_field_suggestion_if_present(page: PageLike, field: str) -> None:
+    listboxes = page.get_by_role(_ROLE_LISTBOX)
+    count = listboxes.count()
+    if count == 0:
+        return
+    if count > 1:
+        raise ControlNotFound(
+            f"filter field suggestions: ambiguous listbox ({count} matches)"
+        )
+    suggestion = listboxes.get_by_role(_ROLE_OPTION, name=field, exact=True)
+    suggestion = _require_exactly_one(
+        suggestion,
+        description=f"field suggestion {field!r}",
+    )
+    suggestion.click()
+
+
+def _fill_filter_editor(page: PageLike, field: str, value: str) -> None:
+    field_input = _filter_field_input(page)
+    field_input.fill(field)
+    _select_exact_field_suggestion_if_present(page, field)
+    value_input = _filter_value_input(page)
+    value_input.fill(value)
+    save = _require_exactly_one(
+        page.locator(_TEST_SUBJ_SAVE_FILTER),
+        description="save filter",
+    )
+    save.click()
 
 
 def _verify_filter_pill(page: PageLike, field: str, value: str) -> None:
@@ -432,6 +541,20 @@ def _verify_filter_pill(page: PageLike, field: str, value: str) -> None:
     raise SelectionDidNotStick(
         f"filter pill for {field}={value!r} not visible after submit"
     )
+
+
+def _set_range_handle_value(handle: LocatorLike, value: str) -> None:
+    try:
+        handle.evaluate(
+            """(element, nextValue) => {
+                element.value = nextValue;
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }""",
+            value,
+        )
+    except (AttributeError, TypeError, BrowserAdapterError):
+        handle.fill(value)
 
 
 # ---------------------------------------------------------------------------
@@ -602,8 +725,8 @@ class RangeSliderAdapter:
                 f"range slider {control.label!r} requires exactly two handles, "
                 f"found {sliders.count()}"
             )
-        sliders.nth(0).fill(low)
-        sliders.nth(1).fill(high)
+        _set_range_handle_value(sliders.nth(0), low)
+        _set_range_handle_value(sliders.nth(1), high)
         actual_low = sliders.nth(0).input_value()
         actual_high = sliders.nth(1).input_value()
         self._last_low = actual_low
@@ -675,21 +798,7 @@ class FilterPillAdapter:
             description="add filter",
         )
         add_filter.click()
-        field_input = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_FILTER_FIELD),
-            description="filter field",
-        )
-        field_input.fill(field)
-        value_input = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_FILTER_VALUE),
-            description="filter value",
-        )
-        value_input.fill(value)
-        save = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_SAVE_FILTER),
-            description="save filter",
-        )
-        save.click()
+        _fill_filter_editor(self._page, field, value)
         _verify_filter_pill(self._page, field, value)
 
 
@@ -769,26 +878,10 @@ class PanelFilterAdapter:
             description=f"panel actions for {panel_id!r}",
         )
         actions.click()
-        filter_action = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_PANEL_FILTER_ACTION),
-            description="panel filter action",
-        )
+        menu = _visible_action_menu(self._page)
+        filter_action = _panel_filter_action(menu)
         filter_action.click()
-        field_input = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_FILTER_FIELD),
-            description="filter field",
-        )
-        field_input.fill(field)
-        value_input = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_FILTER_VALUE),
-            description="filter value",
-        )
-        value_input.fill(value)
-        save = _require_exactly_one(
-            self._page.locator(_TEST_SUBJ_SAVE_FILTER),
-            description="save filter",
-        )
-        save.click()
+        _fill_filter_editor(self._page, field, value)
         _verify_filter_pill(self._page, field, value)
 
 
@@ -812,6 +905,10 @@ def _adapter_for(page: PageLike, adapter_name: str) -> ControlAdapter:
     raise BrowserAdapterError(f"unsupported adapter: {adapter_name!r}")
 
 
+def _adapter_cache_key(control: ControlScenario) -> tuple[str, str]:
+    return (control.adapter, control.key)
+
+
 # ---------------------------------------------------------------------------
 # Browser driver
 # ---------------------------------------------------------------------------
@@ -826,6 +923,38 @@ class PlaywrightKibanaBrowser:
         self._browser: Any | None = None
         self._context: Any | None = None
         self._closed = False
+        self._adapters: dict[tuple[str, str], ControlAdapter] = {}
+
+    def _clear_adapter_cache(self) -> None:
+        self._adapters.clear()
+
+    def _adapter_for_control(self, control: ControlScenario) -> ControlAdapter:
+        cache_key = _adapter_cache_key(control)
+        adapter = self._adapters.get(cache_key)
+        if adapter is None:
+            adapter = _adapter_for(self._require_page(), control.adapter)
+            self._adapters[cache_key] = adapter
+        return adapter
+
+    def _session_is_active(self) -> bool:
+        return (
+            self._playwright is not None
+            or self._browser is not None
+            or self._context is not None
+        )
+
+    def _release_session(self) -> None:
+        if self._context is not None:
+            self._context.close()
+            self._context = None
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+        if self._playwright is not None:
+            self._playwright.stop()
+            self._playwright = None
+        self._page = None
+        self._clear_adapter_cache()
 
     def start(
         self,
@@ -834,8 +963,14 @@ class PlaywrightKibanaBrowser:
         user_data_dir: str = "",
         executable_path: str = "",
     ) -> None:
+        if self._session_is_active():
+            raise BrowserAdapterError(
+                "browser session is already active; call close() before start()"
+            )
         from playwright.sync_api import sync_playwright
 
+        self._closed = False
+        self._clear_adapter_cache()
         self._playwright = sync_playwright().start()
         launch_kwargs: dict[str, Any] = {"headless": headless}
         if executable_path:
@@ -869,16 +1004,21 @@ class PlaywrightKibanaBrowser:
         return self._page
 
     def open_dashboard(self, url: str) -> None:
+        self._clear_adapter_cache()
         self._require_page().goto(url, wait_until="domcontentloaded")
 
     def reset(self, url: str) -> None:
+        self._clear_adapter_cache()
         self._require_page().goto(url, wait_until="domcontentloaded")
 
     def discover(self, control: ControlScenario) -> DiscoveredControl:
-        return _adapter_for(self._require_page(), control.adapter).discover(control)
+        return self._adapter_for_control(control).discover(control)
 
     def select(self, control: ControlScenario, option: str) -> None:
-        _adapter_for(self._require_page(), control.adapter).select(control, option)
+        self._adapter_for_control(control).select(control, option)
+
+    def read_state(self, control: ControlScenario) -> ControlState:
+        return self._adapter_for_control(control).read_state()
 
     def capture(self, expected_panels: Collection[str]) -> BrowserObservation:
         del expected_panels  # Task 7 adds panel/network settling.
@@ -900,13 +1040,4 @@ class PlaywrightKibanaBrowser:
         if self._closed:
             return
         self._closed = True
-        if self._context is not None:
-            self._context.close()
-            self._context = None
-        if self._browser is not None:
-            self._browser.close()
-            self._browser = None
-        if self._playwright is not None:
-            self._playwright.stop()
-            self._playwright = None
-        self._page = None
+        self._release_session()
