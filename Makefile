@@ -6,7 +6,8 @@
 PYTHON := .venv/bin/python
 KIBANA_DASHBOARDS_API_SCHEMA_URL ?=
 
-.PHONY: help sync licenses test test-e2e lint typecheck check-native-schema
+.PHONY: help sync licenses test test-e2e lint typecheck check-native-schema \
+	setup-browser test-interactions interaction-audit-local
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,3 +49,16 @@ check-native-schema: sync ## Check full Kibana Dashboards API OpenAPI schema
 	  --check-only \
 	  --require-full-schema \
 	  --url "$(KIBANA_DASHBOARDS_API_SCHEMA_URL)"
+
+setup-browser: sync ## Install Chromium used by dashboard interaction tests
+	$(PYTHON) -m playwright install chromium
+
+test-interactions: sync ## Run offline interaction-audit unit tests
+	$(PYTHON) -m pytest \
+	  tests/test_interaction_audit.py \
+	  tests/test_interaction_scenarios.py \
+	  tests/test_interaction_driver.py \
+	  tests/test_interaction_canary.py
+
+interaction-audit-local: setup-browser ## Run live interaction scenarios on local Kibana
+	bash scripts/run_interaction_audit_local.sh

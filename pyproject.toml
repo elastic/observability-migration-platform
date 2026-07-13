@@ -73,6 +73,9 @@ all = [
   "obs-migrate[datadog]",
   "obs-migrate[kibana]",
 ]
+browser = [
+    "playwright>=1.61.0",
+]
 
 [project.scripts]
 obs-migrate = "observability_migration.app.cli:main"
