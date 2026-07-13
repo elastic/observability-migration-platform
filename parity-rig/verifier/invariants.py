@@ -8,8 +8,9 @@ nothing about whether the *visualization* wiring is internally consistent:
   produces (otherwise Kibana renders "Provided column name or index is
   invalid");
 * multi-dimension grouping that an XY chart cannot show as separate series is
-  either folded into a synthetic composite ``legend`` column or honestly
-  disclosed as a "visually merged" warning - never silently dropped;
+  either folded into a synthetic composite ``legend``/``series_group`` column
+  or honestly disclosed as a "visually merged" warning - never silently
+  dropped;
 * a panel that degraded to a markdown placeholder carries a reason, instead of
   silently disappearing as a chart.
 
@@ -44,7 +45,8 @@ ColumnsOracle = Callable[[str], "set[str] | None"]
 _TIME_LIKE_FIELDS = {"time_bucket", "timestamp_bucket", "step", "@timestamp"}
 
 _COMPOSITE_LEGEND_RE = re.compile(r"EVAL\s+legend\s*=\s*CONCAT\(", re.IGNORECASE)
-_MERGE_DISCLOSURE_RE = re.compile(r"merg(e|ed)|collaps", re.IGNORECASE)
+_COMPOSITE_SERIES_GROUP_RE = re.compile(r"EVAL\s+series_group\s*=\s*CONCAT\(", re.IGNORECASE)
+_MERGE_DISCLOSURE_RE = re.compile(r"merg(e|ed)|collaps|composit", re.IGNORECASE)
 
 # Opportunistically use the package's battle-tested ES|QL shape parser when it
 # is importable; otherwise fall back to the embedded parser below. Either way
@@ -524,7 +526,12 @@ def _check_merged_series(
 
     breakdown = config.get("breakdown") if isinstance(config.get("breakdown"), dict) else {}
     breakdown_field = str((breakdown or {}).get("field") or "")
-    composite_applied = breakdown_field == "legend" and bool(_COMPOSITE_LEGEND_RE.search(query or ""))
+    composite_applied = (
+        breakdown_field == "legend" and bool(_COMPOSITE_LEGEND_RE.search(query or ""))
+    ) or (
+        breakdown_field == "series_group"
+        and bool(_COMPOSITE_SERIES_GROUP_RE.search(query or ""))
+    )
     if composite_applied:
         return []
 

@@ -432,6 +432,8 @@ def save_detailed_report(
                 "query_ir": pr.query_ir,
                 "verification_packet": pr.verification_packet,
                 "operational_ir": _maybe_to_dict(pr.operational_ir),
+                "visual_ir": _maybe_to_dict(getattr(pr, "visual_ir", None)),
+                "source_panel_id": getattr(pr, "source_panel_id", "") or pr.widget_id,
             }
             dashboard_entry["panels"].append(panel_entry)
 

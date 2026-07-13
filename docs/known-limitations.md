@@ -46,8 +46,13 @@ notes so operators know what to check by hand.
   name can still mistype offline. The live `--es-url` path resolves this from
   field caps; prefer it for production migrations.
 - **Native PROMQL adaptive resolution parity** — migrated native-PROMQL range
-  dashboard panels are emitted with **no baked-in `step=`** (Elastic sizes the
-  resolution to the dashboard time range at view time, #272) and a
+  dashboard panels are emitted with **no baked-in `step=`**; instead they bind
+  the window to the dashboard time picker via `start=?_tstart end=?_tend
+  buckets=50` so Elastic sizes the resolution to the view at render time (#272).
+  A bare stepless `PROMQL index=...` range command is rejected by Elasticsearch
+  ("unable to create a bucket; provide either [step] or all of [start], [end],
+  and [buckets]"), so the timing args are always present and Kibana materializes
+  the params when it renders the panel. A
   `rate()`/`increase()` whose Grafana source used an adaptive window macro
   (`$__rate_interval` / `$__interval`) is emitted **windowless** so its lookback
   tracks the view too (#273). This stays adaptive like Grafana but is not

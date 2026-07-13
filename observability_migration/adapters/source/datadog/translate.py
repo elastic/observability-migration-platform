@@ -370,6 +370,27 @@ def _translate_single_metric(
                 " — ES|QL cannot filter to N series in a single pass",
             )
             return "\n".join(lines)
+        if widget.widget_type == "distribution" and is_timeseries:
+            # Datadog distribution widgets show a value envelope over time.
+            # A single line loses that shape, so p50/p90/p99 percentiles are
+            # added as extra XY series — but the requested aggregator
+            # (avg/sum/min/max/...) is the one explicit thing the source
+            # dashboard asked for, so it is kept as its own series alongside
+            # the percentile envelope rather than replaced by it.
+            query = _build_distribution_percentile_esql(
+                spec.index,
+                spec.where_str,
+                spec.es_metric,
+                spec.group_fields,
+                agg_expr=spec.agg_expr,
+            )
+            _append_unique_warning(
+                result,
+                "distribution widget approximated as its requested aggregation "
+                "plus p50/p90/p99 percentile time series (ES|QL has no native "
+                "distribution histogram panel)",
+            )
+            return query
         return _build_timeseries_esql(
             spec.index, spec.where_str, spec.agg_expr, spec.group_fields,
         )
@@ -490,7 +511,29 @@ def _translate_formula_metric_widget(
         return count_formula_query
 
     used_specs = _resolve_used_specs(formulas, spec_map)
-    _ensure_formula_specs_compatible(used_specs)
+
+    # Preflight cosmetic display/smoothing functions (autosmooth, ewma_*,
+    # median_*) *before* _ensure_formula_specs_compatible unions mismatched
+    # groupings and appends its success-oriented "the panel can migrate as one
+    # ES|QL query" warning. Without this, a widget that has both a grouping
+    # mismatch and a smoothing function would emit that warning and then fail
+    # deep in AST translation with a bare ValueError -> not_feasible,
+    # contradicting the warning and regressing the operator disposition from the
+    # accurate requires_manual (a human can simply drop the cosmetic smoothing)
+    # to a hard block.
+    smoothing_funcs = _manual_review_formula_funcs(formulas)
+    if smoothing_funcs:
+        raise _RequiresManualError(
+            "formula uses Datadog display/smoothing function(s) with no ES|QL "
+            f"equivalent ({', '.join(smoothing_funcs)}); drop the cosmetic "
+            "smoothing or hand-write the query for manual review"
+        )
+
+    _ensure_formula_specs_compatible(
+        used_specs,
+        result=result,
+        kibana_type=str(plan.kibana_type or ""),
+    )
 
     if plan.kibana_type == "metric":
         if len(formulas) != 1:
@@ -1104,16 +1147,42 @@ def _resolve_used_specs(
     return used
 
 
-def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
+def _ensure_formula_specs_compatible(
+    specs: list[_MetricQuerySpec],
+    *,
+    result: TranslationResult | None = None,
+    kibana_type: str = "",
+) -> None:
     base = specs[0]
     for spec in specs[1:]:
         if spec.index != base.index:
             raise ValueError("formula queries span different index patterns")
         if spec.group_fields != base.group_fields:
-            # Different per-query groupings is a semantic ambiguity DD
-            # resolves by convention; we can't reproduce it cleanly in
-            # one ES|QL pipeline. Surface as requires_manual so the
-            # widget gets a placeholder for human review.
+            # Prefer a union of grouping dims for XY/heatmap formulas when the
+            # mismatch is only "extra tags on one query". Datadog resolves that
+            # by broadcasting the ungrouped side; ES|QL can approximate the same
+            # by grouping on the union (ungrouped measures repeat per group).
+            # Fundamentally incompatible non-subset mismatches still need a
+            # human-designed query.
+            base_set = set(base.group_fields)
+            other_set = set(spec.group_fields)
+            if kibana_type in ("xy", "heatmap") and (
+                base_set.issubset(other_set) or other_set.issubset(base_set)
+            ):
+                union_fields: list[str] = []
+                for field_name in list(base.group_fields) + list(spec.group_fields):
+                    if field_name not in union_fields:
+                        union_fields.append(field_name)
+                for item in specs:
+                    item.group_fields = list(union_fields)
+                if result is not None:
+                    _append_unique_warning(
+                        result,
+                        "multi-query formula had mismatched groupings; "
+                        f"united dimensions ({', '.join(union_fields)}) so the "
+                        "panel can migrate as one ES|QL query",
+                    )
+                continue
             raise _RequiresManualError(
                 "multi-query formulas with different groupings need a "
                 "manually-designed ES|QL query (e.g. UNION ALL or split "
@@ -1121,8 +1190,7 @@ def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
                 "semantically ambiguous"
             )
     # Heterogeneous filters across specs are translated via per-aggregation
-    # WHERE clauses (no error). Heterogeneous groupings still raise because
-    # they would require a UNION/join that ES|QL can't express in one STATS.
+    # WHERE clauses (no error).
 
 
 def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
@@ -1201,6 +1269,52 @@ def _formula_ref_names(node: Any) -> list[str]:
 
 _BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
 _DERIVATIVE_FORMULA_FNS = {"rate", "diff", "monotonic_diff"}
+
+# Datadog display/smoothing formula functions that have no ES|QL analogue but
+# are purely cosmetic: a reviewer can drop the smoothing and the underlying
+# panel still migrates. These are surfaced up-front as ``requires_manual`` (a
+# human decision) rather than being allowed to fail deep in AST translation as
+# a hard ``not_feasible`` block. Semantic transforms (clamp/timeshift/cumsum/
+# anomalies/...) are intentionally *not* here so their existing disposition is
+# preserved.
+_MANUAL_REVIEW_FORMULA_FUNCS = frozenset(
+    {
+        "autosmooth",
+        "ewma_3",
+        "ewma_5",
+        "ewma_10",
+        "ewma_20",
+        "median_3",
+        "median_5",
+        "median_7",
+        "median_9",
+    }
+)
+
+
+def _collect_formula_func_names(node: Any) -> set[str]:
+    """Return the lowercased names of every function call in a formula AST."""
+    names: set[str] = set()
+    if isinstance(node, FormulaFuncCall):
+        names.add((node.name or "").lower())
+        for arg in node.args or []:
+            names |= _collect_formula_func_names(arg)
+    elif isinstance(node, FormulaBinOp):
+        names |= _collect_formula_func_names(node.left)
+        names |= _collect_formula_func_names(node.right)
+    elif isinstance(node, FormulaUnary):
+        names |= _collect_formula_func_names(node.operand)
+    return names
+
+
+def _manual_review_formula_funcs(formulas: list[_FormulaSpec]) -> list[str]:
+    """Return sorted cosmetic-smoothing formula funcs that force manual review."""
+    return sorted(
+        name
+        for formula in formulas
+        for name in _collect_formula_func_names(formula.ast)
+        if name in _MANUAL_REVIEW_FORMULA_FUNCS
+    )
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:
@@ -1782,6 +1896,58 @@ def _build_timeseries_esql(
     )
 
 
+def _build_distribution_percentile_esql(
+    index: str,
+    where: str,
+    metric_field: str,
+    group_fields: list[str],
+    agg_expr: str = "",
+) -> str:
+    """Approximate a Datadog distribution widget as percentile envelopes.
+
+    ``agg_expr``, when provided, is the widget's own requested aggregator
+    (e.g. ``AVG(field)``) and is kept as its own STATS term so the source
+    aggregation is not silently dropped in favor of the (synthesized)
+    percentile envelope — both are genuinely useful series on the chart.
+    """
+    field = (metric_field or "").strip() or "value"
+    time_bucket = TIME_BUCKET_EXPR
+    group_clause = f"time_bucket = {time_bucket}"
+    if group_fields:
+        group_clause += ", " + ", ".join(group_fields)
+    stats_terms = []
+    agg_expr = (agg_expr or "").strip()
+    if agg_expr:
+        agg_alias = _distribution_agg_alias(agg_expr)
+        stats_terms.append(f"{agg_alias} = {agg_expr}")
+    stats_terms.extend(
+        [
+            f"p50 = PERCENTILE({field}, 50)",
+            f"p90 = PERCENTILE({field}, 90)",
+            f"p99 = PERCENTILE({field}, 99)",
+        ]
+    )
+    return (
+        f"FROM {index}\n"
+        f"| WHERE {where}\n"
+        f"| STATS " + ", ".join(stats_terms) + f" BY {group_clause}\n"
+        f"| SORT time_bucket"
+    )
+
+
+def _distribution_agg_alias(agg_expr: str) -> str:
+    """Derive a STATS alias for the distribution widget's own aggregator.
+
+    ``agg_expr`` looks like ``AVG(field)``; the alias is the lowercased
+    function name (``avg``), falling back to ``agg_value`` when the
+    expression's shape can't be parsed (e.g. a CASE-wrapped filtered
+    aggregate) so it never collides with the ``p50``/``p90``/``p99`` aliases.
+    """
+    match = re.match(r"\s*([A-Za-z_]+)\s*\(", agg_expr)
+    name = match.group(1).lower() if match else ""
+    return name if name and name not in {"p50", "p90", "p99"} else "agg_value"
+
+
 def _build_toplist_esql(
     index: str,
     where: str,
@@ -1915,13 +2081,35 @@ def _resolve_agg(dd_agg: str, metric_field: str) -> str:
     raise ValueError(f"unsupported Datadog aggregator: {dd_agg or '<empty>'}")
 
 
-def _normalize_request_reducer(raw: str) -> str:
+_PERCENTILE_REDUCERS = {"p50", "p75", "p90", "p95", "p99"}
+
+
+def _normalize_request_reducer(raw: str, space_agg: str = "") -> str:
     reducer = raw.lower().strip()
     if not reducer:
         return ""
-    if reducer not in {"avg", "sum", "min", "max", "last"}:
-        raise ValueError(f"unsupported Datadog request aggregator: {raw}")
-    return reducer
+    if reducer in {"avg", "sum", "min", "max", "last"}:
+        return reducer
+    if reducer in _PERCENTILE_REDUCERS:
+        return reducer
+    # Datadog's ``percentile`` request aggregator reduces the time series by a
+    # percentile; the level lives in the query's space aggregation (``p99:``).
+    # This is the common P99/P95 latency query_value pattern, so resolve it to
+    # the query's own percentile rather than degrading the whole panel.
+    if reducer == "percentile":
+        level = (space_agg or "").lower().strip()
+        if level in _PERCENTILE_REDUCERS:
+            return level
+        raise ValueError(
+            "Datadog 'percentile' request aggregator without a percentile "
+            "query aggregation (p50/p75/p90/p95/p99) is ambiguous in ES|QL"
+        )
+    raise ValueError(f"unsupported Datadog request aggregator: {raw}")
+
+
+def _query_space_agg(q: WidgetQuery) -> str:
+    mq = getattr(q, "metric_query", None)
+    return getattr(mq, "space_agg", "") if mq else ""
 
 
 def _request_reducer_for_queries(
@@ -1929,9 +2117,9 @@ def _request_reducer_for_queries(
     default: str | None = None,
 ) -> str | None:
     reducers = {
-        _normalize_request_reducer(q.aggregator)
+        _normalize_request_reducer(q.aggregator, _query_space_agg(q))
         for q in queries
-        if q.metric_query and _normalize_request_reducer(q.aggregator)
+        if q.metric_query and _normalize_request_reducer(q.aggregator, _query_space_agg(q))
     }
     if not reducers:
         return default
@@ -2000,6 +2188,8 @@ def _extract_top_params(ast: Any) -> tuple[int, str, str] | None:
 
 def _series_reducer_expr(reducer: str, field: str) -> str:
     field_ident = _esql_identifier(field)
+    if reducer in _PERCENTILE_REDUCERS:
+        return f"PERCENTILE({field_ident}, {int(reducer[1:])})"
     return {
         "avg": f"AVG({field_ident})",
         "sum": f"SUM({field_ident})",
@@ -2227,7 +2417,7 @@ def _build_lens_widget_config(
     # ``last_value``, not the space-aggregation which would accumulate
     # every document in the query window.
     if plan.kibana_type == "metric":
-        request_reducer = _normalize_request_reducer(wq.aggregator) if wq.aggregator else ""
+        request_reducer = _normalize_request_reducer(wq.aggregator, mq.space_agg) if wq.aggregator else ""
         _REDUCER_TO_LENS: dict[str, str] = {
             "last": "LAST",
             "avg": "AVG",

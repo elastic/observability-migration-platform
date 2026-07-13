@@ -1,6 +1,7 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import re
 import unittest
 from pathlib import Path
 
@@ -55,7 +56,11 @@ class CommandContractDocTests(unittest.TestCase):
     def test_command_contract_uses_split_dashboard_upload_path_for_legacy_flow(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn(
-            "--yaml-dir examples/alerting/generated/grafana/dashboards/yaml",
+            "--artifact-dir examples/alerting/generated/grafana/dashboards",
+            text,
+        )
+        self.assertIn(
+            "--artifact-format yaml",
             text,
         )
         self.assertNotIn(
@@ -302,10 +307,9 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("### Target index flags: data-view vs esql-index", text)
         # The default-fallback behavior must be stated explicitly.
         self.assertIn("Defaults to `--data-view` when unset", text)
-        # The two distinct roles of --esql-index must both be documented:
-        # query emission and schema discovery.
-        self.assertIn("query emission and field", text)
-        self.assertIn("the target of schema discovery", text)
+        # --esql-index is the unified metrics query + discovery target.
+        self.assertIn("metrics query + schema-discovery target", text)
+        self.assertIn("native `PROMQL index=…`", text)
         # The code-accurate fallback expression is documented.
         self.assertIn("args.esql_index or args.data_view", text)
         # Prometheus remediation callout with a worked example.
@@ -316,19 +320,61 @@ class CommandContractDocTests(unittest.TestCase):
         # --logs-index does NOT fall back to --data-view (profile log default).
         self.assertIn("does **not** fall back\nto `--data-view`", text)
         self.assertIn("the source/profile log index", text)
-        # Native-PROMQL panels read from --data-view, not --esql-index, in the
-        # default auto mode; --esql-index only retargets ES|QL/fallback + discovery.
-        self.assertIn("Native-PROMQL vs ES|QL read target", text)
-        self.assertIn("`PROMQL index=…` command from `--data-view`", text)
-        self.assertIn("--translation-mode esql", text)
+        # Native PROMQL and ES|QL share esql_index or data_view (consistency fix).
+        self.assertIn("Metrics query target (native PROMQL and ES|QL)", text)
+        self.assertIn("esql_index or data_view", text)
+        self.assertIn("retargets **both**", text)
 
     def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("They accept the same `--input-mode {files,api}`", text)
         self.assertIn("`--source files|api`", text)
         self.assertIn("--no-compile", text)
-        self.assertIn("Upload deploys through Kibana's typed Dashboards API by default", text)
+        # Phrase may wrap across a Markdown line break.
+        self.assertRegex(
+            text,
+            r"Upload deploys through Kibana's\s+typed Dashboards API by default",
+        )
         self.assertIn("obs-migrate migrate --source <source> --input-mode files", text)
+
+    def test_command_contract_documents_every_obs_migrate_subcommand(self):
+        import argparse
+
+        from observability_migration.app import cli as app_cli
+
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        parser = app_cli._build_parser()
+        subcommands: list[str] = []
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                subcommands = sorted(action.choices)
+                break
+        self.assertTrue(subcommands, "failed to discover obs-migrate subcommands")
+        for name in subcommands:
+            with self.subTest(command=name):
+                self.assertRegex(
+                    text,
+                    rf"obs-migrate\s+{re.escape(name)}\b",
+                    msg=f"command-contract.md missing `obs-migrate {name}`",
+                )
+
+    def test_command_contract_documents_verify_panels_and_verify_visual(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("### Verify Panels (5-tier panel verifier)", text)
+        self.assertIn("### Verify Visual (pixel-diff Grafana vs Kibana)", text)
+        self.assertIn("obs-migrate verify-panels", text)
+        self.assertIn("obs-migrate verify-visual", text)
+        self.assertIn("--grafana-slug", text)
+        self.assertIn("--kibana-dash-id", text)
+
+    def test_command_contract_documents_cli_parity_matrix(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("### CLI parity (unified vs dedicated)", text)
+        self.assertIn("consistent on the shared migration contract", text)
+        self.assertIn("`--space-id` → `--shadow-space`", text)
+        self.assertIn("`--fetch-monitors`", text)
+        self.assertIn("Grafana-only", text)
+        self.assertIn("Datadog-only", text)
 
 
 if __name__ == "__main__":

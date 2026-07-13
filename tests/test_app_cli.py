@@ -866,6 +866,258 @@ class TestUnifiedCliRouting(unittest.TestCase):
         self.assertNotIn("a .yaml file", error_text)
         self.assertNotIn("migration_output/yaml", error_text)
 
+    # -- --artifact-dir / --artifact-format (native review artifacts) --------
+
+    def test_artifact_dir_and_yaml_dir_are_mutually_exclusive(self):
+        parser = app_cli._build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "upload",
+                    "--artifact-dir", "/tmp/x",
+                    "--yaml-dir", "/tmp/y",
+                    "--kibana-url", "https://kibana.example",
+                ]
+            )
+
+    def test_artifact_format_defaults_to_auto(self):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(
+            ["upload", "--artifact-dir", "/tmp/x", "--kibana-url", "https://kibana.example"]
+        )
+        self.assertEqual(args.artifact_format, "auto")
+
+    def test_artifact_format_rejects_unknown_choice(self):
+        parser = app_cli._build_parser()
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(stderr):
+            parser.parse_args(
+                [
+                    "upload",
+                    "--artifact-dir", "/tmp/x",
+                    "--artifact-format", "ndjson",
+                    "--kibana-url", "https://kibana.example",
+                ]
+            )
+
+    def test_resolve_upload_input_prefers_artifact_dir_and_keeps_requested_format(self):
+        args = SimpleNamespace(artifact_dir="/tmp/root", yaml_dir=None, compiled_dir=None, artifact_format="native")
+        input_dir, artifact_format = app_cli._resolve_upload_input(args)
+        self.assertEqual(input_dir, Path("/tmp/root"))
+        self.assertEqual(artifact_format, "native")
+
+    def test_resolve_upload_input_yaml_dir_alias_forces_yaml_format(self):
+        args = SimpleNamespace(artifact_dir=None, yaml_dir="/tmp/yaml", compiled_dir=None, artifact_format="native")
+        input_dir, artifact_format = app_cli._resolve_upload_input(args)
+        self.assertEqual(input_dir, Path("/tmp/yaml"))
+        self.assertEqual(artifact_format, "yaml")
+
+    def test_resolve_upload_input_compiled_dir_alias_forces_yaml_and_warns(self):
+        args = SimpleNamespace(artifact_dir=None, yaml_dir=None, compiled_dir="/tmp/compiled", artifact_format="auto")
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            input_dir, artifact_format = app_cli._resolve_upload_input(args)
+        self.assertEqual(input_dir, Path("/tmp/compiled"))
+        self.assertEqual(artifact_format, "yaml")
+        self.assertIn("deprecated alias", stderr.getvalue())
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_artifact_dir_auto_passes_through_to_adapter(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            (artifact_dir / "native").mkdir()
+            (artifact_dir / "native" / "dash.native.json").write_text("{}", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1, "artifact_format": "native"},
+                "records": [{"yaml_file": "dash.native.json", "success": True, "output": "", "status": "created"}],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            with redirect_stdout(io.StringIO()):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="auto",
+                        legacy_import=False,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        adapter.upload.assert_called_once()
+        self.assertEqual(adapter.upload.call_args.kwargs.get("artifact_format"), "auto")
+        self.assertTrue(adapter.upload.call_args.kwargs.get("use_dashboards_api"))
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_artifact_format_native_forwarded(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1, "artifact_format": "native"},
+                "records": [{"yaml_file": "dash.native.json", "success": True, "output": "", "status": "created"}],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            with redirect_stdout(io.StringIO()):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="native",
+                        legacy_import=False,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        self.assertEqual(adapter.upload.call_args.kwargs.get("artifact_format"), "native")
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_no_native_artifacts_found_reports_clear_error(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 0, "total": 0, "error": "no_native_artifacts_found"},
+                "records": [],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, redirect_stderr(stderr):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="native",
+                        legacy_import=False,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("No native Dashboard-as-Code artifacts", stderr.getvalue())
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_mixed_native_yaml_artifacts_reports_clear_error(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {
+                    "uploaded_ok": 0,
+                    "total": 0,
+                    "error": "mixed_native_yaml_artifacts",
+                    "missing_native_artifacts": ["yaml-only"],
+                    "extra_native_artifacts": [],
+                },
+                "records": [],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, redirect_stderr(stderr):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="auto",
+                        legacy_import=False,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        self.assertEqual(ctx.exception.code, 1)
+        error_text = stderr.getvalue()
+        self.assertIn("do not match", error_text)
+        self.assertIn("yaml-only", error_text)
+        self.assertIn("--artifact-format yaml", error_text)
+
+    def test_run_upload_legacy_import_with_explicit_native_format_errors_clearly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, redirect_stderr(stderr):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="native",
+                        legacy_import=True,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--legacy-import requires YAML artifacts", stderr.getvalue())
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_legacy_import_forces_yaml_format_when_default_auto(self, mock_get):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            (artifact_dir / "dash.yaml").write_text("dashboards: []", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1},
+                "records": [{"yaml_file": "dash.yaml", "success": True, "output": ""}],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            with redirect_stdout(io.StringIO()):
+                app_cli._run_upload(
+                    SimpleNamespace(
+                        artifact_dir=str(artifact_dir),
+                        yaml_dir=None,
+                        compiled_dir=None,
+                        artifact_format="auto",
+                        legacy_import=True,
+                        kibana_url="https://kibana.example",
+                        kibana_api_key="secret",
+                        space_id="shadow",
+                        ca_cert="",
+                        insecure=False,
+                    )
+                )
+
+        self.assertEqual(adapter.upload.call_args.kwargs.get("artifact_format"), "yaml")
+        self.assertFalse(adapter.upload.call_args.kwargs.get("use_dashboards_api"))
+
+    def test_upload_help_mentions_artifact_dir_and_artifact_format(self):
+        parser = app_cli._build_parser()
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stdout(stdout):
+            parser.parse_args(["upload", "--help"])
+        help_text = stdout.getvalue()
+        self.assertIn("--artifact-dir", help_text)
+        self.assertIn("--artifact-format", help_text)
+        self.assertIn("native", help_text)
+
     @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_smoke_flags(self, mock_main):
         args = SimpleNamespace(
@@ -1069,6 +1321,20 @@ class TestUnifiedCliRouting(unittest.TestCase):
         try:
             app_cli._run_grafana_migration(args)
             self.assertIn("--legacy-import", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_forwards_compile_flag(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "grafana", "--compile"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertIn("--compile", sys.argv)
         finally:
             sys.argv = original_argv
 

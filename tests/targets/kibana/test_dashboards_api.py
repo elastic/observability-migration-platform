@@ -871,6 +871,67 @@ def test_native_dashboard_from_yaml_reconstructs_sections():
     assert counts.sections == 1
 
 
+def test_native_dashboard_from_ir_matches_native_dashboard_from_yaml():
+    """IR-first parity: `native_dashboard_from_ir` must not be a lossier or
+    differently-shaped mapping than the YAML path for the same dashboard --
+    panels, a nested section, a control, and a filter all round-trip through
+    `DashboardIR` and map identically either way.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    dashboard = {
+        "name": "D",
+        "description": "hello",
+        "filters": [{"field": "data_stream.dataset", "equals": "prometheus"}],
+        "panels": [
+            _leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top"),
+            {
+                "title": "System Metrics",
+                "section": {
+                    "collapsed": True,
+                    "panels": [
+                        _leaf(
+                            {"type": "line", "query": "FROM m", "dimension": {"field": "t"}, "metrics": [{"field": "v"}]},
+                            "cpu",
+                        ),
+                    ],
+                },
+            },
+        ],
+        "controls": [
+            {"variable_name": "env", "label": "Env", "available_options": ["prod", "dev"]},
+        ],
+    }
+
+    yaml_native, yaml_counts = api.native_dashboard_from_yaml(dashboard)
+    dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
+    ir_native, ir_counts = api.native_dashboard_from_ir(dashboard_ir)
+
+    assert ir_native.to_api_payload() == yaml_native.to_api_payload()
+    assert ir_counts.as_dicts() == yaml_counts.as_dicts()
+
+
+def test_native_dashboard_from_ir_returns_native_dashboard_instance():
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    dashboard_ir = DashboardIR.from_yaml_dict({
+        "name": "D",
+        "description": "hello",
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+        "controls": [
+            {"variable_name": "env", "label": "Env", "available_options": ["prod", "dev"]},
+        ],
+    })
+    native, counts = api.native_dashboard_from_ir(dashboard_ir)
+    assert isinstance(native, NativeDashboard)
+    assert native.title == "D"
+    assert native.description == "hello"
+    assert len(native.items) == 1
+    assert len(native.controls) == 1
+    assert counts.mapped == 1
+    assert counts.controls == 1
+
+
 def test_native_dashboard_from_yaml_preserves_phrase_filter():
     dashboard = {
         "name": "Filtered Dashboard",
@@ -1500,6 +1561,70 @@ def test_upload_native_dashboard_reports_rejected_when_every_attempt_raises():
 
 
 # --------------------------------------------------------------------------- #
+# 409 conflict classification (cross-space shareable-id collision)
+# --------------------------------------------------------------------------- #
+
+def test_upload_native_dashboard_classifies_409_as_conflict_not_rejected():
+    # Dashboards are a shareable saved-object type, so a deterministic name-based
+    # id that already exists in another space returns 409. That is an id-ownership
+    # collision, not a payload defect: it must be classified "conflict" (a terminal
+    # failure) so the caller skips the legacy kb-dashboard-cli fallback, which
+    # could not resolve it and would only re-introduce the compiler dependency.
+    from observability_migration.core.assets.native_dashboard import NativeDashboard, NativeGrid, NativePanel
+
+    native_dashboard = NativeDashboard(
+        title="Already Elsewhere",
+        dashboard_id="already-elsewhere",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+    )
+    conflict = mock.Mock(status_code=409)
+    conflict.json.return_value = {"message": "Saved object [dashboard/already-elsewhere] conflict"}
+    session = mock.Mock()
+    session.put.return_value = conflict
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(native_dashboard, "https://kibana.example", api_key="k")
+
+    # A single call: 409 is not a retryable status, and it is not "rejected".
+    assert session.put.call_count == 1
+    assert result.status == "conflict"
+    assert result.http_status == 409
+    assert "conflict" in result.message
+
+
+def test_upload_yaml_files_does_not_fall_back_to_legacy_on_conflict():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yaml_path = Path(tmpdir) / "dash.yaml"
+        yaml_path.write_text(
+            "dashboards:\n"
+            "- name: Shared\n"
+            "  panels:\n"
+            "  - title: Count\n"
+            "    esql:\n"
+            "      type: metric\n"
+            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
+            "      primary: {field: count}\n",
+            encoding="utf-8",
+        )
+
+        conflict = mock.Mock(status_code=409)
+        conflict.json.return_value = {"message": "Saved object [dashboard/x] conflict"}
+        session = mock.Mock()
+        session.put.return_value = conflict
+        fallback_calls = []
+
+        def fallback(path, dashboard):
+            fallback_calls.append((Path(path).name, dashboard["name"]))
+
+        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+            results = api.upload_yaml_files([str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback)
+
+    assert results[0].status == "conflict"
+    # A conflict is terminal: the legacy/compiler fallback must not be invoked.
+    assert fallback_calls == []
+
+
+# --------------------------------------------------------------------------- #
 # Native control data_view_id resolution (PR #278 review regression)
 # --------------------------------------------------------------------------- #
 
@@ -1593,6 +1718,200 @@ def test_upload_yaml_files_resolves_pinned_control_data_view_id():
             )
 
     assert results[0].status == "created"
+    sent = json.loads(session.put.call_args[1]["data"])
+    assert sent["pinned_panels"][0]["config"]["data_view_id"] == "generated-id"
+
+
+# --------------------------------------------------------------------------- #
+# upload_native_artifact: deploy a persisted review artifact envelope
+# --------------------------------------------------------------------------- #
+
+def _native_artifact_envelope(**overrides) -> dict:
+    envelope = {
+        "kind": "native_dashboard",
+        "version": 1,
+        "dashboard_id": "obs-migrate-reviewed",
+        "title": "Reviewed Dashboard",
+        "source_adapter": "grafana",
+        "payload": {
+            "title": "Reviewed Dashboard",
+            "panels": [
+                {"grid": {"x": 0, "y": 0, "w": 24, "h": 8}, "type": "vis", "config": {"type": "metric"}},
+            ],
+        },
+        "mapping": {"mapped": 1, "unmapped": 0, "sections": 0, "controls": 0, "reasons": {}},
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def test_upload_native_artifact_sends_persisted_payload_unchanged():
+    artifact = _native_artifact_envelope()
+    response = mock.Mock(status_code=201)
+    response.json.return_value = {"id": "obs-migrate-reviewed"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
+    assert result.status == "created"
+    assert result.mapped == 1
+    assert result.dashboard == "Reviewed Dashboard"
+    url, kwargs = session.put.call_args
+    assert url[0] == "https://kibana.example/api/dashboards/obs-migrate-reviewed"
+    sent = json.loads(kwargs["data"])
+    assert sent == artifact["payload"]
+
+
+def test_upload_native_artifact_falls_back_to_stable_id_when_missing():
+    artifact = _native_artifact_envelope(dashboard_id="")
+    response = mock.Mock(status_code=201)
+    response.json.return_value = {"id": "obs-migrate-reviewed-dashboard"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
+    assert result.status == "created"
+    url, _kwargs = session.put.call_args
+    assert url[0] == "https://kibana.example/api/dashboards/obs-migrate-reviewed-dashboard"
+
+
+def test_upload_native_artifact_reports_unmapped_reasons_from_mapping():
+    artifact = _native_artifact_envelope(
+        mapping={"mapped": 1, "unmapped": 2, "sections": 0, "controls": 0, "reasons": {"unsupported_type": 2}},
+    )
+    response = mock.Mock(status_code=200)
+    response.json.return_value = {"id": "obs-migrate-reviewed"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.mapped == 1
+    assert result.unmapped == 2
+    assert result.unmapped_reasons == {"unsupported_type": 2}
+
+
+def test_upload_native_artifact_no_leaf_panels_is_empty_not_rejected():
+    artifact = _native_artifact_envelope(payload={"title": "Empty", "panels": []})
+    session = mock.Mock()
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
+    # No leaf panels means nothing was ever sent -- there is no legacy YAML
+    # to fall back to for a native artifact, so this is reported as "empty".
+    session.put.assert_not_called()
+    assert result.status == "empty"
+
+
+def test_upload_native_artifact_rejection_has_no_legacy_fallback():
+    artifact = _native_artifact_envelope()
+    bad_request = mock.Mock(status_code=400)
+    bad_request.json.return_value = {"message": "schema violation"}
+    session = mock.Mock()
+    session.put.return_value = bad_request
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
+    assert result.status == "rejected"
+    assert "schema violation" in result.message
+    # A single call: no retry (4xx is not transient) and no fallback path
+    # exists for a persisted native artifact.
+    assert session.put.call_count == 1
+
+
+def test_upload_native_artifact_rejects_non_object_envelope():
+    # ``json.loads`` of a ``.native.json`` containing ``[]`` is valid JSON but
+    # a list, not the expected envelope; must be a per-record rejection, not
+    # an AttributeError crashing the whole staged upload.
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact([], "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "object envelope" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_unexpected_kind():
+    artifact = _native_artifact_envelope(kind="dashboard_ir")
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "kind" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_unsupported_version():
+    artifact = _native_artifact_envelope(version=999)
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "version" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_non_object_payload():
+    artifact = _native_artifact_envelope(payload=[])
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "payload" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_non_numeric_mapping_counter():
+    # ``mapping.mapped: "corrupt"`` is valid JSON but would raise ValueError
+    # in ``int(...)``; must be reported as a rejected record instead.
+    artifact = _native_artifact_envelope(
+        mapping={"mapped": "corrupt", "unmapped": 0, "reasons": {}},
+    )
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "mapping.mapped" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_resolves_pinned_control_data_view_id():
+    artifact = _native_artifact_envelope(
+        payload={
+            "title": "Has Control",
+            "panels": [
+                {"grid": {"x": 0, "y": 0, "w": 24, "h": 8}, "type": "vis", "config": {"type": "metric"}},
+            ],
+            "pinned_panels": [
+                {
+                    "type": "options_list_control",
+                    "config": {"title": "Service", "data_view_id": "metrics-*", "field_name": "service.name"},
+                }
+            ],
+        },
+    )
+    response = mock.Mock(status_code=201)
+    response.json.return_value = {"id": "obs-migrate-reviewed"}
+    session = mock.Mock()
+    session.put.return_value = response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(
+            artifact,
+            "https://kibana.example",
+            api_key="k",
+            data_view_ids={"metrics-*": "generated-id"},
+        )
+
+    assert result.status == "created"
     sent = json.loads(session.put.call_args[1]["data"])
     assert sent["pinned_panels"][0]["config"]["data_view_id"] == "generated-id"
 

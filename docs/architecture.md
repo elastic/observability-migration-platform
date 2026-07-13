@@ -66,8 +66,8 @@ flowchart LR
     end
 
     subgraph shared [Shared contracts and runtime]
-        ir[Build QueryIR / VisualIR / OperationalIR]
-        emit[Emit Kibana YAML]
+        ir["Build QueryIR / VisualIR / OperationalIR<br/>Assemble DashboardIR (Grafana + Datadog)"]
+        emit["Derive native Dashboards API payload + YAML<br/>from DashboardIR"]
         validate[Optional runtime validation]
         compile[Lint and compile]
         verify[Verification and reporting]
@@ -114,7 +114,7 @@ Generated artifacts typically include:
 | `observability_migration/adapters/source/grafana/adapter.py` | Registers the Grafana source adapter |
 | `observability_migration/adapters/source/grafana/cli.py` | Grafana end-to-end orchestration |
 | `observability_migration/adapters/source/grafana/extract.py` | Grafana file/API extraction |
-| `observability_migration/adapters/source/grafana/panels.py` | Panel and dashboard translation, layout normalization, YAML generation |
+| `observability_migration/adapters/source/grafana/panels.py` | Panel and dashboard translation, layout normalization, `DashboardIR` construction, and derived YAML export |
 | `observability_migration/adapters/source/grafana/translate.py` | PromQL / LogQL translation entry points |
 | `observability_migration/adapters/source/grafana/promql.py` | PromQL parsing and planning helpers |
 | `observability_migration/adapters/source/grafana/rules.py` | Rule registries, rule packs, plugins |
@@ -130,6 +130,7 @@ Generated artifacts typically include:
 | `observability_migration/adapters/source/datadog/planner.py` | Widget planning |
 | `observability_migration/adapters/source/datadog/query_parser.py` and `log_parser.py` | Datadog metric/log parsing |
 | `observability_migration/adapters/source/datadog/translate.py` | Widget translation |
+| `observability_migration/adapters/source/datadog/generate.py` | Dashboard artifact emission: assemble `DashboardIR`, then derive native Dashboards API payload + YAML |
 | `observability_migration/adapters/source/datadog/field_map.py` | Built-in field profiles and custom profile loading |
 | `observability_migration/adapters/source/datadog/execution.py` | Live Datadog metric source execution for verification |
 | `observability_migration/adapters/source/datadog/manifest.py` and `rollout.py` | Datadog manifest and rollout artifacts |
@@ -171,7 +172,7 @@ Datadog currently covers:
 - extraction from files and the Datadog API for dashboard objects
 - dashboard normalization
 - metric-query, formula, and log-search translation
-- YAML generation plus manifest and rollout outputs
+- IR-first dashboard emission (`DashboardIR` → native payload + YAML) plus manifest and rollout outputs
 - capability-aware preflight via `--preflight` and/or live `_field_caps` loaded by `--es-url`
 - first-class emitted-query validation
 - optional shared compile via `--compile`
@@ -188,13 +189,13 @@ the same stage sequence.
 | Stage | Grafana dedicated pipeline | Datadog dedicated pipeline |
 |---|---|---|
 | Runtime setup | Load rule packs/plugins, configure dataset filters, build `SchemaResolver`, and support explicit `--validate` for upload/preflight workflows | Load field profile, derive dataset filters, optionally load live `_field_caps` into the field map, and support explicit `--validate` during upload workflows |
-| Extract | `extract_dashboards_from_files()` or `extract_dashboards_from_grafana()` for dashboard documents; links/annotations/transforms/legacy alerts are derived later from dashboard JSON | `extract_dashboards_from_files()` or `extract_dashboards_from_api()` for dashboard objects; monitors stay out of scope as first-class live inputs |
+| Extract | `extract_dashboards_from_files()` or `extract_dashboards_from_grafana()` for dashboard documents; links/annotations/transforms/legacy alerts are derived later from dashboard JSON | `extract_dashboards_from_files()` or `extract_dashboards_from_api()` for dashboard objects; monitors are first-class live inputs when `--assets alerts` / `--assets all` |
 | Normalize | Mostly folded into dashboard/panel translation and layout handling | Explicit `normalize_dashboard()` to `NormalizedDashboard` / `NormalizedWidget` before planning |
 | Planning | Translation path chosen inside Grafana panel/query flow: native `PROMQL`, rule-engine ES|QL, LLM fallback, or native ES|QL reuse | Explicit `plan_widget()` chooses `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked` |
-| Translate | `translate_dashboard()` handles queries, panel mapping, controls, layout, and initial YAML emission | `translate_widget()` runs after planning; YAML is emitted later by `generate_dashboard_yaml()` |
+| Translate / emit | `translate_dashboard()` builds `DashboardIR`, then derives native payload + YAML | `translate_widget()` then `generate_dashboard_artifacts()` builds `DashboardIR` and derives native payload + YAML |
 | Preflight / capability safety | Customer-facing preflight mode plus source/target probes; validation remains part of the preflight flow when target access is configured | Capability-aware preflight runs before translation when `--preflight` or live field capabilities are available |
 | Target query validation | First-class `--validate --es-url` loop with auto-fix/manualize and YAML sync | First-class `--validate --es-url` loop with shared ES query fixes plus Datadog-safe YAML regeneration/manualization |
-| Compile / layout | YAML lint, compile, and compiled-layout validation are part of the main Grafana flow | Optional shared compile via `--compile`, after any validation-driven YAML rewrites |
+| Compile / layout | YAML lint always; NDJSON compile + compiled-layout validation are opt-in via `--compile` (implied by `--legacy-import`) | Same: optional shared compile via `--compile`, after any validation-driven YAML rewrites |
 | Upload | First-class `--upload` in the dedicated CLI after lint/compile/layout pass | First-class `--upload` in the dedicated CLI after compile; shared `obs-migrate upload` remains available |
 | Smoke / verification | First-class `--smoke`, Grafana-only pre-existing `--smoke-report` merge, verification packets, and semantic gates in the main flow | First-class `--smoke`, semantic gates, and live metric source execution during verification when configured |
 | Reports | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, optional preflight artifacts, rollout plan | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, `rollout_plan.json`, optional smoke report |
@@ -206,12 +207,12 @@ The dedicated Grafana CLI behaves like this:
 ```text
 rule packs/plugins/schema setup
   -> extract dashboards
-  -> translate_dashboard() and emit YAML
-  -> optional metadata polish
-  -> optional ES query validation and YAML sync
+  -> translate_dashboard() (assemble DashboardIR; derive native + YAML)
+  -> optional metadata polish (rebuild DashboardIR; re-derive native + YAML)
+  -> optional ES query validation and YAML sync (same IR rebuild)
   -> YAML lint
-  -> compile and layout validation
-  -> optional upload
+  -> optional compile and layout validation
+  -> optional upload (typed API prefers native_dashboard from IR)
   -> optional integrated smoke validation / browser audit / screenshot capture
   -> verification packets and reviewer explanations
   -> report / manifest
@@ -220,9 +221,9 @@ rule packs/plugins/schema setup
 ```
 
 Important detail: Grafana's "translation" stage is broad. It already includes
-query-path selection, variable/control translation, layout normalization, YAML
-emission, and feature-gap artifact extraction for links, annotations,
-transformations, and legacy alerts.
+query-path selection, variable/control translation, layout normalization,
+`DashboardIR` assembly, derived native/YAML emission, and feature-gap artifact
+extraction for links, annotations, transformations, and legacy alerts.
 
 #### Datadog Dedicated Flow
 
@@ -236,10 +237,11 @@ field profile setup
   -> optional capability-aware preflight
   -> plan_widget()
   -> translate_widget()
-  -> generate_dashboard_yaml()
-  -> optional emitted-query validation
+  -> generate_dashboard_artifacts() (assemble DashboardIR; derive native + YAML)
+  -> optional emitted-query validation (regenerate via generate_dashboard_artifacts)
+  -> persist native/IR review artifacts
   -> optional compile
-  -> optional upload
+  -> optional upload (typed API prefers native_dashboard from IR)
   -> optional smoke validation
   -> verification packets
   -> report
@@ -247,11 +249,13 @@ field profile setup
 
 Important detail: Datadog has a more explicit **normalize -> plan -> translate
 -> emit** pipeline than Grafana, and it now continues through first-class
-validate/compile/upload/smoke/verification steps. Datadog also produces
-`migration_manifest.json` and `rollout_plan.json` artifacts, and runs live
-metric source execution during verification when API credentials are available.
-The remaining breadth gap is log-query and multi-query source execution, which
-still fall back to target/runtime evidence.
+validate/compile/upload/smoke/verification steps. Emission is IR-first: both
+the typed Dashboards API payload and on-disk YAML are derived from
+`DashboardIR`. Datadog also produces `migration_manifest.json` and
+`rollout_plan.json` artifacts, and runs live metric source execution during
+verification when API credentials are available. The remaining breadth gap is
+log-query and multi-query source execution, which still fall back to
+target/runtime evidence.
 
 ### Shared Contracts And Result Objects
 
@@ -259,7 +263,14 @@ The repo uses a mix of typed IRs and report/result objects:
 
 - `DashboardIR`, `PanelIR`, `QueryIR`, `TargetQueryPlan`, `VisualIR`, and `OperationalIR` live under `core/assets/`
 - `MigrationResult` and `PanelResult` live in `core/reporting/report.py`
-- `VisualIR` is a derived snapshot of emitted YAML, not the source of truth
+- For Grafana and Datadog, `DashboardIR` (on `MigrationResult.dashboard_ir` /
+  `DashboardResult.dashboard_ir`) is the primary working artifact: both
+  `native_dashboard` and the on-disk YAML are derived from it
+  (`docs/architecture/asset-model.md`).
+- `PanelResult.visual_ir` (the flat per-panel report snapshot) remains a
+  derived snapshot refreshed after emission/mutation, not a source of truth;
+  the `VisualIR` embedded in each `PanelIR` inside `dashboard_ir` *is*
+  authoritative for that dashboard's native/YAML derivation
 - `OperationalIR` is refreshed after verification with the final semantic gate and runtime state
 
 ### Kibana Target Runtime
@@ -268,7 +279,9 @@ The shared target runtime is centered on `targets/kibana/`:
 
 - `emit/` builds YAML panel shapes and display metadata
 - `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate compile/upload` and the Datadog smoke path
-- `compile.py` wraps installed-first `kb-dashboard-cli` resolution (pinned `uvx` fallback), YAML lint, compiled-layout validation, upload helpers, and post-validation YAML sync
+- `compile.py` wraps YAML lint, optional `kb-dashboard-cli` compile (pinned `uvx` fallback), compiled-layout validation, upload helpers, and post-validation IR rebuild / YAML sync
+- `dashboards_api.py` maps `DashboardIR` / YAML to the typed Dashboards API and is the default upload path
+- `native_artifacts.py` persists reviewed `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` artifacts for two-step review/upload workflows
 - `smoke.py` inspects uploaded saved objects, runs ES|QL runtime checks, and supports browser audits/screenshots
 
 Some runtime-validation behavior still lives in Grafana modules because it is
@@ -300,7 +313,8 @@ The current architecture is intentionally honest about what is still partial:
 - Datadog now has preflight plus first-class validate/compile/upload/smoke, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining parity gap is broader source execution coverage for logs and multi-query widgets.
 - the active runtime is still partly CLI-centric, but Kibana is now wired through a registered `TargetAdapter` for shared compile/upload/smoke behavior
 - some query families still degrade to warnings, placeholders, or manual review
-- `VisualIR` is a snapshot of emitted YAML, not a full Grafana visual model
+- `VisualIR` embeds chart type/config as an opaque dict (`presentation.config`), not a full typed Grafana visual model
+- Grafana and Datadog are both IR-first (`DashboardIR` primary, native + YAML derived from it); YAML remains a derived export for lint / `--compile` / `--legacy-import`
 - emitted-query validation is shared in spirit but still partly source-specific in code layout
 
 ## Contributor Reading Order

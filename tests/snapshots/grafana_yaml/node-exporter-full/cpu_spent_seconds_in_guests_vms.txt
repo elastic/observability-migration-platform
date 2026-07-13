@@ -3,8 +3,8 @@ grafana_type: timeseries
 status: migrated_with_warnings
 chart_type: bar
 dimension: time_bucket
-metrics: ['node_cpu_guest_seconds_total_ratio']
+metrics: ['Guest_Time_spent_running_a_virtual_CPU_for_a_guest_operating_system', 'GuestNice_Time_spent_running_a_niced_guest_virtual_CPU_for_guest_operating_system']
 breakdown: instance
 mode: unstacked
 axis_title: percentage
-warning: Panel has 2 PromQL targets but only 1 could be migrated
+warning: Fused multi-target panel from independently translated ES|QL queries

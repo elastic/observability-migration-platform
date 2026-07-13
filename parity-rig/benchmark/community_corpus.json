@@ -1,31 +1,187 @@
 {
-  "_comment": "Pinned community Grafana dashboards from grafana.com for benchmark/regression runs. Re-fetch reproducibly with scripts/fetch_community_corpus.py (verifies canonical-JSON sha256). Third-party JSON is NOT committed (marketplace-noise rule, AGENTS.md); only the pin is.",
+  "_comment": "Pinned community Grafana dashboards from grafana.com for benchmark/regression runs. Re-fetch reproducibly with scripts/fetch_community_corpus.py (verifies canonical-JSON sha256). Third-party JSON is NOT committed (marketplace-noise rule, AGENTS.md); only the pin is. Each entry is tagged with a 'stratum': 'top' = selected from the most-downloaded Prometheus-backed dashboards; 'bug_seed' = an explicit, permanently-pinned regression seed (curated prior seeds plus dashboards previously exercised as committed fixtures). Slugs are disambiguated with the numeric id where grafana.com reuses a name.",
   "source": "https://grafana.com/api/dashboards/<id>/revisions/<revision>/download",
   "checksum": "sha256 of canonical JSON (json.dumps sort_keys, compact)",
   "dashboards": [
     {
+      "id": 315,
+      "revision": 3,
+      "slug": "kubernetes-cluster-monitoring-via-prometheus-315",
+      "title": "Kubernetes cluster monitoring (via Prometheus)",
+      "panels": 21,
+      "datasource": "Prometheus",
+      "sha256": "6fb5e045bc6d860f0f22ce7e145f4da04d2e25fd4fbf9fda29355cef6d63aeae",
+      "stratum": "top"
+    },
+    {
+      "id": 741,
+      "revision": 1,
+      "slug": "deployment-metrics",
+      "title": "Kubernetes Deployment metrics",
+      "panels": 16,
+      "datasource": "Prometheus",
+      "sha256": "ee383512d9482a9917c5d5777bde332a91f99972f0168c0a794b20adcaae108c",
+      "stratum": "top"
+    },
+    {
+      "id": 747,
+      "revision": 2,
+      "slug": "pod-metrics",
+      "title": "Kubernetes Pod Metrics",
+      "panels": 18,
+      "datasource": "Prometheus",
+      "sha256": "47837bfea31e6156decd5c152379addfd9c3f9a9991a0cc96d764f91388b2d55",
+      "stratum": "top"
+    },
+    {
       "id": 763,
       "revision": 6,
-      "slug": "redis-prom",
+      "slug": "redis-exporter-763",
       "title": "Redis Dashboard for Prometheus Redis Exporter 1.x",
       "panels": 13,
-      "sha256": "8c34e52a08effbfa559b3c395fafea94750f072398d622a5329b3db6901b07b1"
+      "datasource": "Prometheus",
+      "sha256": "8c34e52a08effbfa559b3c395fafea94750f072398d622a5329b3db6901b07b1",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 893,
+      "revision": 5,
+      "slug": "docker-system-893",
+      "title": "Docker and system monitoring",
+      "panels": 20,
+      "datasource": "Prometheus",
+      "sha256": "6edff41ff5f97652d001481694748d4470ca00bf918fa1a1b9d6e38ce74e2c38",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 1471,
+      "revision": 1,
+      "slug": "kubernetes-apps",
+      "title": "Kubernetes App Metrics",
+      "panels": 13,
+      "datasource": "Prometheus",
+      "sha256": "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52",
+      "stratum": "top"
+    },
+    {
+      "id": 1621,
+      "revision": 1,
+      "slug": "kubernetes-cluster-monitoring-via-prometheus-1621",
+      "title": "Kubernetes cluster monitoring (via Prometheus)",
+      "panels": 21,
+      "datasource": "Prometheus",
+      "sha256": "d714551536ca794e3088ac535e59b3d2f93dd705e3b60f84d6f3c42da40fe9d4",
+      "stratum": "top"
     },
     {
       "id": 1860,
       "revision": 45,
       "slug": "node-exporter-full",
       "title": "Node Exporter Full",
-      "panels": 31,
-      "sha256": "caf87b3e95f2f122eb39aee7cdeda1b609c0d321c5ddc4b61b0eff916f2e8c28"
+      "panels": 140,
+      "datasource": "Prometheus",
+      "sha256": "caf87b3e95f2f122eb39aee7cdeda1b609c0d321c5ddc4b61b0eff916f2e8c28",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 2583,
+      "revision": 2,
+      "slug": "mongodb-2583",
+      "title": "MongoDB",
+      "panels": 25,
+      "datasource": "Prometheus",
+      "sha256": "2a3072ded2bb356d2407c1197bc80eb0866a13809876e071b4aed38b86c053b7",
+      "stratum": "top"
+    },
+    {
+      "id": 3063,
+      "revision": 1,
+      "slug": "memcached-pods-monitoring-via-prometheus",
+      "title": "Memcached Pods monitoring (via Prometheus)",
+      "panels": 13,
+      "datasource": "Prometheus",
+      "sha256": "cae59e8063196b07ef0187cda3c672a27f27205cebdf95e0bffdca04a0e7dab1",
+      "stratum": "top"
+    },
+    {
+      "id": 3662,
+      "revision": 2,
+      "slug": "prometheus-2-overview-3662",
+      "title": "Prometheus 2.0 Overview",
+      "panels": 30,
+      "datasource": "Prometheus",
+      "sha256": "c6083070c3d459d65e30f90c19817d943d14510ae4877884b8f49540515b9b9a",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 3831,
+      "revision": 1,
+      "slug": "autoscaler",
+      "title": "Kubernetes Cluster Autoscaler (via Prometheus)",
+      "panels": 10,
+      "datasource": "Prometheus",
+      "sha256": "fbfc5ff33d138f2a449d4d28b0c0dcd09d351f08a2c78b91e3455d00e2b0b597",
+      "stratum": "top"
+    },
+    {
+      "id": 4271,
+      "revision": 4,
+      "slug": "docker-system-4271",
+      "title": "Docker and system monitoring",
+      "panels": 15,
+      "datasource": "Prometheus",
+      "sha256": "6fcd4b7aa5eba52040d1184f642e2eed387bfdc82d1fd1ae8f1a3be524f65b20",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 4475,
+      "revision": 5,
+      "slug": "traefik",
+      "title": "Traefik",
+      "panels": 9,
+      "datasource": "Prometheus",
+      "sha256": "514309398245f28fb20280ced0957a5c3eb96621bec9b95257668dd5b1dbefcd",
+      "stratum": "top"
+    },
+    {
+      "id": 4701,
+      "revision": 10,
+      "slug": "jvm-micrometer",
+      "title": "JVM (Micrometer)",
+      "panels": 30,
+      "datasource": "Prometheus",
+      "sha256": "ad502104cc14961eadc1dbfa4c96b175e6dfce1500e2ddbe0512ebe7df4e6783",
+      "stratum": "top"
     },
     {
       "id": 6417,
       "revision": 1,
-      "slug": "kube-state",
+      "slug": "kubernetes-cluster-prometheus",
       "title": "Kubernetes Cluster (Prometheus)",
       "panels": 35,
-      "sha256": "6694907c373d7bb0a24143a171f2751cc939f4e8da3fefb04b25b8a59aaca0ab"
+      "datasource": "Prometheus",
+      "sha256": "6694907c373d7bb0a24143a171f2751cc939f4e8da3fefb04b25b8a59aaca0ab",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 6693,
+      "revision": 1,
+      "slug": "envoy",
+      "title": "Envoy Proxy",
+      "panels": 13,
+      "datasource": "Prometheus",
+      "sha256": "c3d87bd0cad278258ecf277aac5e36700f08857d04b36a46f5b62b7170018b28",
+      "stratum": "top"
+    },
+    {
+      "id": 7187,
+      "revision": 1,
+      "slug": "kubernetes-resource-requests",
+      "title": "Kubernetes Resource Requests",
+      "panels": 4,
+      "datasource": "Prometheus",
+      "sha256": "3c877a83770e88c52b8890ee56d2154da08f7e02faac70de51fe3548b533054b",
+      "stratum": "top"
     },
     {
       "id": 7362,
@@ -33,55 +189,509 @@
       "slug": "mysql-overview",
       "title": "MySQL Overview",
       "panels": 50,
-      "sha256": "6d5c16e29a314253f7c6b3b4b4b35f0e993815c1f6f4cf4b92bf443af3ad8106"
+      "datasource": "Prometheus",
+      "sha256": "6d5c16e29a314253f7c6b3b4b4b35f0e993815c1f6f4cf4b92bf443af3ad8106",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 7587,
+      "revision": 3,
+      "slug": "prometheus-blackbox-exporter",
+      "title": "Prometheus Blackbox Exporter",
+      "panels": 12,
+      "datasource": "Prometheus",
+      "sha256": "54eed5744bc7da53328150f328bfcc7b2f3d91b46360be4ef6df0eb3541ef8eb",
+      "stratum": "top"
     },
     {
       "id": 7589,
       "revision": 5,
-      "slug": "kafka-exporter",
+      "slug": "kafka-exporter-overview-7589",
       "title": "Kafka Exporter Overview",
       "panels": 5,
-      "sha256": "c5d5891080aab6823f93e4dc5633b48c67ddd601b0ad4cc730224bc0446983ee"
+      "datasource": "Prometheus",
+      "sha256": "c5d5891080aab6823f93e4dc5633b48c67ddd601b0ad4cc730224bc0446983ee",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 7630,
+      "revision": 315,
+      "slug": "istio-workload-dashboard",
+      "title": "Istio Workload Dashboard",
+      "panels": 25,
+      "datasource": "Prometheus",
+      "sha256": "a8a6513d0bbec7a67b39621f87352b459ff74c2eaf400b7ccbd01de94791832a",
+      "stratum": "top"
+    },
+    {
+      "id": 7636,
+      "revision": 314,
+      "slug": "istio-service-dashboard",
+      "title": "Istio Service Dashboard",
+      "panels": 28,
+      "datasource": "Prometheus",
+      "sha256": "636d24b7c4c4fb583242109ce4276681d73eb07136cf79623f3ed63171c88791",
+      "stratum": "top"
+    },
+    {
+      "id": 7639,
+      "revision": 315,
+      "slug": "istio-mesh-dashboard",
+      "title": "Istio Mesh Dashboard",
+      "panels": 9,
+      "datasource": "Prometheus",
+      "sha256": "fc9668e793357fc26087b0437cb036a82d2ad4cbc02e452a0b3a17bb5cf0348b",
+      "stratum": "top"
+    },
+    {
+      "id": 7645,
+      "revision": 314,
+      "slug": "istio-control-plane-dashboard",
+      "title": "Istio Control Plane Dashboard",
+      "panels": 17,
+      "datasource": "Prometheus",
+      "sha256": "9d6fb3dfcbe56fb9cc8e61d69e4b792c040453c44e2f3eb7b8662a0cbda7da3b",
+      "stratum": "top"
+    },
+    {
+      "id": 8171,
+      "revision": 1,
+      "slug": "kubernetes-nodes",
+      "title": "Kubernetes Nodes",
+      "panels": 8,
+      "datasource": "Prometheus",
+      "sha256": "5d580022bf35bc2cbe42056affd0a1670aa2adb0afd6942f2e642c550a6b29b2",
+      "stratum": "top"
+    },
+    {
+      "id": 9578,
+      "revision": 4,
+      "slug": "alertmanager",
+      "title": "Alertmanager",
+      "panels": 137,
+      "datasource": "Prometheus",
+      "sha256": "67d3519e54307095eaa5933fc4fde51ab1301c261d1005d92689e4dd28963864",
+      "stratum": "top"
     },
     {
       "id": 9614,
       "revision": 1,
-      "slug": "nginx-ingress",
+      "slug": "nginx-ingress-controller",
       "title": "NGINX Ingress controller",
       "panels": 12,
-      "sha256": "c818408a06411560f37e6717fa10d601837167804ed89b62f2deb65b6448a558"
+      "datasource": "Prometheus",
+      "sha256": "c818408a06411560f37e6717fa10d601837167804ed89b62f2deb65b6448a558",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 9621,
+      "revision": 2,
+      "slug": "docker-registry",
+      "title": "Docker Registry",
+      "panels": 19,
+      "datasource": "Prometheus",
+      "sha256": "22e4e15768cf1cd55a62a73a8fe42472c12eab84fe3adfd9409d868744152106",
+      "stratum": "top"
     },
     {
       "id": 9628,
       "revision": 8,
-      "slug": "postgresql",
+      "slug": "postgresql-database",
       "title": "PostgreSQL Database",
       "panels": 35,
-      "sha256": "a3c1f7536523cc8b21f525d88766b84c3f6bb88125fcb1e0af787d3dc99ef79b"
+      "datasource": "Prometheus",
+      "sha256": "a3c1f7536523cc8b21f525d88766b84c3f6bb88125fcb1e0af787d3dc99ef79b",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 10441,
+      "revision": 2,
+      "slug": "keycloak-metrics-dashboard",
+      "title": "Keycloak Metrics Dashboard",
+      "panels": 24,
+      "datasource": "Prometheus",
+      "sha256": "6ff8d0861861c162e2ab670648b8e8030d715c5da37b5800658f8db41c4eff9a",
+      "stratum": "top"
+    },
+    {
+      "id": 10991,
+      "revision": 15,
+      "slug": "rabbitmq-overview",
+      "title": "RabbitMQ-Overview",
+      "panels": 47,
+      "datasource": "Prometheus",
+      "sha256": "c909618ffc7ce6e4aa0b6b4f4f13e2fd41678e56df94339688d38ebb81321b48",
+      "stratum": "top"
+    },
+    {
+      "id": 11001,
+      "revision": 1,
+      "slug": "cert-manager",
+      "title": "cert-manager",
+      "panels": 15,
+      "datasource": "Prometheus",
+      "sha256": "84bf9d749bd8a885cdacc0f4c4ca84db7e7c5fe802fe8a478a21b1094d3e4b04",
+      "stratum": "top"
+    },
+    {
+      "id": 11021,
+      "revision": 1,
+      "slug": "envoy-clusters",
+      "title": "Envoy Clusters",
+      "panels": 13,
+      "datasource": "Prometheus",
+      "sha256": "71aab2e7c2a99b5399523d05a4279d2641b7ec52d13756da705b2ab6e0c427da",
+      "stratum": "top"
+    },
+    {
+      "id": 11022,
+      "revision": 1,
+      "slug": "envoy-global",
+      "title": "Envoy Global",
+      "panels": 22,
+      "datasource": "Prometheus",
+      "sha256": "8a909140d4cb5eb72b27d57e5af58f8ad796506eb2b724cc9fe172cabb27e0d9",
+      "stratum": "top"
+    },
+    {
+      "id": 11023,
+      "revision": 1,
+      "slug": "contour",
+      "title": "Contour",
+      "panels": 8,
+      "datasource": "Prometheus",
+      "sha256": "fbb13df673946df711b6c4ae340292a8768fd38298a988ffe9f90ff450f415df",
+      "stratum": "top"
     },
     {
       "id": 11074,
       "revision": 9,
-      "slug": "node-exporter-en",
+      "slug": "node-exporter-for-prometheus-dashboard-en-v20201010-11074",
       "title": "Node Exporter Dashboard EN 20201010-StarsL.cn",
+      "panels": 24,
+      "datasource": "Prometheus",
+      "sha256": "af4a633acd13fd9cc5abd63736e31d4df306d39a732cc95442a94fc3aef5b049",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 11159,
+      "revision": 1,
+      "slug": "nodejs-application-dashboard",
+      "title": "NodeJS Application Dashboard",
+      "panels": 9,
+      "datasource": "Prometheus",
+      "sha256": "843623c56095196b313d45f06bdc0b4b4536033b804abe7c1a2aca458b014ed6",
+      "stratum": "top"
+    },
+    {
+      "id": 11340,
+      "revision": 9,
+      "slug": "rabbitmq-quorum-queues-raft",
+      "title": "RabbitMQ-Quorum-Queues-Raft",
+      "panels": 5,
+      "datasource": "Prometheus",
+      "sha256": "03b262533f217f69a7904b24fe5aa0f617cfb4a446a9d6b0624545268601cce6",
+      "stratum": "top"
+    },
+    {
+      "id": 11350,
+      "revision": 8,
+      "slug": "erlang-memory-allocators",
+      "title": "Erlang-Memory-Allocators",
       "panels": 26,
-      "sha256": "af4a633acd13fd9cc5abd63736e31d4df306d39a732cc95442a94fc3aef5b049"
+      "datasource": "Prometheus",
+      "sha256": "7d5cec65e772ceb86a42e65d1ae6e2fe02830f31b788ca0aaa77575fb02b5796",
+      "stratum": "top"
+    },
+    {
+      "id": 11352,
+      "revision": 10,
+      "slug": "erlang-distribution",
+      "title": "Erlang-Distribution",
+      "panels": 23,
+      "datasource": "Prometheus",
+      "sha256": "1bf7720b192d34a7209b32d4b0a3947469f858328749bc049fab20bf1c423f18",
+      "stratum": "top"
+    },
+    {
+      "id": 11454,
+      "revision": 14,
+      "slug": "k8s-storage-volumes-cluster",
+      "title": "K8s / Storage / Volumes / Cluster",
+      "panels": 25,
+      "datasource": "Prometheus",
+      "sha256": "ad674d50a254959cf652638cf0d1d0a7a8706f17a803468f0613fbc206c5a3bd",
+      "stratum": "top"
+    },
+    {
+      "id": 11829,
+      "revision": 314,
+      "slug": "istio-performance-dashboard",
+      "title": "Istio Performance Dashboard",
+      "panels": 19,
+      "datasource": "Prometheus",
+      "sha256": "489c2c9372fde86e6604ee45a3d03b3f56b047a091ba9244be297d58a75d5c31",
+      "stratum": "top"
     },
     {
       "id": 11835,
       "revision": 1,
-      "slug": "redis-alt",
+      "slug": "redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha",
       "title": "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)",
       "panels": 12,
-      "sha256": "9ad90c516c051b5592296a587f217994a9e8d6aee3e4c78ec990075c1d3e3d45"
+      "datasource": "Prometheus",
+      "sha256": "9ad90c516c051b5592296a587f217994a9e8d6aee3e4c78ec990075c1d3e3d45",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 12079,
+      "revision": 1,
+      "slug": "mongodb-12079",
+      "title": "MongoDB",
+      "panels": 25,
+      "datasource": "Prometheus",
+      "sha256": "e5b0b7878d8a2583474717ed13109bd2068108d1c287b1d4e2141fea29c9153d",
+      "stratum": "top"
+    },
+    {
+      "id": 12239,
+      "revision": 2,
+      "slug": "nvidia-dcgm-exporter-dashboard",
+      "title": "NVIDIA DCGM Exporter Dashboard",
+      "panels": 8,
+      "datasource": "Prometheus",
+      "sha256": "ad39e01ee84eb493b0b090bd9e272f42546654c1d55b0e8b4b5624afcd5e16f0",
+      "stratum": "top"
+    },
+    {
+      "id": 12483,
+      "revision": 1,
+      "slug": "kafka-12483",
+      "title": "Kubernetes Kafka",
+      "panels": 32,
+      "datasource": "Prometheus",
+      "sha256": "85199e3561834d4c657c8393e0035e53ef792933f51b5f8d1f4dfc0e0ea72b23",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 12485,
+      "revision": 1,
+      "slug": "postgresql-exporter",
+      "title": "PostgreSQL Exporter",
+      "panels": 37,
+      "datasource": "Prometheus",
+      "sha256": "e14a35eac532db4f79837a293411edb20d04164ca59de17d73557d08637a4700",
+      "stratum": "top"
     },
     {
       "id": 12708,
       "revision": 1,
-      "slug": "nginx",
+      "slug": "nginx-12708",
       "title": "NGINX exporter",
+      "panels": 4,
+      "datasource": "Prometheus",
+      "sha256": "bb5e3318b68770846130a98a8ca2beb5e42b91d187155eef18a6542aa1f4c1e5",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 13041,
+      "revision": 4,
+      "slug": "website-monitoring",
+      "title": "Website monitoring",
+      "panels": 15,
+      "datasource": "Prometheus",
+      "sha256": "e4168be50c732a0baddcb0b8bccd7d455586e017cea67b0daf9fbca74d787f61",
+      "stratum": "top"
+    },
+    {
+      "id": 13332,
+      "revision": 12,
+      "slug": "kube-state-metrics-v2",
+      "title": "kube-state-metrics-v2",
+      "panels": 51,
+      "datasource": "Prometheus",
+      "sha256": "1cd308bcd7bcbb4bda2cb089c91e7ba164f237bdd39effc8fdccd45961b5bf97",
+      "stratum": "top"
+    },
+    {
+      "id": 13659,
+      "revision": 1,
+      "slug": "blackbox-exporter-http-prober",
+      "title": "Blackbox Exporter (HTTP prober)",
+      "panels": 4,
+      "datasource": "Prometheus",
+      "sha256": "d840319164cf907bc2e964c689d2e9dff1d08bf47a786bc44722b778a5359acf",
+      "stratum": "top"
+    },
+    {
+      "id": 13968,
+      "revision": 3,
+      "slug": "policyreports",
+      "title": "PolicyReports",
+      "panels": 5,
+      "datasource": "Prometheus",
+      "sha256": "e29ef845b99ed4251d856d1526e4d3c2ce20ad688cda68b79f89f1ac228a532c",
+      "stratum": "top"
+    },
+    {
+      "id": 13995,
+      "revision": 5,
+      "slug": "policyreport-details",
+      "title": "PolicyReport Details",
+      "panels": 9,
+      "datasource": "Prometheus",
+      "sha256": "73d0ed96dde183fb05b8b9755dba3155b1eff3629959fc9deebdf6c8ed1ede84",
+      "stratum": "top"
+    },
+    {
+      "id": 13996,
+      "revision": 5,
+      "slug": "clusterpolicyreport-details",
+      "title": "ClusterPolicyReport Details",
+      "panels": 9,
+      "datasource": "Prometheus",
+      "sha256": "e223753196f522ddb2b3ec9495815bcb3d07f376e91c867cf51b03e38e9bc9ad",
+      "stratum": "top"
+    },
+    {
+      "id": 14055,
+      "revision": 5,
+      "slug": "loki-stack-monitoring-promtail-loki",
+      "title": "Loki stack monitoring (Promtail, Loki)",
+      "panels": 22,
+      "datasource": "Loki, Prometheus",
+      "sha256": "00aab6209ffe101de42db36a1fcea04183c347141d4954871c7919146587aa2c",
+      "stratum": "top"
+    },
+    {
+      "id": 14114,
+      "revision": 1,
+      "slug": "postgres-overview",
+      "title": "PostgreSQL Exporter Quickstart and Dashboard",
       "panels": 6,
-      "sha256": "bb5e3318b68770846130a98a8ca2beb5e42b91d187155eef18a6542aa1f4c1e5"
+      "datasource": "Prometheus",
+      "sha256": "76b92bbeb9b2d8f3f8abec10b7cb016da87803deca34a99dddab9f668010a53d",
+      "stratum": "top"
+    },
+    {
+      "id": 14584,
+      "revision": 1,
+      "slug": "argocd",
+      "title": "ArgoCD",
+      "panels": 50,
+      "datasource": "Prometheus",
+      "sha256": "0fb50ae8a7c6cf2d3d3d587549c1cb5e5b0227d0263308f4458725eb07b06fa4",
+      "stratum": "top"
+    },
+    {
+      "id": 14798,
+      "revision": 11,
+      "slug": "rabbitmq-stream",
+      "title": "RabbitMQ-Stream",
+      "panels": 18,
+      "datasource": "Prometheus",
+      "sha256": "bbae48c6abe4e9eb73400f7e5439161e24ed1f87871b04df904f7f5a73901110",
+      "stratum": "top"
+    },
+    {
+      "id": 14900,
+      "revision": 2,
+      "slug": "nginx",
+      "title": "Nginx",
+      "panels": 23,
+      "datasource": "Prometheus",
+      "sha256": "8e7480e3c4cd75ddb44410a872f78728568067d548bcd0788f44b5e6ba8765af",
+      "stratum": "top"
+    },
+    {
+      "id": 14981,
+      "revision": 2,
+      "slug": "coredns",
+      "title": "CoreDNS",
+      "panels": 28,
+      "datasource": "Prometheus",
+      "sha256": "199a9a11bbcd5f76e533c3645aaee4198a2ca8f498a77a919a6aa02cf88493a4",
+      "stratum": "top"
+    },
+    {
+      "id": 15038,
+      "revision": 3,
+      "slug": "external-dns",
+      "title": "External DNS",
+      "panels": 22,
+      "datasource": "Prometheus",
+      "sha256": "edffa293aefc7784ab1386eb4d4784df173cf6ca6630667cd5883e77f9ab9f79",
+      "stratum": "top"
+    },
+    {
+      "id": 15158,
+      "revision": 5,
+      "slug": "flagger-canary-15158",
+      "title": "Flagger Canary Status",
+      "panels": 34,
+      "datasource": "Prometheus",
+      "sha256": "0e78dd6caf037fddb311dad1a1ba05983988b24c30c90915ba02060ac2d7dfc9",
+      "stratum": "bug_seed"
+    },
+    {
+      "id": 15661,
+      "revision": 2,
+      "slug": "k8s-dashboard-en-20250125",
+      "title": "K8S Dashboard",
+      "panels": 37,
+      "datasource": "Prometheus",
+      "sha256": "21cbac15de7957e55ae8b064fda68570bae9e564766af7168e4492d8806a3161",
+      "stratum": "top"
+    },
+    {
+      "id": 15758,
+      "revision": 46,
+      "slug": "kubernetes-views-namespaces",
+      "title": "Kubernetes / Views / Namespaces",
+      "panels": 30,
+      "datasource": "Prometheus",
+      "sha256": "2d970440c28ca6b674fb497f4f38ce2ee89effccb9e784447bf4450ca37aa0a8",
+      "stratum": "top"
+    },
+    {
+      "id": 15760,
+      "revision": 39,
+      "slug": "kubernetes-views-pods",
+      "title": "Kubernetes / Views / Pods",
+      "panels": 29,
+      "datasource": "Prometheus",
+      "sha256": "153b9a7cb08067a2a030f402b2776f021f4d9deb374ef679c462325d6e47f08c",
+      "stratum": "top"
+    },
+    {
+      "id": 16032,
+      "revision": 1,
+      "slug": "aws-cni-metrics",
+      "title": "AWS CNI Metrics",
+      "panels": 23,
+      "datasource": "Prometheus",
+      "sha256": "bc71d489d095d267bad65d6164758fd69a8b2f6360fd6e9474319783f1ca10b9",
+      "stratum": "top"
+    },
+    {
+      "id": 17175,
+      "revision": 2,
+      "slug": "spring-boot-observability",
+      "title": "Spring Boot Observability",
+      "panels": 11,
+      "datasource": "Loki, Prometheus",
+      "sha256": "5bcfbe75369563b78788ddfdbca2a161370e191f55a0d65510f4fbccf050e1ef",
+      "stratum": "top"
+    },
+    {
+      "id": 17554,
+      "revision": 3,
+      "slug": "restic-exporter",
+      "title": "Restic Exporter",
+      "panels": 30,
+      "datasource": "Prometheus",
+      "sha256": "37704f4260ae763d0bd394eb21ece4ad7c9ff2286a5cfc47b6d5b6b8ef2318a9",
+      "stratum": "top"
     }
   ]
 }

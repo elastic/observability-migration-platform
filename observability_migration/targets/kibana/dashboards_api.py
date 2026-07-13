@@ -68,6 +68,7 @@ from typing import Any
 import requests
 import yaml
 
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import (
     MAX_DASHBOARD_ITEMS,
     MAX_PINNED_CONTROLS,
@@ -84,6 +85,10 @@ from observability_migration.core.assets.native_dashboard import (
 )
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
+from observability_migration.targets.kibana.native_artifacts import (
+    ARTIFACT_ENVELOPE_VERSION,
+    NATIVE_ARTIFACT_KIND,
+)
 
 # Current typed Dashboards API caps. The API schema is still preview and its
 # full reference is externally hosted, so keep these in sync with
@@ -140,7 +145,7 @@ class PanelMapping:
 class UploadResult:
     dashboard: str
     dashboard_id: str = ""
-    status: str = ""  # created | rejected | empty
+    status: str = ""  # created | updated | conflict | rejected | empty
     mapped: int = 0
     unmapped: int = 0
     http_status: int = 0
@@ -1512,6 +1517,35 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     return native, counts
 
 
+def native_dashboard_from_ir(dashboard_ir: DashboardIR) -> tuple[NativeDashboard, NativeMappingCounts]:
+    """Build a :class:`NativeDashboard` from a semantic :class:`DashboardIR`.
+
+    This is the IR-first counterpart of :func:`native_dashboard_from_yaml`:
+    Grafana's ``translate_dashboard`` builds ``DashboardIR`` as its primary
+    working artifact (see ``adapters/source/grafana/panels.py``) and maps it
+    straight to the native API shape here, without a YAML re-parse. It
+    reuses the exact same leaf builders (:func:`map_yaml_panel` /
+    :func:`map_yaml_control` / :func:`map_yaml_filters`) the YAML path uses,
+    via :meth:`DashboardIR.to_yaml_dict` -- the kb-dashboard-core dict shape
+    is the shared wire format those builders already speak, so there is no
+    parallel/duplicated mapping logic to keep in sync between the two paths.
+    """
+    return native_dashboard_from_yaml(dashboard_ir.to_yaml_dict())
+
+
+def build_dashboard_payload_from_ir(
+    dashboard_ir: DashboardIR,
+) -> tuple[dict[str, Any], dict[str, int], dict[str, int]]:
+    """Build a typed ``POST /api/dashboards`` body from a semantic IR.
+
+    Thin wrapper: the JSON body is exactly ``NativeDashboard.to_api_payload()``
+    (see :func:`native_dashboard_from_ir`). Returns
+    ``(payload, counts, unmapped_reasons)``.
+    """
+    native, counts = native_dashboard_from_ir(dashboard_ir)
+    return native.to_api_payload(), {"mapped": counts.mapped, "unmapped": counts.unmapped}, dict(counts.reasons)
+
+
 def build_dashboard_payload_from_yaml(
     dashboard: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, int], dict[str, int]]:
@@ -1627,7 +1661,17 @@ def upload_report(
 
 
 def _classify_response(res: UploadResult, response: requests.Response) -> None:
-    """Fill an ``UploadResult`` from a ``PUT /api/dashboards/{id}`` response."""
+    """Fill an ``UploadResult`` from a ``PUT /api/dashboards/{id}`` response.
+
+    A 409 is classified as ``"conflict"`` rather than ``"rejected"``. Dashboards
+    are a *shareable* saved-object type, so their ids are cluster-global rather
+    than space-scoped: the deterministic name-based id succeeds (201/200) within
+    the space that owns it, but PUTting the same id from a different space
+    returns 409. That is an id-ownership collision, not a payload defect, so the
+    legacy ``kb-dashboard-cli`` ``_import`` fallback cannot fix it (and would
+    only re-introduce the compiler dependency the native path removes). Callers
+    treat ``"conflict"`` as a terminal, actionable failure and skip the fallback.
+    """
     res.http_status = response.status_code
     if 200 <= response.status_code < 300:
         res.status = "created" if response.status_code == 201 else "updated"
@@ -1636,7 +1680,7 @@ def _classify_response(res: UploadResult, response: requests.Response) -> None:
         except ValueError:
             pass
     else:
-        res.status = "rejected"
+        res.status = "conflict" if response.status_code == 409 else "rejected"
         try:
             body = response.json()
             res.message = str(body.get("message", body))[:2000]
@@ -1721,6 +1765,54 @@ def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: 
             config["data_view_id"] = data_view_ids[current]
 
 
+def _upload_native_api_payload(
+    payload: dict[str, Any],
+    *,
+    title: str,
+    kibana_url: str,
+    api_key: str = "",
+    space_id: str = "",
+    verify: bool | str = True,
+    timeout: int = 60,
+    mapped: int = 0,
+    unmapped: int = 0,
+    reasons: dict[str, int] | None = None,
+    dashboard_id: str = "",
+    data_view_ids: dict[str, str] | None = None,
+) -> UploadResult:
+    """Shared ``PUT /api/dashboards/{id}`` body for a typed API payload.
+
+    Both :func:`upload_native_dashboard` (an in-memory ``NativeDashboard``)
+    and :func:`upload_native_artifact` (a persisted review artifact envelope)
+    resolve down to this: one already-built payload dict plus the mapping
+    stats/dashboard id to report, so the two entry points can never diverge
+    in how they talk to Kibana.
+    """
+    res = UploadResult(
+        dashboard=title,
+        mapped=mapped,
+        unmapped=unmapped,
+        unmapped_reasons=dict(reasons or {}),
+    )
+    _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
+    if not _payload_has_leaf_panels(payload):
+        res.status = "empty"
+        return res
+
+    session = _session(api_key, verify=verify)
+    base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
+    resolved_dashboard_id = dashboard_id or _stable_dashboard_id({"name": title})
+    response, error = _put_with_retry(
+        session, f"{base}/api/dashboards/{resolved_dashboard_id}", payload, timeout=timeout,
+    )
+    if response is None:
+        res.status = "rejected"
+        res.message = error[:2000]
+        return res
+    _classify_response(res, response)
+    return res
+
+
 def upload_native_dashboard(
     dashboard: NativeDashboard,
     kibana_url: str,
@@ -1751,30 +1843,123 @@ def upload_native_dashboard(
             for key, value in raw_reasons.items()
             if isinstance(value, int | float) and not isinstance(value, bool)
         }
-    res = UploadResult(
-        dashboard=dashboard.title,
+    return _upload_native_api_payload(
+        dashboard.to_api_payload(),
+        title=dashboard.title,
+        kibana_url=kibana_url,
+        api_key=api_key,
+        space_id=space_id,
+        verify=verify,
+        timeout=timeout,
         mapped=int(stats.get("mapped", dashboard_leaf_panel_count(dashboard.items)) or 0),
         unmapped=int(stats.get("unmapped", 0) or 0),
-        unmapped_reasons=reasons,
+        reasons=reasons,
+        dashboard_id=dashboard_id or dashboard.dashboard_id,
+        data_view_ids=data_view_ids,
     )
-    payload = dashboard.to_api_payload()
-    _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
-    if not _payload_has_leaf_panels(payload):
-        res.status = "empty"
-        return res
 
-    session = _session(api_key, verify=verify)
-    base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
-    resolved_dashboard_id = dashboard_id or dashboard.dashboard_id or _stable_dashboard_id({"name": dashboard.title})
-    response, error = _put_with_retry(
-        session, f"{base}/api/dashboards/{resolved_dashboard_id}", payload, timeout=timeout,
+
+def _validate_native_artifact_envelope(artifact: Any) -> str:
+    """Return a human-readable error if ``artifact`` is not a well-formed
+    native artifact envelope, or ``""`` when it is valid.
+
+    Guards :func:`upload_native_artifact` against structurally corrupt but
+    syntactically valid JSON. ``json.loads`` happily returns a bare list
+    (``[]``), a scalar, or an object with the wrong ``kind``/``version`` or a
+    non-numeric ``mapping`` counter (``"corrupt"``); without this check those
+    would raise ``AttributeError``/``ValueError`` mid-upload instead of
+    becoming the promised per-record rejection.
+    """
+    if not isinstance(artifact, dict):
+        return f"expected a JSON object envelope, got {type(artifact).__name__}"
+    kind = artifact.get("kind")
+    if kind != NATIVE_ARTIFACT_KIND:
+        return f"unexpected artifact kind {kind!r} (expected {NATIVE_ARTIFACT_KIND!r})"
+    version = artifact.get("version")
+    if version != ARTIFACT_ENVELOPE_VERSION:
+        return (
+            f"unsupported artifact version {version!r} "
+            f"(expected {ARTIFACT_ENVELOPE_VERSION!r})"
+        )
+    payload = artifact.get("payload")
+    if not isinstance(payload, dict):
+        return f"payload must be a JSON object, got {type(payload).__name__}"
+    mapping = artifact.get("mapping")
+    if mapping is not None and not isinstance(mapping, dict):
+        return f"mapping must be a JSON object, got {type(mapping).__name__}"
+    if isinstance(mapping, dict):
+        for counter in ("mapped", "unmapped"):
+            value = mapping.get(counter)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                return f"mapping.{counter} must be numeric, got {value!r}"
+    return ""
+
+
+def upload_native_artifact(
+    artifact: dict[str, Any],
+    kibana_url: str,
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    verify: bool | str = True,
+    timeout: int = 60,
+    data_view_ids: dict[str, str] | None = None,
+) -> UploadResult:
+    """Deploy one persisted native review artifact envelope via the typed API.
+
+    ``artifact`` is the JSON envelope written by
+    ``targets/kibana/native_artifacts.py::build_native_artifact`` (``kind``,
+    ``version``, ``dashboard_id``, ``title``, ``payload``, ``mapping``). This
+    is the delayed-upload counterpart of :func:`upload_native_dashboard`: it
+    sends the *exact* payload a reviewer already inspected on disk, with no
+    YAML re-mapping and no legacy fallback -- a rejection is reported as-is
+    so a reviewed artifact never silently degrades to a different upload
+    path (``obs-migrate upload --artifact-format yaml`` remains available
+    for that, explicitly).
+    """
+    envelope_error = _validate_native_artifact_envelope(artifact)
+    if envelope_error:
+        title = ""
+        dashboard_id = ""
+        if isinstance(artifact, dict):
+            title = str(artifact.get("title") or "")
+            dashboard_id = str(artifact.get("dashboard_id") or "")
+        return UploadResult(
+            dashboard=title,
+            dashboard_id=dashboard_id,
+            status="rejected",
+            message=f"invalid native artifact envelope: {envelope_error}",
+        )
+    raw_payload = artifact.get("payload")
+    payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+    mapping = artifact.get("mapping")
+    mapping = mapping if isinstance(mapping, dict) else {}
+    raw_reasons = mapping.get("reasons")
+    reasons: dict[str, int] = {}
+    if isinstance(raw_reasons, dict):
+        reasons = {
+            str(key): int(value)
+            for key, value in raw_reasons.items()
+            if isinstance(value, int | float) and not isinstance(value, bool)
+        }
+    title = str(artifact.get("title") or payload.get("title") or "")
+    dashboard_id = str(artifact.get("dashboard_id") or "")
+    return _upload_native_api_payload(
+        payload,
+        title=title,
+        kibana_url=kibana_url,
+        api_key=api_key,
+        space_id=space_id,
+        verify=verify,
+        timeout=timeout,
+        mapped=int(mapping.get("mapped", 0) or 0),
+        unmapped=int(mapping.get("unmapped", 0) or 0),
+        reasons=reasons,
+        dashboard_id=dashboard_id,
+        data_view_ids=data_view_ids,
     )
-    if response is None:
-        res.status = "rejected"
-        res.message = error[:2000]
-        return res
-    _classify_response(res, response)
-    return res
 
 
 def upload_yaml_files(
@@ -1864,14 +2049,17 @@ __all__ = [
     "PanelMapping",
     "UploadResult",
     "build_dashboard_payload",
+    "build_dashboard_payload_from_ir",
     "build_dashboard_payload_from_yaml",
     "build_payload_from_yaml",
     "delete_dashboard",
     "map_panel",
     "map_yaml_control",
     "map_yaml_panel",
+    "native_dashboard_from_ir",
     "native_dashboard_from_report",
     "native_dashboard_from_yaml",
+    "upload_native_artifact",
     "upload_native_dashboard",
     "upload_report",
     "upload_warnings_from_reasons",

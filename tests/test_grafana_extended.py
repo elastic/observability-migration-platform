@@ -2380,6 +2380,58 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertIn('label_replace(rate(http_requests_total), "__series"', query)
         self.assertIn('label_replace(rate(http_errors_total[5m]), "__series"', query)
 
+    def test_multi_series_bargauge_defers_native_promql_to_bar_chart(self):
+        """Native PROMQL must not short-circuit multi-series bargauge into a
+        single gauge tile (Disk Usage per Mount / {{mountpoint}})."""
+        panel = _make_panel(
+            1,
+            '100 - ((node_filesystem_avail_bytes{mountpoint!~".*pods.*"} '
+            "/ node_filesystem_size_bytes) * 100)",
+            panel_type="bargauge",
+            title="Disk Usage per Mount",
+        )
+        panel["targets"][0]["legendFormat"] = "{{mountpoint}}"
+        panel["targets"][0]["instant"] = True
+        yaml_panel, result = _translate_panel(
+            panel, rule_pack=self.rp, resolver=self.resolver
+        )
+        self.assertIsNotNone(yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "bar")
+        self.assertNotEqual(
+            (result.query_ir or {}).get("family"),
+            "native_promql",
+            "multi-series bargauge must fall through to bargauge_panel_rule",
+        )
+        self.assertIn("Approximated bargauge as bar chart", result.reasons)
+
+    def test_instant_alerts_table_defers_native_promql_for_label_columns(self):
+        """Instant ALERTS tables must not emit a value-only native PROMQL
+        datatable that drops alertname/severity label columns."""
+        panel = _make_panel(
+            1,
+            'ALERTS{alertstate="firing"}',
+            panel_type="table",
+            title="Active Alerts",
+        )
+        panel["targets"][0]["instant"] = True
+        panel["targets"][0]["format"] = "table"
+        yaml_panel, result = _translate_panel(
+            panel, rule_pack=self.rp, resolver=self.resolver
+        )
+        self.assertIsNotNone(yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "datatable")
+        self.assertNotEqual(
+            (result.query_ir or {}).get("family"),
+            "native_promql",
+            "label-rich instant tables must use the ES|QL path",
+        )
+        query = yaml_panel["esql"]["query"]
+        # ES|QL path keeps projected label/metric columns; native was value-only.
+        self.assertFalse(
+            query.startswith("PROMQL") and "KEEP" not in query,
+            f"unexpected value-only native PROMQL table: {query}",
+        )
+
 
 # =========================================================================
 # Display Enrichment

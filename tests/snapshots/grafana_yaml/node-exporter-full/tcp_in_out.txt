@@ -4,6 +4,6 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['InSegs_Segments_received_including_those_received_in_error_This_count_includes_segments_received_on_currently_established', 'OutSegs_Segments_sent_including_those_on_current_connections_but_excluding_those_containing_only_retransmitted_octets']
-breakdown: instance
+breakdown: series_group
 axis_title: datagrams out (-) / in (+)
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

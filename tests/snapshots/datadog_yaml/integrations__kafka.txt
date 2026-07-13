@@ -37,7 +37,7 @@ statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 3, 'skipped': 9, 'war
 - title='Incoming messages by env, producing service for $topic'; kind=markdown
 - title='Outgoing messages by env, consuming service for $topic'; kind=markdown
 - title='Top 10 p95 message size by env for $topic'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
-- title='Distribution of message size for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
+- title='Distribution of message size for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['avg', 'p50', 'p90', 'p99']; breakdowns=[]; primary=; metric=
 - title='Datadog note 3441872316411158'; kind=markdown
 - title='ZK File Descriptors'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2']; breakdowns=[]; primary=; metric=
 - title='Active Connections'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=query1; x_axis=time_bucket; y_axis=y_group

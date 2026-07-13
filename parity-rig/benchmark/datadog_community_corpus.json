@@ -1,0 +1,384 @@
+{
+  "_comment": "Pinned community DataDog integration dashboards from the public DataDog/integrations-core repo (BSD-3-Clause) for benchmark/regression runs. Re-fetch reproducibly with scripts/fetch_datadog_community_corpus.py (verifies canonical-JSON sha256 against the pinned commit). Third-party JSON is NOT committed (marketplace-noise rule, AGENTS.md); only the pin is. Selected as popular, metrics-heavy official integration dashboards.",
+  "source": "https://raw.githubusercontent.com/DataDog/integrations-core/{ref}/{path}",
+  "ref": "a48b4d74eb551ec7dd18ee84429f6ef4c96ca65b",
+  "checksum": "sha256 of canonical JSON (json.dumps sort_keys, compact)",
+  "dashboards": [
+    {
+      "integration": "activemq",
+      "slug": "activemq",
+      "path": "activemq/assets/dashboards/activemq_dashboard.json",
+      "title": "ActiveMQ - Overview",
+      "panels": 28,
+      "sha256": "75b657da1d69849a8f7f255c6c82960b60c7c994073294fbe9ba9e627d45d705"
+    },
+    {
+      "integration": "apache",
+      "slug": "apache",
+      "path": "apache/assets/dashboards/apache_dashboard.json",
+      "title": "Apache - Overview",
+      "panels": 22,
+      "sha256": "d8356ac0ee21dea0400e126ab82311cfef56efed4b34db4602e9a65c08959b05"
+    },
+    {
+      "integration": "cassandra",
+      "slug": "cassandra",
+      "path": "cassandra/assets/dashboards/cassandra_overview.json",
+      "title": "Cassandra - Overview",
+      "panels": 20,
+      "sha256": "7564c692a0022d09522de3766fe139df2ecd8d5272a321f57f6711a3d734095d"
+    },
+    {
+      "integration": "ceph",
+      "slug": "ceph",
+      "path": "ceph/assets/dashboards/overview.json",
+      "title": "Ceph - Overview",
+      "panels": 26,
+      "sha256": "3f31a9341018ed5b6dee5c5136d8bb1ffc7d06ea4b0012132ba8853521eb3050"
+    },
+    {
+      "integration": "cilium",
+      "slug": "cilium",
+      "path": "cilium/assets/dashboards/overview.json",
+      "title": "Cilium Overview",
+      "panels": 29,
+      "sha256": "3a72ccb62885ac1251067eb3ac514316ef9a5c8520c2ad1e20d8b58ada623976"
+    },
+    {
+      "integration": "cockroachdb",
+      "slug": "cockroachdb",
+      "path": "cockroachdb/assets/dashboards/overview.json",
+      "title": "CockroachDB Overview",
+      "panels": 37,
+      "sha256": "16616a2130e2aaa1468751750d2e9830ed62bd58ee8d8034864ee8c58cb41de0"
+    },
+    {
+      "integration": "consul",
+      "slug": "consul",
+      "path": "consul/assets/dashboards/consul_overview.json",
+      "title": "Consul Overview",
+      "panels": 22,
+      "sha256": "9f053350ced39447ab6b7789ae12211d09c2215ec5ce2ff241887268327c5ae1"
+    },
+    {
+      "integration": "coredns",
+      "slug": "coredns",
+      "path": "coredns/assets/dashboards/coredns.json",
+      "title": "CoreDNS",
+      "panels": 16,
+      "sha256": "e57bcf469d37470f41615ac3ae4a7576545a9b22caae4fda7de32134e3cfb73e"
+    },
+    {
+      "integration": "couch",
+      "slug": "couch",
+      "path": "couch/assets/dashboards/CouchDB-overview_dashboard.json",
+      "title": "CouchDB - Overview",
+      "panels": 31,
+      "sha256": "e52b2b4deca892c0ace20b39fd4ae4395c6597f4f9f679699363d6c871f04247"
+    },
+    {
+      "integration": "couchbase",
+      "slug": "couchbase",
+      "path": "couchbase/assets/dashboards/couchbase_dashboard.json",
+      "title": "Couchbase - Metrics",
+      "panels": 9,
+      "sha256": "15976ce60f2d0cb9526594cee03390d792ed3acc22d460db1eae76a1fece0e6a"
+    },
+    {
+      "integration": "docker_daemon",
+      "slug": "docker-daemon",
+      "path": "docker_daemon/assets/dashboards/docker_dashboard.json",
+      "title": "Docker - Overview",
+      "panels": 28,
+      "sha256": "cd68e727d0a67bedc6a9bd09e047846c7e78a257230169142d5ac074880e5985"
+    },
+    {
+      "integration": "elastic",
+      "slug": "elastic",
+      "path": "elastic/assets/dashboards/overview.json",
+      "title": "Elasticsearch - Overview",
+      "panels": 39,
+      "sha256": "5ff214184570eacc541d83e4e398ab6d82e012090d267c032a874525fb9fd54f"
+    },
+    {
+      "integration": "envoy",
+      "slug": "envoy",
+      "path": "envoy/assets/dashboards/envoy_overview.json",
+      "title": "Envoy - Overview",
+      "panels": 22,
+      "sha256": "ec97744ae3e61c3b8cc33a40d698a00f24c067f0401422d2dac8f3cfc1c1ae2e"
+    },
+    {
+      "integration": "etcd",
+      "slug": "etcd",
+      "path": "etcd/assets/dashboards/etcd_2_overview.json",
+      "title": "Etcd v2 - Overview",
+      "panels": 15,
+      "sha256": "fbef06e3ef71fbc059fa874253d0c7271ab61c0513cbf969ff68b4cd5b85bc1f"
+    },
+    {
+      "integration": "flink",
+      "slug": "flink",
+      "path": "flink/assets/dashboards/overview.json",
+      "title": "Flink Overview",
+      "panels": 21,
+      "sha256": "b31d78cee173baba7ed6f946f1a47e25b00a558023a35de620369a1eb25fc5c7"
+    },
+    {
+      "integration": "gitlab",
+      "slug": "gitlab",
+      "path": "gitlab/assets/dashboards/overview.json",
+      "title": "GitLab Overview",
+      "panels": 40,
+      "sha256": "12af43ead7d166984e5e1e727873eeee1b8bab3a93148b00fab16c4cf4c8e76e"
+    },
+    {
+      "integration": "haproxy",
+      "slug": "haproxy",
+      "path": "haproxy/assets/dashboards/openmetrics_overview.json",
+      "title": "HAProxy - Overview (OpenMetrics)",
+      "panels": 32,
+      "sha256": "cc0bf2ffb6d0f28cb17eb814b6b8a23205478b261be63acab318791dbc654b15"
+    },
+    {
+      "integration": "harbor",
+      "slug": "harbor",
+      "path": "harbor/assets/dashboards/overview.json",
+      "title": "Harbor Integration Dashboard",
+      "panels": 5,
+      "sha256": "faae1a854fb942e8df766273f1279139baa1378ea8fc5f55feb1b1dd86de22eb"
+    },
+    {
+      "integration": "hazelcast",
+      "slug": "hazelcast",
+      "path": "hazelcast/assets/dashboards/overview.json",
+      "title": "Hazelcast Overview",
+      "panels": 20,
+      "sha256": "8a5c4bcd37743ff4e883382e9c900422d9962b393f69e876ac4e984a3913f399"
+    },
+    {
+      "integration": "hdfs_namenode",
+      "slug": "hdfs-namenode",
+      "path": "hdfs_namenode/assets/dashboards/hdfs_namenode_dashboard.json",
+      "title": "HDFS Name Node - Overview",
+      "panels": 6,
+      "sha256": "0f56a81a1c0131b97f36531e77ea3c456f02115458418555b9a4b31556d2211a"
+    },
+    {
+      "integration": "ibm_mq",
+      "slug": "ibm-mq",
+      "path": "ibm_mq/assets/dashboards/overview.json",
+      "title": "IBM MQ - Overview",
+      "panels": 23,
+      "sha256": "5ba24b31752a8bd284e2243036aa50dbdb14915864f70e184944ddd2a73ab707"
+    },
+    {
+      "integration": "istio",
+      "slug": "istio",
+      "path": "istio/assets/dashboards/istio_1_5_openmetrics_overview.json",
+      "title": "Istio - Overview (v1.5+) - Openmetrics",
+      "panels": 31,
+      "sha256": "fba94f6f0050b74234c62d5bfd052339e067c4fc236ea1a0c20eba7f1e5901aa"
+    },
+    {
+      "integration": "kafka",
+      "slug": "kafka",
+      "path": "kafka/assets/dashboards/kafka_dashboard.json",
+      "title": "Kafka, Zookeeper and Kafka Consumer Overview",
+      "panels": 46,
+      "sha256": "e7da2e79e2fae4b579a5b100922dfca2846877dddba209586beb04377dddd376"
+    },
+    {
+      "integration": "kong",
+      "slug": "kong",
+      "path": "kong/assets/dashboards/kong_overview.json",
+      "title": "Kong Overview [Legacy]",
+      "panels": 7,
+      "sha256": "e9295c783e1637625e2de3b78d29bf7e51e9b3a38b12bad297af8886addae25d"
+    },
+    {
+      "integration": "kube_apiserver_metrics",
+      "slug": "kube-apiserver-metrics",
+      "path": "kube_apiserver_metrics/assets/dashboards/overview.json",
+      "title": "Kubernetes API Server Overview",
+      "panels": 27,
+      "sha256": "c96889c35c4aeb08cfe32fc601bf4b58660f85548e4e3e466c981a8eb5a877df"
+    },
+    {
+      "integration": "kubernetes",
+      "slug": "kubernetes",
+      "path": "kubernetes/assets/dashboards/kubernetes_clusters.json",
+      "title": "Kubernetes Cluster Overview Dashboard",
+      "panels": 105,
+      "sha256": "bb248f10b80528935180ade0fabbbf330b447c25448c9ba7d7f86f24ecd8590f"
+    },
+    {
+      "integration": "linkerd",
+      "slug": "linkerd",
+      "path": "linkerd/assets/dashboards/overview.json",
+      "title": "Linkerd - Overview",
+      "panels": 21,
+      "sha256": "5dc7ca164f5cd407683d21735cf24e636accd53d9e8fd5451ef71c01a983d456"
+    },
+    {
+      "integration": "mongo",
+      "slug": "mongo",
+      "path": "mongo/assets/dashboards/overview.json",
+      "title": "MongoDB - Overview",
+      "panels": 34,
+      "sha256": "632c3457030a83de89d80b32163a2c5cc67af3615d69139f0c3f967630d21f6e"
+    },
+    {
+      "integration": "mysql",
+      "slug": "mysql",
+      "path": "mysql/assets/dashboards/overview-screenboard.json",
+      "title": "MySQL",
+      "panels": 27,
+      "sha256": "4225abfdc379d6e3ac71fc1de019d183e24b8024a2e4a2580ff86e0fc05a6a17"
+    },
+    {
+      "integration": "nginx",
+      "slug": "nginx",
+      "path": "nginx/assets/dashboards/NGINX-Overview_dashboard.json",
+      "title": "NGINX - Overview",
+      "panels": 21,
+      "sha256": "56e01fc18eb0ba665d6c169ed8f7c22849ec3a56aae2f2da834f1afd6a46b1d5"
+    },
+    {
+      "integration": "nginx_ingress_controller",
+      "slug": "nginx-ingress-controller",
+      "path": "nginx_ingress_controller/assets/dashboards/overview.json",
+      "title": "Kubernetes NGINX Ingress Controller - Overview",
+      "panels": 14,
+      "sha256": "7d63508fa0771d8ef54085ad6c8f8ea9107c9dd6504fa5dd371acd57244a1080"
+    },
+    {
+      "integration": "oracle",
+      "slug": "oracle",
+      "path": "oracle/assets/dashboards/dbm_oracle_database_overview.json",
+      "title": "DBM Oracle Database Overview",
+      "panels": 55,
+      "sha256": "85052a8f16d23f9d4b7512969388dc50604e68db6934092f9445dbd277f28475"
+    },
+    {
+      "integration": "postgres",
+      "slug": "postgres",
+      "path": "postgres/assets/dashboards/postgresql_screenboard_dashboard.json",
+      "title": "Postgres - Overview",
+      "panels": 30,
+      "sha256": "b3942280bf86ff0dcd535e3ed4f885e78f042c90d1dd0c32a6bcc8c12d92de34"
+    },
+    {
+      "integration": "presto",
+      "slug": "presto",
+      "path": "presto/assets/dashboards/overview.json",
+      "title": "Presto Overview",
+      "panels": 20,
+      "sha256": "0dca9b005fc1c664926941ff3d6af42b793e98bd99fe726b0361dc61840c8a4a"
+    },
+    {
+      "integration": "rabbitmq",
+      "slug": "rabbitmq",
+      "path": "rabbitmq/assets/dashboards/rabbitmq_screenboard_dashboard.json",
+      "title": "RabbitMQ Overview (Management Version)",
+      "panels": 36,
+      "sha256": "1df90eda169076c8a69e698ef6b2b5b26c57aaf85579034a1eef844669dfc223"
+    },
+    {
+      "integration": "redisdb",
+      "slug": "redisdb",
+      "path": "redisdb/assets/dashboards/overview.json",
+      "title": "Redis - Overview",
+      "panels": 36,
+      "sha256": "15e130d002d95ca4a76ce099c7c1b2486b604a3999a08b94b92f819927f8feaa"
+    },
+    {
+      "integration": "snmp",
+      "slug": "snmp",
+      "path": "snmp/assets/dashboards/bgp_ospf_overview.json",
+      "title": "NDM BGP/OSPF Overview",
+      "panels": 17,
+      "sha256": "30bf567825fe96093a34ef484ef22ee4b0ce15271874ab93b153b163006c7055"
+    },
+    {
+      "integration": "solr",
+      "slug": "solr",
+      "path": "solr/assets/dashboards/solr_overview.json",
+      "title": "Solr Overview",
+      "panels": 15,
+      "sha256": "8cc394fe5baa2fb0ca0c588718d6335b88e462050bee367dd4026e65b54bb656"
+    },
+    {
+      "integration": "spark",
+      "slug": "spark",
+      "path": "spark/assets/dashboards/databricks_overview.json",
+      "title": "Databricks Overview",
+      "panels": 26,
+      "sha256": "156d3c66db03e6f935bece0abd77e6db3ee175ecbb844f341126d16e3e48a43c"
+    },
+    {
+      "integration": "sqlserver",
+      "slug": "sqlserver",
+      "path": "sqlserver/assets/dashboards/SQLServer-Overview_dashboard.json",
+      "title": "SQL Server - Overview",
+      "panels": 37,
+      "sha256": "92cf3f36ced5b6995d730d76737b9c155a73565efb78b848a8cdcd710ac012c2"
+    },
+    {
+      "integration": "temporal",
+      "slug": "temporal",
+      "path": "temporal/assets/dashboards/server_overview.json",
+      "title": "Temporal Server Overview",
+      "panels": 35,
+      "sha256": "6ea1d0538b4a203a68e0278c6c7bcfa6f53aa07b4e73d510a3eaefcd70e384ba"
+    },
+    {
+      "integration": "tls",
+      "slug": "tls",
+      "path": "tls/assets/dashboards/overview.json",
+      "title": "TLS Overview",
+      "panels": 7,
+      "sha256": "610715d54c10ce6e84b636ecf6c46538665ce57c65b3fc8a33ee4b172e14d768"
+    },
+    {
+      "integration": "tomcat",
+      "slug": "tomcat",
+      "path": "tomcat/assets/dashboards/overview.json",
+      "title": "Tomcat - Overview",
+      "panels": 24,
+      "sha256": "2bc9c6642fc9b98ae89b4a009bc67abff2c85c64a09e94ea1d7f3d61717ab86f"
+    },
+    {
+      "integration": "traefik_mesh",
+      "slug": "traefik-mesh",
+      "path": "traefik_mesh/assets/dashboards/traefik_mesh_overview.json",
+      "title": "Traefik Mesh Overview",
+      "panels": 31,
+      "sha256": "1193f3a9b9d54202e99a42108787303b190f7562ca0aabaeaa9ade63bfe9b1c3"
+    },
+    {
+      "integration": "vault",
+      "slug": "vault",
+      "path": "vault/assets/dashboards/vault_overview.json",
+      "title": "Vault - Overview (OpenMetricsV2)",
+      "panels": 47,
+      "sha256": "473f1206e6d028ab5a219a42e6188615d841aed71f1f141c89be03c9b81a4b09"
+    },
+    {
+      "integration": "vllm",
+      "slug": "vllm",
+      "path": "vllm/assets/dashboards/overview.json",
+      "title": "vLLM Overview",
+      "panels": 33,
+      "sha256": "56deb53dc477a7d2f0b7932dc0f3f24ea418868025c233d04c353fa0b0527c0b"
+    },
+    {
+      "integration": "zk",
+      "slug": "zk",
+      "path": "zk/assets/dashboards/zookeeper_dashboard.json",
+      "title": "ZooKeeper - Overview",
+      "panels": 18,
+      "sha256": "624e92dc3c44c3635c6e037c9a3528f89c9e4d85bee6a88e362b5f28397c55bd"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ status: migrated_with_warnings
 chart_type: area
 dimension: time_bucket
 metrics: ['Activating', 'Active', 'Deactivating', 'Failed', 'Inactive']
-breakdown: instance
+breakdown: series_group
 mode: stacked
 axis_title: counter
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

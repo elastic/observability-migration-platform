@@ -21,6 +21,9 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "bar_chart": "table",
     "table": "table",
     "heatmap": "heatmap",
+    # Distribution widgets are percentile envelopes over time (p50/p90/p99),
+    # not a true histogram heat grid — map to XY so generate can emit multi-
+    # percentile line series instead of a single AVG line.
     "distribution": "xy",
     "change": "metric",
     "scatterplot": "xy",
@@ -424,6 +427,7 @@ class TranslationResult:
     verification_packet: dict[str, Any] = field(default_factory=dict)
     review_explanation: dict[str, Any] = field(default_factory=dict)
     operational_ir: Any = None
+    visual_ir: Any = None
     post_validation_action: str = ""
     post_validation_message: str = ""
 
@@ -450,6 +454,13 @@ class DashboardResult:
     validation_summary: dict[str, int] = field(default_factory=dict)
     yaml_path: str = ""
     compiled_path: str = ""
+    # Native Dashboard-as-Code review artifacts (see
+    # targets/kibana/native_artifacts.py): the on-disk twin of
+    # `native_dashboard`/`dashboard_ir`, written before upload so the exact
+    # typed API payload can be reviewed and later deployed with
+    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    native_artifact_path: str = ""
+    ir_artifact_path: str = ""
     compiled: bool = False
     compile_error: str = ""
     layout_checked: bool = False
@@ -471,11 +482,14 @@ class DashboardResult:
     verification_summary: dict[str, int] = field(default_factory=dict)
     alert_results: list = field(default_factory=list)
     alert_summary: dict = field(default_factory=dict)
-    # NativeDashboard IR built from the same in-memory YAML doc that gets
-    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml
-    # / generate.generate_dashboard_artifacts). Mirrors
-    # MigrationResult.native_dashboard on the Grafana side. Not JSON-serialized
-    # directly; call .to_api_payload() for that.
+    # Semantic DashboardIR -- the primary working artifact of the IR-first
+    # pipeline (Phase 2 for Datadog). `native_dashboard` and the on-disk YAML
+    # are both *derived* from this (see generate.generate_dashboard_artifacts /
+    # targets.kibana.dashboards_api.native_dashboard_from_ir). Not
+    # JSON-serialized directly; call .to_dict() for that.
+    dashboard_ir: Any = None
+    # NativeDashboard IR built from `dashboard_ir` via native_dashboard_from_ir.
+    # Not JSON-serialized directly; call .to_api_payload() for that.
     native_dashboard: Any = None
     native_dashboard_stats: dict = field(default_factory=dict)
 

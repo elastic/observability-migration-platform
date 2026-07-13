@@ -101,7 +101,7 @@ against the schema, and is the fixture the live render audit uploads.
 | Mutation self-test | `verifier.mutations` | the invariant verifier catches deliberate corruptions | `tests/test_verifier_mutations.py` |
 
 Baselines: `parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`
-(223 / 426 panels, 0 errors). The ratchet re-migrates the committed corpus with
+(270 / 426 panels, 0 errors). The ratchet re-migrates the committed corpus with
 the *current* code and fails if ERROR counts rise. → See
 [Refreshing a fidelity baseline](#refreshing-a-fidelity-baseline).
 
@@ -198,10 +198,13 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 
 ### Running the pinned community corpus
 
-10 popular production dashboards from grafana.com are pinned (by id + revision +
-canonical-JSON sha256) in `parity-rig/benchmark/community_corpus.json`. The
-third-party JSON is **not committed** (marketplace-noise rule); fetch it on
-demand and run the gates:
+69 production dashboards from grafana.com are pinned (by id + revision +
+canonical-JSON sha256) in `parity-rig/benchmark/community_corpus.json`. It is a
+**stratified** manifest: each entry is tagged `stratum: top` (selected from the
+most-downloaded Prometheus-backed dashboards) or `stratum: bug_seed` (an
+explicit, permanently-pinned regression seed — curated prior seeds plus
+dashboards once exercised as committed fixtures). The third-party JSON is **not
+committed** (marketplace-noise rule); fetch it on demand and run the gate:
 
 ```bash
 .venv/bin/python scripts/fetch_community_corpus.py --output-dir /tmp/community
@@ -212,10 +215,13 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --baseline parity-rig/benchmark/fidelity_baseline_community.json
 ```
 
-Baseline reference: 335 panels, **0 invariant ERRORs**, 10/10 schema-valid, and
-0 `real_bug` on `live_validate`. Bump pins intentionally with `--no-verify`
-(refetch) then refresh the baseline. `tests/test_community_corpus.py` guards the
-manifest offline.
+Baseline reference: 1,640 panels, **0 invariant ERRORs**, 69/69 schema-valid.
+This scorecard runs nightly (`.github/workflows/nightly-live-gates.yml`, job
+`community-fidelity`) so the committed baseline is backed by a reproducible run,
+not just a refreshed JSON file. Bump pins intentionally with `--no-verify`
+(refetch) then refresh the baseline with `--update`.
+`tests/test_community_corpus.py` guards the manifest offline (shape, strata, and
+that the explicit regression seeds are never evicted).
 
 ### Element-checking a whole corpus
 

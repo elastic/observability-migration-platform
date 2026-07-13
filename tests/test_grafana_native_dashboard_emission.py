@@ -17,6 +17,7 @@ import tempfile
 from observability_migration.adapters.source.grafana.panels import translate_dashboard
 from observability_migration.adapters.source.grafana.rules import RulePackConfig
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.targets.kibana import dashboards_api
 
@@ -85,3 +86,28 @@ class TestGrafanaNativeDashboardEmission:
         result, _yaml_path = _translate({"title": "Empty", "uid": "empty-1", "panels": []})
         assert isinstance(result.native_dashboard, NativeDashboard)
         assert result.native_dashboard.items == []
+
+    def test_translate_dashboard_attaches_dashboard_ir(self) -> None:
+        # IR-first Phase 1: `DashboardIR` is the primary artifact that both
+        # `native_dashboard` and the on-disk YAML are derived from.
+        result, _yaml_path = _translate(_metric_panel_dashboard())
+        assert isinstance(result.dashboard_ir, DashboardIR)
+        assert result.dashboard_ir.title == "Native Emission Dashboard"
+        assert result.dashboard_ir.source_adapter == "grafana"
+        assert result.dashboard_ir.uid == "native-emit-1"
+        assert len(result.dashboard_ir.panels) == 1
+
+    def test_native_dashboard_is_derived_from_dashboard_ir_not_yaml(self) -> None:
+        # The native mapper is called on the IR, not on a YAML re-parse --
+        # feeding the same IR through `native_dashboard_from_ir` again must
+        # reproduce the exact payload already attached to the result.
+        result, _yaml_path = _translate(_metric_panel_dashboard())
+        native_from_ir_again, _counts = dashboards_api.native_dashboard_from_ir(result.dashboard_ir)
+        assert native_from_ir_again.to_api_payload() == result.native_dashboard.to_api_payload()
+
+    def test_written_yaml_is_derived_export_of_dashboard_ir(self) -> None:
+        result, yaml_path = _translate(_metric_panel_dashboard())
+        import yaml as yaml_lib
+
+        on_disk = yaml_lib.safe_load(yaml_path.read_text())
+        assert on_disk == {"dashboards": [result.dashboard_ir.to_yaml_dict()]}

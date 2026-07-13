@@ -71,6 +71,13 @@ class MigrationResult:
     uploaded_kibana_url: str = ""
     yaml_path: str = ""
     compiled_path: str = ""
+    # Native Dashboard-as-Code review artifacts (see
+    # targets/kibana/native_artifacts.py): the on-disk twin of
+    # `native_dashboard`/`dashboard_ir`, written before upload so the exact
+    # typed API payload can be reviewed and later deployed with
+    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    native_artifact_path: str = ""
+    ir_artifact_path: str = ""
     runtime_summary: dict = field(default_factory=dict)
     dashboard_links: list = field(default_factory=list)
     annotations: list = field(default_factory=list)
@@ -79,8 +86,13 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
-    # NativeDashboard IR built from the same in-memory YAML doc that gets
-    # written to disk (see targets.kibana.dashboards_api.native_dashboard_from_yaml).
+    # Semantic DashboardIR -- the primary working artifact of the IR-first
+    # pipeline. `native_dashboard` and the on-disk YAML are both *derived*
+    # from this (see targets.kibana.dashboards_api.native_dashboard_from_ir /
+    # DashboardIR.to_yaml_dict), not the other way around. Not JSON-serialized
+    # directly; call .to_dict() for that.
+    dashboard_ir: Any = None
+    # NativeDashboard IR built from `dashboard_ir` via native_dashboard_from_ir.
     # Not JSON-serialized directly; call .to_api_payload() for that.
     native_dashboard: Any = None
     native_dashboard_stats: dict = field(default_factory=dict)
@@ -119,6 +131,7 @@ class PanelResult:
     runtime_rollups: list = field(default_factory=list)
     link_migrations: list = field(default_factory=list)
     transformation_redesign_tasks: list = field(default_factory=list)
+    applied_transform_indices: list = field(default_factory=list)
     post_validation_action: str = ""
     post_validation_message: str = ""
 

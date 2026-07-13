@@ -4,5 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['Current_count', 'Max_count']
-breakdown: instance
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['handler'] are in the query but not on the chart, so series differing only by those are visually merged
+breakdown: series_group
+warning: Composited multi-label grouping (instance, handler) into a single XY breakdown column

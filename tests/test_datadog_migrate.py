@@ -1915,6 +1915,41 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket) BY replset_name", result.esql_query)
 
+    def test_query_value_percentile_request_aggregator_reduces_over_time(self):
+        # Datadog P99 latency query_value: the query's space aggregation is a
+        # percentile (``p99:``) and the request aggregator is ``percentile``,
+        # meaning "reduce the time series by the same percentile". This is an
+        # extremely common real-world pattern (SLO/latency panels) and maps
+        # cleanly to a two-level ES|QL PERCENTILE reduction.
+        query = "p99:cockroachdb.sql.service.latency{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            aggregator="percentile",
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="SQL Statements, P99",
+            queries=[wq],
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertEqual(result.status, "ok")
+        self.assertIn(
+            "| STATS _bucket_value = PERCENTILE(cockroachdb_sql_service_latency, 99) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            result.esql_query,
+        )
+        self.assertIn("| STATS value = PERCENTILE(_bucket_value, 99)", result.esql_query)
+        # No leftover "unsupported request aggregator" degradation.
+        joined = " ".join(result.warnings)
+        self.assertNotIn("unsupported Datadog request aggregator", joined)
+
     def test_multi_query_formula_with_different_filters_uses_per_agg_where(self):
         # Two queries with identical metric and grouping but different
         # tag filters — the kafka data_streams.latency pattern. The
@@ -2277,6 +2312,120 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket")
         self.assertEqual(panel["esql"]["breakdown"]["field"], "resource_name")
         self.assertEqual([metric["field"] for metric in panel["esql"]["metrics"]], ["value"])
+
+    def test_distribution_widget_emits_percentile_envelope(self):
+        raw = {
+            "title": "Distribution",
+            "widgets": [
+                {
+                    "id": "d1",
+                    "definition": {
+                        "type": "distribution",
+                        "title": "Distribution of message size",
+                        "requests": [
+                            {
+                                "request_type": "histogram",
+                                "query": {
+                                    "data_source": "metrics",
+                                    "name": "query1",
+                                    "aggregator": "avg",
+                                    "query": "avg:data_streams.payload_size{type:kafka}",
+                                },
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "width": 4, "height": 2},
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertIn(result.status, ("ok", "warning"))
+        # The requested aggregator (avg) is kept as its own series alongside
+        # the synthesized percentile envelope, not replaced by it.
+        self.assertIn("AVG(", result.esql_query)
+        self.assertIn("PERCENTILE(", result.esql_query)
+        self.assertIn("p50", result.esql_query)
+        self.assertIn("p99", result.esql_query)
+        panel = yaml.safe_load(generate_dashboard_yaml(nd, [result]))["dashboards"][0]["panels"][0]
+        metric_fields = [m["field"] for m in panel["esql"]["metrics"]]
+        self.assertEqual(metric_fields, ["avg", "p50", "p90", "p99"])
+        self.assertIsNotNone(result.visual_ir)
+        self.assertEqual(result.visual_ir.title, "Distribution of message size")
+        self.assertEqual(result.visual_ir.presentation.kind, "esql")
+
+    def test_xy_multi_tag_composites_series_group_breakdown(self):
+        query = "avg:system.cpu.user{*} by {host,service}"
+        mq = parse_metric_query(query)
+        widget = NormalizedWidget(
+            id="xy1",
+            widget_type="timeseries",
+            title="CPU by host/service",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        panel = yaml.safe_load(generate_dashboard_yaml(dash, [result]))["dashboards"][0]["panels"][0]
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "series_group")
+        self.assertIn("EVAL series_group = CONCAT(", panel["esql"]["query"])
+        self.assertTrue(
+            any("composited into a single breakdown column" in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_formula_subset_groupings_are_united(self):
+        raw = {
+            "title": "Formula groups",
+            "widgets": [
+                {
+                    "id": "f1",
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "CPU Usage by Pod",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "a",
+                                        "query": "avg:kubernetes.cpu.usage.total{*} by {pod_name}",
+                                    },
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "b",
+                                        "query": "avg:kubernetes.cpu.limits{*}",
+                                    },
+                                ],
+                                "formulas": [{"formula": "a / b"}],
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "width": 4, "height": 2},
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "requires_manual")
+        self.assertTrue(result.esql_query)
+        self.assertTrue(
+            any("united dimensions" in w for w in result.warnings),
+            result.warnings,
+        )
 
     def test_markdown_panel_for_note(self):
         path = Path(__file__).parent.parent / "infra" / "datadog" / "dashboards" / "sample_dashboard.json"
@@ -2731,11 +2880,13 @@ class TestYAMLGeneration(unittest.TestCase):
         generate_dashboard_yaml(dash, [result])
         self.assertEqual(len(result.yaml_panel["esql"]["breakdowns"]), 2)
 
-    def test_timeseries_with_two_group_dims_warns_about_dropped_breakdown(self):
+    def test_timeseries_with_two_group_dims_composites_breakdown(self):
         # A Datadog timeseries grouped by two tags maps to a Kibana XY chart that
-        # can only break the series down by a single field. The second dimension
-        # is in the ES|QL output but not on the chart, so series differing only by
-        # it are visually merged. That must surface as a warning, not silently.
+        # can only break the series down by a single field. Rather than picking
+        # one dimension and silently merging series that differ only in the
+        # other, both tags are composited into a single ``series_group`` column
+        # so every distinct tag pair stays a separate series; the approximation
+        # is disclosed via a warning, not hidden.
         query = "avg:cassandra.gc.minor.collection_time{*} by {cloud_region,host}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(
@@ -2759,13 +2910,13 @@ class TestYAMLGeneration(unittest.TestCase):
         dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
         generate_dashboard_yaml(dash, [result])
         esql = result.yaml_panel["esql"]
-        # only one breakdown is rendered (the first non-time dimension)
+        # Both grouping dimensions are folded into one composite breakdown.
         self.assertIn("breakdown", esql)
-        self.assertIn(esql["breakdown"]["field"], ("cloud_region", "cloud.region"))
-        # ...so the dropped dimension must be called out in the warnings
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        # ...and the approximation must be called out in the warnings.
         self.assertTrue(
-            any("not on the chart" in w or "visually merged" in w for w in result.warnings),
-            f"expected a dropped-breakdown warning, got: {result.warnings}",
+            any("composited into a single breakdown column" in w for w in result.warnings),
+            f"expected a composite-breakdown disclosure, got: {result.warnings}",
         )
 
     def test_timeseries_with_single_group_dim_does_not_warn(self):
@@ -3244,6 +3395,72 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
             any("group" in (w or "").lower() for w in result.warnings),
             f"expected a group-related warning, got {result.warnings}",
         )
+
+    def test_autosmooth_formula_widget_is_requires_manual_not_feasible(self):
+        # Regression for the pinned HAProxy "CPU Usage by Pod" widget: its two
+        # requests both apply autosmooth() (a Datadog display transform with no
+        # ES|QL analogue) and have mismatched groupings (one `by {pod_name}`,
+        # one ungrouped). The grouping-union shortcut must NOT report "the panel
+        # can migrate as one ES|QL query" and then fail as not_feasible; the
+        # untranslatable display function is caught up-front so the panel is
+        # surfaced for manual review (requires_manual) with an accurate reason.
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "haproxy.json"
+        )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        dashboard = normalize_dashboard(raw)
+
+        def _iter(widgets):
+            for widget in widgets or []:
+                yield widget
+                yield from _iter(getattr(widget, "children", []) or [])
+
+        result = None
+        for widget in _iter(dashboard.widgets):
+            if getattr(widget, "title", "") == "CPU Usage by Pod":
+                result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+                break
+        self.assertIsNotNone(result, "CPU Usage by Pod widget not found in fixture")
+        self.assertEqual(
+            result.status,
+            "requires_manual",
+            msg=f"warnings={result.warnings} esql={result.esql_query!r}",
+        )
+        joined = " ".join(result.warnings or [])
+        self.assertIn("autosmooth", joined)
+        # The success-oriented grouping-union warning must never be emitted for
+        # a panel that ultimately cannot migrate automatically.
+        self.assertNotIn("can migrate as one ES|QL query", joined)
+
+    def test_manual_review_formula_funcs_flags_smoothing_only(self):
+        from observability_migration.adapters.source.datadog.models import (
+            FormulaFuncCall,
+            FormulaRef,
+        )
+        from observability_migration.adapters.source.datadog.translate import (
+            _FormulaSpec,
+            _manual_review_formula_funcs,
+        )
+
+        smoothed = _FormulaSpec(
+            ast=FormulaFuncCall(name="autosmooth", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="autosmooth(query1)",
+        )
+        # A semantic transform (anomalies) is NOT flagged for manual review here
+        # so its existing not_feasible disposition is preserved.
+        semantic = _FormulaSpec(
+            ast=FormulaFuncCall(name="anomalies", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="anomalies(query1)",
+        )
+        self.assertEqual(_manual_review_formula_funcs([smoothed]), ["autosmooth"])
+        self.assertEqual(_manual_review_formula_funcs([semantic]), [])
 
     def test_log_widget_with_modern_search_query_translates(self):
         # Modern Datadog log widgets put the filter in raw_q["search"]["query"]
@@ -4079,7 +4296,12 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             ), patch.object(
                 datadog_cli,
                 "generate_dashboard_artifacts",
-                return_value=("dashboard: current\n", NativeDashboard(title="Current Dashboard"), {}),
+                return_value=(
+                    "dashboard: current\n",
+                    NativeDashboard(title="Current Dashboard"),
+                    {},
+                    None,
+                ),
             ), patch.object(
                 datadog_cli,
                 "annotate_results_with_verification",

@@ -21,8 +21,12 @@ translated output, see the source-specific trace docs:
 This is the **shared** pipeline contract, not the exact dedicated CLI sequence
 for every source. The source adapters differ materially:
 
-- Grafana runs a broader end-to-end flow with translation, optional emitted-query validation, lint/compile/layout, optional upload, verification, and rollout artifacts.
-- Datadog runs a more explicit `normalize -> plan -> translate -> emit` flow with capability-aware preflight, first-class emitted-query validation, optional compile, first-class upload, post-upload smoke validation, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining gap is broader source execution coverage for logs and multi-query widgets.
+- Grafana runs a broader end-to-end flow with translation, IR-first emission (`DashboardIR` → native Dashboards API payload + YAML), optional emitted-query validation, lint, optional compile/layout, optional upload, verification, and rollout artifacts.
+- Datadog runs a more explicit `normalize -> plan -> translate -> emit` flow with capability-aware preflight, the same IR-first emission, first-class emitted-query validation, optional compile, first-class upload, post-upload smoke validation, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining gap is broader source execution coverage for logs and multi-query widgets.
+
+For both sources, `DashboardIR` is the primary working artifact after
+translation/assembly; native upload payload and on-disk YAML are derived from
+it. See `docs/architecture/asset-model.md`.
 
 For the exact source-specific stage order, see `docs/architecture.md`,
 `docs/sources/grafana.md`, and `docs/sources/datadog.md`.
@@ -34,27 +38,30 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
-| grafana | Diverse Panel Types Test | 10 | 2 | 8 | 0 | 0 | 0 | 1 |
-| grafana | Home - Migration Test Lab | 6 | 2 | 3 | 0 | 1 | 0 | 0 |
-| grafana | Kubernetes / Views / Global | 26 | 12 | 14 | 0 | 0 | 0 | 4 |
-| grafana | Node Exporter Full | 116 | 3 | 111 | 0 | 2 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 21 | 17 | 5 | 1 | 0 | 0 |
-| datadog | Apache - Overview | 22 | 16 | 4 | 1 | 1 | 0 | 0 |
+| grafana | Diverse Panel Types Test | 10 | 3 | 7 | 0 | 0 | 0 | 1 |
+| grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
+| grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
+| grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
+| grafana | Node Exporter Full | 116 | 39 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 28 | 10 | 5 | 1 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
+| datadog | Apache - Overview | 22 | 12 | 8 | 1 | 1 | 0 | 0 |
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
-| datadog | Docker - Overview | 28 | 16 | 9 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 12 | 2 | 0 | 6 | 0 |
-| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 27 | 4 | 2 | 9 | 0 |
-| datadog | Kubernetes - Overview | 57 | 17 | 24 | 4 | 2 | 10 | 0 |
-| datadog | MongoDB - Overview | 43 | 15 | 18 | 1 | 0 | 9 | 0 |
+| datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
+| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
+| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 28 | 3 | 2 | 9 | 0 |
+| datadog | Kubernetes - Overview | 57 | 2 | 39 | 4 | 2 | 10 | 0 |
+| datadog | MongoDB - Overview | 43 | 13 | 20 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
 | datadog | NGINX - Overview | 27 | 12 | 5 | 2 | 2 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 23 | 6 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 24 | 5 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
-**19 dashboards, 628 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
+**22 dashboards, 673 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -62,9 +69,9 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 337 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 71 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 241 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 237 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 247 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 212 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -72,19 +79,19 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Count | Warning |
 |------:|---------|
-| 188 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
-| 60 | No explicit aggregation; using AVG per series (faithful gauge downsample) |
-| 54 | XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 45 | Added outer AVG() around irate because ES\|QL requires an outer aggregation when grouping TS functions by label fields |
+| 220 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
+| 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
 | 35 | Grafana panel description is not carried into Kibana YAML automatically |
+| 34 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 24 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
-| 13 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 21 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 19 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
 | 9 | as_count interval semantics are approximated in ES\|QL |
 | 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
+| 7 | rollup interval is approximated in ES\|QL |
+| 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
 | 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
 | 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
-| 6 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
 | 5 | Grafana panel has 20 field override(s); verify visual mappings manually |
 | 5 | Grafana panel has 17 field override(s); verify visual mappings manually |
 <!-- /GENERATED:WARNING_PATTERNS -->
@@ -107,18 +114,19 @@ Source dashboard files (Grafana JSON / Datadog JSON)
   │                         produces: emitted target query + QueryIR
   ▼
 [4] ASSEMBLE — panel type mapping, layout normalisation, variable→control, display enrichment
-  │              produces: Kibana dashboard YAML + VisualIR + OperationalIR
+  │              produces: DashboardIR (primary) → native Dashboards API payload + YAML
+  │                        (+ VisualIR / OperationalIR snapshots for reporting)
   ▼
-[5] POLISH (optional) — improve titles and labels (heuristic or AI)
+[5] POLISH (optional) — improve titles and labels (heuristic or AI); rebuild DashboardIR
   │
   ▼
 [6] VALIDATE (optional) — run emitted target queries against Elasticsearch, fix/downgrade broken ones
+  │                        (rebuild DashboardIR; re-derive native + YAML)
+  ▼
+[7] LINT — schema-validate derived YAML via kb-dashboard-lint
   │
   ▼
-[7] LINT — schema-validate all YAML files via kb-dashboard-lint
-  │
-  ▼
-[8] COMPILE — YAML → Kibana NDJSON via kb-dashboard-cli
+[8] COMPILE (optional) — YAML → Kibana NDJSON via kb-dashboard-cli (--compile / --legacy-import)
   │
   ▼
 [9] VERIFY — build verification packets, assign semantic gates, refresh OperationalIR
@@ -127,7 +135,7 @@ Source dashboard files (Grafana JSON / Datadog JSON)
 [10] REPORT — write migration_report.json, manifest, verification packets
   │
   ▼
-[11] UPLOAD (optional) — import NDJSON into Kibana
+[11] UPLOAD (optional) — typed Dashboards API from native_dashboard / reviewed native artifact; YAML fallback by explicit format or absence
   │
   ▼
 [12] SMOKE (optional) — validate uploaded dashboards in Kibana
@@ -189,24 +197,28 @@ the Datadog adapter.
 Both paths produce a `QueryIR` — a typed contract of source meaning used by
 reports, verification, and downstream analysis.
 
-### Step 4 — Panel Assembly & Layout
+### Step 4 — Panel Assembly & Layout (IR-first)
 
-- Source queries + layout + display metadata → YAML panel structures
+- Source queries + layout + display metadata → kb-dashboard-core dict, then
+  `DashboardIR` (primary working artifact)
+- From `DashboardIR`, derive both:
+  - native Dashboards API payload (`native_dashboard_from_ir`)
+  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / explicit YAML upload
 - Grafana 24-column grid → Kibana 48-column grid
-- Template variables → Kibana dashboard controls (both sources)
+- Template variables → Kibana dashboard controls / `pinned_panels` (both sources)
 - Display enrichment: units, legend, axis titles, thresholds, colour overrides
 
 ### Steps 5–12
 
 | Step | Tool / Module | Outcome |
 |------|--------------|---------|
-| 5. Polish | Heuristic / AI | Better panel titles |
-| 6. Validate | `_query` API | Catches runtime errors early |
-| 7. Lint | `kb-dashboard-lint` | Schema validation |
-| 8. Compile | `kb-dashboard-cli` | YAML → Kibana NDJSON |
+| 5. Polish | Heuristic / AI | Better panel titles; rebuild `DashboardIR` + re-derive native/YAML |
+| 6. Validate | `_query` API | Catches runtime errors early; same IR rebuild on fixes |
+| 7. Lint | `kb-dashboard-lint` | Schema validation of derived YAML |
+| 8. Compile (optional) | `kb-dashboard-cli` | YAML → Kibana NDJSON when `--compile` / `--legacy-import` |
 | 9. Verify | Semantic gates | Green / yellow / red quality signal |
 | 10. Report | `migration_report.json` | Persistent audit trail |
-| 11. Upload | Kibana API | Import NDJSON |
+| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
 | 12. Smoke | Saved-object check | Validates dashboards are loadable |
 
 ---
@@ -219,11 +231,12 @@ reports, verification, and downstream analysis.
 | **Inventory** | Classifies query language | Wrong translator would run |
 | **Translation** | Source query → target query | Panel becomes `not_feasible` placeholder |
 | **QueryIR** | Typed contract of source meaning | Downstream analysis blind |
-| **Assembly** | Query + layout + display → YAML | No compilable output |
+| **Assembly** | Query + layout + display → `DashboardIR` → native + YAML | No deployable / lintable output |
 | **Layout** | 24→48 col, overlap resolution | Visual layout corruption |
 | **Validation** | Runs query against ES | Errors surface only after upload |
-| **Lint** | Schema validation | Blocks compilation |
-| **Compile** | YAML → NDJSON | Dashboard can't deploy |
+| **Lint** | Schema validation | Blocks optional compile / flags bad YAML |
+| **Compile** | Optional YAML → NDJSON | Only blocks `--legacy-import` / explicit `--compile` paths |
+| **Upload** | Typed API from native IR (default) | Dashboard not in Kibana; legacy fallback may still succeed |
 | **Verification** | Semantic gates | All panels look equally trustworthy |
 | **Report** | Persistent audit trail | No post-run analysis |
 
@@ -235,26 +248,26 @@ reports, verification, and downstream analysis.
 From the latest trace run:
 
 ```
-Elements:            649 total (628 panels + 21 rows)
-Renderable panels:   628
-  Migrated:              40 (6.4%)
-  With warnings:        153 (24.4%)
-  OK:                   138 (22.0%)
-  Warning:              188 (29.9%)
-  Requires manual:       33 (5.3%)
-  Not feasible:          14 (2.2%)
-  Skipped:               62 (9.9%)
+Elements:            696 total (673 panels + 23 rows)
+Renderable panels:   673
+  Migrated:              96 (14.3%)
+  With warnings:        141 (21.0%)
+  OK:                   107 (15.9%)
+  Warning:              222 (33.0%)
+  Requires manual:       30 (4.5%)
+  Not feasible:          14 (2.1%)
+  Skipped:               63 (9.4%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                  337
-  MINOR_ISSUE:               71
-  EXPECTED_LIMITATION:      241
+  CORRECT:                  237
+  MINOR_ISSUE:              247
+  EXPECTED_LIMITATION:      212
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-06-02 10:51 UTC*
+*Last generated: 2026-07-13 10:29 UTC*

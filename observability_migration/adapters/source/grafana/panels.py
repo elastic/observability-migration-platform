@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.operational import build_operational_ir
 from observability_migration.core.assets.query import QueryIR, build_query_ir, infer_output_shape
 from observability_migration.core.assets.visual import refresh_visual_ir
@@ -23,7 +24,7 @@ from observability_migration.core.reporting.report import (
     recompute_result_counts,
 )
 from observability_migration.core.verification.field_capabilities import assess_field_usage
-from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_yaml
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
     enrich_yaml_panel_display,
@@ -104,6 +105,7 @@ from .series_labels import (
     build_metric_series_labels,
     expr_has_explicit_grouping,
 )
+from .transforms import apply_transformations_to_esql
 from .translate import (
     TranslationContext,
     _build_metric_contract_artifacts,
@@ -129,6 +131,30 @@ PANEL_TYPE_MAP = {
     "piechart": "pie",
     "grafana-piechart-panel": "pie",  # community plugin alias for built-in piechart
     "barchart": "bar",
+    # Discrete-state visualizations. Kibana has no native state-timeline /
+    # status-history panel, but the underlying query is an ordinary metric time
+    # series, so the data is preserved by rendering it as a line chart. The
+    # visual approximation is disclosed via ``APPROXIMATED_VIS_TYPE_NOTES`` so the
+    # panel lands as ``migrated_with_warnings`` (degrade gracefully) rather than a
+    # bare "Migration Required" placeholder that discards the query.
+    "state-timeline": "line",
+    "status-history": "line",
+}
+
+# Source panel types whose Kibana mapping is a deliberate visual approximation.
+# The note is appended to the migrated panel's reasons and downgrades the status
+# to ``migrated_with_warnings`` so the fidelity loss is never silent.
+APPROXIMATED_VIS_TYPE_NOTES = {
+    "state-timeline": (
+        "Grafana state-timeline panel approximated as a Kibana line chart: the "
+        "underlying time series is preserved, but Kibana has no discrete "
+        "state-band visualization so state transitions render as line values"
+    ),
+    "status-history": (
+        "Grafana status-history panel approximated as a Kibana line chart: the "
+        "underlying time series is preserved, but Kibana has no periodic "
+        "discrete-state (status cell) visualization so values render as a line"
+    ),
 }
 
 SKIP_PANEL_TYPES = {"row", "news", "dashlist", "alertlist", "nodeGraph", "canvas"}
@@ -896,6 +922,22 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
+# Adaptive range resolution for dashboard panels (#272). A range plot must size
+# its bucketing to the dashboard time range at view time (like Grafana's
+# ``$__interval``) instead of freezing a fixed ``step=``. A *bare* stepless
+# ``PROMQL index=...`` command is NOT valid, however: Elasticsearch rejects it at
+# plan time with "unable to create a bucket; provide either [step] or all of
+# [start], [end], and [buckets]" (verified against ES 9.5 serverless). So the
+# adaptive form binds the window to the dashboard time picker via the
+# ``?_tstart`` / ``?_tend`` params Kibana materializes at render time, with a
+# fixed bucket count matching the ES|QL ``BUCKET(@timestamp, 50, ?_tstart,
+# ?_tend)`` path. This stays adaptive (no baked-in ``step=``) while remaining an
+# executable query.
+_NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
+_NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
+    f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
+)
+
 # Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
 # $__auto_interval_*). Grafana sizes these from the panel width and selected time
 # range at view time, i.e. they encode "size the lookback to the view", not a
@@ -1554,10 +1596,13 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     #   1. instant           -> ``time=?_tend`` (no step column)
     #   2. explicit ``step`` -> ``step=<value>`` (e.g. a migrated Grafana alert
     #      honoring the source query interval, issue #209)
-    #   3. ``adaptive_step`` -> omit ``step=`` so Elastic sizes the resolution
-    #      from the dashboard time range at view time, matching Grafana's
-    #      ``$__interval`` auto-bucketing instead of freezing a fixed step
-    #      (issue #272). The command still emits the ``step`` time column.
+    #   3. ``adaptive_step`` -> bind the window to the dashboard time picker via
+    #      ``start=?_tstart end=?_tend buckets=50`` so Elastic sizes the
+    #      resolution to the view (like Grafana's ``$__interval``) without a
+    #      frozen step (issue #272). A *bare* stepless command is rejected by ES
+    #      ("provide either [step] or all of [start], [end], and [buckets]"), so
+    #      the timing args must be present; Kibana materializes the params at
+    #      render time. The command still emits the ``step`` time column.
     #   4. otherwise         -> the documented ``step=1m`` default, preserving
     #      historical behavior for direct callers that opt into neither.
     if instant:
@@ -1565,7 +1610,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     elif step:
         selector = f"step={str(step).strip()}"
     elif adaptive_step:
-        selector = ""
+        selector = _NATIVE_PROMQL_ADAPTIVE_SELECTOR
     else:
         selector = f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
 
@@ -1619,6 +1664,37 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     return base
 
 
+def _promql_fragment_has_nested_agg(frag) -> bool:
+    """True when *frag* (or a binary operand) is a PromQL nested aggregation.
+
+    Nested aggregations such as ``count(count(...) by (cpu))`` are valid PromQL
+    and the ES|QL translator handles them, but Elasticsearch's native PROMQL
+    command often rejects them at runtime. Detect via the AST family rather than
+    a brittle regex so ``max(avg_over_time(...))`` (range_agg) stays native.
+    """
+    if frag is None:
+        return False
+    family = str(getattr(frag, "family", "") or "")
+    if family == "nested_agg":
+        return True
+    if family == "binary_expr":
+        extra = getattr(frag, "extra", {}) or {}
+        return _promql_fragment_has_nested_agg(extra.get("left_frag")) or _promql_fragment_has_nested_agg(
+            extra.get("right_frag")
+        )
+    return False
+
+
+def _promql_has_nested_aggregation(promql_expr) -> bool:
+    if not promql_expr or not str(promql_expr).strip():
+        return False
+    try:
+        cleaned = _clean_promql_for_native(promql_expr)
+        return _promql_fragment_has_nested_agg(_parse_fragment(cleaned or promql_expr))
+    except Exception:
+        return False
+
+
 def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
@@ -1642,6 +1718,8 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     if _promql_has_known_server_bug(promql_expr):
         return False
     if _promql_has_range_on_nonselector(promql_expr):
+        return False
+    if _promql_has_nested_aggregation(promql_expr):
         return False
     return True
 
@@ -1850,6 +1928,23 @@ def _translate_panel_native_promql(
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
+    # Native PROMQL returns before PANEL_TRANSLATORS. Multi-series bargauge
+    # panels need ``bargauge_panel_rule`` (bar + category breakdown); keeping
+    # them native collapses every series into one gauge tile. Defer when the
+    # expression preserves per-series labels (``_timeseries``), has legend
+    # placeholders, or has multiple targets. A true scalar stays native.
+    if panel_type == "bargauge":
+        _, shape_groups = _native_promql_result_shape(expr)
+        if legend_labels or len(targets_with_expr) > 1 or shape_groups == ["_timeseries"]:
+            return None
+    # Instant tables without an explicit ``by (...)`` (or legend placeholders)
+    # would emit only a ``value`` column and drop Prometheus label columns
+    # (ALERTS → alertname/severity/…). Prefer the ES|QL table path.
+    if panel_type in ("table", "table-old") and _target_summary_mode(panel_type, target):
+        _, shape_groups = _native_promql_result_shape(expr)
+        real_groups = [col for col in shape_groups if col != "_timeseries"]
+        if not real_groups and not legend_labels:
+            return None
 
     index = datasource_index or "metrics-prometheus-*"
     regex_default_params = getattr(rule_pack, "_regex_default_param_names", frozenset())
@@ -2120,10 +2215,14 @@ def _translate_multi_target_native_promql(
         )
 
     combined_expr = " or ".join(parts)
-    # #272: omit ``step=`` so Kibana/Elastic re-buckets the overlay to the
-    # dashboard time range at view time; the command still emits a ``step``
-    # column for the x-axis.
-    promql_query = f"PROMQL index={index} value=({combined_expr})"
+    # #272: bind the overlay to the dashboard time range at view time via
+    # ``start=?_tstart end=?_tend buckets=50`` (no baked-in ``step=``) so Elastic
+    # re-buckets it to the view while staying an executable query — a bare
+    # stepless range command is rejected by ES. The command still emits a
+    # ``step`` column for the x-axis.
+    promql_query = (
+        f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
+    )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
     # ES|QL translation; a data/field gap keeps native (issue #158).
@@ -2318,6 +2417,11 @@ def _enrich_panel_result(
                 "status": "not_required",
                 "actions": [],
             }
+    approximation_note = APPROXIMATED_VIS_TYPE_NOTES.get(panel_result.grafana_type)
+    if approximation_note and panel_result.status in ("migrated", "migrated_with_warnings"):
+        _append_unique(panel_result.reasons, approximation_note)
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.8)
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
@@ -2597,10 +2701,28 @@ def fallback_line_panel_rule(context):
     return f"fell back to {emitted_type} panel"
 
 
+def metrics_query_index(datasource_index=None, esql_index=None) -> str:
+    """Return the index/stream every *metrics query* must read.
+
+    Schema discovery already probes ``esql_index or data_view``. Native
+    ``PROMQL index=…`` and ES|QL ``TS``/``FROM`` must use that same target so
+    ``--esql-index`` cannot silently diverge from ``--data-view`` in ``auto``
+    mode. ``datasource_index`` / ``--data-view`` remains the Kibana UI / control
+    bind when callers pass it separately.
+    """
+    for candidate in (esql_index, datasource_index):
+        token = str(candidate or "").strip()
+        if token:
+            return token
+    return "metrics-*"
+
+
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                     llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
     rule_pack = rule_pack or RulePackConfig()
+    # Single metrics read target for native PROMQL and ES|QL (see metrics_query_index).
+    query_index = metrics_query_index(datasource_index, esql_index)
     panel_type = panel.get("type", "unknown")
     panel_analysis = analyze_panel_targets(panel)
     title = _coalesce_panel_title(panel, panel_analysis)
@@ -2628,6 +2750,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     raw_h = grid.get("h", 10)
     raw_x = grid.get("x", 0)
     raw_y = grid.get("y", 0)
+    source_panel_id = str(panel.get("id") or panel.get("panelId") or "").strip()
     yaml_panel = {
         "title": title,
         "size": {"w": KIBANA_GRID_COLS, "h": KIBANA_DEFAULT_HEIGHT},
@@ -2637,11 +2760,16 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         "_grafana_w": raw_w,
         "_grafana_h": raw_h,
     }
+    if source_panel_id:
+        # Survives on the in-memory YAML dict through layout/validation sync so
+        # post-validation pairing does not depend on leaf order. DashboardIR
+        # export strips underscore keys; title matching covers that path.
+        yaml_panel["_source_panel_id"] = source_panel_id
 
     kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
     if panel_type == "graph" and kibana_type == "line":
         kibana_type = _infer_graph_chart_style(panel)
-    elif panel_type == "timeseries" and kibana_type == "line":
+    elif panel_type in ("timeseries", "state-timeline", "status-history") and kibana_type == "line":
         kibana_type = _infer_timeseries_chart_style(panel)
     if not kibana_type:
         reasons = [f"Unknown Grafana panel type: {panel_type}"]
@@ -2767,7 +2895,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if rule_pack.native_promql and query_language == "promql":
         native_result = _translate_panel_native_promql(
             panel, yaml_panel, title, panel_type, kibana_type,
-            datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
+            datasource, query_index, rule_pack, panel_notes, panel_inventory,
             query_language, visible_targets, resolver=resolver,
         )
         if native_result is not None:
@@ -2808,8 +2936,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         try:
             t = translate_promql_to_esql(
                 expr,
-                datasource_index=datasource_index,
-                esql_index=esql_index,
+                datasource_index=query_index,
+                esql_index=query_index,
                 panel_type=panel_type,
                 rule_pack=rule_pack,
                 resolver=target_resolver,
@@ -2825,8 +2953,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         except Exception as exc:
             t = TranslationContext(
                 promql_expr=expr,
-                data_view=datasource_index,
-                index=esql_index or datasource_index,
+                data_view=query_index,
+                index=query_index,
                 rule_pack=rule_pack or RulePackConfig(),
                 resolver=target_resolver,
                 panel_type=panel_type,
@@ -2875,6 +3003,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         fused_extra = fused_series[1:]
         if len(fused_series) > 1:
             merged_query = _build_multi_target_series_query(fused_series)
+            if merged_query is None:
+                # Formula-plan fusion can fail on complex OR-chain targets that
+                # each translate alone (MySQL Network Traffic). Fall back to
+                # splicing the already-translated ES|QL bodies.
+                merged_query = _merge_pretranslated_xy_queries(fused_series)
             if merged_query:
                 primary.esql_query = merged_query["query"]
                 primary.source_type = merged_query["source_type"]
@@ -2917,6 +3050,28 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 })
         primary.metadata["collapsed_targets"] = unfused_provenance
     primary.query_ir = build_query_ir(primary)
+
+    # Apply Grafana panel transformations to the fused wide ES|QL query
+    # *before* PANEL_TRANSLATORS (bargauge unpivot / XY binding) so
+    # calculateField/organize see the multi-series columns they name.
+    applied_transform_indices: list[int] = []
+    if primary.esql_query and panel.get("transformations"):
+        _seed_transform_metric_labels(panel, primary)
+        rewritten_query, tx_result = apply_transformations_to_esql(
+            panel,
+            primary,
+            esql_query=primary.esql_query,
+        )
+        primary.esql_query = rewritten_query
+        applied_transform_indices = list(tx_result.applied_indices)
+        for warning in tx_result.warnings:
+            _append_unique(primary.warnings, warning)
+        if tx_result.updated_metric_fields:
+            primary.metadata["multi_series_metric_fields"] = list(tx_result.updated_metric_fields)
+            primary.output_metric_field = tx_result.updated_metric_fields[0]
+        if tx_result.updated_metric_label_hints:
+            primary.metadata["multi_series_metric_labels"] = dict(tx_result.updated_metric_label_hints)
+        primary.query_ir = build_query_ir(primary)
 
     migrated_refs = {
         t.metadata.get("target_ref_id")
@@ -2964,7 +3119,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         ):
             multi_result = _translate_multi_target_native_promql(
                 panel, yaml_panel, title, panel_type, kibana_type,
-                datasource, datasource_index, rule_pack, panel_notes,
+                datasource, query_index, rule_pack, panel_notes,
                 panel_inventory, targets_with_expr, resolver=resolver,
             )
             if multi_result is not None:
@@ -3026,6 +3181,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 yaml_panel["esql"]["query"] = primary.esql_query
             _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
 
+    # Translators may have snapshotted the pre-transform query into yaml_panel;
+    # keep the applied-transform body authoritative when present.
+    if applied_transform_indices and primary.esql_query and isinstance(yaml_panel.get("esql"), dict):
+        yaml_panel["esql"]["query"] = primary.esql_query
     yaml_panel = _normalize_esql_panel_query(yaml_panel, primary.rule_pack)
     metric_labels = dict(primary.metadata.get("multi_series_metric_labels") or {})
     static_legend_label = primary.metadata.get("static_legend_label")
@@ -3055,6 +3214,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         esql_query=primary.esql_query,
         trace=primary.trace + panel_context.trace,
     )
+    panel_result.applied_transform_indices = list(applied_transform_indices)
     return yaml_panel, _enrich_panel_result(
         panel_result,
         panel=panel,
@@ -3270,6 +3430,228 @@ def _try_collapse_same_metric_targets(translations):
     return collapsed
 
 
+def _merge_pretranslated_xy_queries(translations):
+    """Fuse already-translated XY ES|QL queries when formula-plan fusion fails.
+
+    Complex ``or``-chain targets (MySQL Network Traffic) each translate cleanly
+    alone but produce duplicate measure aliases / incompatible formula plans
+    when rebuilt together. When every target already has a time-bucketed ES|QL
+    body with a single metric column, splice those STATS measures into one
+    shared pipeline and EVAL one series column per target.
+    """
+    if not translations or len(translations) < 2:
+        return None
+    if any(not (t.esql_query or "").strip() for t in translations):
+        return None
+    if any(t.feasibility == "not_feasible" for t in translations):
+        return None
+
+    parsed = []
+    for translation in translations:
+        query = translation.esql_query or ""
+        stages = [stage.strip() for stage in _split_esql_pipeline(query) if stage.strip()]
+        if not stages:
+            return None
+        source = stages[0]
+        if not source.upper().startswith(("TS ", "FROM ")):
+            return None
+        source_type = "TS" if source.upper().startswith("TS ") else "FROM"
+        stats_idx = next(
+            (
+                idx
+                for idx, stage in enumerate(stages)
+                if stage.upper().startswith("STATS ")
+            ),
+            None,
+        )
+        if stats_idx is None:
+            return None
+        stats_stage = stages[stats_idx]
+        by_split = re.split(r"\bBY\b", stats_stage, maxsplit=1, flags=re.IGNORECASE)
+        if len(by_split) != 2:
+            return None
+        assignments_text = by_split[0][len("STATS ") :].strip()
+        by_text = by_split[1].strip()
+        if "time_bucket" not in by_text:
+            return None
+        assignments = [
+            part.strip()
+            for part in _split_top_level_csv(assignments_text)
+            if part.strip() and "=" in part
+        ]
+        if not assignments:
+            return None
+        metric_field = str(translation.output_metric_field or "").strip()
+        if not metric_field:
+            shape = _extract_esql_shape(query)
+            if shape.metric_fields:
+                metric_field = shape.metric_fields[0]
+        if not metric_field:
+            return None
+        # Capture EVAL lines that derive the final metric from STATS aliases
+        # (COALESCE / arithmetic) so we can rename the result per target.
+        post_stats = stages[stats_idx + 1 :]
+        eval_stages = [
+            stage
+            for stage in post_stats
+            if stage.upper().startswith("EVAL ")
+        ]
+        parsed.append(
+            {
+                "translation": translation,
+                "source": source,
+                "source_type": source_type,
+                "pre_stats": stages[1:stats_idx],
+                "assignments": assignments,
+                "by_text": by_text,
+                "eval_stages": eval_stages,
+                "metric_field": metric_field,
+            }
+        )
+
+    source_types = {item["source_type"] for item in parsed}
+    if len(source_types) != 1:
+        return None
+    by_texts = {item["by_text"] for item in parsed}
+    if len(by_texts) != 1:
+        return None
+
+    # Merge WHERE / filter stages: keep unique lines in order.
+    merged_pre: list[str] = []
+    seen_pre: set[str] = set()
+    for item in parsed:
+        for stage in item["pre_stats"]:
+            key = stage.strip()
+            if key and key not in seen_pre:
+                seen_pre.add(key)
+                merged_pre.append(stage)
+
+    used_aliases: set[str] = set()
+    renamed_assignments: list[str] = []
+    metric_fields: list[str] = []
+    metric_label_hints: dict[str, str] = {}
+    target_provenance: list[dict[str, object]] = []
+    eval_parts: list[str] = []
+    warnings: list[str] = [
+        "Fused multi-target panel from independently translated ES|QL queries"
+    ]
+
+    for idx, item in enumerate(parsed, start=1):
+        translation = item["translation"]
+        alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
+        raw_alias = (
+            translation.metadata.get("series_alias")
+            or translation.output_metric_field
+            or translation.metric_name
+            or f"series_{idx}"
+        )
+        result_alias = _unique_safe_alias(
+            raw_alias,
+            used_aliases,
+            fallback_suffix=alias_hint,
+        )
+        # Prefix STATS aliases so receive/transmit OR-chains don't collide.
+        alias_map: dict[str, str] = {}
+        for assignment in item["assignments"]:
+            left, right = assignment.split("=", 1)
+            old_alias = left.strip()
+            new_alias = _unique_safe_alias(
+                f"{old_alias}_{alias_hint}",
+                used_aliases,
+                fallback_suffix=str(idx),
+            )
+            alias_map[old_alias] = new_alias
+            renamed_assignments.append(f"{_esql_identifier(new_alias)} = {right.strip()}")
+
+        # Rewrite EVAL expressions to use renamed STATS aliases, then bind the
+        # final series column to ``result_alias``.
+        rewritten_metric_expr = item["metric_field"]
+        for eval_stage in item["eval_stages"]:
+            body = eval_stage[len("EVAL ") :].strip()
+            if "=" not in body:
+                continue
+            left, right = body.split("=", 1)
+            expr = right.strip()
+            for old_alias, new_alias in alias_map.items():
+                expr = re.sub(
+                    rf"\b{re.escape(old_alias)}\b",
+                    new_alias,
+                    expr,
+                )
+            out_name = left.strip()
+            if out_name == item["metric_field"]:
+                rewritten_metric_expr = expr
+            else:
+                mapped = alias_map.get(out_name) or _unique_safe_alias(
+                    f"{out_name}_{alias_hint}",
+                    used_aliases,
+                    fallback_suffix=str(idx),
+                )
+                alias_map[out_name] = mapped
+                eval_parts.append(f"| EVAL {_esql_identifier(mapped)} = {expr}")
+                if out_name == item["metric_field"]:
+                    rewritten_metric_expr = mapped
+
+        if translation.metadata.get("negate_result"):
+            rewritten_metric_expr = f"(-1 * {rewritten_metric_expr})"
+        eval_parts.append(
+            f"| EVAL {_esql_identifier(result_alias)} = {rewritten_metric_expr}"
+        )
+        metric_fields.append(result_alias)
+        metric_label_hints[result_alias] = str(raw_alias)
+        provenance_entry: dict[str, object] = {
+            "ref_id": alias_hint,
+            "source_expr": str(translation.metadata.get("target_source_expr") or ""),
+            "value_column": result_alias,
+            "whole_translated": True,
+        }
+        if translation.metadata.get("negate_result"):
+            provenance_entry["negated"] = True
+        target_provenance.append(provenance_entry)
+        for warning in translation.warnings or []:
+            if warning not in warnings:
+                warnings.append(warning)
+
+    by_text = next(iter(by_texts))
+    group_fields = [
+        part.strip().split("=", 1)[0].strip()
+        for part in _split_top_level_csv(by_text)
+        if part.strip()
+    ]
+
+    def _pipe_stage(stage: str) -> str:
+        text = stage.strip()
+        if not text:
+            return text
+        return text if text.startswith("|") else f"| {text}"
+
+    parts = [parsed[0]["source"], *(_pipe_stage(stage) for stage in merged_pre)]
+    parts.append(
+        "| STATS "
+        + ", ".join(renamed_assignments)
+        + f" BY {by_text}"
+    )
+    parts.extend(_pipe_stage(stage) for stage in eval_parts)
+    parts.append(
+        "| KEEP "
+        + ", ".join(
+            _esql_identifier(f)
+            for f in dict.fromkeys(group_fields + metric_fields)
+        )
+    )
+    if "time_bucket" in group_fields:
+        parts.append("| SORT time_bucket ASC")
+    return {
+        "query": "\n".join(parts),
+        "metric_fields": metric_fields,
+        "metric_label_hints": metric_label_hints,
+        "group_fields": group_fields,
+        "source_type": next(iter(source_types)),
+        "warnings": warnings,
+        "targets": target_provenance,
+    }
+
+
 def _build_multi_target_series_query(translations):
     if not translations:
         return None
@@ -3397,7 +3779,10 @@ def _build_multi_target_series_query(translations):
 
 def _translations_compatible(*translations):
     """Check if translations can be fused into a single XY panel safely."""
-    return _build_multi_target_series_query(list(translations)) is not None
+    items = list(translations)
+    if _build_multi_target_series_query(items) is not None:
+        return True
+    return _merge_pretranslated_xy_queries(items) is not None
 
 
 def _best_compatible_translation_group(translations):
@@ -3732,21 +4117,68 @@ def _strip_dashboard_timestamp_range_filter(esql, time_filters=None):
     return "\n".join(lines)
 
 
+def _seed_transform_metric_labels(panel, translation) -> None:
+    """Ensure transform field resolution can map Grafana legends → ES|QL columns.
+
+    Fusion populates ``multi_series_metric_labels``; single-target / partial-drop
+    paths often leave it empty, so calculateField ``include: ["Real Linux"]``
+    cannot resolve even when the primary metric *is* that series. Seed from the
+    primary target's static legend (or series alias) when bookkeeping is absent.
+    """
+    metadata = getattr(translation, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    metric_field = str(getattr(translation, "output_metric_field", "") or "").strip()
+    if not metric_field:
+        return
+    labels = dict(metadata.get("multi_series_metric_labels") or {})
+    fields = list(metadata.get("multi_series_metric_fields") or [])
+    if metric_field not in fields:
+        fields = [metric_field] + [f for f in fields if f != metric_field]
+        metadata["multi_series_metric_fields"] = fields
+    if metric_field in labels and str(labels[metric_field]).strip():
+        return
+    legend = str(metadata.get("static_legend_label") or "").strip()
+    if not legend:
+        ref = str(metadata.get("target_ref_id") or "").strip()
+        for target in panel.get("targets") or []:
+            if not isinstance(target, dict):
+                continue
+            if ref and str(target.get("refId") or "").strip() != ref:
+                continue
+            legend = str(target.get("legendFormat") or "").strip()
+            if legend:
+                break
+        if not legend:
+            for target in panel.get("targets") or []:
+                if not isinstance(target, dict) or target.get("hide"):
+                    continue
+                legend = str(target.get("legendFormat") or "").strip()
+                if legend:
+                    break
+    if legend:
+        labels[metric_field] = legend
+        metadata["multi_series_metric_labels"] = labels
+
+
 def _strip_dotted_group_keep(query):
-    """Drop a KEEP/DROP projection that follows ``STATS BY <dotted field> | EVAL``.
+    """Drop KEEP/DROP lines that re-project a dotted ``STATS BY`` grouping field.
 
     ES|QL's optimizer re-attributes a dotted grouping field (e.g. ``service.name``)
     from field -> reference across such a projection, raising a
     verification_exception "Output has changed from [..service.name{f}..] to
-    [..service.name{r}..]" that breaks the panel in Kibana. The query is valid
-    without the projection — the extra intermediate columns are ignored by the
-    Lens chart config. Bisected live against Elastic 9.5.0; see
-    tests/test_grafana_dotted_group_keep.py.
+    [..service.name{r}..]" that breaks the panel in Kibana. Bisected live against
+    Elastic 9.5.0; see tests/test_grafana_dotted_group_keep.py.
+
+    Only projections that *include* a dotted grouping field are stripped.
+    Transform-authored KEEP lines that project ``time_bucket`` + metrics (and
+    omit the dotted group key) are preserved so calculateField/organize cleanup
+    survives normalization.
     """
     if not query or "STATS" not in query:
         return query
     lines = query.splitlines()
-    has_dotted_group = False
+    dotted_groups: set[str] = set()
     has_eval = False
     for line in lines:
         stripped = line.strip()
@@ -3754,14 +4186,30 @@ def _strip_dotted_group_keep(query):
             for token in stripped.split(" BY ", 1)[1].split(","):
                 name = (token.split("=", 1)[-1] if "=" in token else token).strip().strip("`")
                 if "." in name and "(" not in name:
-                    has_dotted_group = True
+                    dotted_groups.add(name)
         elif stripped.startswith("| EVAL"):
             has_eval = True
-    if not (has_dotted_group and has_eval):
+    if not (dotted_groups and has_eval):
         return query
-    return "\n".join(
-        line for line in lines if not line.strip().startswith(("| KEEP ", "| DROP "))
-    )
+
+    def _projects_dotted_group(line: str) -> bool:
+        stripped = line.strip()
+        if stripped.startswith("| KEEP "):
+            body = stripped[len("| KEEP ") :]
+        elif stripped.startswith("| DROP "):
+            body = stripped[len("| DROP ") :]
+        else:
+            return False
+        # DROP of non-group helpers/metrics is safe; only strip when a dotted
+        # group key itself appears in the projection list.
+        tokens = {
+            part.strip().strip("`")
+            for part in body.split(",")
+            if part.strip()
+        }
+        return bool(tokens & dotted_groups)
+
+    return "\n".join(line for line in lines if not _projects_dotted_group(line))
 
 
 def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
@@ -4192,6 +4640,81 @@ def _warn_extra_breakdown_dimensions(
         )
 
 
+def _apply_composite_group_breakdown_to_xy_panel(panel, *, group_cols, warnings=None):
+    """Composite multiple non-time ``BY`` columns into one XY breakdown field.
+
+    Lens XY supports a single ``breakdown.field``. When the query groups by two
+    or more categorical dimensions (and no multi-placeholder legend template
+    already produced ``legend``), synthesize ``series_group = CONCAT(...)`` so
+    each distinct label tuple remains a separate series instead of silently
+    merging on the first dimension alone.
+    """
+    if not isinstance(panel, dict):
+        return panel
+    if (panel.get("breakdown") or {}).get("field") == "legend":
+        return panel
+    dims = [str(col) for col in (group_cols or []) if col]
+    if len(dims) < 2:
+        return panel
+    query = str(panel.get("query") or "")
+    if not query.strip():
+        return panel
+
+    concat_args = []
+    for index, dim in enumerate(dims):
+        if index:
+            concat_args.append('" / "')
+        concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(dim)}), "")')
+    eval_line = f"| EVAL series_group = CONCAT({', '.join(concat_args)})"
+    # Reuse the legend splice helper, then rename the KEEP column it appends
+    # (``legend``) to ``series_group`` so the breakdown field matches.
+    spliced = _splice_composite_legend_into_query(
+        query,
+        eval_line=eval_line,
+        label_columns=set(dims),
+    )
+    # The helper may append ``legend`` to a KEEP list even though EVAL already
+    # names the column ``series_group``. Rewrite that KEEP token only.
+    stages = _split_esql_pipeline(spliced)
+    for idx in range(len(stages) - 1, -1, -1):
+        stage = stages[idx].strip()
+        if stage.lower().startswith("keep "):
+            keep_body = stage[5:].strip()
+            parts = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+            rewritten = [("series_group" if part == "legend" else part) for part in parts]
+            if "series_group" not in rewritten:
+                rewritten.append("series_group")
+            stages[idx] = f"KEEP {', '.join(rewritten)}"
+            break
+    if "\n" in spliced:
+        # Rebuild from multiline form: replace KEEP line content carefully.
+        lines = spliced.splitlines()
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("keep "):
+                keep_body = stripped[1:].strip()[5:].strip()
+                parts = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+                rewritten = [("series_group" if part == "legend" else part) for part in parts]
+                if "series_group" not in rewritten:
+                    rewritten.append("series_group")
+                lines[idx] = f"| KEEP {', '.join(rewritten)}"
+                panel["query"] = "\n".join(lines)
+                break
+        else:
+            panel["query"] = spliced
+    else:
+        head = stages[0]
+        tail = " | ".join(stages[1:]) if len(stages) > 1 else ""
+        panel["query"] = f"{head} | {tail}" if tail else head
+    panel["breakdown"] = {"field": "series_group"}
+    _append_unique(
+        warnings if warnings is not None else [],
+        "Composited multi-label grouping "
+        f"({', '.join(dims)}) into a single XY breakdown column",
+    )
+    return panel
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
                          time_fields=None, mode=None,
                          legend_format_template=None, legend_labels=None,
@@ -4238,11 +4761,27 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
-    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    non_time_groups = [
+        col
+        for col in (by_cols or [])
+        if col and col != dimension_field and not _is_time_like_output_field(col)
+    ]
+    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+        _apply_composite_group_breakdown_to_xy_panel(
+            panel,
+            group_cols=non_time_groups,
+            warnings=warnings,
+        )
+    represented = []
+    breakdown_name = (panel.get("breakdown") or {}).get("field")
+    if breakdown_name == "legend":
+        represented = list(legend_labels or [])
+    elif breakdown_name == "series_group":
+        represented = list(non_time_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
-        (panel.get("breakdown") or {}).get("field"),
+        breakdown_name,
         warnings,
         represented_breakdown_fields=represented,
     )
@@ -4290,11 +4829,27 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
-    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    non_time_groups = [
+        col
+        for col in (by_cols or [])
+        if col and col != dimension_field and not _is_time_like_output_field(col)
+    ]
+    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+        _apply_composite_group_breakdown_to_xy_panel(
+            panel,
+            group_cols=non_time_groups,
+            warnings=warnings,
+        )
+    represented = []
+    breakdown_name = (panel.get("breakdown") or {}).get("field")
+    if breakdown_name == "legend":
+        represented = list(legend_labels or [])
+    elif breakdown_name == "series_group":
+        represented = list(non_time_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
-        (panel.get("breakdown") or {}).get("field"),
+        breakdown_name,
         warnings,
         represented_breakdown_fields=represented,
     )
@@ -6446,7 +7001,7 @@ def _translate_panel_group(
 
 
 def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                        llm_endpoint="", llm_model="", llm_api_key=""):
+                        llm_endpoint="", llm_model="", llm_api_key="", output_stem=None):
     rule_pack = rule_pack or RulePackConfig()
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
@@ -6663,20 +7218,33 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # per-type minimums (which sometimes widen panels) from being
     # punished by the downstream ``kb-dashboard-cli`` compile step,
     # which rejects any overlap.
+    #
+    # This 2D-grid layout math (row-filling, overlap resolution) still runs
+    # on the kb-dashboard-core dict shape: it is grid arithmetic tied to that
+    # shape, not dashboard semantics, so porting it to the IR buys nothing.
+    # Everything downstream of this point -- the native Dashboards API
+    # payload and the on-disk YAML -- is derived from the semantic
+    # `DashboardIR` built right after, not from this dict directly (see
+    # docs/architecture/asset-model.md).
     for dashboard in yaml_doc.get("dashboards") or []:
         _resolve_section_overlaps_recursively(dashboard.get("panels") or [])
 
-    safe_name = _dashboard_output_stem(title)
-    output_path = Path(output_dir) / f"{safe_name}.yaml"
-    with open(output_path, "w") as f:
-        yaml.dump(yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+    # IR-first: `DashboardIR` is the primary working artifact from here on.
+    # The native Dashboards API payload (`native_dashboard_from_ir`) and the
+    # on-disk YAML (`DashboardIR.to_yaml_dict`) are both *derived* from it, so
+    # they can never drift from each other -- see
+    # tests/test_grafana_native_dashboard_emission.py for the parity guarantee.
+    dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
+    dashboard_ir.uid = uid
+    result.dashboard_ir = dashboard_ir
 
-    # Native Dashboards API artifact, built from this exact in-memory YAML
-    # doc (before any re-parse), so it can never drift from what was just
-    # written to disk. This is additive: the YAML file remains the on-disk
-    # bridge artifact; `result.native_dashboard` is the typed-API-shaped IR
-    # for callers (upload, verification) that want it directly.
-    native_dashboard, native_counts = native_dashboard_from_yaml(yaml_doc["dashboards"][0])
+    safe_name = output_stem or _dashboard_output_stem(title)
+    output_path = Path(output_dir) / f"{safe_name}.yaml"
+    exported_yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+    with open(output_path, "w") as f:
+        yaml.dump(exported_yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+
+    native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
     result.native_dashboard = native_dashboard
     native_counts_dict, native_reasons = native_counts.as_dicts()
     result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
@@ -6690,6 +7258,7 @@ __all__ = [
     "PanelContext",
     "VariableContext",
     "_dashboard_output_stem",
+    "metrics_query_index",
     "query_variable_rule",
     "translate_dashboard",
     "translate_panel",
