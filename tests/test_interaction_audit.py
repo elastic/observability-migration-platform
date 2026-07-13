@@ -73,6 +73,21 @@ def test_interaction_report_warns_for_source_only_capability_even_when_passed():
     assert report.exit_code == 0
 
 
+def test_interaction_report_warns_for_migration_gap_capability_even_when_passed():
+    report = InteractionReport(
+        scenario="synthetic",
+        results=[
+            InteractionResult(
+                "function=AVG",
+                InteractionStatus.PASS,
+                capability=CapabilityCategory.MIGRATION_GAP,
+            )
+        ],
+    )
+    assert report.status == "warn"
+    assert report.exit_code == 0
+
+
 def test_interaction_report_passes_when_all_migrated_live_pass():
     report = InteractionReport(
         scenario="redis",
@@ -107,8 +122,10 @@ def test_interaction_report_to_dict_serializes_enums_recursively():
     assert payload["status"] == "fail"
     assert payload["exit_code"] == 1
     assert payload["results"][0]["status"] == "fail"
+    assert payload["results"][0]["name"] == "instance=redis_2"
     assert payload["results"][0]["capability"] == "migrated_live"
     assert payload["results"][0]["findings"][0]["failure_class"] == "render_error"
+    assert payload["results"][0]["findings"][0]["detail"] == "panel failed"
     assert payload["results"][0]["network"][0]["endpoint"] == "/internal/search/esql_async"
     assert payload["results"][0]["panels"][0]["title"] == "CPU"
 

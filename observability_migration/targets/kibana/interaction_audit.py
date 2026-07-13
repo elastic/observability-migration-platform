@@ -90,12 +90,12 @@ def _aggregate_status(results: Sequence[InteractionResult]) -> str:
 @dataclass
 class InteractionFinding:
     failure_class: FailureClass
-    message: str = ""
+    detail: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "failure_class": self.failure_class.value,
-            "message": self.message,
+            "detail": self.detail,
         }
 
 
@@ -139,7 +139,7 @@ class PanelEvidence:
 
 @dataclass
 class InteractionResult:
-    interaction: str
+    name: str
     status: InteractionStatus
     capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE
     findings: list[InteractionFinding] = field(default_factory=list)
@@ -148,7 +148,7 @@ class InteractionResult:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "interaction": self.interaction,
+            "name": self.name,
             "status": self.status.value,
             "capability": self.capability.value,
             "findings": [finding.to_dict() for finding in self.findings],
