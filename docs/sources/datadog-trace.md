@@ -61,14 +61,14 @@ the `$var` LIKE-broadening in individual panel queries.
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
 | datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
+| datadog | HAProxy - Overview | 29 | 9 | 13 | 0 | 1 | 6 | 0 |
 | datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 28 | 3 | 2 | 9 | 0 |
 | datadog | Kubernetes - Overview | 57 | 2 | 39 | 4 | 2 | 10 | 0 |
 | datadog | MongoDB - Overview | 43 | 13 | 20 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
 | datadog | NGINX - Overview | 27 | 12 | 5 | 2 | 2 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 12 | 23 | 5 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 24 | 5 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
@@ -80,9 +80,9 @@ the `$var` LIKE-broadening in individual panel queries.
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 228 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 25 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 173 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 226 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 26 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 174 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -95,16 +95,16 @@ the `$var` LIKE-broadening in individual panel queries.
 | 7 | rollup interval is approximated in ES\|QL |
 | 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
 | 5 | query syntax not recognized; manual review needed |
-| 5 | XY chart shows a single breakdown; additional grouping dimension(s) ['deployment.environment'] are in the query but not on the chart, so series differing only by those are visually merged |
 | 5 | top(10) on timeseries approximated as ranked table of top-10 groups — ES\|QL cannot filter to N series in a single pass |
-| 4 | XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 3 | XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 3 | XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged |
+| 4 | XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column |
+| 3 | XY chart grouped by multiple tags (worker, task); composited into a single breakdown column |
+| 3 | XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column |
 | 3 | Scope filter with template variable broadened to LIKE pattern; apply specific values via Kibana dashboard controls |
 | 2 | Data source 'event_stream' has no direct Kibana equivalent; panel will be a placeholder |
-| 1 | XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter'] are in the query but not on the chart, so series differing only by those are visually merged |
+| 2 | distribution widget approximated as its requested aggregation plus p50/p90/p99 percentile time series (ES\|QL has no native distribution histogram panel) |
+| 2 | XY chart grouped by multiple tags (type, deployment.environment); composited into a single breakdown column |
+| 1 | XY chart grouped by multiple tags (consul_service_id, consul_datacenter); composited into a single breakdown column |
 | 1 | Grouped single-value formula widget approximated as a summary table (one value per group); a metric tile shows only a single number |
-| 1 | manual review needed: multi-query formulas with different groupings need a manually-designed ES\|QL query (e.g. UNION ALL or split into separate panels) — automatic translation would be semantically ambiguous |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -940,7 +940,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -982,7 +982,7 @@ FROM metrics-*
 - Output metric: `tasks`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -1064,7 +1064,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -1346,7 +1346,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -1387,7 +1387,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -1428,7 +1428,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -1469,7 +1469,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -2135,7 +2135,7 @@ FROM metrics-*
 | Backend p99 Response Time | `timeseries` → `xy` | ok | **CORRECT** | avg:haproxy.backend.response.time{*,*,*,*} by {release} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Pod Statistics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Top Resource Consumers | `query_table` → `table` | ok | **CORRECT** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
-| CPU Usage by Pod | `timeseries` → `xy` | requires_manual | **MINOR_ISSUE** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | — |
+| CPU Usage by Pod | `timeseries` → `xy` | not_feasible | **EXPECTED_LIMITATION** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | — |
 | Memory Usage % | `timeseries` → `xy` | ok | **CORRECT** | max:kubernetes.memory.usage{team:logs,*,*,*,datacenter:us1.prod.dog,*,*,*,kube_c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND team... |
 
 <details>
@@ -2511,7 +2511,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -2552,7 +2552,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -2593,7 +2593,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -2634,7 +2634,7 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
 **Verdict:** CORRECT
 
@@ -2714,7 +2714,7 @@ FROM metrics-*
 | Incoming messages by env, producing service for $topic | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{direction:out,pathway_type:full,type:kafka,$... | — |
 | Outgoing messages by env, consuming service for $topic | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{direction:in,pathway_type:full,type:kafka,$t... | — |
 | Top 10 p95 message size by env for $topic | `timeseries` → `table` | warning | **MINOR_ISSUE** | p95:data_streams.payload_size{type:kafka,$topic,$env} by {topic,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
-| Distribution of message size for $topic | `distribution` → `xy` | warning | **CORRECT** | avg:data_streams.payload_size{type:kafka,$topic,$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
+| Distribution of message size for $topic | `distribution` → `xy` | warning | **MINOR_ISSUE** | avg:data_streams.payload_size{type:kafka,$topic,$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
 | Zookeeper Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 3441872316411158 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | ZK File Descriptors  | `timeseries` → `xy` | warning | **CORRECT** | avg:zookeeper.max_file_descriptor_count{$env} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
@@ -5653,7 +5653,7 @@ FROM metrics-*
 | Incoming Messages by env, Producing Service | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | — |
 | Outgoing Messages by env, Consuming Service | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | — |
 | Top 10 p95 Message Size by env | `timeseries` → `table` | warning | **MINOR_ISSUE** | p95:data_streams.payload_size{type:rabbitmq,topic:$queue.value} by {topic,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
-| Distribution of Message Size | `distribution` → `xy` | ok | **CORRECT** | avg:data_streams.payload_size{type:rabbitmq,topic:*} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
+| Distribution of Message Size | `distribution` → `xy` | warning | **MINOR_ISSUE** | avg:data_streams.payload_size{type:rabbitmq,topic:*} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 218491216894336 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Count per Log Status | `timeseries` → `xy` | ok | **CORRECT** | source:rabbitmq $node_name | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
@@ -7067,19 +7067,19 @@ From the latest trace run:
 ```
 Elements:            426 total (426 panels)
 Renderable panels:   426
-  OK:                   108 (25.4%)
-  Warning:              221 (51.9%)
-  Requires manual:       25 (5.9%)
-  Not feasible:          10 (2.3%)
+  OK:                   107 (25.1%)
+  Warning:              222 (52.1%)
+  Requires manual:       24 (5.6%)
+  Not feasible:          11 (2.6%)
   Skipped:               62 (14.6%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                  228
-  MINOR_ISSUE:               25
-  EXPECTED_LIMITATION:      173
+  CORRECT:                  226
+  MINOR_ISSUE:               26
+  EXPECTED_LIMITATION:      174
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -7088,13 +7088,14 @@ Verdict breakdown:
 ## Appendix: Not-Feasible Panel Breakdown
 
 <!-- GENERATED:NOT_FEASIBLE_BREAKDOWN -->
-Every panel marked `not_feasible` in the trace run (10 total):
+Every panel marked `not_feasible` in the trace run (11 total):
 
 | Panel Title | Dashboard | Source | Reason |
 |-------------|-----------|--------|--------|
 | Requests per second per host | Apache - Overview | datadog | — |
 | 9 | Docker - Overview | datadog | — |
 | 10 | Docker - Overview | datadog | — |
+| CPU Usage by Pod | HAProxy - Overview | datadog | multi-query formula had mismatched groupings; united dimensions (k8s.pod.name) so the panel can migr... |
 | Kafka Topology for $topic, $env | Kafka, Zookeeper and Kafka Consumer Overview | datadog | — |
 | Topic Health | Kafka, Zookeeper and Kafka Consumer Overview | datadog | Scope filter with template variable could not be bound exactly; apply specific values via Kibana das... |
 | CPU utilization per node | Kubernetes - Overview | datadog | — |
@@ -7105,6 +7106,8 @@ Every panel marked `not_feasible` in the trace run (10 total):
 
 **Pattern analysis:**
 
+- **1×** multi-query formula had mismatched groupings; united dimensi
+- **1×** translation error: unsupported formula function: autosmooth
 - **1×** Scope filter with template variable could not be bound exact
 - **1×** rate semantics approximated with delta over observed bucket 
 - **1×** translation error: multi-query widgets with different reques
@@ -7112,4 +7115,4 @@ Every panel marked `not_feasible` in the trace run (10 total):
 
 ---
 
-*Last generated: 2026-07-09 10:11 UTC*
+*Last generated: 2026-07-13 06:19 UTC*

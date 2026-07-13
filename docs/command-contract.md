@@ -54,12 +54,13 @@ enable local git hooks:
 .venv/bin/pre-commit run --all-files
 ```
 
-Commands that invoke `kb-dashboard-cli` or `kb-dashboard-lint` (including
-`obs-migrate compile` and `obs-migrate upload`) resolve the tool
-**installed-first**: install the Kibana tools in-venv with
-`.venv/bin/pip install ".[kibana]"` (requires Python 3.12+), otherwise the
-runtime falls back to a pinned `uvx`, which requires `uv` on `PATH`. Run
-`obs-migrate doctor` to see which path is active.
+Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
+`obs-migrate upload --legacy-import`) resolve the tool **installed-first**:
+install the Kibana tools in-venv with `.venv/bin/pip install ".[kibana]"`
+(requires Python 3.12+), otherwise the runtime falls back to a pinned `uvx`,
+which requires `uv` on `PATH`. The default typed Dashboards API upload path
+does **not** need `kb-dashboard-cli`; YAML lint and compiled-layout validation
+run in-process. Run `obs-migrate doctor` to see which path is active.
 
 Datadog live API extraction (`--input-mode api` on either the unified or
 dedicated CLI; legacy dedicated spelling `--source api` also works) requires
@@ -140,6 +141,9 @@ Datadog.
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
 | `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto`; use `native` or `esql` only for explicit operator control |
+| `--compile` | Grafana, Datadog dashboards | Also compile generated dashboard YAML to legacy NDJSON and validate compiled layout | Optional local/debug artifact; not required for typed Dashboards API upload. Forwarded to source CLIs and still useful for legacy import readiness checks. |
+| `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload by default; still writes `native/*.native.json`, `ir/*.ir.json`, YAML, and reports for review/audit. |
+| `--legacy-import` | Grafana, Datadog dashboards | Force legacy YAML compile + saved-object import instead of the typed Dashboards API | Requires YAML and implies the legacy compile/import backend. Use only when you intentionally need the older importer behavior. |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
 | `--dashboard-ids` | Datadog dashboard pipeline | Scope Datadog dashboard extraction by comma-separated dashboard IDs | Only affects Datadog dashboard runs |
@@ -225,12 +229,14 @@ GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
   --alert-folder "infra-folder-uid"
 ```
 
-`obs-migrate migrate` emits dashboard YAML (and the native IR consumed by the
-typed Dashboards API upload) during dashboard runs for both Grafana and Datadog.
+`obs-migrate migrate` emits dashboard YAML plus native Dashboard-as-Code review
+artifacts (`dashboards/native/*.native.json`) and semantic IR review artifacts
+(`dashboards/ir/*.ir.json`) during dashboard runs for both Grafana and Datadog.
 Local compilation to Kibana NDJSON via `kb-dashboard-cli` is opt-in through
 `--compile` (and is implied by `--legacy-import`); the default typed-API upload
-maps straight from the native IR and never consumes the NDJSON. Alerts-only
-runs do not emit dashboard YAML or compiled output.
+uses the native payload derived from `DashboardIR` and never consumes the
+NDJSON. Alerts-only runs do not emit dashboard YAML, native dashboard artifacts,
+or compiled output.
 
 For both Grafana and Datadog, the native IR and the on-disk YAML are no
 longer two independent renderings of the same source data: a semantic
@@ -500,6 +506,25 @@ Reviewing it before upload restores the pre-typed-API "compile, inspect,
 upload" workflow without reviving the legacy YAML-to-NDJSON compile step: see
 `docs/architecture/asset-model.md`.
 
+#### Current vs compatibility dashboard paths
+
+Native IR / native Dashboard-as-Code is the current dashboard migration path.
+YAML and NDJSON are still emitted because existing operators, linters, and
+legacy import workflows rely on them, but new automation should prefer
+`migrate --upload` or `obs-migrate upload --artifact-dir ...` with the default
+`--artifact-format auto`.
+
+| Surface | Status | Use it when |
+|---|---|---|
+| `migrate --upload` | Current default | You want a one-step migration that uploads the in-memory `native_dashboard` derived from `DashboardIR`. |
+| `obs-migrate upload --artifact-dir <dashboards>` | Current default for two-step review/upload | You reviewed `native/*.native.json` and want to upload the exact persisted typed Dashboards API payload. |
+| `--artifact-format native` | Current explicit mode | You want to reject the run if reviewed native artifacts are missing. |
+| `--artifact-format yaml` / `--yaml-dir` | Compatibility path | You intentionally want to map YAML files through the typed API, with per-dashboard legacy fallback for rejected/empty YAML-derived dashboards. |
+| `obs-migrate compile` / `--compile` | Legacy/debug artifact path | You need local NDJSON/layout evidence or legacy-import readiness checks. Typed API upload does not consume this NDJSON. |
+| `--legacy-import` | Legacy fallback path | You intentionally need the old `kb-dashboard-cli` compile+saved-object import behavior. It requires YAML and bypasses the native artifact upload path. |
+| `--compiled-dir` | Deprecated compatibility alias | Older scripts still pass it. New scripts should use `--artifact-dir` or `--yaml-dir`; NDJSON directories are not uploaded directly. |
+| `--fetch-alerts` / `--fetch-monitors` | Deprecated compatibility aliases | Older scripts still use them. New scripts should use `--assets alerts` or `--assets all`. |
+
 ### Compile / Upload
 
 ```bash
@@ -526,7 +551,11 @@ directory (or directly its `native/` or `yaml/` child). `--artifact-format`
 picks the representation:
 
 - `auto` (default) — prefer reviewed native artifacts (`native/*.native.json`)
-  when present, else fall back to YAML.
+  when present, else fall back to YAML. When both native artifacts and YAML
+  artifacts are present under an artifact root, their stems must match; a mixed
+  or incomplete tree is rejected so dashboards are not silently skipped. Point
+  directly at `native/` to intentionally upload only native artifacts, or pass
+  `--artifact-format yaml` to intentionally use YAML.
 - `native` — upload the reviewed typed API payload exactly, with **no** YAML
   re-mapping and **no** legacy fallback. A rejection is reported as-is, since
   there is nothing to silently re-derive it from; pass `--artifact-format
@@ -541,8 +570,9 @@ picks the representation:
 This is the file-based upload entry. During `obs-migrate migrate --upload`,
 Grafana and Datadog prefer the in-memory `native_dashboard` already derived from
 `DashboardIR` (same payload shape as the persisted `native/*.native.json`
-artifact); on-disk YAML remains the portable artifact for standalone upload,
-lint, and `--compile`/`--legacy-import`.
+artifact). For standalone upload, the portable default artifact is now
+`native/*.native.json`; on-disk YAML remains supported for explicit
+`--artifact-format yaml`, lint, and `--compile`/`--legacy-import`.
 
 Pass `--legacy-import` to force the legacy `kb-dashboard-cli` resolution path
 (installed console script, otherwise pinned `uvx` fallback) for every
@@ -1147,7 +1177,8 @@ KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=a
 
 Without `--es-url`, Grafana skips schema discovery and emitted-query
 validation. Dashboard-capable runs (`--assets dashboards` or `--assets all`)
-still write dashboard YAML and the normal dashboard report artifacts (local
+still write dashboard YAML, `dashboards/native/*.native.json`,
+`dashboards/ir/*.ir.json`, and the normal dashboard report artifacts (local
 NDJSON compilation is opt-in via `--compile`, matching datadog-migrate).
 Alerts-only runs (`--assets alerts`) skip dashboard emission and
 write alert artifacts under `<output-dir>/alerts`. For pure source-side alert
@@ -1198,17 +1229,21 @@ validated monitor shapes.
 
 Without `--es-url`, Datadog stays in offline field-capabilities mode.
 Dashboard-capable runs (`--assets dashboards` or `--assets all`) write dashboard
-YAML (derived from `DashboardIR`) plus the standard dashboard run reports.
+YAML plus `dashboards/native/*.native.json` and `dashboards/ir/*.ir.json`
+(all derived from `DashboardIR`) plus the standard dashboard run reports.
 Local NDJSON compilation is opt-in via `--compile`; `--no-compile` remains
 accepted for compatibility and is the default. Upload deploys through Kibana's
 typed Dashboards API by default: migrate `--upload` prefers the in-memory
 `native_dashboard` from `DashboardIR`, while standalone `obs-migrate upload`
-maps YAML files (neither path consumes the NDJSON written by
-`obs-migrate compile`). Rejected dashboards fall back per-dashboard to the
-legacy `kb-dashboard-cli` compile+import; pass `--legacy-import` to force that
-path for every dashboard, which auto-enables legacy compilation. Alerts-only
-runs (`--assets alerts`) skip dashboard YAML and compiled output, write monitor
-artifacts under `<output-dir>/alerts`, and still emit the root
+prefers persisted native review artifacts when present and falls back to YAML
+only when native artifacts are absent or `--artifact-format yaml` is selected
+(neither path consumes the NDJSON written by `obs-migrate compile`). YAML-mode
+rejections fall back per-dashboard to the legacy `kb-dashboard-cli`
+compile+import; native-artifact rejections do not silently fall back. Pass
+`--legacy-import` to force that legacy path for every dashboard, which
+auto-enables legacy compilation. Alerts-only runs (`--assets alerts`) skip
+dashboard YAML/native/IR artifacts and compiled output, write monitor artifacts
+under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
 dashboard scoping via `--dashboard-ids` before any Elastic target exists.
 
@@ -1281,7 +1316,8 @@ This flow remains supported in a source checkout when you want to regenerate the
 
 set -a && source serverless_creds.env && set +a
 .venv/bin/obs-migrate upload \
-  --yaml-dir examples/alerting/generated/grafana/dashboards/yaml \
+  --artifact-dir examples/alerting/generated/grafana/dashboards \
+  --artifact-format yaml \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY"
 

@@ -95,6 +95,11 @@ from (pass `--artifact-format yaml` explicitly for that fallback). Pass
 `--legacy-import` to force the legacy compile+import path for every
 dashboard; it always requires YAML (it forces `--artifact-format yaml`).
 
+In short: native IR is the new source of truth for dashboard upload. The YAML,
+compile, and saved-object import surfaces are compatibility paths for review,
+linting, legacy automation, and explicit fallback workflows; they are not the
+default deployment contract anymore.
+
 ### Native Dashboard-as-Code Review Artifacts
 
 Every dashboard migration run persists two artifacts per dashboard, whether or
@@ -131,6 +136,13 @@ saved objects. The accepted shapes are:
 - A directory containing `*.yaml` dashboard files directly (e.g. `migration_output/dashboards/yaml`).
 - A dashboard artifacts directory that holds `native/` and/or `yaml/` subdirectories (e.g. `migration_output/dashboards`).
 - The compiled sibling of a dashboard artifacts directory, because the command falls back to the sibling `yaml/` directory (e.g. `migration_output/dashboards/compiled`).
+
+When `--artifact-format auto` sees both native artifacts and YAML under an
+artifact root, it requires their stems to match exactly. A partial/mixed tree
+(for example, one missing `*.native.json`) is rejected with
+`mixed_native_yaml_artifacts` instead of uploading a silent subset. Point
+directly at the `native/` directory for an intentional native-only subset, or
+pass `--artifact-format yaml` when you intentionally want the YAML mapping path.
 
 `--yaml-dir` remains accepted as a compatibility alias for `--artifact-dir ...
 --artifact-format yaml`. The older `--compiled-dir` alias is still accepted

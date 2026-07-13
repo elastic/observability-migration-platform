@@ -79,6 +79,7 @@ rule packs/plugins/schema setup
   -> translate_dashboard() (assemble DashboardIR; derive native + YAML)
   -> optional metadata polish (rebuild DashboardIR; re-derive native + YAML)
   -> optional emitted-query validation and YAML sync (same IR rebuild)
+  -> persist native/IR review artifacts
   -> YAML lint
   -> optional compile and layout validation
   -> optional upload (typed API prefers native_dashboard from IR)
@@ -95,8 +96,9 @@ rule packs/plugins/schema setup
 | Translate + emit | `panels.py`, `translate.py`, `promql.py` | Choose native `PROMQL`, rule-engine ES\|QL, LLM fallback, or native ES\|QL reuse; map panels; assemble `DashboardIR`; derive native Dashboards API payload + YAML |
 | Feature-gap extraction | `links.py`, `annotations.py`, `alerts.py`, `transforms.py` | Collect reviewer-facing artifacts for non-query surfaces |
 | Optional validate | `esql_validate.py` | Validate emitted target queries against Elasticsearch, auto-fix safe cases, and manualize broken ones |
+| Native/IR review artifacts | `targets/kibana/native_artifacts.py` | Persist `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`, and `dashboards/native/index.json` after final IR/native regeneration so review artifacts match an immediate upload |
 | Lint / compile / layout | `targets/kibana/compile.py` | Lint YAML; optional compile NDJSON and validate compiled layout |
-| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Typed API upload prefers in-memory `native_dashboard` from IR; the same payload is persisted as `dashboards/native/*.native.json` for review, and standalone `obs-migrate upload --artifact-dir` prefers that artifact when present, else maps YAML |
+| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Typed API upload prefers in-memory `native_dashboard` from IR; standalone `obs-migrate upload --artifact-dir` prefers the persisted native artifact when present, rejects mixed native/YAML artifact roots, and falls back to YAML only when native artifacts are absent or YAML is selected |
 | Optional integrated smoke | `cli.py`, `targets/kibana/smoke.py`, `smoke_integration.py` | Validate uploaded dashboards, optionally run browser audit / screenshots, then merge post-upload smoke results back into the migration evidence |
 | Verification + reporting | `verification.py`, `report.py`, `manifest.py`, `rollout.py` | Build semantic gates, save reports/manifests/verification packets, and generate rollout guidance |
 | Optional preflight mode | `preflight.py` | Probe source inventory, target readiness, and required target contract for readiness assessment |

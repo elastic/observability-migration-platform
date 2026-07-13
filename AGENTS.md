@@ -43,6 +43,23 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 - Keep `docs/` canonical for narrative and reference docs.
 - Keep `examples/` and `infra/` focused on assets plus local landing READMEs.
 - Do not duplicate long command walkthroughs outside `docs/command-contract.md`.
+- When a change affects operator-visible behavior, update the matching docs in
+  the same PR. Use this checklist:
+  - CLI flags, command shapes, env vars, upload/compile/smoke behavior:
+    `docs/command-contract.md`.
+  - Shared asset/IR/result contracts: `docs/architecture/asset-model.md`.
+  - Package maps or cross-source pipeline structure: `docs/architecture.md` and
+    `docs/pipeline-trace.tpl.md` (then regenerate `docs/pipeline-trace.md`).
+  - Kibana target behavior, native API/YAML/compile/upload artifacts:
+    `docs/targets/kibana.md`.
+  - Grafana- or Datadog-specific extraction, translation, validation, or upload
+    behavior: `docs/sources/grafana.md` or `docs/sources/datadog.md`.
+  - Public install/scope pointers: `README.md` and `docs/README.md`.
+  - Importable public helpers/modules: `docs/contributing/import-paths.md`.
+  - Verification gates or verifier commands: `docs/testing.md` and the relevant
+    command examples in `docs/command-contract.md`.
+  - Generated trace docs: edit the matching `*.tpl.md` or generator and run
+    `python scripts/audit_pipeline.py --update-docs`.
 - Do not commit secrets or generated local artifacts.
 - Preserve the existing "degrade gracefully" behavior for unsupported translations instead of hiding semantic gaps.
 - For dashboard migration fixes, prove the generated YAML matches `docs/dashboards/schema.json`

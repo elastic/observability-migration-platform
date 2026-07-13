@@ -19,6 +19,17 @@ this repo as the single source of truth for it. (See the Naming note in
 - Architecture overview: `docs/architecture.md`
 - Canonical CLI commands: `docs/command-contract.md`
 - Build / test / lint: see `AGENTS.md` (use `make test`, `make lint`, `make typecheck`).
+- Keep docs in the same PR as operator-visible behavior changes. Update
+  `docs/command-contract.md` for CLI/env/upload/compile/smoke changes,
+  `docs/architecture/asset-model.md` for shared IR/result contracts,
+  `docs/architecture.md` and `docs/pipeline-trace.tpl.md` for package maps or
+  cross-source pipeline structure,
+  `docs/targets/kibana.md` for Kibana target/native API/YAML artifact behavior,
+  `docs/sources/grafana.md` or `docs/sources/datadog.md` for source-specific
+  behavior, `docs/contributing/import-paths.md` for public helper/module moves,
+  and `docs/testing.md` for verifier/gate changes. If public install/scope
+  changes, also update `README.md` and `docs/README.md`. Generated trace docs
+  must be updated through their templates/generators.
 - Preserve "degrade gracefully" behavior for unsupported translations — do not silently hide semantic gaps.
 - Do not commit secrets or generated local artifacts.
 - Dashboard migration fixes must be checked against the schema, compiled saved

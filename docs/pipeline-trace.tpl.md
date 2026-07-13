@@ -84,7 +84,7 @@ Source dashboard files (Grafana JSON / Datadog JSON)
 [10] REPORT — write migration_report.json, manifest, verification packets
   │
   ▼
-[11] UPLOAD (optional) — typed Dashboards API from native_dashboard (IR); YAML fallback for standalone upload
+[11] UPLOAD (optional) — typed Dashboards API from native_dashboard / reviewed native artifact; YAML fallback by explicit format or absence
   │
   ▼
 [12] SMOKE (optional) — validate uploaded dashboards in Kibana
@@ -152,7 +152,7 @@ reports, verification, and downstream analysis.
   `DashboardIR` (primary working artifact)
 - From `DashboardIR`, derive both:
   - native Dashboards API payload (`native_dashboard_from_ir`)
-  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / standalone upload
+  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / explicit YAML upload
 - Grafana 24-column grid → Kibana 48-column grid
 - Template variables → Kibana dashboard controls / `pinned_panels` (both sources)
 - Display enrichment: units, legend, axis titles, thresholds, colour overrides
@@ -167,7 +167,7 @@ reports, verification, and downstream analysis.
 | 8. Compile (optional) | `kb-dashboard-cli` | YAML → Kibana NDJSON when `--compile` / `--legacy-import` |
 | 9. Verify | Semantic gates | Green / yellow / red quality signal |
 | 10. Report | `migration_report.json` | Persistent audit trail |
-| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR; standalone upload maps YAML |
+| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
 | 12. Smoke | Saved-object check | Validates dashboards are loadable |
 
 ---

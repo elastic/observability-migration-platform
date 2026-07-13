@@ -19,7 +19,8 @@ All code lives in the `observability_migration/` package.
 | Symbol | Import path |
 |--------|------------|
 | `compile_yaml`, `upload_yaml`, `compile_all` | `observability_migration.targets.kibana.compile` |
-| `native_dashboard_from_ir`, `native_dashboard_from_yaml`, `upload_yaml_files` | `observability_migration.targets.kibana.dashboards_api` |
+| `native_dashboard_from_ir`, `native_dashboard_from_yaml`, `upload_native_dashboard`, `upload_native_artifact`, `upload_yaml_files` | `observability_migration.targets.kibana.dashboards_api` |
+| `build_native_artifact`, `build_ir_artifact`, `write_native_artifact`, `write_ir_artifact`, `write_native_artifact_index` | `observability_migration.targets.kibana.native_artifacts` |
 | `DashboardIR` | `observability_migration.core.assets.dashboard` |
 | `enrich_yaml_panel_display` | `observability_migration.targets.kibana.emit.display` |
 | `ESQLShape`, `extract_esql_columns` | `observability_migration.targets.kibana.emit.esql_utils` |

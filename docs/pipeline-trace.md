@@ -38,41 +38,53 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
+| grafana | ArgoCD | 41 | 30 | 9 | 0 | 2 | 0 | 9 |
 | grafana | Prometheus Blackbox Exporter | 10 | 9 | 1 | 0 | 0 | 0 | 2 |
+| grafana | cert-manager | 13 | 11 | 2 | 0 | 0 | 0 | 2 |
+| grafana | CoreDNS | 23 | 15 | 4 | 0 | 4 | 0 | 5 |
 | grafana | Diverse Panel Types Test | 10 | 3 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Docker and system monitoring | 15 | 6 | 8 | 0 | 1 | 0 | 0 |
-| grafana | Docker and system monitoring | 20 | 11 | 6 | 0 | 3 | 0 | 0 |
+| grafana | Docker and system monitoring | 20 | 11 | 8 | 0 | 1 | 0 | 0 |
+| grafana | Envoy Proxy | 13 | 7 | 6 | 0 | 0 | 0 | 0 |
+| grafana | Erlang-Distribution | 18 | 0 | 15 | 0 | 3 | 0 | 5 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
 | grafana | Flagger Canary Status | 34 | 1 | 31 | 0 | 2 | 0 | 4 |
 | grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Istio Service Dashboard | 25 | 3 | 13 | 0 | 9 | 0 | 3 |
 | grafana | Kubernetes cluster monitoring (via Prometheus) | 21 | 15 | 6 | 0 | 0 | 0 | 0 |
 | grafana | Kubernetes Cluster (Prometheus) | 29 | 1 | 28 | 0 | 0 | 0 | 6 |
-| grafana | Kubernetes / Views / Global | 26 | 11 | 12 | 0 | 3 | 0 | 4 |
+| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
 | grafana | Kubernetes Kafka | 32 | 21 | 11 | 0 | 0 | 0 | 3 |
+| grafana | Keycloak Metrics Dashboard | 24 | 5 | 19 | 0 | 0 | 0 | 0 |
+| grafana | kube-state-metrics-v2 | 42 | 31 | 9 | 0 | 2 | 0 | 9 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | MySQL Overview | 36 | 7 | 12 | 0 | 17 | 0 | 14 |
+| grafana | MySQL Overview | 36 | 7 | 29 | 0 | 0 | 0 | 14 |
 | grafana | Node Exporter Full | 116 | 39 | 77 | 0 | 0 | 0 | 16 |
 | grafana | NodeJS Application Dashboard | 9 | 5 | 3 | 0 | 1 | 0 | 0 |
+| grafana | NVIDIA DCGM Exporter Dashboard | 8 | 7 | 1 | 0 | 0 | 0 | 0 |
+| grafana | PostgreSQL Database | 32 | 0 | 32 | 0 | 0 | 0 | 3 |
 | grafana | Prometheus 2.0 Overview | 30 | 1 | 29 | 0 | 0 | 0 | 0 |
 | grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 28 | 10 | 5 | 1 | 0 | 0 |
+| grafana | RabbitMQ-Overview | 40 | 2 | 18 | 0 | 20 | 0 | 7 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter 1.x | 13 | 9 | 3 | 0 | 1 | 0 | 0 |
+| grafana | Spring Boot Observability | 11 | 1 | 4 | 0 | 6 | 0 | 0 |
 | datadog | Apache - Overview | 22 | 12 | 8 | 1 | 1 | 0 | 0 |
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
 | datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
+| datadog | HAProxy - Overview | 29 | 9 | 13 | 0 | 1 | 6 | 0 |
 | datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 28 | 3 | 2 | 9 | 0 |
 | datadog | Kubernetes - Overview | 57 | 2 | 39 | 4 | 2 | 10 | 0 |
 | datadog | MongoDB - Overview | 43 | 13 | 20 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
 | datadog | NGINX - Overview | 27 | 12 | 5 | 2 | 2 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 12 | 23 | 5 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 24 | 5 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
-**33 dashboards, 922 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
+**45 dashboards, 1212 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -80,9 +92,9 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 252 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 452 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 270 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 288 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 676 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 343 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -91,20 +103,20 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 | Count | Warning |
 |------:|---------|
 | 220 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
-| 102 | Dropped variable-driven label filters during migration |
-| 78 | Grafana panel description is not carried into Kibana YAML automatically |
-| 66 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
-| 56 | XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 42 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
-| 32 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 31 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
-| 17 | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped |
+| 170 | Dropped variable-driven label filters during migration |
+| 126 | Grafana panel description is not carried into Kibana YAML automatically |
+| 120 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
+| 65 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
+| 48 | Grafana panel has 1 field override(s); verify visual mappings manually |
+| 41 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
+| 33 | Grafana panel has 10 field override(s); verify visual mappings manually |
+| 17 | PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples |
+| 14 | XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged |
+| 14 | round(v, step) emitted as ROUND(v / step) * step |
+| 12 | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index) |
+| 12 | Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric. |
 | 12 | Grafana panel has 1 link(s); verify drilldowns manually |
-| 11 | Grafana panel has 2 field override(s); verify visual mappings manually |
-| 9 | Panel has 2 PromQL targets but only 1 could be migrated |
-| 9 | as_count interval semantics are approximated in ES\|QL |
-| 7 | Panel has 3 PromQL targets but only 1 could be migrated |
-| 7 | rollup interval is approximated in ES\|QL |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -146,7 +158,7 @@ Source dashboard files (Grafana JSON / Datadog JSON)
 [10] REPORT — write migration_report.json, manifest, verification packets
   │
   ▼
-[11] UPLOAD (optional) — typed Dashboards API from native_dashboard (IR); YAML fallback for standalone upload
+[11] UPLOAD (optional) — typed Dashboards API from native_dashboard / reviewed native artifact; YAML fallback by explicit format or absence
   │
   ▼
 [12] SMOKE (optional) — validate uploaded dashboards in Kibana
@@ -214,7 +226,7 @@ reports, verification, and downstream analysis.
   `DashboardIR` (primary working artifact)
 - From `DashboardIR`, derive both:
   - native Dashboards API payload (`native_dashboard_from_ir`)
-  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / standalone upload
+  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / explicit YAML upload
 - Grafana 24-column grid → Kibana 48-column grid
 - Template variables → Kibana dashboard controls / `pinned_panels` (both sources)
 - Display enrichment: units, legend, axis titles, thresholds, colour overrides
@@ -229,7 +241,7 @@ reports, verification, and downstream analysis.
 | 8. Compile (optional) | `kb-dashboard-cli` | YAML → Kibana NDJSON when `--compile` / `--legacy-import` |
 | 9. Verify | Semantic gates | Green / yellow / red quality signal |
 | 10. Report | `migration_report.json` | Persistent audit trail |
-| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR; standalone upload maps YAML |
+| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
 | 12. Smoke | Saved-object check | Validates dashboards are loadable |
 
 ---
@@ -259,26 +271,26 @@ reports, verification, and downstream analysis.
 From the latest trace run:
 
 ```
-Elements:            974 total (922 panels + 52 rows)
-Renderable panels:   922
-  Migrated:             183 (19.8%)
-  With warnings:        275 (29.8%)
-  OK:                   108 (11.7%)
-  Warning:              221 (24.0%)
-  Requires manual:       30 (3.3%)
-  Not feasible:          42 (4.6%)
-  Skipped:               63 (6.8%)
+Elements:            1307 total (1212 panels + 95 rows)
+Renderable panels:   1212
+  Migrated:             294 (24.3%)
+  With warnings:        430 (35.5%)
+  OK:                   107 (8.8%)
+  Warning:              222 (18.3%)
+  Requires manual:       29 (2.4%)
+  Not feasible:          67 (5.5%)
+  Skipped:               63 (5.2%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                  252
-  MINOR_ISSUE:              452
-  EXPECTED_LIMITATION:      270
+  CORRECT:                  288
+  MINOR_ISSUE:              676
+  EXPECTED_LIMITATION:      343
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-07-09 10:11 UTC*
+*Last generated: 2026-07-13 06:19 UTC*

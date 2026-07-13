@@ -28,7 +28,8 @@ Install or verify:
 - Docker with `docker compose`
 - Python 3
 - a project virtual environment with the repo installed in editable mode
-- `uvx` so `kb-dashboard-cli` can compile and upload dashboards
+- `uvx` for the pinned Kibana tooling fallback used by legacy compile/import
+  checks when the in-venv tools are unavailable
 - optional Chrome or Chromium if you want screenshot capture during smoke validation
 
 Recommended setup:
@@ -90,7 +91,7 @@ This script:
 3. provisions Kibana data views for `metrics-*`, `logs-*`, and `traces-*`
 4. selects three representative Grafana dashboards
 5. runs the migration pipeline with live ES|QL validation
-6. uploads the compiled dashboards to Kibana
+6. uploads the dashboards to Kibana through the typed Dashboards API
 7. runs saved-object smoke validation
 8. runs browser-side dashboard audit checks
 9. captures screenshots by default
@@ -104,6 +105,8 @@ Important files:
 - `validation/local_otlp_sample_run/migration_report.json`
 - `validation/local_otlp_sample_run/migration_manifest.json`
 - `validation/local_otlp_sample_run/verification_packets.json`
+- `validation/local_otlp_sample_run/dashboards/native/*.native.json`
+- `validation/local_otlp_sample_run/dashboards/ir/*.ir.json`
 - `validation/local_otlp_sample_run/upload_smoke_report.json`
 - `validation/local_otlp_sample_run/browser_qa`
 - `validation/local_otlp_sample_run/dashboard_qa`
@@ -221,7 +224,8 @@ This script creates or updates saved objects with fixed IDs for:
 - `logs-*`
 - `traces-*`
 
-The fixed IDs matter because the compiled dashboards expect those references to exist in Kibana.
+The fixed IDs matter because uploaded dashboards and controls expect those
+data-view references to exist in Kibana.
 
 ## What Counts As A Good Validation Result
 
@@ -231,7 +235,7 @@ In this repo, a successful end-to-end lab run means:
 
 - the infrastructure started
 - data reached Elasticsearch
-- dashboards translated and compiled
+- dashboards translated and native/IR review artifacts were written
 - dashboards uploaded to Kibana
 - smoke validation ran against the uploaded saved objects without hard runtime failures, layout failures, browser-visible errors, or unvalidated query panels
 
@@ -271,7 +275,7 @@ These will usually show whether the issue is:
 - missing source metrics in the lab
 - missing labels
 - a translation gap
-- a query that compiled but still fails at runtime
+- a translated query that still fails at runtime
 - a panel that did not expose a runnable ES|QL query after upload
 
 ### The sample dashboards upload, but some panels are empty

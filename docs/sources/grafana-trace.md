@@ -61,27 +61,39 @@ queries because the Kibana control applies the filter at dashboard level.
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
+| grafana | ArgoCD | 41 | 30 | 9 | 0 | 2 | 0 | 9 |
 | grafana | Prometheus Blackbox Exporter | 10 | 9 | 1 | 0 | 0 | 0 | 2 |
+| grafana | cert-manager | 13 | 11 | 2 | 0 | 0 | 0 | 2 |
+| grafana | CoreDNS | 23 | 15 | 4 | 0 | 4 | 0 | 5 |
 | grafana | Diverse Panel Types Test | 10 | 3 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Docker and system monitoring | 15 | 6 | 8 | 0 | 1 | 0 | 0 |
-| grafana | Docker and system monitoring | 20 | 11 | 6 | 0 | 3 | 0 | 0 |
+| grafana | Docker and system monitoring | 20 | 11 | 8 | 0 | 1 | 0 | 0 |
+| grafana | Envoy Proxy | 13 | 7 | 6 | 0 | 0 | 0 | 0 |
+| grafana | Erlang-Distribution | 18 | 0 | 15 | 0 | 3 | 0 | 5 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
 | grafana | Flagger Canary Status | 34 | 1 | 31 | 0 | 2 | 0 | 4 |
 | grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Istio Service Dashboard | 25 | 3 | 13 | 0 | 9 | 0 | 3 |
 | grafana | Kubernetes cluster monitoring (via Prometheus) | 21 | 15 | 6 | 0 | 0 | 0 | 0 |
 | grafana | Kubernetes Cluster (Prometheus) | 29 | 1 | 28 | 0 | 0 | 0 | 6 |
-| grafana | Kubernetes / Views / Global | 26 | 11 | 12 | 0 | 3 | 0 | 4 |
+| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
 | grafana | Kubernetes Kafka | 32 | 21 | 11 | 0 | 0 | 0 | 3 |
+| grafana | Keycloak Metrics Dashboard | 24 | 5 | 19 | 0 | 0 | 0 | 0 |
+| grafana | kube-state-metrics-v2 | 42 | 31 | 9 | 0 | 2 | 0 | 9 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | MySQL Overview | 36 | 7 | 12 | 0 | 17 | 0 | 14 |
+| grafana | MySQL Overview | 36 | 7 | 29 | 0 | 0 | 0 | 14 |
 | grafana | Node Exporter Full | 116 | 39 | 77 | 0 | 0 | 0 | 16 |
 | grafana | NodeJS Application Dashboard | 9 | 5 | 3 | 0 | 1 | 0 | 0 |
+| grafana | NVIDIA DCGM Exporter Dashboard | 8 | 7 | 1 | 0 | 0 | 0 | 0 |
+| grafana | PostgreSQL Database | 32 | 0 | 32 | 0 | 0 | 0 | 3 |
 | grafana | Prometheus 2.0 Overview | 30 | 1 | 29 | 0 | 0 | 0 | 0 |
 | grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 28 | 10 | 5 | 1 | 0 | 0 |
+| grafana | RabbitMQ-Overview | 40 | 2 | 18 | 0 | 20 | 0 | 7 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter 1.x | 13 | 9 | 3 | 0 | 1 | 0 | 0 |
+| grafana | Spring Boot Observability | 11 | 1 | 4 | 0 | 6 | 0 | 0 |
 
-**19 dashboards, 496 panels** audited from `infra/grafana/dashboards/`.
+**31 dashboards, 786 panels** audited from `infra/grafana/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -89,9 +101,9 @@ queries because the Kibana control applies the filter at dashboard level.
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 24 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 427 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 97 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 62 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 650 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 169 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -99,21 +111,21 @@ queries because the Kibana control applies the filter at dashboard level.
 
 | Count | Warning |
 |------:|---------|
-| 102 | Dropped variable-driven label filters during migration |
-| 78 | Grafana panel description is not carried into Kibana YAML automatically |
-| 66 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
-| 56 | XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 42 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
-| 32 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 31 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
-| 17 | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped |
+| 170 | Dropped variable-driven label filters during migration |
+| 126 | Grafana panel description is not carried into Kibana YAML automatically |
+| 120 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
+| 65 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
+| 48 | Grafana panel has 1 field override(s); verify visual mappings manually |
+| 41 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
+| 33 | Grafana panel has 10 field override(s); verify visual mappings manually |
+| 17 | PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples |
+| 14 | XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged |
+| 14 | round(v, step) emitted as ROUND(v / step) * step |
+| 12 | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index) |
+| 12 | Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric. |
 | 12 | Grafana panel has 1 link(s); verify drilldowns manually |
-| 11 | Grafana panel has 2 field override(s); verify visual mappings manually |
-| 9 | Panel has 2 PromQL targets but only 1 could be migrated |
-| 7 | Panel has 3 PromQL targets but only 1 could be migrated |
-| 6 | round(v, step) emitted as ROUND(v / step) * step |
-| 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
-| 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
+| 11 | Panel has 2 PromQL targets but only 1 could be migrated |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -121,6 +133,1320 @@ queries because the Kibana control applies the filter at dashboard level.
 ## Per-Dashboard Traces
 
 <!-- GENERATED:PER_DASHBOARD_TRACES -->
+### Grafana: ArgoCD
+
+**File:** `argocd-14584.json` — **Panels:** 50
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Overview | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Application Status | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Sync Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Controller Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Controller Telemetry | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Cluster Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Repo Server Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Server Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Redis Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
+| Uptime | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | time() - max(process_start_time_seconds{job="argocd-server-metrics",namespace=~"... | FROM metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE proce... |
+| Clusters | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count by (server) (argocd_cluster_info{namespace=~"$namespace"})) | FROM metrics-prometheus-* \| WHERE argocd_cluster_info IS NOT NULL \| STATS argo... |
+| Applications | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_statu... | TS metrics-prometheus-* \| WHERE argocd_app_info IS NOT NULL \| STATS argocd_app... |
+| Repositories | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count by (repo) (argocd_app_info{namespace=~"$namespace"})) | FROM metrics-prometheus-* \| WHERE argocd_app_info IS NOT NULL \| STATS argocd_a... |
+| Operations | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",operation!="... | TS metrics-prometheus-* \| WHERE operation != "" \| WHERE argocd_app_info IS NOT... |
+| Applications | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_statu... | TS metrics-prometheus-* \| WHERE argocd_app_info IS NOT NULL \| STATS argocd_app... |
+| Health Status | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_statu... | TS metrics-prometheus-* \| WHERE health_status != "" \| WHERE argocd_app_info IS... |
+| Sync Status | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_statu... | TS metrics-prometheus-* \| WHERE health_status != "" \| WHERE argocd_app_info IS... |
+| Sync Activity | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(round(increase(argocd_app_sync_total{namespace=~"$namespace",dest_server=~"$... | — |
+| Sync Failures | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(round(increase(argocd_app_sync_total{namespace=~"$namespace",phase=~"Error\|... | TS metrics-prometheus-* \| WHERE phase RLIKE "Error\|Failed" \| WHERE argocd_app... |
+| Reconciliation Activity | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(increase(argocd_app_reconcile_count{namespace=~"$namespace",dest_server=~"$c... | — |
+| Reconciliation Performance | `heatmap` → `heatmap` | migrated | **MINOR_ISSUE** | sum(increase(argocd_app_reconcile_bucket{namespace=~"$namespace"}[$interval])) b... | TS metrics-prometheus-* \| WHERE argocd_app_reconcile_bucket IS NOT NULL \| STAT... |
+| K8s API Activity | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(argocd_app_k8s_request_total{namespace=~"$namespace",server=~"$clus... | TS metrics-prometheus-* \| WHERE argocd_app_k8s_request_total IS NOT NULL \| STA... |
+| Workqueue Depth | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(workqueue_depth{namespace=~"$namespace",name=~"app_.*"}) by (name) | TS metrics-prometheus-* \| WHERE name RLIKE "app_.*" \| WHERE workqueue_depth IS... |
+| Pending kubectl run | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(argocd_kubectl_exec_pending{namespace=~"$namespace"}) by (command) | TS metrics-prometheus-* \| WHERE argocd_kubectl_exec_pending IS NOT NULL \| STAT... |
+| Memory Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | go_memstats_heap_alloc_bytes{job="argocd-metrics",namespace=~"$namespace"} | TS metrics-prometheus-* \| WHERE job == "argocd-metrics" \| WHERE go_memstats_he... |
+| CPU Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | irate(process_cpu_seconds_total{job="argocd-metrics",namespace=~"$namespace"}[1m... | TS metrics-prometheus-* \| WHERE job == "argocd-metrics" \| WHERE process_cpu_se... |
+| Goroutines | `graph` → `line` | migrated | **MINOR_ISSUE** | go_goroutines{job="argocd-metrics",namespace=~"$namespace"} | TS metrics-prometheus-* \| WHERE job == "argocd-metrics" \| WHERE go_goroutines ... |
+| Resource Objects Count | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(argocd_cluster_api_resource_objects{namespace=~"$namespace",server=~"$cluste... | TS metrics-prometheus-* \| WHERE argocd_cluster_api_resource_objects IS NOT NULL... |
+| API Resources Count | `graph` → `line` | migrated | **MINOR_ISSUE** |   sum(argocd_cluster_api_resources{namespace=~"$namespace",server=~"$cluster"}) ... | TS metrics-prometheus-* \| WHERE argocd_cluster_api_resources IS NOT NULL \| STA... |
+| Cluster Events Count | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(argocd_cluster_events_total{namespace=~"$namespace",server=~"$clust... | TS metrics-prometheus-* \| WHERE argocd_cluster_events_total IS NOT NULL \| STAT... |
+| Git Requests (ls-remote) | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(argocd_git_request_total{request_type="ls-remote", namespace=~"$nam... | TS metrics-prometheus-* \| WHERE request_type == "ls-remote" \| WHERE argocd_git... |
+| Git Requests (checkout) | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(argocd_git_request_total{request_type="fetch", namespace=~"$namespa... | TS metrics-prometheus-* \| WHERE request_type == "fetch" \| WHERE argocd_git_req... |
+| Git Fetch Performance | `heatmap` → `heatmap` | migrated | **MINOR_ISSUE** | sum(increase(argocd_git_request_duration_seconds_bucket{request_type="fetch", na... | TS metrics-prometheus-* \| WHERE request_type == "fetch" \| WHERE argocd_git_req... |
+| Git Ls-Remote Performance | `heatmap` → `heatmap` | migrated | **MINOR_ISSUE** | sum(increase(argocd_git_request_duration_seconds_bucket{request_type="ls-remote"... | TS metrics-prometheus-* \| WHERE request_type == "ls-remote" \| WHERE argocd_git... |
+| Memory Used | `graph` → `line` | migrated | **MINOR_ISSUE** | go_memstats_heap_alloc_bytes{job="argocd-repo-server",namespace=~"$namespace"} | TS metrics-prometheus-* \| WHERE job == "argocd-repo-server" \| WHERE go_memstat... |
+| Goroutines | `graph` → `line` | migrated | **MINOR_ISSUE** | go_goroutines{job="argocd-repo-server",namespace=~"$namespace"} | TS metrics-prometheus-* \| WHERE job == "argocd-repo-server" \| WHERE go_gorouti... |
+| Memory Used | `graph` → `line` | migrated | **MINOR_ISSUE** | go_memstats_heap_alloc_bytes{job="argocd-server-metrics",namespace=~"$namespace"... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE go_mems... |
+| Goroutines | `graph` → `line` | migrated | **MINOR_ISSUE** | go_goroutines{job="argocd-server-metrics",namespace=~"$namespace"} | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE go_goro... |
+| GC Time Quantiles | `graph` → `line` | migrated | **MINOR_ISSUE** | go_gc_duration_seconds{job="argocd-server-metrics", quantile="1", namespace=~"$n... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE quantil... |
+| Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
+| ApplicationService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| ClusterService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| ProjectService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| RepositoryService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| SessionService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| VersionService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| AccountService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| SettingsService Requests | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(grpc_server_handled_total{job="argocd-server-metrics",grpc_service=... | TS metrics-prometheus-* \| WHERE job == "argocd-server-metrics" \| WHERE grpc_se... |
+| Requests by result | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(argocd_redis_request_total{namespace=~"$namespace"}[$interval])) by... | TS metrics-prometheus-* \| WHERE argocd_redis_request_total IS NOT NULL \| STATS... |
+
+<details>
+<summary>Detailed traces (39 panels)</summary>
+
+#### Uptime
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+time() - max(process_start_time_seconds{job="argocd-server-metrics",namespace=~"$namespace"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family` → translated uptime expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+FROM metrics-prometheus-*
+| WHERE job == "argocd-server-metrics"
+| WHERE process_start_time_seconds IS NOT NULL
+| STATS start_time_ms = MAX(process_start_time_seconds * 1000)
+| EVAL process_start_time_seconds_uptime_seconds = DATE_DIFF("seconds", TO_DATETIME(start_time_ms), NOW())
+| KEEP process_start_time_seconds_uptime_seconds
+```
+
+**Query IR:**
+
+- Family: `uptime`
+- Metric: `process_start_time_seconds`
+- Outer agg: `max`
+- Binary op: `-`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `process_start_time_seconds_uptime_seconds`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated time() - metric as uptime from metric timestamp
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=4, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated time() - metric as uptime from metric timestamp
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated time() - metric as uptime from metric timestamp
+
+**Verdict:** MINOR_ISSUE
+
+#### Clusters
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+count(count by (server) (argocd_cluster_info{namespace=~"$namespace"}))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family` → translated nested count(count()) expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+FROM metrics-prometheus-*
+| WHERE argocd_cluster_info IS NOT NULL
+| STATS argocd_cluster_info_count = COUNT_DISTINCT(server)
+```
+
+**Query IR:**
+
+- Family: `nested_agg`
+- Metric: `argocd_cluster_info_count`
+- Outer agg: `count`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_cluster_info_count`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(server)
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=10, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated nested count(count()) as COUNT_DISTINCT(server)
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(server)
+
+**Verdict:** MINOR_ISSUE
+
+#### Applications
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_status=~"$health_status",sync_status=~"$sync_status"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info = SUM(argocd_app_info) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), argocd_app_info = MAX(argocd_app_info)
+| KEEP time_bucket, argocd_app_info
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_app_info`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=16, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Repositories
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+count(count by (repo) (argocd_app_info{namespace=~"$namespace"}))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family` → translated nested count(count()) expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+FROM metrics-prometheus-*
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info_count = COUNT_DISTINCT(repo)
+```
+
+**Query IR:**
+
+- Family: `nested_agg`
+- Metric: `argocd_app_info_count`
+- Outer agg: `count`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info_count`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(repo)
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=22, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated nested count(count()) as COUNT_DISTINCT(repo)
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(repo)
+
+**Verdict:** MINOR_ISSUE
+
+#### Operations
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",operation!=""})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE operation != ""
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info = SUM(argocd_app_info) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), argocd_app_info = MAX(argocd_app_info)
+| KEEP time_bucket, argocd_app_info
+| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_app_info`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=28, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance, minimum
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Applications
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_status=~"$health_status",sync_status=~"$sync_status"}) by (namespace)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to area panel
+
+**Translated (area):**
+
+```
+TS metrics-prometheus-*
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info = SUM(argocd_app_info) BY time_bucket = TBUCKET(5 minute), namespace
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_app_info`
+- Outer agg: `sum`
+- Group labels: `namespace`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info`
+- Output groups: `time_bucket, namespace`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `area`
+- Layout: x=34, y=0, w=14, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, mode
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Health Status
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_status=~"$health_status",sync_status=~"$sync_status",health_status!=""}) by (health_status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE health_status != ""
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info = SUM(argocd_app_info) BY time_bucket = TBUCKET(5 minute), health_status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_app_info`
+- Outer agg: `sum`
+- Group labels: `health_status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info`
+- Output groups: `time_bucket, health_status`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Sync Status
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(argocd_app_info{namespace=~"$namespace",dest_server=~"$cluster",health_status=~"$health_status",sync_status=~"$sync_status",health_status!=""}) by (sync_status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE health_status != ""
+| WHERE argocd_app_info IS NOT NULL
+| STATS argocd_app_info = SUM(argocd_app_info) BY time_bucket = TBUCKET(5 minute), sync_status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_app_info`
+- Outer agg: `sum`
+- Group labels: `sync_status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_info`
+- Output groups: `time_bucket, sync_status`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Sync Activity
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (graph):**
+
+```
+sum(round(increase(argocd_app_sync_total{namespace=~"$namespace",dest_server=~"$cluster"}[$interval]))) by ($grouping)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails` → grouping template variable requires manual redesign
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment`
+- `query_classifiers` / `fragment_guardrails`
+
+**Query IR:**
+
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=0, w=48, h=9
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Semantic losses:** BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Sync Failures
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(round(increase(argocd_app_sync_total{namespace=~"$namespace",phase=~"Error|Failed",dest_server=~"$cluster"}[$interval]))) by ($grouping, phase)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to area panel
+
+**Translated (area):**
+
+```
+TS metrics-prometheus-*
+| WHERE phase RLIKE "Error|Failed"
+| WHERE argocd_app_sync_total IS NOT NULL
+| STATS argocd_app_sync_total = SUM(INCREASE(argocd_app_sync_total, 5m)) BY time_bucket = TBUCKET(5 minute), phase
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `argocd_app_sync_total`
+- Range func: `increase`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `phase`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_sync_total`
+- Output groups: `time_bucket, phase`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `area`
+- Layout: x=0, y=9, w=48, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, mode
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** optional Grafana template-variable grouping dimension ($grouping) could not be resolved at migration time and was omitted; the panel is grouped by its explicit label(s) only. Re-add the breakdown in Kibana if the dashboard needs it.; Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Reconciliation Activity
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (graph):**
+
+```
+sum(increase(argocd_app_reconcile_count{namespace=~"$namespace",dest_server=~"$cluster"}[$interval])) by ($grouping)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails` → grouping template variable requires manual redesign
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment`
+- `query_classifiers` / `fragment_guardrails`
+
+**Query IR:**
+
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=0, w=48, h=9
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Semantic losses:** BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Reconciliation Performance
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (heatmap):**
+
+```
+sum(increase(argocd_app_reconcile_bucket{namespace=~"$namespace"}[$interval])) by (le)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel` → mapped to heatmap panel
+
+**Translated (heatmap):**
+
+```
+TS metrics-prometheus-*
+| WHERE argocd_app_reconcile_bucket IS NOT NULL
+| STATS argocd_app_reconcile_bucket = SUM(INCREASE(argocd_app_reconcile_bucket, 5m)) BY time_bucket = TBUCKET(5 minute), le
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `argocd_app_reconcile_bucket`
+- Range func: `increase`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `le`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_reconcile_bucket`
+- Output groups: `time_bucket, le`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `heatmap`
+- Layout: x=0, y=9, w=48, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, x_axis, y_axis, metric
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### K8s API Activity
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(increase(argocd_app_k8s_request_total{namespace=~"$namespace",server=~"$cluster"}[$interval])) by (verb, resource_kind)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE argocd_app_k8s_request_total IS NOT NULL
+| STATS argocd_app_k8s_request_total = SUM(INCREASE(argocd_app_k8s_request_total, 5m)) BY time_bucket = TBUCKET(5 minute), verb, resource_kind
+| EVAL legend = CONCAT(COALESCE(TO_STRING(verb), ""), " ", COALESCE(TO_STRING(resource_kind), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `argocd_app_k8s_request_total`
+- Range func: `increase`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `verb, resource_kind`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_app_k8s_request_total`
+- Output groups: `time_bucket, verb, resource_kind`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=20, w=48, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Workqueue Depth
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(workqueue_depth{namespace=~"$namespace",name=~"app_.*"}) by (name)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE name RLIKE "app_.*"
+| WHERE workqueue_depth IS NOT NULL
+| STATS workqueue_depth = SUM(workqueue_depth) BY time_bucket = TBUCKET(5 minute), name
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `workqueue_depth`
+- Outer agg: `sum`
+- Group labels: `name`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `workqueue_depth`
+- Output groups: `time_bucket, name`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=29, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Pending kubectl run
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(argocd_kubectl_exec_pending{namespace=~"$namespace"}) by (command)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE argocd_kubectl_exec_pending IS NOT NULL
+| STATS argocd_kubectl_exec_pending = SUM(argocd_kubectl_exec_pending) BY time_bucket = TBUCKET(5 minute), command
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `argocd_kubectl_exec_pending`
+- Outer agg: `sum`
+- Group labels: `command`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `argocd_kubectl_exec_pending`
+- Output groups: `time_bucket, command`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=29, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `namespace` (type: `options`)
+- `cluster` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Prometheus Blackbox Exporter
 
 **File:** `blackbox-7587.json` — **Panels:** 12
@@ -160,6 +1486,7 @@ probe_duration_seconds{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -246,6 +1573,7 @@ probe_success{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -332,6 +1660,7 @@ probe_http_duration_seconds{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -418,6 +1747,7 @@ probe_duration_seconds{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -504,6 +1834,7 @@ probe_http_status_code{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -590,6 +1921,7 @@ probe_http_version{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -676,6 +2008,7 @@ probe_http_ssl{instance=~"$target"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -762,6 +2095,7 @@ probe_ssl_earliest_cert_expiry{instance=~"$target"} - time()
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -844,6 +2178,7 @@ avg(probe_duration_seconds{instance=~"$target"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -930,6 +2265,7 @@ avg(probe_dns_lookup_time_seconds{instance=~"$target"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1010,6 +2346,2558 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: cert-manager
+
+**File:** `cert-manager-11001.json` — **Panels:** 15
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Certificates | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| ACME Client | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Time Left | `table` → `datatable` | migrated_with_warnings | **CORRECT** | sort_desc( sum(certmanager_certificate_expiration_timestamp_seconds{exported_nam... | FROM metrics-prometheus-* \| STATS certmanager_certificate_expiration_timestamp_... |
+| Certificate Ready Status | `graph` → `line` | migrated | **CORRECT** | sum(certmanager_certificate_ready_status) BY (condition) | TS metrics-prometheus-* \| WHERE certmanager_certificate_ready_status IS NOT NUL... |
+| Time Left | `graph` → `line` | migrated | **CORRECT** | sum(certmanager_certificate_expiration_timestamp_seconds{exported_namespace=~"$N... | FROM metrics-prometheus-* \| STATS certmanager_certificate_expiration_timestamp_... |
+| Overall requests per 2m | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count[2m])) BY (status) | TS metrics-prometheus-* \| WHERE certmanager_http_acme_client_request_count IS N... |
+| Total requests | `singlestat` → `metric` | migrated_with_warnings | **CORRECT** | sum(certmanager_http_acme_client_request_count) | TS metrics-prometheus-* \| WHERE certmanager_http_acme_client_request_count IS N... |
+| /directory | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/directory"}[2m])) BY ... | TS metrics-prometheus-* \| WHERE path == "/directory" \| WHERE certmanager_http_... |
+| /acme/cert | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/cert"}[2m])) BY ... | TS metrics-prometheus-* \| WHERE path == "/acme/cert" \| WHERE certmanager_http_... |
+| /acme/new-acct | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/new-acct"}[2m]))... | TS metrics-prometheus-* \| WHERE path == "/acme/new-acct" \| WHERE certmanager_h... |
+| /acme/order | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/order"}[2m])) BY... | TS metrics-prometheus-* \| WHERE path == "/acme/order" \| WHERE certmanager_http... |
+| /acme/new-order | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/new-order"}[2m])... | TS metrics-prometheus-* \| WHERE path == "/acme/new-order" \| WHERE certmanager_... |
+| /acme/authz-v3 | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/authz-v3"}[2m]))... | TS metrics-prometheus-* \| WHERE path == "/acme/authz-v3" \| WHERE certmanager_h... |
+| /acme/chall-v3 | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/chall-v3"}[2m]))... | TS metrics-prometheus-* \| WHERE path == "/acme/chall-v3" \| WHERE certmanager_h... |
+| /acme/finalize | `graph` → `line` | migrated | **CORRECT** | sum(rate(certmanager_http_acme_client_request_count{path="/acme/finalize"}[2m]))... | TS metrics-prometheus-* \| WHERE path == "/acme/finalize" \| WHERE certmanager_h... |
+
+<details>
+<summary>Detailed traces (13 panels)</summary>
+
+#### Time Left
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (table):**
+
+```
+sort_desc( sum(certmanager_certificate_expiration_timestamp_seconds{exported_namespace=~"$Namespace"} - time()) BY (name,exported_namespace) )
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family`
+- `query_translators` / `fragment_extract` → extracted fragment fields via ast
+- `query_translators` / `extract_label_filters`
+- `query_translators` / `scalar_outer_agg`
+- `query_translators` / `resolve_labels`
+- `query_translators` / `counter_detection`
+- `query_translators` / `source_type` → selected FROM source
+- `query_translators` / `time_filter` → applied time filter @timestamp >= ?_tstart AND @timestamp <= ?_tend
+- `query_translators` / `bucket` → applied bucket time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+- `query_translators` / `stats_expression` → built stats expression SUM(certmanager_certificate_expiration_timestamp_seconds)
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql` → rendered ES|QL query
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: sort_desc
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel` → mapped to datatable panel
+
+**Translated (datatable):**
+
+```
+FROM metrics-prometheus-*
+| STATS certmanager_certificate_expiration_timestamp_seconds = SUM(certmanager_certificate_expiration_timestamp_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), name, exported_namespace
+| SORT certmanager_certificate_expiration_timestamp_seconds DESC
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `certmanager_certificate_expiration_timestamp_seconds`
+- Outer agg: `sum`
+- Group labels: `name, exported_namespace`
+- Binary op: `-`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_certificate_expiration_timestamp_seconds`
+
+**Visual IR:**
+
+- Kibana type: `datatable`
+- Layout: x=0, y=0, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** sort_desc() applied — ES|QL output sorted by value DESC
+
+**Verdict:** CORRECT
+
+#### Certificate Ready Status
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(certmanager_certificate_ready_status) BY (condition)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE certmanager_certificate_ready_status IS NOT NULL
+| STATS certmanager_certificate_ready_status = SUM(certmanager_certificate_ready_status) BY time_bucket = TBUCKET(5 minute), condition
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `certmanager_certificate_ready_status`
+- Outer agg: `sum`
+- Group labels: `condition`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_certificate_ready_status`
+- Output groups: `time_bucket, condition`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Time Left
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(certmanager_certificate_expiration_timestamp_seconds{exported_namespace=~"$Namespace"} - time()) BY (name,exported_namespace)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family`
+- `query_translators` / `fragment_extract` → extracted fragment fields via ast
+- `query_translators` / `extract_label_filters`
+- `query_translators` / `scalar_outer_agg`
+- `query_translators` / `resolve_labels`
+- `query_translators` / `counter_detection`
+- `query_translators` / `source_type` → selected FROM source
+- `query_translators` / `time_filter` → applied time filter @timestamp >= ?_tstart AND @timestamp <= ?_tend
+- `query_translators` / `bucket` → applied bucket time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+- `query_translators` / `stats_expression` → built stats expression SUM(certmanager_certificate_expiration_timestamp_seconds)
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql` → rendered ES|QL query
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| STATS certmanager_certificate_expiration_timestamp_seconds = SUM(certmanager_certificate_expiration_timestamp_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), name, exported_namespace
+| EVAL legend = CONCAT(" ", COALESCE(TO_STRING(exported_namespace), ""), " / ", COALESCE(TO_STRING(name), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `certmanager_certificate_expiration_timestamp_seconds`
+- Outer agg: `sum`
+- Group labels: `name, exported_namespace`
+- Binary op: `-`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_certificate_expiration_timestamp_seconds`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=12, w=48, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Overall requests per 2m
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=40, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Total requests
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(certmanager_http_acme_client_request_count)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(LAST_OVER_TIME(certmanager_http_acme_client_request_count)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), certmanager_http_acme_client_request_count = MAX(certmanager_http_acme_client_request_count)
+| KEEP time_bucket, certmanager_http_acme_client_request_count
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=40, y=0, w=8, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+
+**Verdict:** CORRECT
+
+#### /directory
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/directory"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/directory"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=12, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/cert
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/cert"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/cert"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=16, y=12, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/new-acct
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/new-acct"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/new-acct"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=32, y=12, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/order
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/order"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/order"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=24, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/new-order
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/new-order"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/new-order"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=16, y=24, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/authz-v3
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/authz-v3"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/authz-v3"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=32, y=24, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/chall-v3
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/chall-v3"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/chall-v3"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=36, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### /acme/finalize
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(rate(certmanager_http_acme_client_request_count{path="/acme/finalize"}[2m])) BY (status)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE path == "/acme/finalize"
+| WHERE certmanager_http_acme_client_request_count IS NOT NULL
+| STATS certmanager_http_acme_client_request_count = SUM(RATE(certmanager_http_acme_client_request_count, 2m)) BY time_bucket = TBUCKET(5 minute), status
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `certmanager_http_acme_client_request_count`
+- Range func: `rate`
+- Range window: `2m`
+- Outer agg: `sum`
+- Group labels: `status`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `certmanager_http_acme_client_request_count`
+- Output groups: `time_bucket, status`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=16, y=36, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `Namespace` (type: `options`)
+- `Certificate` (type: `options`)
+
+</details>
+
+---
+
+### Grafana: CoreDNS
+
+**File:** `coredns-14981.json` — **Panels:** 28
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Health: $instance | `row` → `skipped` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Global stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Health: $instance | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Local | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Upstream | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Requests (by instance) | `piechart` → `pie` | migrated | **CORRECT** | sum(rate(coredns_dns_requests_total[5m])) by (instance) | TS metrics-prometheus-* \| WHERE coredns_dns_requests_total IS NOT NULL \| STATS... |
+| Version | `stat` → `metric` | migrated | **MINOR_ISSUE** | coredns_build_info{instance=~"$instance"} | TS metrics-prometheus-* \| WHERE coredns_build_info IS NOT NULL \| STATS coredns... |
+| Upstream Health Check Fails | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(rate(coredns_forward_healthcheck_broken_total{instance=~"$instance"}[5m])) | TS metrics-prometheus-* \| WHERE coredns_forward_healthcheck_broken_total IS NOT... |
+| Upstream Rejected Queries | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(rate(coredns_forward_max_concurrent_rejects_total{instance=~"$instance"}[5m]... | TS metrics-prometheus-* \| WHERE coredns_forward_max_concurrent_rejects_total IS... |
+| Panics | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(rate(coredns_panics_total{instance=~"$instance"}[5m])) | TS metrics-prometheus-* \| WHERE coredns_panics_total IS NOT NULL \| STATS cored... |
+| Failed Reloads | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(rate(coredns_reload_failed_total{instance=~"$instance"}[5m])) | TS metrics-prometheus-* \| WHERE coredns_reload_failed_total IS NOT NULL \| STAT... |
+| CPU Time | `gauge` → `gauge` | migrated | **MINOR_ISSUE** | sum(rate(process_cpu_seconds_total{instance=~"$instance"}[5m])) | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL \| STATS ... |
+| Memory Usage | `stat` → `metric` | migrated | **MINOR_ISSUE** | go_memstats_alloc_bytes{instance=~"$instance"} | TS metrics-prometheus-* \| WHERE go_memstats_alloc_bytes IS NOT NULL \| STATS go... |
+| Requests (total) | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (server) \|\... | TS metrics-prometheus-* \| WHERE coredns_dns_requests_total IS NOT NULL \| STATS... |
+| Requests (by zone) | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (zone) | TS metrics-prometheus-* \| WHERE coredns_dns_requests_total IS NOT NULL \| STATS... |
+| Responses (latency, internet zone) | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.99, sum(rate(coredns_dns_request_duration_seconds_bucket{in... | — |
+| Requests (by type) | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (type) | TS metrics-prometheus-* \| WHERE coredns_dns_requests_total IS NOT NULL \| STATS... |
+| Cache (hitrate) | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(coredns_cache_hits_total{instance=~"$instance", type="success"}[5m])) /... | TS metrics-prometheus-* \| WHERE coredns_cache_hits_total IS NOT NULL OR coredns... |
+| Requests (DNSSEC by zone) | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(coredns_dns_do_requests_total{instance=~"$instance"}[5m])) by (zone) | TS metrics-prometheus-* \| WHERE coredns_dns_do_requests_total IS NOT NULL \| ST... |
+| Responses (by code) | `piechart` → `pie` | migrated | **MINOR_ISSUE** | sum(rate(coredns_dns_responses_total{instance=~"$instance"}[5m])) by (rcode) | TS metrics-prometheus-* \| WHERE coredns_dns_responses_total IS NOT NULL \| STAT... |
+| Requests (size, internet zone) | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.99, sum(rate(coredns_dns_request_size_bytes_bucket{instance... | — |
+| Responses (size, internet zone) | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.99, sum(rate(coredns_dns_response_size_bytes_bucket{instanc... | — |
+| Cache (size) | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(coredns_cache_entries{instance=~"$instance"}) by (type) \|\|\| sum(coredns_d... | TS metrics-prometheus-* \| WHERE coredns_cache_entries IS NOT NULL \| STATS core... |
+| Requests (total) | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(coredns_forward_requests_total{instance=~"$instance"}[5m])) | TS metrics-prometheus-* \| WHERE coredns_forward_requests_total IS NOT NULL \| S... |
+| Cache (hitrate) | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(coredns_forward_conn_cache_hits_total{instance=~"$instance"}[5m])) / su... | TS metrics-prometheus-* \| WHERE coredns_forward_conn_cache_hits_total IS NOT NU... |
+| Responses (latency) | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.99, sum(rate(coredns_forward_request_duration_seconds_bucke... | — |
+| Requests (by upstream) | `piechart` → `pie` | migrated | **MINOR_ISSUE** | sum(rate(coredns_forward_requests_total{instance=~"$instance"}[5m])) by (to) | TS metrics-prometheus-* \| WHERE coredns_forward_requests_total IS NOT NULL \| S... |
+| Responses (by code) | `piechart` → `pie` | migrated | **MINOR_ISSUE** | sum(rate(coredns_forward_responses_total{instance=~"$instance"}[5m])) by (rcode) | TS metrics-prometheus-* \| WHERE coredns_forward_responses_total IS NOT NULL \| ... |
+
+<details>
+<summary>Detailed traces (23 panels)</summary>
+
+#### Requests (by instance)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (piechart):**
+
+```
+sum(rate(coredns_dns_requests_total[5m])) by (instance)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_requests_total IS NOT NULL
+| STATS coredns_dns_requests_total = SUM(RATE(coredns_dns_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| SORT time_bucket ASC
+| STATS coredns_dns_requests_total = MAX(coredns_dns_requests_total) BY instance
+| KEEP instance, coredns_dns_requests_total
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_requests_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `instance`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_requests_total`
+- Output groups: `instance`
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=0, y=0, w=12, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Version
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+coredns_build_info{instance=~"$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_build_info IS NOT NULL
+| STATS coredns_build_info = MAX(LAST_OVER_TIME(coredns_build_info)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), coredns_build_info = MAX(coredns_build_info)
+| KEEP time_bucket, coredns_build_info
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `coredns_build_info`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_build_info`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=12, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Upstream Health Check Fails
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rate(coredns_forward_healthcheck_broken_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_forward_healthcheck_broken_total IS NOT NULL
+| STATS coredns_forward_healthcheck_broken_total = SUM(RATE(coredns_forward_healthcheck_broken_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), coredns_forward_healthcheck_broken_total = MAX(coredns_forward_healthcheck_broken_total)
+| KEEP time_bucket, coredns_forward_healthcheck_broken_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_forward_healthcheck_broken_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_forward_healthcheck_broken_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Upstream Rejected Queries
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rate(coredns_forward_max_concurrent_rejects_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_forward_max_concurrent_rejects_total IS NOT NULL
+| STATS coredns_forward_max_concurrent_rejects_total = SUM(RATE(coredns_forward_max_concurrent_rejects_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), coredns_forward_max_concurrent_rejects_total = MAX(coredns_forward_max_concurrent_rejects_total)
+| KEEP time_bucket, coredns_forward_max_concurrent_rejects_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_forward_max_concurrent_rejects_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_forward_max_concurrent_rejects_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=18, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Panics
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rate(coredns_panics_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_panics_total IS NOT NULL
+| STATS coredns_panics_total = SUM(RATE(coredns_panics_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), coredns_panics_total = MAX(coredns_panics_total)
+| KEEP time_bucket, coredns_panics_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_panics_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_panics_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Failed Reloads
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rate(coredns_reload_failed_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_reload_failed_total IS NOT NULL
+| STATS coredns_reload_failed_total = SUM(RATE(coredns_reload_failed_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), coredns_reload_failed_total = MAX(coredns_reload_failed_total)
+| KEEP time_bucket, coredns_reload_failed_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_reload_failed_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_reload_failed_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=30, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### CPU Time
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+sum(rate(process_cpu_seconds_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE process_cpu_seconds_total IS NOT NULL
+| STATS process_cpu_seconds_total = SUM(RATE(process_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), process_cpu_seconds_total = MAX(process_cpu_seconds_total)
+| KEEP time_bucket, process_cpu_seconds_total
+| EVAL _gauge_min = 0, _gauge_max = 0.03, _gauge_goal = 60
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `process_cpu_seconds_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `process_cpu_seconds_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=36, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance, minimum
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Memory Usage
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+go_memstats_alloc_bytes{instance=~"$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE go_memstats_alloc_bytes IS NOT NULL
+| STATS go_memstats_alloc_bytes = MAX(LAST_OVER_TIME(go_memstats_alloc_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), go_memstats_alloc_bytes = MAX(go_memstats_alloc_bytes)
+| KEEP time_bucket, go_memstats_alloc_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `go_memstats_alloc_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `go_memstats_alloc_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=42, y=0, w=6, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Requests (total)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (server) ||| sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_requests_total IS NOT NULL
+| STATS coredns_dns_requests_total = SUM(RATE(coredns_dns_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), server
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_requests_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `server`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_requests_total`
+- Output groups: `time_bucket, server`
+- Semantic losses: Dropped variable-driven label filters during migration, Panel has 2 PromQL targets but only 1 could be migrated
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Panel has 2 PromQL targets but only 1 could be migrated
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Verdict:** MINOR_ISSUE
+
+#### Requests (by zone)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (zone)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_requests_total IS NOT NULL
+| STATS coredns_dns_requests_total = SUM(RATE(coredns_dns_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), zone
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_requests_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `zone`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_requests_total`
+- Output groups: `time_bucket, zone`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Responses (latency, internet zone)
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+histogram_quantile(0.99, sum(rate(coredns_dns_request_duration_seconds_bucket{instance=~"$instance", zone="."}[5m])) by (le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `histogram_quantile`
+- Metric: `coredns_dns_request_duration_seconds`
+- Range window: `5m`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=10, w=24, h=11
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 3
+
+**Warnings:** histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Requests (by type)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(rate(coredns_dns_requests_total{instance=~"$instance"}[5m])) by (type)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_requests_total IS NOT NULL
+| STATS coredns_dns_requests_total = SUM(RATE(coredns_dns_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), type
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_requests_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `type`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_requests_total`
+- Output groups: `time_bucket, type`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=10, w=24, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cache (hitrate)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(rate(coredns_cache_hits_total{instance=~"$instance", type="success"}[5m])) / sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) ||| sum(rate(coredns_cache_hits_total{instance=~"$instance", type="denial"}[5m])) / sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) ||| (sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) - sum(rate(coredns_cache_hits_total{instance=~"$instance", type="success"}[5m]))) / sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) ||| sum(rate(coredns_dnssec_cache_hits_total{instance=~"$instance"}[5m])) / sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) ||| (sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m])) - sum(rate(coredns_dnssec_cache_hits_total{instance=~"$instance"}[5m]))) / sum(rate(coredns_cache_requests_total{instance=~"$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_cache_hits_total IS NOT NULL OR coredns_cache_requests_total IS NOT NULL OR coredns_dnssec_cache_hits_total IS NOT NULL
+| STATS coredns_cache_hits_total_A_lhs = SUM(RATE(CASE((type == "success"), coredns_cache_hits_total, NULL), 5m)), coredns_cache_requests_total_A_rhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_cache_hits_total_B_lhs = SUM(RATE(CASE((type == "denial"), coredns_cache_hits_total, NULL), 5m)), coredns_cache_requests_total_B_rhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_cache_requests_total_C_lhs_lhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_cache_hits_total_C_lhs_rhs = SUM(RATE(CASE((type == "success"), coredns_cache_hits_total, NULL), 5m)), coredns_cache_requests_total_C_rhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_dnssec_cache_hits_total_D_lhs = SUM(RATE(coredns_dnssec_cache_hits_total, 5m)), coredns_cache_requests_total_D_rhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_cache_requests_total_E_lhs_lhs = SUM(RATE(coredns_cache_requests_total, 5m)), coredns_dnssec_cache_hits_total_E_lhs_rhs = SUM(RATE(coredns_dnssec_cache_hits_total, 5m)), coredns_cache_requests_total_E_rhs = SUM(RATE(coredns_cache_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL hits_success = (coredns_cache_hits_total_A_lhs / coredns_cache_requests_total_A_rhs)
+| EVAL hits_denial = (coredns_cache_hits_total_B_lhs / coredns_cache_requests_total_B_rhs)
+| EVAL misses = ((coredns_cache_requests_total_C_lhs_lhs - coredns_cache_hits_total_C_lhs_rhs) / coredns_cache_requests_total_C_rhs)
+| EVAL hits_DNSSEC = (coredns_dnssec_cache_hits_total_D_lhs / coredns_cache_requests_total_D_rhs)
+| EVAL misses_DNSSEC = ((coredns_cache_requests_total_E_lhs_lhs - coredns_dnssec_cache_hits_total_E_lhs_rhs) / coredns_cache_requests_total_E_rhs)
+| KEEP time_bucket, hits_success, hits_denial, misses, hits_DNSSEC, misses_DNSSEC
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `hits_success`
+- Output groups: `time_bucket`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=21, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 5
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Requests (DNSSEC by zone)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(rate(coredns_dns_do_requests_total{instance=~"$instance"}[5m])) by (zone)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_do_requests_total IS NOT NULL
+| STATS coredns_dns_do_requests_total = SUM(RATE(coredns_dns_do_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), zone
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_do_requests_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `zone`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_do_requests_total`
+- Output groups: `time_bucket, zone`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=21, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Responses (by code)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (piechart):**
+
+```
+sum(rate(coredns_dns_responses_total{instance=~"$instance"}[5m])) by (rcode)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE coredns_dns_responses_total IS NOT NULL
+| STATS coredns_dns_responses_total = SUM(RATE(coredns_dns_responses_total, 5m)) BY time_bucket = TBUCKET(5 minute), rcode
+| SORT time_bucket ASC
+| STATS coredns_dns_responses_total = MAX(coredns_dns_responses_total) BY rcode
+| KEEP rcode, coredns_dns_responses_total
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `coredns_dns_responses_total`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `rcode`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `coredns_dns_responses_total`
+- Output groups: `rcode`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=0, y=31, w=16, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (1)</summary>
+
+- `Instance` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Diverse Panel Types Test
 
 **File:** `diverse-panels-test.json` — **Panels:** 11
@@ -1048,6 +4936,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1136,6 +5025,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1230,6 +5120,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=topk backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family topk bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1316,6 +5207,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1401,6 +5293,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1487,6 +5380,7 @@ time() - node_boot_time_seconds
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1564,6 +5458,7 @@ FROM metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1647,6 +5542,7 @@ ALERTS{alertstate="firing"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1740,6 +5636,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=logql_stream backend=regex
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family logql_stream bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1856,6 +5753,7 @@ count(rate(container_last_seen{container_label_namespace=~"$namespace",instance=
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -1943,6 +5841,7 @@ avg(node_load1{instance=~"$server:.*"}) /  count(count(node_cpu{instance=~"$serv
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2025,6 +5924,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2107,6 +6007,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2234,6 +6135,7 @@ time() - node_boot_time{instance=~"$server:.*"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2311,6 +6213,7 @@ FROM metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2396,6 +6299,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2480,6 +6384,7 @@ sum(irate(node_network_receive_bytes{instance=~"$server:.*"}[5m])) ||| - sum(ira
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2572,6 +6477,7 @@ node_memory_MemTotal{instance=~"$server:.*"} ||| node_memory_MemTotal{instance=~
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2663,6 +6569,7 @@ sum(rate(container_network_receive_bytes_total{container_label_namespace=~"$name
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2751,6 +6658,7 @@ sum(rate(container_network_transmit_bytes_total{container_label_namespace=~"$nam
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2839,6 +6747,7 @@ sum(rate(container_cpu_usage_seconds_total{container_label_namespace=~"$namespac
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=scaled_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family scaled_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -2927,6 +6836,7 @@ sum(container_memory_rss{container_label_namespace=~"$namespace",instance=~"$ser
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3014,6 +6924,7 @@ sum(container_memory_swap{container_label_namespace=~"$namespace",instance=~"$se
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3107,10 +7018,10 @@ TS metrics-prometheus-*
 | Disk space | `singlestat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | min((node_filesystem_size{fstype=~"xfs\|ext4",instance=~"$server:.*"} - node_fil... | — |
 | Memory | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | ((node_memory_MemTotal{instance=~"$server:.*"} - node_memory_MemAvailable{instan... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal IS NOT NULL OR node_memory... |
 | Swap | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | (node_memory_SwapTotal{instance=~'$server:.*'} - node_memory_SwapFree{instance=~... | TS metrics-prometheus-* \| WHERE node_memory_SwapTotal IS NOT NULL OR node_memor... |
-| Load | `singlestat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta... | — |
+| Load | `singlestat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_cpu IS NOT NULL ... |
 | Network Traffic | `graph` → `line` | migrated | **CORRECT** | sum(rate(container_network_receive_bytes_total{id="/"}[$interval])) by (id) \|\|... | TS metrics-prometheus-* \| WHERE id == "/" \| WHERE container_network_receive_by... |
 | CPU Usage | `graph` → `area` | migrated | **CORRECT** | sum(rate(process_cpu_seconds_total[$interval])) * 100 | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL \| STATS ... |
-| Load | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta... | — |
+| Load | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_cpu IS NOT NULL ... |
 | Used Disk Space | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_filesystem_size{fstype="aufs"} - node_filesystem_free{fstype="aufs"} | TS metrics-prometheus-* \| WHERE fstype == "aufs" \| WHERE node_filesystem_size ... |
 | Available Memory | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal - node_memory_MemAvailable | TS metrics-prometheus-* \| WHERE node_memory_MemTotal IS NOT NULL OR node_memory... |
 | Disk I/O | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | -sum(rate(node_disk_bytes_read[$interval])) by (device) \|\|\| sum(rate(node_dis... | TS metrics-prometheus-* \| WHERE node_disk_bytes_read IS NOT NULL OR node_disk_b... |
@@ -3143,6 +7054,7 @@ time() - node_boot_time{instance=~"$server:.*"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3220,6 +7132,7 @@ count(rate(container_last_seen{name=~".+"}[$interval]))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3349,6 +7262,7 @@ min((node_filesystem_size{fstype=~"xfs|ext4",instance=~"$server:.*"} - node_file
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3431,6 +7345,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3498,7 +7413,7 @@ TS metrics-prometheus-*
 
 #### Load
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (singlestat):**
 
@@ -3513,6 +7428,7 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3520,28 +7436,49 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → binary expression requires unsafe measure merge; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → approximated grouped stat as datatable
+
+**Translated (datatable):**
+
+```
+TS metrics-prometheus-*
+| WHERE node_load1 IS NOT NULL OR node_cpu IS NOT NULL
+| STATS node_load1_instance = AVG(node_load1), node_cpu_instance_count = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(5 minute), job, instance
+| EVAL computed_value = (node_load1_instance / node_cpu_instance_count)
+| SORT time_bucket ASC
+| STATS computed_value = MAX(computed_value) BY job, instance
+| KEEP job, instance, computed_value
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `/`
-- Output shape: `single_value`
+- Output shape: `table`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `job, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(cpu), Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
-- Kibana type: `markdown`
-- Layout: x=40, y=0, w=8, h=8
-- Presentation kind: `markdown`
-- Config keys: content
+- Kibana type: `datatable`
+- Layout: x=36, y=0, w=12, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
 
 **Operational IR:**
 
@@ -3551,9 +7488,11 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 
 - targets: 1
 
-**Warnings:** PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu); Approximated grouped stat panel as summary table
 
-**Verdict:** EXPECTED_LIMITATION
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu); Approximated grouped stat panel as summary table
+
+**Verdict:** MINOR_ISSUE
 
 #### Network Traffic
 
@@ -3572,6 +7511,7 @@ sum(rate(container_network_receive_bytes_total{id="/"}[$interval])) by (id) ||| 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3661,6 +7601,7 @@ sum(rate(process_cpu_seconds_total[$interval])) * 100
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=scaled_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family scaled_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3730,7 +7671,7 @@ TS metrics-prometheus-*
 
 #### Load
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
@@ -3745,6 +7686,7 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3752,28 +7694,51 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → binary expression requires unsafe measure merge; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE node_load1 IS NOT NULL OR node_cpu IS NOT NULL
+| STATS node_load1_instance = AVG(node_load1), node_cpu_instance_count = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(5 minute), job, instance
+| EVAL computed_value = (node_load1_instance / node_cpu_instance_count)
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(job), ""), " / ", COALESCE(TO_STRING(instance), ""))
+| KEEP time_bucket, job, instance, computed_value, series_group
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `/`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket, job, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=16, y=0, w=8, h=9
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -3783,9 +7748,11 @@ node_load1{instance=~"$server:.*"} / count by(job, instance)(count by(job, insta
 
 - targets: 1
 
-**Warnings:** PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu); Composited multi-label grouping (job, instance) into a single XY breakdown column
 
-**Verdict:** EXPECTED_LIMITATION
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+
+**Verdict:** MINOR_ISSUE
 
 #### Used Disk Space
 
@@ -3804,6 +7771,7 @@ node_filesystem_size{fstype="aufs"} - node_filesystem_free{fstype="aufs"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3888,6 +7856,7 @@ node_memory_MemTotal - node_memory_MemAvailable
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -3971,6 +7940,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4055,6 +8025,7 @@ sum(rate(container_network_receive_bytes_total{name=~".+"}[$interval])) by (name
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4140,6 +8111,7 @@ sum(rate(container_network_transmit_bytes_total{name=~".+"}[$interval])) by (nam
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4225,6 +8197,7 @@ sum(rate(container_cpu_usage_seconds_total{name=~".+"}[$interval])) by (name) * 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=scaled_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family scaled_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4305,6 +8278,2395 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: Envoy Proxy
+
+**File:** `envoy-6693.json` — **Panels:** 13
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Live servers | `singlestat` → `metric` | migrated | **CORRECT** | sum(envoy_server_live) | TS metrics-prometheus-* \| WHERE envoy_server_live IS NOT NULL \| STATS envoy_se... |
+| Avg uptime per node | `singlestat` → `metric` | migrated | **CORRECT** | avg(envoy_server_uptime) | TS metrics-prometheus-* \| WHERE envoy_server_uptime IS NOT NULL \| STATS envoy_... |
+| Allocated Memory | `singlestat` → `metric` | migrated | **CORRECT** | SUM(envoy_server_memory_allocated) | TS metrics-prometheus-* \| WHERE envoy_server_memory_allocated IS NOT NULL \| ST... |
+| Heap Size | `singlestat` → `metric` | migrated | **CORRECT** | SUM(envoy_server_memory_heap_size) | TS metrics-prometheus-* \| WHERE envoy_server_memory_heap_size IS NOT NULL \| ST... |
+| Unhealthy Clusters | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | (sum(envoy_cluster_membership_healthy)  - sum(envoy_cluster_membership_total)) | TS metrics-prometheus-* \| WHERE envoy_cluster_membership_healthy IS NOT NULL OR... |
+| Cluster State | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | (sum(envoy_cluster_membership_total)-sum(envoy_cluster_membership_healthy)) == b... | TS metrics-prometheus-* \| WHERE envoy_cluster_membership_total IS NOT NULL OR e... |
+| Total active connections | `graph` → `line` | migrated | **MINOR_ISSUE** | envoy_cluster_upstream_cx_active{envoy_cluster_name=~"$cluster",host=~"$hosts"} | TS metrics-prometheus-* \| WHERE envoy_cluster_upstream_cx_active IS NOT NULL \|... |
+| Total requests | `graph` → `line` | migrated | **MINOR_ISSUE** | irate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~"$cluster",host=~"$hos... | TS metrics-prometheus-* \| WHERE envoy_cluster_upstream_rq_total IS NOT NULL \| ... |
+| Downstream Total active connections | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | envoy_http_downstream_cx_active{envoy_http_conn_manager_prefix=~"$cluster",host=... | TS metrics-prometheus-* \| WHERE envoy_http_downstream_cx_active IS NOT NULL \| ... |
+| Downstream Total active requests | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(envoy_http_downstream_rq_total{envoy_http_conn_manager_prefix=~"$cluster",... | TS metrics-prometheus-* \| WHERE envoy_http_downstream_rq_total IS NOT NULL \| S... |
+| Upstream Network Traffic | `graph` → `line` | migrated | **MINOR_ISSUE** | irate(envoy_cluster_upstream_cx_rx_bytes_total{envoy_cluster_name=~"$cluster",ho... | TS metrics-prometheus-* \| WHERE envoy_cluster_upstream_cx_rx_bytes_total IS NOT... |
+| Downstream Network Traffic | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(envoy_http_downstream_cx_rx_bytes_total{envoy_http_conn_manager_prefix=~"$... | TS metrics-prometheus-* \| WHERE envoy_http_downstream_cx_rx_bytes_total IS NOT ... |
+| Downstream members | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(envoy_cluster_membership_healthy{envoy_cluster_name="$cluster",host=~"$hosts... | TS metrics-prometheus-* \| WHERE envoy_cluster_membership_healthy IS NOT NULL \|... |
+
+<details>
+<summary>Detailed traces (13 panels)</summary>
+
+#### Live servers
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(envoy_server_live)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_server_live IS NOT NULL
+| STATS envoy_server_live = SUM(envoy_server_live) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), envoy_server_live = MAX(envoy_server_live)
+| KEEP time_bucket, envoy_server_live
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `envoy_server_live`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_server_live`
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=10, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Avg uptime per node
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+avg(envoy_server_uptime)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_server_uptime IS NOT NULL
+| STATS envoy_server_uptime = AVG(envoy_server_uptime) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), envoy_server_uptime = MAX(envoy_server_uptime)
+| KEEP time_bucket, envoy_server_uptime
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `envoy_server_uptime`
+- Outer agg: `avg`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_server_uptime`
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=10, y=0, w=8, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Allocated Memory
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+SUM(envoy_server_memory_allocated)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_server_memory_allocated IS NOT NULL
+| STATS envoy_server_memory_allocated = SUM(envoy_server_memory_allocated) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), envoy_server_memory_allocated = MAX(envoy_server_memory_allocated)
+| KEEP time_bucket, envoy_server_memory_allocated
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `envoy_server_memory_allocated`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_server_memory_allocated`
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=18, y=0, w=10, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Heap Size
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+SUM(envoy_server_memory_heap_size)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_server_memory_heap_size IS NOT NULL
+| STATS envoy_server_memory_heap_size = SUM(envoy_server_memory_heap_size) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), envoy_server_memory_heap_size = MAX(envoy_server_memory_heap_size)
+| KEEP time_bucket, envoy_server_memory_heap_size
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `envoy_server_memory_heap_size`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_server_memory_heap_size`
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=28, y=0, w=8, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Verdict:** CORRECT
+
+#### Unhealthy Clusters
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+(sum(envoy_cluster_membership_healthy)  - sum(envoy_cluster_membership_total))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_membership_healthy IS NOT NULL OR envoy_cluster_membership_total IS NOT NULL
+| STATS envoy_cluster_membership_healthy_sum = SUM(SUM_OVER_TIME(envoy_cluster_membership_healthy, 5m)), envoy_cluster_membership_total_sum = SUM(LAST_OVER_TIME(envoy_cluster_membership_total)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (envoy_cluster_membership_healthy_sum - envoy_cluster_membership_total_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `-`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=36, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster State
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+(sum(envoy_cluster_membership_total)-sum(envoy_cluster_membership_healthy)) == bool 0
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_membership_total IS NOT NULL OR envoy_cluster_membership_healthy IS NOT NULL
+| STATS envoy_cluster_membership_total_sum = SUM(LAST_OVER_TIME(envoy_cluster_membership_total)), envoy_cluster_membership_healthy_sum = SUM(SUM_OVER_TIME(envoy_cluster_membership_healthy, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = CASE((envoy_cluster_membership_total_sum - envoy_cluster_membership_healthy_sum) == 0, 1, 0)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `==`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=42, y=0, w=6, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Verdict:** MINOR_ISSUE
+
+#### Total active connections
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+envoy_cluster_upstream_cx_active{envoy_cluster_name=~"$cluster",host=~"$hosts"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_upstream_cx_active IS NOT NULL
+| STATS envoy_cluster_upstream_cx_active = MAX(LAST_OVER_TIME(envoy_cluster_upstream_cx_active)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `envoy_cluster_upstream_cx_active`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_cluster_upstream_cx_active`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=8, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Total requests
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+irate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~"$cluster",host=~"$hosts"}[1m])
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_upstream_rq_total IS NOT NULL
+| STATS envoy_cluster_upstream_rq_total = AVG(IRATE(envoy_cluster_upstream_rq_total, 1m)) BY time_bucket = TBUCKET(5 minute), zone, host
+| EVAL legend = CONCAT(COALESCE(TO_STRING(zone), ""), "(", COALESCE(TO_STRING(host), ""), ")")
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `envoy_cluster_upstream_rq_total`
+- Range func: `irate`
+- Range window: `1m`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_cluster_upstream_rq_total`
+- Output groups: `time_bucket, zone, host`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=8, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Downstream Total active connections
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+envoy_http_downstream_cx_active{envoy_http_conn_manager_prefix=~"$cluster",host=~"$hosts"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_http_downstream_cx_active IS NOT NULL
+| STATS envoy_http_downstream_cx_active = MAX(LAST_OVER_TIME(envoy_http_downstream_cx_active)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `envoy_http_downstream_cx_active`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_http_downstream_cx_active`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=18, w=24, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Downstream Total active requests
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+irate(envoy_http_downstream_rq_total{envoy_http_conn_manager_prefix=~"$cluster",host=~"$hosts"}[1m])
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_http_downstream_rq_total IS NOT NULL
+| STATS envoy_http_downstream_rq_total = AVG(IRATE(envoy_http_downstream_rq_total, 1m)) BY time_bucket = TBUCKET(5 minute), zone, host
+| EVAL legend = CONCAT(COALESCE(TO_STRING(zone), ""), "(", COALESCE(TO_STRING(host), ""), ")")
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `envoy_http_downstream_rq_total`
+- Range func: `irate`
+- Range window: `1m`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `envoy_http_downstream_rq_total`
+- Output groups: `time_bucket, zone, host`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=18, w=24, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Upstream Network Traffic
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+irate(envoy_cluster_upstream_cx_rx_bytes_total{envoy_cluster_name=~"$cluster",host=~"$hosts"}[1m]) ||| irate(envoy_cluster_upstream_cx_tx_bytes_total{envoy_cluster_name=~"$cluster",host=~"$hosts"}[1m])
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_upstream_cx_rx_bytes_total IS NOT NULL OR envoy_cluster_upstream_cx_tx_bytes_total IS NOT NULL
+| STATS envoy_cluster_upstream_cx_rx_bytes_total_A = AVG(IRATE(envoy_cluster_upstream_cx_rx_bytes_total, 1m)), envoy_cluster_upstream_cx_tx_bytes_total_B = AVG(IRATE(envoy_cluster_upstream_cx_tx_bytes_total, 1m)) BY time_bucket = TBUCKET(5 minute), zone, host
+| EVAL `in` = envoy_cluster_upstream_cx_rx_bytes_total_A
+| EVAL out = envoy_cluster_upstream_cx_tx_bytes_total_B
+| EVAL legend = CONCAT(COALESCE(TO_STRING(zone), ""), " (", COALESCE(TO_STRING(host), ""), ") - in")
+| KEEP time_bucket, zone, host, `in`, out, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `envoy_cluster_upstream_cx_rx_bytes_total`
+- Range func: `irate`
+- Range window: `1m`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `in`
+- Output groups: `time_bucket, zone, host`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=29, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Downstream Network Traffic
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+irate(envoy_http_downstream_cx_rx_bytes_total{envoy_http_conn_manager_prefix=~"$cluster",host=~"$hosts"}[1m]) ||| irate(envoy_http_downstream_cx_tx_bytes_total{envoy_http_conn_manager_prefix=~"$cluster",host=~"$hosts"}[1m])
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_http_downstream_cx_rx_bytes_total IS NOT NULL OR envoy_http_downstream_cx_tx_bytes_total IS NOT NULL
+| STATS envoy_http_downstream_cx_rx_bytes_total_A = AVG(IRATE(envoy_http_downstream_cx_rx_bytes_total, 1m)), envoy_http_downstream_cx_tx_bytes_total_B = AVG(IRATE(envoy_http_downstream_cx_tx_bytes_total, 1m)) BY time_bucket = TBUCKET(5 minute), zone, host
+| EVAL `in` = envoy_http_downstream_cx_rx_bytes_total_A
+| EVAL out = envoy_http_downstream_cx_tx_bytes_total_B
+| EVAL legend = CONCAT(COALESCE(TO_STRING(zone), ""), " (", COALESCE(TO_STRING(host), ""), ") - in")
+| KEEP time_bucket, zone, host, `in`, out, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `envoy_http_downstream_cx_rx_bytes_total`
+- Range func: `irate`
+- Range window: `1m`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `in`
+- Output groups: `time_bucket, zone, host`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=29, w=24, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Downstream members
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(envoy_cluster_membership_healthy{envoy_cluster_name="$cluster",host=~"$hosts"})/count(envoy_cluster_membership_healthy{envoy_cluster_name="$cluster",host=~"$hosts"}) ||| sum(envoy_cluster_membership_total{envoy_cluster_name="$cluster",host=~"$hosts"})/count(envoy_cluster_membership_total{envoy_cluster_name="$cluster",host=~"$hosts"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE envoy_cluster_membership_healthy IS NOT NULL
+| STATS envoy_cluster_membership_healthy_envoy_cluster_name_host_sum = SUM(envoy_cluster_membership_healthy), envoy_cluster_membership_healthy_envoy_cluster_name_host_count = COUNT(envoy_cluster_membership_healthy) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (envoy_cluster_membership_healthy_envoy_cluster_name_host_sum / envoy_cluster_membership_healthy_envoy_cluster_name_host_count)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Panel has 2 PromQL targets but only 1 could be migrated
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=39, w=48, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `Cluster` (type: `options`)
+- `Hosts` (type: `options`)
+
+</details>
+
+---
+
+### Grafana: Erlang-Distribution
+
+**File:** `erlang-distribution-11352.json` — **Panels:** 23
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| $erlang_vm_dist_proc_type process | `row` → `skipped` | skipped | **EXPECTED_LIMITATION** | — | — |
+| distribution links | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| inet socket | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| port driver | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| $erlang_vm_dist_proc_type process | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| All distribution links | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster)... | TS metrics-prometheus-* \| WHERE erlang_vm_dist_node_state IS NOT NULL \| STATS ... |
+| Established distribution links | `stat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster)... | — |
+| Connecting distribution links | `stat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster)... | — |
+| Waiting distribution links | `stat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster)... | — |
+| State of distribution links | `status-history` → `line` | migrated_with_warnings | **MINOR_ISSUE** | erlang_vm_dist_node_state{peer!~"rabbitmqcli.*"} * on(instance, job) group_left(... | FROM metrics-prometheus-* \| WHERE NOT (peer RLIKE "rabbitmqcli.*") \| WHERE erl... |
+| Data buffered in the distribution links queue | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | erlang_vm_dist_node_queue_size_bytes * on(instance, job) group_left(rabbitmq_nod... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_node_queue_size_bytes IS NOT N... |
+| Data sent to peer node / s | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | rate(erlang_vm_dist_send_bytes[60s]) * on(instance, job) group_left(rabbitmq_clu... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_send_bytes IS NOT NULL \| STAT... |
+| Data received from peer node / s | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | rate(erlang_vm_dist_recv_bytes[60s]) * on(instance, job) group_left(rabbitmq_clu... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_recv_bytes IS NOT NULL \| STAT... |
+| Distribution messages sent to peer node / s | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | rate(erlang_vm_dist_send_cnt[60s]) * on(instance, job) group_left(rabbitmq_clust... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_send_cnt IS NOT NULL \| STATS ... |
+| Distribution messages received from peer node / s | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | rate(erlang_vm_dist_recv_cnt[60s]) * on(instance, job) group_left(rabbitmq_clust... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_recv_cnt IS NOT NULL \| STATS ... |
+| Average inet packet size sent to peer node | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | (rate(erlang_vm_dist_send_bytes[60s]) * on(instance, job) group_left(rabbitmq_cl... | TS metrics-prometheus-* \| WHERE erlang_vm_dist_send_bytes IS NOT NULL OR erlang... |
+| Average inet packet size received from peer node | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | (rate(erlang_vm_dist_recv_bytes[60s]) * on(instance, job) group_left(rabbitmq_cl... | TS metrics-prometheus-* \| WHERE erlang_vm_dist_recv_bytes IS NOT NULL OR erlang... |
+| Memory used by the port driver | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | erlang_vm_dist_port_memory_bytes * on(instance, job) group_left(rabbitmq_cluster... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_port_memory_bytes IS NOT NULL ... |
+| Data in the port driver buffer | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | erlang_vm_dist_port_queue_size_bytes * on(instance, job) group_left(rabbitmq_clu... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_port_queue_size_bytes IS NOT N... |
+| Process state | `status-history` → `line` | migrated_with_warnings | **MINOR_ISSUE** | erlang_vm_dist_proc_status{type="$erlang_vm_dist_proc_type"} * on(instance, job)... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_proc_status IS NOT NULL \| STA... |
+| Messages in the process queue | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | erlang_vm_dist_proc_message_queue_len{type="$erlang_vm_dist_proc_type"} * on(ins... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_proc_message_queue_len IS NOT ... |
+| Memory used by the process | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | erlang_vm_dist_proc_memory_bytes{type="$erlang_vm_dist_proc_type"} * on(instance... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_proc_memory_bytes IS NOT NULL ... |
+| Process reductions / s | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(erlang_vm_dist_proc_reductions{type="$erlang_vm_dist_proc_type"}[60s]) * on... | FROM metrics-prometheus-* \| WHERE erlang_vm_dist_proc_reductions IS NOT NULL \|... |
+
+<details>
+<summary>Detailed traces (18 panels)</summary>
+
+#### All distribution links
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) OR vector(0)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note` → noted or-vector zero-fill approximation
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE erlang_vm_dist_node_state IS NOT NULL
+| STATS erlang_vm_dist_node_state = COUNT(erlang_vm_dist_node_state) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), erlang_vm_dist_node_state = MAX(erlang_vm_dist_node_state)
+| KEEP time_bucket, erlang_vm_dist_node_state
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `erlang_vm_dist_node_state`
+- Outer agg: `count`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_node_state`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric., Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=48, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Verdict:** MINOR_ISSUE
+
+#### Established distribution links
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (stat):**
+
+```
+count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"} == 3) OR vector(0)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails` → Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `erlang_vm_dist_node_state`
+- Outer agg: `count`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=12, y=0, w=12, h=5
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Semantic losses:** Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Connecting distribution links
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (stat):**
+
+```
+count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"} == 1) OR vector(0)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails` → Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `erlang_vm_dist_node_state`
+- Outer agg: `count`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=24, y=0, w=12, h=5
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Semantic losses:** Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Waiting distribution links
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (stat):**
+
+```
+count(erlang_vm_dist_node_state * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"} == 2) OR vector(0)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails` → Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `erlang_vm_dist_node_state`
+- Outer agg: `count`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=36, y=0, w=12, h=5
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Semantic losses:** Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is an unrecognized vector-matching join
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### State of distribution links
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (status-history):**
+
+```
+erlang_vm_dist_node_state{peer!~"rabbitmqcli.*"} * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE NOT (peer RLIKE "rabbitmqcli.*")
+| WHERE erlang_vm_dist_node_state IS NOT NULL
+| STATS erlang_vm_dist_node_state = AVG(erlang_vm_dist_node_state) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_node_state`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_node_state`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged; Grafana status-history panel approximated as a Kibana line chart: the underlying time series is preserved, but Kibana has no periodic discrete-state (status cell) visualization so values render as a line
+
+**Verdict:** MINOR_ISSUE
+
+#### Data buffered in the distribution links queue
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+erlang_vm_dist_node_queue_size_bytes * on(instance, job) group_left(rabbitmq_node, rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_node_queue_size_bytes IS NOT NULL
+| STATS erlang_vm_dist_node_queue_size_bytes = AVG(erlang_vm_dist_node_queue_size_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_node_queue_size_bytes`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_node_queue_size_bytes`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Data sent to peer node / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+rate(erlang_vm_dist_send_bytes[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_send_bytes IS NOT NULL
+| STATS erlang_vm_dist_send_bytes = AVG(erlang_vm_dist_send_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_send_bytes`
+- Range func: `rate`
+- Range window: `1m`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_send_bytes`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually
+
+**Verdict:** CORRECT
+
+#### Data received from peer node / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+rate(erlang_vm_dist_recv_bytes[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_recv_bytes IS NOT NULL
+| STATS erlang_vm_dist_recv_bytes = AVG(erlang_vm_dist_recv_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " <- ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_recv_bytes`
+- Range func: `rate`
+- Range window: `1m`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_recv_bytes`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually
+
+**Verdict:** CORRECT
+
+#### Distribution messages sent to peer node / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+rate(erlang_vm_dist_send_cnt[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_send_cnt IS NOT NULL
+| STATS erlang_vm_dist_send_cnt = AVG(erlang_vm_dist_send_cnt) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_send_cnt`
+- Range func: `rate`
+- Range window: `1m`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_send_cnt`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=8, w=24, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Distribution messages received from peer node / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+rate(erlang_vm_dist_recv_cnt[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_recv_cnt IS NOT NULL
+| STATS erlang_vm_dist_recv_cnt = AVG(erlang_vm_dist_recv_cnt) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " <- ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_recv_cnt`
+- Range func: `rate`
+- Range window: `1m`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_recv_cnt`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=8, w=24, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Average inet packet size sent to peer node
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+(rate(erlang_vm_dist_send_bytes[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) /
+(rate(erlang_vm_dist_send_cnt[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE erlang_vm_dist_send_bytes IS NOT NULL OR erlang_vm_dist_send_cnt IS NOT NULL
+| STATS erlang_vm_dist_send_bytes_rate = AVG(RATE(erlang_vm_dist_send_bytes, 1m)), erlang_vm_dist_send_cnt_rate = AVG(RATE(erlang_vm_dist_send_cnt, 1m)) BY time_bucket = TBUCKET(5 minute), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL computed_value = (erlang_vm_dist_send_bytes_rate / erlang_vm_dist_send_cnt_rate)
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| KEEP time_bucket, rabbitmq_node, peer, rabbitmq_cluster, computed_value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=15, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Average inet packet size received from peer node
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+(rate(erlang_vm_dist_recv_bytes[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) /
+(rate(erlang_vm_dist_recv_cnt[60s]) * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE erlang_vm_dist_recv_bytes IS NOT NULL OR erlang_vm_dist_recv_cnt IS NOT NULL
+| STATS erlang_vm_dist_recv_bytes_rate = AVG(RATE(erlang_vm_dist_recv_bytes, 1m)), erlang_vm_dist_recv_cnt_rate = AVG(RATE(erlang_vm_dist_recv_cnt, 1m)) BY time_bucket = TBUCKET(5 minute), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL computed_value = (erlang_vm_dist_recv_bytes_rate / erlang_vm_dist_recv_cnt_rate)
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " <- ", COALESCE(TO_STRING(peer), ""))
+| KEEP time_bucket, rabbitmq_node, peer, rabbitmq_cluster, computed_value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=15, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Memory used by the port driver
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+erlang_vm_dist_port_memory_bytes * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_port_memory_bytes IS NOT NULL
+| STATS erlang_vm_dist_port_memory_bytes = AVG(erlang_vm_dist_port_memory_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_port_memory_bytes`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_port_memory_bytes`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Data in the port driver buffer
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+erlang_vm_dist_port_queue_size_bytes * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_port_queue_size_bytes IS NOT NULL
+| STATS erlang_vm_dist_port_queue_size_bytes = AVG(erlang_vm_dist_port_queue_size_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_port_queue_size_bytes`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_port_queue_size_bytes`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 1
+- has_description: True
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Process state
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (status-history):**
+
+```
+erlang_vm_dist_proc_status{type="$erlang_vm_dist_proc_type"} * on(instance, job) group_left(rabbitmq_node, rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE erlang_vm_dist_proc_status IS NOT NULL
+| STATS erlang_vm_dist_proc_status = AVG(erlang_vm_dist_proc_status) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, peer, rabbitmq_cluster
+| EVAL legend = CONCAT(" ", COALESCE(TO_STRING(rabbitmq_node), ""), " -> ", COALESCE(TO_STRING(peer), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `erlang_vm_dist_proc_status`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `erlang_vm_dist_proc_status`
+- Output groups: `time_bucket, rabbitmq_node, peer, rabbitmq_cluster`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=24, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration; XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged; Grafana status-history panel approximated as a Kibana line chart: the underlying time series is preserved, but Kibana has no periodic discrete-state (status cell) visualization so values render as a line
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (3)</summary>
+
+- `Namespace` (type: `options`)
+- `RabbitMQ Cluster` (type: `options`)
+- `Process type` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Express Prometheus Middleware
 
 **File:** `express-14565.json` — **Panels:** 24
@@ -4377,6 +10739,7 @@ sum(
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4469,6 +10832,7 @@ http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4553,6 +10917,7 @@ http_requests_total{instance="$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4642,6 +11007,7 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4710,6 +11076,7 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4778,6 +11145,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4868,6 +11236,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -4958,6 +11327,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5048,6 +11418,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5138,6 +11509,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5228,6 +11600,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5318,6 +11691,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5408,6 +11782,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5498,6 +11873,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5588,6 +11964,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5738,6 +12115,7 @@ kube_pod_container_info{namespace="$namespace",pod=~"$primary-.*",container!~"PO
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5827,6 +12205,7 @@ sum by (cluster) (flagger_canary_status{namespace="$namespace",name=~"$canary",a
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -5916,6 +12295,7 @@ kube_pod_container_info{namespace="$namespace",pod=~"$canary-.*",pod!~".primary.
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6006,6 +12386,7 @@ kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6094,6 +12475,7 @@ flagger_canary_weight{namespace=~"$namespace",workload=~"$primary",account=~"$aw
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6182,6 +12564,7 @@ flagger_canary_weight{namespace=~"$namespace",workload=~"$canary",account=~"$aws
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6270,6 +12653,7 @@ kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6358,6 +12742,7 @@ round(sum by (cluster)(rate(istio_requests_total{reporter="destination",destinat
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6450,6 +12835,7 @@ sum by (cluster)(irate(istio_requests_total{reporter="destination",destination_w
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6534,6 +12920,7 @@ sum by (cluster)(irate(istio_requests_total{reporter="destination",destination_w
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6618,6 +13005,7 @@ round(sum by (cluster)(rate(istio_requests_total{reporter="destination",destinat
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6710,6 +13098,7 @@ histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{re
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6772,6 +13161,7 @@ histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{re
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6834,6 +13224,7 @@ round(sum(irate(istio_requests_total{connection_security_policy="mutual_tls", de
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -6929,6 +13320,7 @@ round(sum(irate(istio_requests_total{connection_security_policy="mutual_tls", de
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7044,6 +13436,7 @@ count(up == 1)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7126,6 +13519,7 @@ scrape_duration_seconds
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7209,6 +13603,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7342,6 +13737,7 @@ up
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7416,6 +13812,1291 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: Istio Service Dashboard
+
+**File:** `istio-service-7636.json` — **Panels:** 28
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| General | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Client Workloads | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Service Workloads | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
+| Client Request Volume | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_requests_total{reporter=~"$qrep",destination_service=~"$se... | TS metrics-prometheus-* \| WHERE istio_requests_total IS NOT NULL \| STATS istio... |
+| Client Success Rate (non-5xx responses) | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(istio_requests_total{reporter=~"$qrep",destination_service=~"$service"... | TS metrics-prometheus-* \| WHERE istio_requests_total IS NOT NULL \| STATS istio... |
+| Client Request Duration | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | (histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{r... | — |
+| TCP Received Bytes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(istio_tcp_received_bytes_total{reporter=~"$qrep", destination_service=... | TS metrics-prometheus-* \| WHERE istio_tcp_received_bytes_total IS NOT NULL \| S... |
+| Server Request Volume | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_requests_total{reporter="destination",destination_service=... | TS metrics-prometheus-* \| WHERE reporter == "destination" \| WHERE istio_reques... |
+| Server Success Rate (non-5xx responses) | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(istio_requests_total{reporter="destination",destination_service=~"$ser... | TS metrics-prometheus-* \| WHERE reporter == "destination" \| WHERE istio_reques... |
+| Server Request Duration | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | (histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{r... | — |
+| TCP Sent Bytes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(istio_tcp_sent_bytes_total{reporter=~"$qrep", destination_service=~"$s... | TS metrics-prometheus-* \| WHERE istio_tcp_sent_bytes_total IS NOT NULL \| STATS... |
+| Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
+| Incoming Requests By Source And Response Code | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_requests_total{connection_security_policy="mutual_tls",des... | TS metrics-prometheus-* \| WHERE istio_requests_total IS NOT NULL \| STATS istio... |
+| Incoming Success Rate (non-5xx responses) By Source | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(istio_requests_total{reporter=~"$qrep", connection_security_policy="mu... | TS metrics-prometheus-* \| WHERE istio_requests_total IS NOT NULL \| STATS istio... |
+| Incoming Request Duration By Source | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | (histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{r... | — |
+| Incoming Request Size By Source | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.50, sum(irate(istio_request_bytes_bucket{reporter=~"$qrep",... | — |
+| Response Size By Source | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.50, sum(irate(istio_response_bytes_bucket{reporter=~"$qrep"... | — |
+| Bytes Received from Incoming TCP Connection | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_tcp_received_bytes_total{reporter=~"$qrep", connection_sec... | TS metrics-prometheus-* \| WHERE istio_tcp_received_bytes_total IS NOT NULL \| S... |
+| Bytes Sent to Incoming TCP Connection | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_tcp_sent_bytes_total{connection_security_policy="mutual_tl... | TS metrics-prometheus-* \| WHERE istio_tcp_sent_bytes_total IS NOT NULL \| STATS... |
+| Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
+| Incoming Requests By Destination Workload And Response Code | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_requests_total{connection_security_policy="mutual_tls",des... | TS metrics-prometheus-* \| WHERE reporter == "destination" \| WHERE istio_reques... |
+| Incoming Success Rate (non-5xx responses) By Destination Workload | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(irate(istio_requests_total{reporter="destination", connection_security_polic... | — |
+| Incoming Request Duration By Service Workload | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | (histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{r... | — |
+| Incoming Request Size By Service Workload | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.50, sum(irate(istio_request_bytes_bucket{reporter="destinat... | — |
+| Response Size By Service Workload | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.50, sum(irate(istio_response_bytes_bucket{reporter="destina... | — |
+| Bytes Received from Incoming TCP Connection | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_tcp_received_bytes_total{reporter="destination", connectio... | TS metrics-prometheus-* \| WHERE reporter == "destination" \| WHERE istio_tcp_re... |
+| Bytes Sent to Incoming TCP Connection | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | round(sum(irate(istio_tcp_sent_bytes_total{connection_security_policy="mutual_tl... | TS metrics-prometheus-* \| WHERE reporter == "destination" \| WHERE istio_tcp_se... |
+
+<details>
+<summary>Detailed traces (22 panels)</summary>
+
+#### Client Request Volume
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+round(sum(irate(istio_requests_total{reporter=~"$qrep",destination_service=~"$service"}[$__rate_interval])), 0.001)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: round
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total = SUM(IRATE(istio_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL istio_requests_total = ROUND(istio_requests_total / 0.001) * 0.001
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), istio_requests_total = MAX(istio_requests_total)
+| KEEP time_bucket, istio_requests_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_requests_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `istio_requests_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=4, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration; round(v, step) emitted as ROUND(v / step) * step
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Client Success Rate (non-5xx responses)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(istio_requests_total{reporter=~"$qrep",destination_service=~"$service",response_code!~"5.*"}[$__rate_interval])) / (sum(irate(istio_requests_total{reporter=~"$qrep",destination_service=~"$service"}[$__rate_interval])) or on () vector(1))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note` → noted or-vector zero-fill approximation
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total_response_code_5_irate_sum = SUM(IRATE(CASE((NOT (response_code RLIKE "5.*")), istio_requests_total, NULL), 5m)), istio_requests_total_reporter_destination_service_irate_sum = SUM(IRATE(istio_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (istio_requests_total_response_code_5_irate_sum / istio_requests_total_reporter_destination_service_irate_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=4, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Verdict:** MINOR_ISSUE
+
+#### Client Request Duration
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+(histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{reporter=~"$qrep",destination_service=~"$service"}[$__rate_interval])) by (le)) / 1000) or histogram_quantile(0.50, sum(irate(istio_request_duration_seconds_bucket{reporter=~"$qrep",destination_service=~"$service"}[$__rate_interval])) by (le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Binary op: `or`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=24, y=4, w=12, h=6
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 3
+
+**Warnings:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### TCP Received Bytes
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(istio_tcp_received_bytes_total{reporter=~"$qrep", destination_service=~"$service"}[$__rate_interval]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_tcp_received_bytes_total IS NOT NULL
+| STATS istio_tcp_received_bytes_total = SUM(IRATE(istio_tcp_received_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), istio_tcp_received_bytes_total = MAX(istio_tcp_received_bytes_total)
+| KEEP time_bucket, istio_tcp_received_bytes_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_tcp_received_bytes_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `istio_tcp_received_bytes_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=36, y=4, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Server Request Volume
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+round(sum(irate(istio_requests_total{reporter="destination",destination_service=~"$service"}[$__rate_interval])), 0.001)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: round
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE reporter == "destination"
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total = SUM(IRATE(istio_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL istio_requests_total = ROUND(istio_requests_total / 0.001) * 0.001
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), istio_requests_total = MAX(istio_requests_total)
+| KEEP time_bucket, istio_requests_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_requests_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `istio_requests_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=10, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration; round(v, step) emitted as ROUND(v / step) * step
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Server Success Rate (non-5xx responses)
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(istio_requests_total{reporter="destination",destination_service=~"$service",response_code!~"5.*"}[$__rate_interval])) / (sum(irate(istio_requests_total{reporter="destination",destination_service=~"$service"}[$__rate_interval])) or on () vector(1))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note` → noted or-vector zero-fill approximation
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE reporter == "destination"
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total_reporter_destination_response_code_5_irate_sum = SUM(IRATE(CASE((NOT (response_code RLIKE "5.*")), istio_requests_total, NULL), 5m)), istio_requests_total_reporter_destination_irate_sum = SUM(IRATE(istio_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (istio_requests_total_reporter_destination_response_code_5_irate_sum / istio_requests_total_reporter_destination_irate_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=10, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value
+
+**Verdict:** MINOR_ISSUE
+
+#### Server Request Duration
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+(histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{reporter="destination",destination_service=~"$service"}[$__rate_interval])) by (le)) / 1000) or histogram_quantile(0.50, sum(irate(istio_request_duration_seconds_bucket{reporter="destination",destination_service=~"$service"}[$__rate_interval])) by (le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Binary op: `or`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=24, y=10, w=12, h=6
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 3
+
+**Warnings:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### TCP Sent Bytes
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(istio_tcp_sent_bytes_total{reporter=~"$qrep", destination_service=~"$service"}[$__rate_interval]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_tcp_sent_bytes_total IS NOT NULL
+| STATS istio_tcp_sent_bytes_total = SUM(IRATE(istio_tcp_sent_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), istio_tcp_sent_bytes_total = MAX(istio_tcp_sent_bytes_total)
+| KEEP time_bucket, istio_tcp_sent_bytes_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_tcp_sent_bytes_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `istio_tcp_sent_bytes_total`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=36, y=10, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Incoming Requests By Source And Response Code
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+round(sum(irate(istio_requests_total{connection_security_policy="mutual_tls",destination_service=~"$service",reporter=~"$qrep",source_workload=~"$srcwl",source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, response_code), 0.001) ||| round(sum(irate(istio_requests_total{connection_security_policy!="mutual_tls", destination_service=~"$service", reporter=~"$qrep", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, response_code), 0.001)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: round
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total_A = SUM(IRATE(CASE((connection_security_policy == "mutual_tls"), istio_requests_total, NULL), 5m)), istio_requests_total_B = SUM(IRATE(CASE((connection_security_policy != "mutual_tls"), istio_requests_total, NULL), 5m)) BY time_bucket = TBUCKET(5 minute), source_workload, source_workload_namespace, response_code
+| EVAL mTLS = istio_requests_total_A
+| EVAL value = istio_requests_total_B
+| EVAL legend = CONCAT(COALESCE(TO_STRING(source_workload), ""), ".", COALESCE(TO_STRING(source_workload_namespace), ""), " : ", COALESCE(TO_STRING(response_code), ""), " (🔐mTLS)")
+| KEEP time_bucket, source_workload, source_workload_namespace, response_code, mTLS, value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_requests_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `source_workload, source_workload_namespace, response_code`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `mTLS`
+- Output groups: `time_bucket, source_workload, source_workload_namespace, response_code`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=4, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+- field_overrides: 1
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven label filters during migration; round(v, step) emitted as ROUND(v / step) * step
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+
+**Verdict:** MINOR_ISSUE
+
+#### Incoming Success Rate (non-5xx responses) By Source
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum(irate(istio_requests_total{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service",response_code!~"5.*", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace) / sum(irate(istio_requests_total{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace) ||| sum(irate(istio_requests_total{reporter=~"$qrep", connection_security_policy!="mutual_tls", destination_service=~"$service",response_code!~"5.*", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace) / sum(irate(istio_requests_total{reporter=~"$qrep", connection_security_policy!="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total_A_lhs = SUM(IRATE(CASE((connection_security_policy == "mutual_tls") and (NOT (response_code RLIKE "5.*")), istio_requests_total, NULL), 5m)), istio_requests_total_A_rhs = SUM(IRATE(CASE((connection_security_policy == "mutual_tls"), istio_requests_total, NULL), 5m)), istio_requests_total_B_lhs = SUM(IRATE(CASE((connection_security_policy != "mutual_tls") and (NOT (response_code RLIKE "5.*")), istio_requests_total, NULL), 5m)), istio_requests_total_B_rhs = SUM(IRATE(CASE((connection_security_policy != "mutual_tls"), istio_requests_total, NULL), 5m)) BY time_bucket = TBUCKET(5 minute), source_workload, source_workload_namespace
+| EVAL mTLS = (istio_requests_total_A_lhs / istio_requests_total_A_rhs)
+| EVAL value = (istio_requests_total_B_lhs / istio_requests_total_B_rhs)
+| EVAL legend = CONCAT(COALESCE(TO_STRING(source_workload), ""), ".", COALESCE(TO_STRING(source_workload_namespace), ""), " (🔐mTLS)")
+| KEEP time_bucket, source_workload, source_workload_namespace, mTLS, value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `mTLS`
+- Output groups: `time_bucket, source_workload, source_workload_namespace`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=4, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+- field_overrides: 1
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+
+**Verdict:** MINOR_ISSUE
+
+#### Incoming Request Duration By Source
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+(histogram_quantile(0.50, sum(irate(istio_request_duration_milliseconds_bucket{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, le)) / 1000) or histogram_quantile(0.50, sum(irate(istio_request_duration_seconds_bucket{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Binary op: `or`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=13, w=16, h=9
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 8
+- field_overrides: 1
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Incoming Request Size By Source
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+histogram_quantile(0.50, sum(irate(istio_request_bytes_bucket{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `histogram_quantile`
+- Metric: `istio_request_bytes`
+- Range window: `5m`
+- Group labels: `source_workload, source_workload_namespace`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=16, y=13, w=16, h=9
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 8
+- field_overrides: 1
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven label filters during migration; histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Response Size By Source
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+histogram_quantile(0.50, sum(irate(istio_response_bytes_bucket{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace, le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `histogram_quantile`
+- Metric: `istio_response_bytes`
+- Range window: `5m`
+- Group labels: `source_workload, source_workload_namespace`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=32, y=13, w=16, h=9
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 8
+- field_overrides: 1
+
+**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven label filters during migration; histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Bytes Received from Incoming TCP Connection
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+round(sum(irate(istio_tcp_received_bytes_total{reporter=~"$qrep", connection_security_policy="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace), 0.001) ||| round(sum(irate(istio_tcp_received_bytes_total{reporter=~"$qrep", connection_security_policy!="mutual_tls", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace), 0.001)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: round
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_tcp_received_bytes_total IS NOT NULL
+| STATS istio_tcp_received_bytes_total_A = SUM(IRATE(CASE((connection_security_policy == "mutual_tls"), istio_tcp_received_bytes_total, NULL), 5m)), istio_tcp_received_bytes_total_B = SUM(IRATE(CASE((connection_security_policy != "mutual_tls"), istio_tcp_received_bytes_total, NULL), 5m)) BY time_bucket = TBUCKET(5 minute), source_workload, source_workload_namespace
+| EVAL mTLS = istio_tcp_received_bytes_total_A
+| EVAL value = istio_tcp_received_bytes_total_B
+| EVAL legend = CONCAT(COALESCE(TO_STRING(source_workload), ""), ".", COALESCE(TO_STRING(source_workload_namespace), ""), " (🔐mTLS)")
+| KEEP time_bucket, source_workload, source_workload_namespace, mTLS, value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_tcp_received_bytes_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `source_workload, source_workload_namespace`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `mTLS`
+- Output groups: `time_bucket, source_workload, source_workload_namespace`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=22, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Dropped variable-driven label filters during migration; round(v, step) emitted as ROUND(v / step) * step
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Bytes Sent to Incoming TCP Connection
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+round(sum(irate(istio_tcp_sent_bytes_total{connection_security_policy="mutual_tls", reporter=~"$qrep", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace), 0.001) ||| round(sum(irate(istio_tcp_sent_bytes_total{connection_security_policy!="mutual_tls", reporter=~"$qrep", destination_service=~"$service", source_workload=~"$srcwl", source_workload_namespace=~"$srcns"}[$__rate_interval])) by (source_workload, source_workload_namespace), 0.001)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms` → applied value wrapper transforms: round
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE istio_tcp_sent_bytes_total IS NOT NULL
+| STATS istio_tcp_sent_bytes_total_A = SUM(IRATE(CASE((connection_security_policy == "mutual_tls"), istio_tcp_sent_bytes_total, NULL), 5m)), istio_tcp_sent_bytes_total_B = SUM(IRATE(CASE((connection_security_policy != "mutual_tls"), istio_tcp_sent_bytes_total, NULL), 5m)) BY time_bucket = TBUCKET(5 minute), source_workload, source_workload_namespace
+| EVAL mTLS = istio_tcp_sent_bytes_total_A
+| EVAL value = istio_tcp_sent_bytes_total_B
+| EVAL legend = CONCAT(COALESCE(TO_STRING(source_workload), ""), ".", COALESCE(TO_STRING(source_workload_namespace), ""), " (🔐mTLS)")
+| KEEP time_bucket, source_workload, source_workload_namespace, mTLS, value, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `istio_tcp_sent_bytes_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Group labels: `source_workload, source_workload_namespace`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `mTLS`
+- Output groups: `time_bucket, source_workload, source_workload_namespace`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=22, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Dropped variable-driven label filters during migration; round(v, step) emitted as ROUND(v / step) * step
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+---
+
 ### Grafana: Kubernetes cluster monitoring (via Prometheus)
 
 **File:** `k8s-cluster-monitoring-315.json` — **Panels:** 21
@@ -7464,6 +15145,7 @@ sum (rate (container_network_receive_bytes_total{kubernetes_io_hostname=~"^$Node
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7554,6 +15236,7 @@ sum (container_memory_working_set_bytes{id="/",kubernetes_io_hostname=~"^$Node$"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7636,6 +15319,7 @@ sum (container_memory_working_set_bytes{id="/",kubernetes_io_hostname=~"^$Node$"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7723,6 +15407,7 @@ sum (machine_memory_bytes{kubernetes_io_hostname=~"^$Node$"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7809,6 +15494,7 @@ sum (rate (container_cpu_usage_seconds_total{id="/",kubernetes_io_hostname=~"^$N
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7891,6 +15577,7 @@ sum (rate (container_cpu_usage_seconds_total{id="/",kubernetes_io_hostname=~"^$N
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -7979,6 +15666,7 @@ sum (machine_cpu_cores{kubernetes_io_hostname=~"^$Node$"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8065,6 +15753,7 @@ sum (container_fs_usage_bytes{device=~"^/dev/[sv]d[a-z][1-9]$",id="/",kubernetes
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8149,6 +15838,7 @@ sum (container_fs_usage_bytes{device=~"^/dev/[sv]d[a-z][1-9]$",id="/",kubernetes
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8237,6 +15927,7 @@ sum (container_fs_limit_bytes{device=~"^/dev/[sv]d[a-z][1-9]$",id="/",kubernetes
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8325,6 +16016,7 @@ sum (rate (container_cpu_usage_seconds_total{image!="",name=~"^k8s_.*",kubernete
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8415,6 +16107,7 @@ sum (rate (container_cpu_usage_seconds_total{systemd_service_name!="",kubernetes
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8504,6 +16197,7 @@ sum (rate (container_cpu_usage_seconds_total{image!="",name=~"^k8s_.*",container
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8598,6 +16292,7 @@ sum (rate (container_cpu_usage_seconds_total{id!="/",kubernetes_io_hostname=~"^$
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8687,6 +16382,7 @@ sum (container_memory_working_set_bytes{image!="",name=~"^k8s_.*",kubernetes_io_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8832,6 +16528,7 @@ sum(kube_pod_info{node=~"$node"}) / sum(kube_node_status_allocatable_pods{node=~
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8914,6 +16611,7 @@ sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"}) / sum(kube_no
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -8996,6 +16694,7 @@ sum(kube_pod_container_resource_requests_memory_bytes{node=~"$node"}) / sum(kube
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9078,6 +16777,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9160,6 +16860,7 @@ sum(kube_node_status_allocatable_pods{node=~"$node"}) ||| sum(kube_node_status_c
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9252,6 +16953,7 @@ sum(kube_node_status_capacity_cpu_cores{node=~"$node"}) ||| sum(kube_node_status
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9344,6 +17046,7 @@ sum(kube_node_status_allocatable_memory_bytes{node=~"$node"}) ||| sum(kube_node_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9436,6 +17139,7 @@ sum(node_filesystem_size{nodename=~"$node"}) - sum(node_filesystem_free{nodename
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9520,6 +17224,7 @@ kube_deployment_status_replicas{namespace=~"$namespace"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9612,6 +17317,7 @@ sum(kube_deployment_status_replicas{namespace=~"$namespace"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9700,6 +17406,7 @@ sum(kube_deployment_status_replicas_updated{namespace=~"$namespace"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9788,6 +17495,7 @@ sum(kube_deployment_status_replicas_unavailable{namespace=~"$namespace"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9876,6 +17584,7 @@ sum(kube_node_info{node=~"$node"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -9964,6 +17673,7 @@ sum(kube_node_status_condition{condition="OutOfDisk", node=~"$node", status="tru
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10054,6 +17764,7 @@ sum(kube_node_spec_unschedulable{node=~"$node"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10144,13 +17855,13 @@ TS metrics-prometheus-*
 | Nodes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count by (node) (kube_node_info{cluster="$cluster"})) | FROM metrics-prometheus-* \| WHERE kube_node_info IS NOT NULL \| STATS kube_node... |
 | Kubernetes Resource Count | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_namespace_labels{cluster="$cluster"}) \|\|\| sum(kube_pod_container_sta... | TS metrics-prometheus-* \| WHERE kube_namespace_labels IS NOT NULL OR kube_pod_c... |
 | Namespaces | `stat` → `metric` | migrated | **MINOR_ISSUE** | count(kube_namespace_created{cluster="$cluster"}) | FROM metrics-prometheus-* \| WHERE kube_namespace_created IS NOT NULL \| STATS s... |
-| CPU Usage | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_cpu_seconds_total{mode!~"idle\|iowait\|steal", cluster="$cluster",... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
-| RAM Usage | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
+| CPU Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_cpu_seconds_total{mode!~"idle\|iowait\|steal", cluster="$cluster",... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
+| RAM Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | Running Pods | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{phase="Running", cluster="$cluster"}) | TS metrics-prometheus-* \| WHERE phase == "Running" \| WHERE kube_pod_status_pha... |
 | Cluster CPU Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
 | Cluster Memory Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| CPU Utilization by namespace | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat... | — |
-| Memory Utilization by namespace | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names... | — |
+| CPU Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE image != "" \| WHERE container_cpu_usage_second... |
+| Memory Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names... | TS metrics-prometheus-* \| WHERE image != "" \| WHERE container_memory_working_s... |
 | CPU Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
 | Memory Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | CPU Throttled seconds by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"... | TS metrics-prometheus-* \| WHERE image != "" \| WHERE container_cpu_cfs_throttle... |
@@ -10160,8 +17871,8 @@ TS metrics-prometheus-*
 | OOM Events by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(container_oom_events_total{cluster="$cluster"}[$__rate_interval])) ... | TS metrics-prometheus-* \| WHERE container_oom_events_total IS NOT NULL \| STATS... |
 | Container Restarts by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(kube_pod_container_status_restarts_total{cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_restarts_total IS NOT... |
 | Global Network Utilization by device | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc).*", cluster=... | TS metrics-prometheus-* \| WHERE NOT (device RLIKE "(veth\|azv\|lxc).*") \| WHER... |
-| Network Saturation - Packets dropped | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_drop_total{cluster="$cluster", job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
-| Network Received by namespace | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(container_network_receive_bytes_total{cluster="$cluster"}[$__rate_inter... | — |
+| Network Saturation - Packets dropped | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_drop_total{cluster="$cluster", job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
+| Network Received by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_network_receive_bytes_total{cluster="$cluster"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE container_network_receive_bytes_total IS NOT NU... |
 | Total Network Received (with all virtual devices) by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{cluster="$cluster", job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
 | Network Received (without loopback)  by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc\|lo).*", clus... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
 | Network Received (loopback only) by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device="lo", cluster="$cluster", job="... | TS metrics-prometheus-* \| WHERE device == "lo" \| WHERE node_network_receive_by... |
@@ -10186,6 +17897,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10217,7 +17929,7 @@ TS metrics-prometheus-*
 | EVAL Limits = (kube_pod_container_resource_limits_Limits_lhs / machine_cpu_cores_Limits_rhs)
 | SORT time_bucket ASC
 | STATS time_bucket = MAX(time_bucket), Requests = MAX(Requests), Limits = MAX(Limits)
-| KEEP time_bucket, Requests, Limits
+| KEEP Requests, Limits
 | EVAL __labels = MV_APPEND("Requests", "Limits"), __values = MV_APPEND(TO_STRING(Requests), TO_STRING(Limits))
 | EVAL __pairs = MV_ZIP(__labels, __values, "~")
 | MV_EXPAND __pairs
@@ -10253,7 +17965,7 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'organize' as ES|QL rewrite; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific)
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
 
@@ -10278,6 +17990,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10311,8 +18024,9 @@ TS metrics-prometheus-*
 | EVAL Limits = (kube_pod_container_resource_limits_Limits_lhs / machine_memory_bytes_Limits_rhs)
 | SORT time_bucket ASC
 | STATS time_bucket = MAX(time_bucket), Real_Linux = MAX(Real_Linux), Real_Windows = MAX(Real_Windows), Requests = MAX(Requests), Limits = MAX(Limits)
-| KEEP time_bucket, Real_Linux, Real_Windows, Requests, Limits
-| EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Real Linux", "Real Windows"), "Requests"), "Limits"), __values = MV_APPEND(MV_APPEND(MV_APPEND(TO_STRING(Real_Linux), TO_STRING(Real_Windows)), TO_STRING(Requests)), TO_STRING(Limits))
+| EVAL Real = CASE((CASE(Real_Linux IS NOT NULL, 1, 0) + CASE(Real_Windows IS NOT NULL, 1, 0)) > 0, (COALESCE(Real_Linux, 0) + COALESCE(Real_Windows, 0)) / (CASE(Real_Linux IS NOT NULL, 1, 0) + CASE(Real_Windows IS NOT NULL, 1, 0)), NULL)
+| KEEP Requests, Limits, Real
+| EVAL __labels = MV_APPEND(MV_APPEND("Requests", "Limits"), "Real"), __values = MV_APPEND(MV_APPEND(TO_STRING(Requests), TO_STRING(Limits)), TO_STRING(Real))
 | EVAL __pairs = MV_ZIP(__labels, __values, "~")
 | MV_EXPAND __pairs
 | EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
@@ -10328,7 +18042,7 @@ TS metrics-prometheus-*
 - Output shape: `single_value`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `Real_Linux`
+- Output metric: `Requests`
 - Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
 
 **Visual IR:**
@@ -10347,7 +18061,7 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Approximated bargauge as bar chart
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
 
@@ -10372,6 +18086,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10454,6 +18169,7 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10558,6 +18274,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10641,6 +18358,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10665,9 +18383,9 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
-- `panel_translators` / `metric_panel` → mapped to metric panel
+- `panel_translators` / `metric_panel` → approximated grouped stat as datatable
 
-**Translated (metric):**
+**Translated (datatable):**
 
 ```
 TS metrics-prometheus-*
@@ -10691,14 +18409,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `node_cpu_seconds_total`
-- Semantic losses: Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+- Semantic losses: Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific), Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
-- Kibana type: `metric`
-- Layout: x=0, y=12, w=12, h=6
+- Kibana type: `datatable`
+- Layout: x=0, y=12, w=12, h=8
 - Presentation kind: `esql`
-- Config keys: type, query, primary
+- Config keys: type, query, metrics, breakdowns
 
 **Operational IR:**
 
@@ -10709,9 +18427,9 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+**Semantic losses:** Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -10734,6 +18452,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10752,9 +18471,9 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
-- `panel_translators` / `metric_panel` → mapped to metric panel
+- `panel_translators` / `metric_panel` → approximated grouped stat as datatable
 
-**Translated (metric):**
+**Translated (datatable):**
 
 ```
 TS metrics-prometheus-*
@@ -10776,14 +18495,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `computed_value`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific), Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
-- Kibana type: `metric`
-- Layout: x=12, y=12, w=12, h=6
+- Kibana type: `datatable`
+- Layout: x=12, y=12, w=12, h=8
 - Presentation kind: `esql`
-- Config keys: type, query, primary
+- Config keys: type, query, metrics, breakdowns
 
 **Operational IR:**
 
@@ -10794,9 +18513,9 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -10819,6 +18538,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10873,7 +18593,7 @@ TS metrics-prometheus-*
 **Visual IR:**
 
 - Kibana type: `metric`
-- Layout: x=24, y=12, w=4, h=6
+- Layout: x=24, y=12, w=4, h=8
 - Presentation kind: `esql`
 - Config keys: type, query, primary
 
@@ -10906,6 +18626,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -10999,6 +18720,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11029,7 +18751,8 @@ TS metrics-prometheus-*
 | STATS node_memory_MemTotal_bytes_Linux_lhs_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Linux_lhs_rhs = SUM(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes_Linux_rhs = SUM(node_memory_MemTotal_bytes), windows_os_visible_memory_bytes_Windows_lhs_lhs = SUM(windows_os_visible_memory_bytes), windows_memory_available_bytes_Windows_lhs_rhs = SUM(windows_memory_available_bytes), windows_os_visible_memory_bytes_Windows_rhs = SUM(windows_os_visible_memory_bytes) BY time_bucket = TBUCKET(5 minute)
 | EVAL Linux = ((node_memory_MemTotal_bytes_Linux_lhs_lhs - node_memory_MemAvailable_bytes_Linux_lhs_rhs) / node_memory_MemTotal_bytes_Linux_rhs)
 | EVAL Windows = ((windows_os_visible_memory_bytes_Windows_lhs_lhs - windows_memory_available_bytes_Windows_lhs_rhs) / windows_os_visible_memory_bytes_Windows_rhs)
-| KEEP time_bucket, Linux, Windows
+| EVAL Memory_usage_in = CASE((CASE(Linux IS NOT NULL, 1, 0) + CASE(Windows IS NOT NULL, 1, 0)) > 0, (COALESCE(Linux, 0) + COALESCE(Windows, 0)) / (CASE(Linux IS NOT NULL, 1, 0) + CASE(Windows IS NOT NULL, 1, 0)), NULL)
+| KEEP time_bucket, Memory_usage_in
 | SORT time_bucket ASC
 ```
 
@@ -11041,7 +18764,7 @@ TS metrics-prometheus-*
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `Linux`
+- Output metric: `Memory_usage_in`
 - Output groups: `time_bucket`
 - Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
 
@@ -11061,7 +18784,7 @@ TS metrics-prometheus-*
 - targets: 2
 - transformations: 1
 
-**Warnings:** Grafana panel has 1 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel has 1 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'calculateField' as ES|QL rewrite
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
 
@@ -11071,7 +18794,7 @@ TS metrics-prometheus-*
 
 #### CPU Utilization by namespace
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (timeseries):**
 
@@ -11088,6 +18811,7 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11095,29 +18819,51 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → arithmetic operand unsupported; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE image != ""
+| WHERE container_cpu_usage_seconds_total IS NOT NULL
+| STATS container_cpu_usage_seconds_total_image_rate_sum = SUM(RATE(container_cpu_usage_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), namespace
+| EVAL computed_value = container_cpu_usage_seconds_total_image_rate_sum
+| KEEP time_bucket, namespace, computed_value
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `+`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+- Output metric: `computed_value`
+- Output groups: `time_bucket, namespace`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=12, w=24, h=12
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -11127,15 +18873,15 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 
 - targets: 1
 
-**Warnings:** PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
-**Semantic losses:** PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### Memory Utilization by namespace
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (timeseries):**
 
@@ -11152,6 +18898,7 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11159,29 +18906,51 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → arithmetic operand unsupported; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE image != ""
+| WHERE container_memory_working_set_bytes IS NOT NULL
+| STATS container_memory_working_set_bytes_image_sum = SUM(container_memory_working_set_bytes) BY time_bucket = TBUCKET(5 minute), namespace
+| EVAL computed_value = container_memory_working_set_bytes_image_sum
+| KEEP time_bucket, namespace, computed_value
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `+`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+- Output metric: `computed_value`
+- Output groups: `time_bucket, namespace`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=12, w=24, h=12
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -11191,11 +18960,11 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 
 - targets: 1
 
-**Warnings:** PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
-**Semantic losses:** PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### CPU Utilization by instance
 
@@ -11214,6 +18983,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11305,6 +19075,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11390,6 +19161,7 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11540,6 +19312,7 @@ sum(up{namespace="$namespace", app_kubernetes_io_component="kafka"}) / 3
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11623,6 +19396,7 @@ kafka_brokers{namespace="$namespace"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11709,6 +19483,7 @@ sum(kafka_controller_kafkacontroller_activecontrollercount_value{namespace="$nam
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11795,6 +19570,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11884,6 +19660,7 @@ sum(kafka_topic_partition_under_replicated_partition{namespace="$namespace"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -11970,6 +19747,7 @@ kafka_server_replicamanager_total_partitioncount_value{namespace="$namespace", i
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12056,6 +19834,7 @@ up{namespace="$namespace", instance=~"$broker"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12142,6 +19921,7 @@ sum(kafka_controller_controllerstats_uncleanleaderelectionspersec_count{namespac
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12230,6 +20010,7 @@ kafka_controller_kafkacontroller_activecontrollercount_value{namespace="$namespa
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12317,6 +20098,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12406,6 +20188,7 @@ sum(kafka_controller_kafkacontroller_offlinepartitionscount_value{namespace="$na
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12492,6 +20275,7 @@ kafka_server_brokertopicmetrics_total_bytesinpersec_count{namespace="$namespace"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12575,6 +20359,7 @@ kafka_server_brokertopicmetrics_total_messagesinpersec_oneminuterate{namespace="
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12661,6 +20446,7 @@ kafka_server_replicamanager_total_partitioncount_value{namespace="$namespace"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12747,6 +20533,7 @@ rate(kafka_server_brokertopicmetrics_total_bytesinpersec_count{namespace="$names
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12828,6 +20615,2830 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: Keycloak Metrics Dashboard
+
+**File:** `keycloak-10441.json` — **Panels:** 24
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Current Memory HEAP | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(jvm_memory_bytes_used{kubernetes_pod_name="$instance", area="heap"})*100/sum... | TS metrics-prometheus-* \| WHERE area == "heap" \| WHERE jvm_memory_bytes_used I... |
+| Current Memory nonHEAP | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(jvm_memory_bytes_used{kubernetes_pod_name="$instance", area="nonheap"})*100/... | TS metrics-prometheus-* \| WHERE area == "nonheap" \| WHERE jvm_memory_bytes_use... |
+| Memory Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(jvm_memory_bytes_max{kubernetes_pod_name="$instance"}) \|\|\| sum(jvm_memory... | TS metrics-prometheus-* \| WHERE jvm_memory_bytes_max IS NOT NULL OR jvm_memory_... |
+| Logins Per REALM for past 24h | `grafana-piechart-panel` → `pie` | migrated_with_warnings | **MINOR_ISSUE** | sum by (realm)(increase(keycloak_logins[24h])) | TS metrics-prometheus-* \| WHERE keycloak_logins IS NOT NULL \| STATS keycloak_l... |
+| Registrations Per REALM for past 24h | `grafana-piechart-panel` → `pie` | migrated_with_warnings | **MINOR_ISSUE** | sum by (realm)(increase(keycloak_registrations[24h])) | TS metrics-prometheus-* \| WHERE keycloak_registrations IS NOT NULL \| STATS key... |
+| Logins Per CLIENT for past 24h | `grafana-piechart-panel` → `pie` | migrated_with_warnings | **MINOR_ISSUE** | sum by (client_id)(increase(keycloak_logins[24h])) | TS metrics-prometheus-* \| WHERE keycloak_logins IS NOT NULL \| STATS keycloak_l... |
+| Registrations Per CLIENT for past 24h | `grafana-piechart-panel` → `pie` | migrated_with_warnings | **MINOR_ISSUE** | sum by (client_id)(increase(keycloak_registrations[24h])) | TS metrics-prometheus-* \| WHERE keycloak_registrations IS NOT NULL \| STATS key... |
+| 4xx and 5xx Responses | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (code)(increase(keycloak_response_errors[30m])) | TS metrics-prometheus-* \| WHERE keycloak_response_errors IS NOT NULL \| STATS k... |
+| Logins per REALM | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (realm)(increase(keycloak_logins[30m])) | TS metrics-prometheus-* \| WHERE keycloak_logins IS NOT NULL \| STATS keycloak_l... |
+| Login Errors on realm | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (error) (increase(keycloak_failed_login_attempts{provider="keycloak",real... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_failed... |
+| Logins per CLIENT on realm | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (client_id)(increase(keycloak_logins{realm="$realm",provider="keycloak"}[... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_logins... |
+| Registration Errors on realm | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (realm) (increase(keycloak_registrations_errors{provider="keycloak",realm... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_regist... |
+| Registrations per REALM | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (realm)(increase(keycloak_registrations[30m])) | TS metrics-prometheus-* \| WHERE keycloak_registrations IS NOT NULL \| STATS key... |
+| Login Errors | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (error) (increase(keycloak_failed_login_attempts{provider="keycloak",real... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_failed... |
+| Registrations per CLIENT on relm | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (client_id)(increase(keycloak_registrations{realm="$realm",provider="keyc... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_regist... |
+| Registration Errors | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum by (error) (increase(keycloak_registrations_errors{provider="keycloak",realm... | TS metrics-prometheus-* \| WHERE provider == "keycloak" \| WHERE keycloak_regist... |
+| Request duration method = "GET" Heatmap | `heatmap` → `heatmap` | migrated | **CORRECT** | sum(increase(keycloak_request_duration_bucket{method="GET"}[30m])) by (le) | TS metrics-prometheus-* \| WHERE method == "GET" \| WHERE keycloak_request_durat... |
+| Percentage of requests "GET"  method  was served in 100ms or below | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(keycloak_request_duration_bucket{method="GET", le="100.0"}[30m])) / sum... | TS metrics-prometheus-* \| WHERE method == "GET" \| WHERE keycloak_request_durat... |
+| Request duration method = "POST" Heatmap | `heatmap` → `heatmap` | migrated | **CORRECT** | sum(increase(keycloak_request_duration_bucket{method="POST"}[30m])) by (le) | TS metrics-prometheus-* \| WHERE method == "POST" \| WHERE keycloak_request_dura... |
+| Percentage of requests "POST"  method  was served in 100ms or below | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(keycloak_request_duration_bucket{method="POST", le="100.0"}[30m])) / su... | TS metrics-prometheus-* \| WHERE method == "POST" \| WHERE keycloak_request_dura... |
+| Request duration method = "HEAD" Heatmap | `heatmap` → `heatmap` | migrated | **CORRECT** | sum(increase(keycloak_request_duration_bucket{method="HEAD"}[30m])) by (le) | TS metrics-prometheus-* \| WHERE method == "HEAD" \| WHERE keycloak_request_dura... |
+| Percentage of requests "HEAD"  method  was served in 100ms or below | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(keycloak_request_duration_bucket{method="HEAD", le="100.0"}[30m])) / su... | TS metrics-prometheus-* \| WHERE method == "HEAD" \| WHERE keycloak_request_dura... |
+| Request duration method = "PUT" Heatmap | `heatmap` → `heatmap` | migrated | **CORRECT** | sum(increase(keycloak_request_duration_bucket{method="PUT"}[30m])) by (le) | TS metrics-prometheus-* \| WHERE method == "PUT" \| WHERE keycloak_request_durat... |
+| Percentage of requests "PUT"  method  was served in 100ms or below | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(keycloak_request_duration_bucket{method="PUT", le="100.0"}[30m])) / sum... | TS metrics-prometheus-* \| WHERE method == "PUT" \| WHERE keycloak_request_durat... |
+
+<details>
+<summary>Detailed traces (24 panels)</summary>
+
+#### Current Memory HEAP
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+sum(jvm_memory_bytes_used{kubernetes_pod_name="$instance", area="heap"})*100/sum(jvm_memory_bytes_max{kubernetes_pod_name="$instance", area="heap"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE area == "heap"
+| WHERE jvm_memory_bytes_used IS NOT NULL OR jvm_memory_bytes_max IS NOT NULL
+| STATS jvm_memory_bytes_used_area_heap_sum = SUM(jvm_memory_bytes_used), jvm_memory_bytes_max_area_heap_sum = SUM(jvm_memory_bytes_max) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = ((jvm_memory_bytes_used_area_heap_sum * 100) / jvm_memory_bytes_max_area_heap_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| EVAL _gauge_max = 100, _gauge_goal = 80
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=0, y=0, w=12, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance, maximum
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Current Memory nonHEAP
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+sum(jvm_memory_bytes_used{kubernetes_pod_name="$instance", area="nonheap"})*100/sum(jvm_memory_bytes_max{kubernetes_pod_name="$instance", area="nonheap"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE area == "nonheap"
+| WHERE jvm_memory_bytes_used IS NOT NULL OR jvm_memory_bytes_max IS NOT NULL
+| STATS jvm_memory_bytes_used_area_nonheap_sum = SUM(jvm_memory_bytes_used), jvm_memory_bytes_max_area_nonheap_sum = SUM(jvm_memory_bytes_max) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = ((jvm_memory_bytes_used_area_nonheap_sum * 100) / jvm_memory_bytes_max_area_nonheap_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| EVAL _gauge_max = 100, _gauge_goal = 80
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=12, y=0, w=12, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance, maximum
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Memory Usage
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(jvm_memory_bytes_max{kubernetes_pod_name="$instance"}) ||| sum(jvm_memory_bytes_committed{kubernetes_pod_name="$instance"}) ||| sum(jvm_memory_bytes_used{kubernetes_pod_name="$instance"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE jvm_memory_bytes_max IS NOT NULL OR jvm_memory_bytes_committed IS NOT NULL OR jvm_memory_bytes_used IS NOT NULL
+| STATS jvm_memory_bytes_max_A = SUM(jvm_memory_bytes_max), jvm_memory_bytes_committed_C = SUM(jvm_memory_bytes_committed), jvm_memory_bytes_used_B = SUM(jvm_memory_bytes_used) BY time_bucket = TBUCKET(5 minute)
+| EVAL Max = jvm_memory_bytes_max_A
+| EVAL Comitted = jvm_memory_bytes_committed_C
+| EVAL Used = jvm_memory_bytes_used_B
+| KEEP time_bucket, Max, Comitted, Used
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `jvm_memory_bytes_max`
+- Outer agg: `sum`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `Max`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=0, w=24, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 3
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Logins Per REALM for past 24h
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (grafana-piechart-panel):**
+
+```
+sum by (realm)(increase(keycloak_logins[24h]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_logins IS NOT NULL
+| STATS keycloak_logins = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_logins), 24h)) BY time_bucket = TBUCKET(5 minute), realm
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_logins`
+- Range func: `increase`
+- Range window: `24h`
+- Outer agg: `sum`
+- Group labels: `realm`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_logins`
+- Output groups: `time_bucket, realm`
+- Semantic losses: Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=0, y=11, w=12, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Registrations Per REALM for past 24h
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (grafana-piechart-panel):**
+
+```
+sum by (realm)(increase(keycloak_registrations[24h]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_registrations IS NOT NULL
+| STATS keycloak_registrations = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_registrations), 24h)) BY time_bucket = TBUCKET(5 minute), realm
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_registrations`
+- Range func: `increase`
+- Range window: `24h`
+- Outer agg: `sum`
+- Group labels: `realm`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_registrations`
+- Output groups: `time_bucket, realm`
+- Semantic losses: Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=12, y=11, w=12, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Logins Per CLIENT for past 24h
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (grafana-piechart-panel):**
+
+```
+sum by (client_id)(increase(keycloak_logins[24h]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_logins IS NOT NULL
+| STATS keycloak_logins = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_logins), 24h)) BY time_bucket = TBUCKET(5 minute), client_id
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_logins`
+- Range func: `increase`
+- Range window: `24h`
+- Outer agg: `sum`
+- Group labels: `client_id`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_logins`
+- Output groups: `time_bucket, client_id`
+- Semantic losses: Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=24, y=11, w=12, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Registrations Per CLIENT for past 24h
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (grafana-piechart-panel):**
+
+```
+sum by (client_id)(increase(keycloak_registrations[24h]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel`
+- `panel_translators` / `heatmap_panel`
+- `panel_translators` / `pie_panel` → mapped to pie panel
+
+**Translated (pie):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_registrations IS NOT NULL
+| STATS keycloak_registrations = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_registrations), 24h)) BY time_bucket = TBUCKET(5 minute), client_id
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_registrations`
+- Range func: `increase`
+- Range window: `24h`
+- Outer agg: `sum`
+- Group labels: `client_id`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_registrations`
+- Output groups: `time_bucket, client_id`
+- Semantic losses: Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `pie`
+- Layout: x=36, y=11, w=12, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### 4xx and 5xx Responses
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (code)(increase(keycloak_response_errors[30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_response_errors IS NOT NULL
+| STATS keycloak_response_errors = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_response_errors), 30m)) BY time_bucket = TBUCKET(5 minute), code
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_response_errors`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `code`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_response_errors`
+- Output groups: `time_bucket, code`
+- Semantic losses: Source PromQL used increase() but keycloak_response_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=12, y=21, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_response_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_response_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Logins per REALM
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (realm)(increase(keycloak_logins[30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_logins IS NOT NULL
+| STATS keycloak_logins = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_logins), 30m)) BY time_bucket = TBUCKET(5 minute), realm
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_logins`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `realm`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_logins`
+- Output groups: `time_bucket, realm`
+- Semantic losses: Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=33, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Login Errors on realm
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (error) (increase(keycloak_failed_login_attempts{provider="keycloak",realm="$realm"}[30m])) ||| sum by (realm) (increase(keycloak_failed_login_attempts{provider="keycloak",realm="dialog-test"} [30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE provider == "keycloak"
+| WHERE keycloak_failed_login_attempts IS NOT NULL
+| STATS keycloak_failed_login_attempts = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_failed_login_attempts), 30m)) BY time_bucket = TBUCKET(5 minute), error
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_failed_login_attempts`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `error`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_failed_login_attempts`
+- Output groups: `time_bucket, error`
+- Semantic losses: Dropped variable-driven label filters during migration, Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window., Panel has 2 PromQL targets but only 1 could be migrated
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=33, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Verdict:** MINOR_ISSUE
+
+#### Logins per CLIENT on realm
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (client_id)(increase(keycloak_logins{realm="$realm",provider="keycloak"}[30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE provider == "keycloak"
+| WHERE keycloak_logins IS NOT NULL
+| STATS keycloak_logins = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_logins), 30m)) BY time_bucket = TBUCKET(5 minute), client_id
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_logins`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `client_id`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_logins`
+- Output groups: `time_bucket, client_id`
+- Semantic losses: Dropped variable-driven label filters during migration, Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=45, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Registration Errors on realm
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (realm) (increase(keycloak_registrations_errors{provider="keycloak",realm="$realm"} [30m])) ||| sum by (error) (increase(keycloak_registrations_errors{provider="keycloak",realm="$realm"} [30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE provider == "keycloak"
+| WHERE keycloak_registrations_errors IS NOT NULL
+| STATS keycloak_registrations_errors = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_registrations_errors), 30m)) BY time_bucket = TBUCKET(5 minute), realm
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_registrations_errors`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `realm`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_registrations_errors`
+- Output groups: `time_bucket, realm`
+- Semantic losses: Dropped variable-driven label filters during migration, Source PromQL used increase() but keycloak_registrations_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window., Panel has 2 PromQL targets but only 1 could be migrated
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=45, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Source PromQL used increase() but keycloak_registrations_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Source PromQL used increase() but keycloak_registrations_errors is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Verdict:** MINOR_ISSUE
+
+#### Registrations per REALM
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (realm)(increase(keycloak_registrations[30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros`
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE keycloak_registrations IS NOT NULL
+| STATS keycloak_registrations = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_registrations), 30m)) BY time_bucket = TBUCKET(5 minute), realm
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_registrations`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `realm`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_registrations`
+- Output groups: `time_bucket, realm`
+- Semantic losses: Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=57, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Login Errors
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (error) (increase(keycloak_failed_login_attempts{provider="keycloak",realm="$realm",client_id="$ClientId"}[30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE provider == "keycloak"
+| WHERE keycloak_failed_login_attempts IS NOT NULL
+| STATS keycloak_failed_login_attempts = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_failed_login_attempts), 30m)) BY time_bucket = TBUCKET(5 minute), error
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_failed_login_attempts`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `error`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_failed_login_attempts`
+- Output groups: `time_bucket, error`
+- Semantic losses: Dropped variable-driven label filters during migration, Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=57, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Source PromQL used increase() but keycloak_failed_login_attempts is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.
+
+**Verdict:** MINOR_ISSUE
+
+#### Registrations per CLIENT on relm
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum by (client_id)(increase(keycloak_registrations{realm="$realm",provider="keycloak"}[30m])) ||| sum by (realm)(increase(keycloak_registrations{provider="keycloak",realm="$realm"} [30m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE provider == "keycloak"
+| WHERE keycloak_registrations IS NOT NULL
+| STATS keycloak_registrations = SUM(MAX_OVER_TIME(TO_DOUBLE(keycloak_registrations), 30m)) BY time_bucket = TBUCKET(5 minute), client_id
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `keycloak_registrations`
+- Range func: `increase`
+- Range window: `30m`
+- Outer agg: `sum`
+- Group labels: `client_id`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `keycloak_registrations`
+- Output groups: `time_bucket, client_id`
+- Semantic losses: Dropped variable-driven label filters during migration, Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window., Panel has 2 PromQL targets but only 1 could be migrated
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=69, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Warnings:** Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Source PromQL used increase() but keycloak_registrations is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.; Panel has 2 PromQL targets but only 1 could be migrated
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (3)</summary>
+
+- `Instance` (type: `options`)
+- `Realm` (type: `options`)
+- `ClientId` (type: `options`)
+
+</details>
+
+---
+
+### Grafana: kube-state-metrics-v2
+
+**File:** `kube-state-metrics-v2-13332.json` — **Panels:** 51
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Cluster | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Node | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Deployments | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Statefuleset | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Pods | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Containers | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| HPA | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Jobs | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| PVC | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Cluster Pod Requested | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_info{cluster=~"$cluster",node=~"$node"}) / sum(kube_node_status_all... | TS metrics-prometheus-* \| WHERE kube_pod_info IS NOT NULL OR kube_node_status_a... |
+| Cluster CPU Requested | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="cpu",node... | TS metrics-prometheus-* \| WHERE resource == "cpu" \| WHERE kube_pod_container_r... |
+| Cluster Memory  Requested | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="memory",n... | TS metrics-prometheus-* \| WHERE resource == "memory" \| WHERE kube_pod_containe... |
+| Cluster Pod Capacity | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(kube_node_status_allocatable{cluster=~"$cluster",resource="pods",node=~"$nod... | TS metrics-prometheus-* \| WHERE kube_node_status_allocatable IS NOT NULL OR kub... |
+| Cluster CPU Capacity | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(kube_node_status_capacity{node=~"$node",cluster=~"$cluster",resource="cpu"})... | TS metrics-prometheus-* \| WHERE resource == "cpu" \| WHERE kube_node_status_cap... |
+| Cluster Mem Capacity | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(kube_node_status_allocatable{node=~"$node",cluster=~"$cluster",resource="mem... | TS metrics-prometheus-* \| WHERE resource == "memory" \| WHERE kube_node_status_... |
+| Number Of Nodes | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_node_info{cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_node_info IS NOT NULL \| STATS kube_node_i... |
+| Nodes Unavailable | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_node_spec_unschedulable{cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_node_spec_unschedulable IS NOT NULL \| STA... |
+| Node NotReady | `graph` → `line` | migrated | **MINOR_ISSUE** | kube_node_status_condition{cluster=~"$cluster",condition="Ready",status="false"}... | TS metrics-prometheus-* \| WHERE condition == "Ready" \| WHERE status == "false"... |
+| Node Pressure | `graph` → `line` | migrated | **MINOR_ISSUE** | kube_node_status_condition{condition="DiskPressure",cluster=~"$cluster",status="... | TS metrics-prometheus-* \| WHERE status == "true" \| WHERE kube_node_status_cond... |
+| node number | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(kube_node_info{cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_node_info IS NOT NULL \| STATS kube_node_i... |
+| Deployment Replicas - Up To Date | `table-old` → `datatable` | migrated | **MINOR_ISSUE** | kube_deployment_status_replicas{namespace=~"$namespace",cluster=~"$cluster"} | TS metrics-prometheus-* \| WHERE kube_deployment_status_replicas IS NOT NULL \| ... |
+| Deployment Replicas | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_deployment_status_replicas{namespace=~"$namespace",cluster=~"$cluster"}... | TS metrics-prometheus-* \| WHERE kube_deployment_status_replicas IS NOT NULL \| ... |
+| Deployment Replicas - Updated | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_deployment_status_replicas_updated{namespace=~"$namespace",cluster=~"$c... | TS metrics-prometheus-* \| WHERE kube_deployment_status_replicas_updated IS NOT ... |
+| Deployment Replicas - Unavailable | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_deployment_status_replicas_unavailable{namespace=~"$namespace",cluster=... | TS metrics-prometheus-* \| WHERE kube_deployment_status_replicas_unavailable IS ... |
+| Statefulset Replicas - Up To Date | `table-old` → `datatable` | migrated | **MINOR_ISSUE** | kube_statefulset_status_replicas_ready{namespace=~"$namespace",cluster=~"$cluste... | TS metrics-prometheus-* \| WHERE kube_statefulset_status_replicas_ready IS NOT N... |
+| Statefulset replicas | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | kube_statefulset_status_replicas_ready{namespace=~"$namespace",cluster=~"$cluste... | TS metrics-prometheus-* \| WHERE kube_statefulset_status_replicas_ready IS NOT N... |
+| Pods restart in 30m | `table-old` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | changes(kube_pod_container_status_restarts_total{namespace=~"$namespace",cluster... | — |
+| Evicted | `graph` → `line` | migrated | **MINOR_ISSUE** | kube_pod_status_reason{cluster=~"$cluster",namespace=~"$namespace", reason="Evic... | TS metrics-prometheus-* \| WHERE reason == "Evicted" \| WHERE kube_pod_status_re... |
+| Pods Running | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{cluster=~"$cluster",namespace=~"$namespace", phase="Ru... | TS metrics-prometheus-* \| WHERE phase == "Running" \| WHERE kube_pod_status_pha... |
+| Pods Succeeded | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{cluster=~"$cluster",namespace=~"$namespace", phase="Su... | TS metrics-prometheus-* \| WHERE phase == "Succeeded" \| WHERE kube_pod_status_p... |
+| Pods Failed | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{cluster=~"$cluster",namespace=~"$namespace", phase="Fa... | TS metrics-prometheus-* \| WHERE phase == "Failed" \| WHERE kube_pod_status_phas... |
+| Pods Pending | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{cluster=~"$cluster",namespace=~"$namespace", phase="Pe... | TS metrics-prometheus-* \| WHERE phase == "Pending" \| WHERE kube_pod_status_pha... |
+| Pods Unknown | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{cluster=~"$cluster",namespace=~"$namespace", phase="Un... | TS metrics-prometheus-* \| WHERE phase == "Unknown" \| WHERE kube_pod_status_pha... |
+| Containers Running | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_container_status_running{namespace=~"$namespace",cluster=~"$cluster... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_running IS NOT NULL \... |
+| Containers Waiting | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_container_status_waiting{namespace=~"$namespace",cluster=~"$cluster... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_waiting IS NOT NULL \... |
+| Containers Terminated | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_container_status_terminated{namespace=~"$namespace",cluster=~"$clus... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_terminated IS NOT NUL... |
+| Containers Restarts (Last 30 Minutes) | `singlestat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(changes(kube_pod_container_status_restarts_total{namespace=~"$namespace",clu... | — |
+| CPU Cores Requested by Containers | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_container_resource_requests_cpu_cores{namespace=~"$namespace",clust... | TS metrics-prometheus-* \| WHERE kube_pod_container_resource_requests_cpu_cores ... |
+| Memory Requested By Containers | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_container_resource_requests_memory_bytes{namespace=~"$namespace" ,c... | TS metrics-prometheus-* \| WHERE kube_pod_container_resource_requests_memory_byt... |
+| hpa | `graph` → `line` | migrated | **MINOR_ISSUE** | kube_hpa_status_current_replicas{cluster=~"$cluster",namespace=~"$namespace"} \|... | TS metrics-prometheus-* \| WHERE kube_hpa_status_current_replicas IS NOT NULL OR... |
+| total-hpa-current | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_hpa_status_current_replicas{hpa=~".*"}) | TS metrics-prometheus-* \| WHERE kube_hpa_status_current_replicas IS NOT NULL \|... |
+| current==max | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | kube_hpa_status_current_replicas{hpa=~".*"} == kube_hpa_spec_max_replicas{hpa=~"... | TS metrics-prometheus-* \| WHERE kube_hpa_status_current_replicas IS NOT NULL OR... |
+| current==min | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | kube_hpa_status_current_replicas{hpa=~".*"} == kube_hpa_spec_min_replicas{hpa=~"... | TS metrics-prometheus-* \| WHERE kube_hpa_status_current_replicas IS NOT NULL OR... |
+| Jobs Succeeded | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_job_status_succeeded{namespace=~"$namespace",cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_job_status_succeeded IS NOT NULL \| STATS ... |
+| Job last success time from now | `table-old` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | (time()-kube_job_status_completion_time{namespace=~"$namespace",cluster=~"$clust... | FROM metrics-prometheus-* \| WHERE kube_job_status_completion_time IS NOT NULL \... |
+| Job failed | `table-old` → `datatable` | migrated | **MINOR_ISSUE** | kube_job_status_failed{namespace=~"$namespace",cluster=~"$cluster"}>1 | TS metrics-prometheus-* \| WHERE kube_job_status_failed IS NOT NULL \| STATS kub... |
+| Jobs Active | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_job_status_active{namespace=~"$namespace",cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_job_status_active IS NOT NULL \| STATS kub... |
+| Jobs Failed | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_job_status_failed{namespace=~"$namespace",cluster=~"$cluster"}) | TS metrics-prometheus-* \| WHERE kube_job_status_failed IS NOT NULL \| STATS kub... |
+| pvc is bound | `singlestat` → `metric` | migrated | **CORRECT** | sum(kube_persistentvolumeclaim_status_phase{phase="Bound"}==1) | TS metrics-prometheus-* \| WHERE phase == "Bound" \| WHERE kube_persistentvolume... |
+| pvc is not bound | `singlestat` → `metric` | migrated | **CORRECT** | sum(kube_persistentvolumeclaim_status_phase{phase!="Bound"}==1) | TS metrics-prometheus-* \| WHERE phase != "Bound" \| WHERE kube_persistentvolume... |
+| pvc | `table-old` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | kube_persistentvolumeclaim_resource_requests_storage_bytes/1024/1024/1024 | TS metrics-prometheus-* \| WHERE kube_persistentvolumeclaim_resource_requests_st... |
+
+<details>
+<summary>Detailed traces (42 panels)</summary>
+
+#### Cluster Pod Requested
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_pod_info{cluster=~"$cluster",node=~"$node"}) / sum(kube_node_status_allocatable{cluster=~"$cluster",resource="pods",node=~"$node"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_pod_info IS NOT NULL OR kube_node_status_allocatable IS NOT NULL
+| STATS kube_pod_info_cluster_node_sum = SUM(kube_pod_info), kube_node_status_allocatable_resource_pods_sum = SUM(CASE((resource == "pods"), kube_node_status_allocatable, NULL)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (kube_pod_info_cluster_node_sum / kube_node_status_allocatable_resource_pods_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster CPU Requested
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="cpu",node=~"$node"})/ sum(kube_node_status_allocatable{node=~"$node",cluster=~"$cluster",resource="cpu"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE resource == "cpu"
+| WHERE kube_pod_container_resource_requests IS NOT NULL OR kube_node_status_allocatable IS NOT NULL
+| STATS kube_pod_container_resource_requests_resource_cpu_sum = SUM(kube_pod_container_resource_requests), kube_node_status_allocatable_resource_cpu_sum = SUM(kube_node_status_allocatable) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (kube_pod_container_resource_requests_resource_cpu_sum / kube_node_status_allocatable_resource_cpu_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=0, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster Memory  Requested
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="memory",node=~"$node"}) / sum(kube_node_status_allocatable{node=~"$node",cluster=~"$cluster",resource="memory"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE resource == "memory"
+| WHERE kube_pod_container_resource_requests IS NOT NULL OR kube_node_status_allocatable IS NOT NULL
+| STATS kube_pod_container_resource_requests_resource_memory_sum = SUM(kube_pod_container_resource_requests), kube_node_status_allocatable_resource_memory_sum = SUM(kube_node_status_allocatable) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (kube_pod_container_resource_requests_resource_memory_sum / kube_node_status_allocatable_resource_memory_sum)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=12, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster Pod Capacity
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(kube_node_status_allocatable{cluster=~"$cluster",resource="pods",node=~"$node"}) ||| sum(kube_pod_info{node=~"$node",cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_node_status_allocatable IS NOT NULL OR kube_pod_info IS NOT NULL
+| STATS kube_node_status_allocatable_A = SUM(CASE((resource == "pods"), kube_node_status_allocatable, NULL)), kube_pod_info_C = SUM(kube_pod_info) BY time_bucket = TBUCKET(5 minute)
+| EVAL allocatable = kube_node_status_allocatable_A
+| EVAL requested = kube_pod_info_C
+| KEEP time_bucket, allocatable, requested
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_status_allocatable`
+- Outer agg: `sum`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `allocatable`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=6, w=12, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster CPU Capacity
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(kube_node_status_capacity{node=~"$node",cluster=~"$cluster",resource="cpu"}) ||| sum(kube_node_status_allocatable{node=~"$node",cluster=~"$cluster",resource="cpu"}) ||| sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="cpu",node=~"$node"}) ||| sum(kube_pod_container_resource_limits{cluster=~"$cluster",resource="cpu",node=~"$node"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE resource == "cpu"
+| WHERE kube_node_status_capacity IS NOT NULL OR kube_node_status_allocatable IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL
+| STATS kube_node_status_capacity_A = SUM(kube_node_status_capacity), kube_node_status_allocatable_B = SUM(kube_node_status_allocatable), kube_pod_container_resource_requests_C = SUM(kube_pod_container_resource_requests), kube_pod_container_resource_limits_D = SUM(kube_pod_container_resource_limits) BY time_bucket = TBUCKET(5 minute)
+| EVAL allocatable = kube_node_status_capacity_A
+| EVAL capacity = kube_node_status_allocatable_B
+| EVAL requested = kube_pod_container_resource_requests_C
+| EVAL limited = kube_pod_container_resource_limits_D
+| KEEP time_bucket, allocatable, capacity, requested, limited
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_status_capacity`
+- Outer agg: `sum`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `allocatable`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=12, y=6, w=12, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 4
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Cluster Mem Capacity
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(kube_node_status_allocatable{node=~"$node",cluster=~"$cluster",resource="memory"}) ||| sum(kube_node_status_capacity{node=~"$node",cluster=~"$cluster",resource="memory"}) ||| sum(kube_pod_container_resource_requests{cluster=~"$cluster",resource="memory",node=~"$node"}) ||| sum(kube_pod_container_resource_limits{cluster=~"$cluster",resource="memory",node=~"$node"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE resource == "memory"
+| WHERE kube_node_status_allocatable IS NOT NULL OR kube_node_status_capacity IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL
+| STATS kube_node_status_allocatable_A = SUM(kube_node_status_allocatable), kube_node_status_capacity_B = SUM(kube_node_status_capacity), kube_pod_container_resource_requests_C = SUM(kube_pod_container_resource_requests), kube_pod_container_resource_limits_D = SUM(kube_pod_container_resource_limits) BY time_bucket = TBUCKET(5 minute)
+| EVAL allocatable = kube_node_status_allocatable_A
+| EVAL capacity = kube_node_status_capacity_B
+| EVAL requested = kube_pod_container_resource_requests_C
+| EVAL limited = kube_pod_container_resource_limits_D
+| KEEP time_bucket, allocatable, capacity, requested, limited
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_status_allocatable`
+- Outer agg: `sum`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `allocatable`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=6, w=12, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 4
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Number Of Nodes
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_node_info{cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_node_info IS NOT NULL
+| STATS kube_node_info = SUM(kube_node_info) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_node_info = MAX(kube_node_info)
+| KEEP time_bucket, kube_node_info
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_info`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_node_info`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=8, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Nodes Unavailable
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_node_spec_unschedulable{cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_node_spec_unschedulable IS NOT NULL
+| STATS kube_node_spec_unschedulable = SUM(kube_node_spec_unschedulable) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_node_spec_unschedulable = MAX(kube_node_spec_unschedulable)
+| KEEP time_bucket, kube_node_spec_unschedulable
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_spec_unschedulable`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_node_spec_unschedulable`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=8, y=0, w=8, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Node NotReady
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+kube_node_status_condition{cluster=~"$cluster",condition="Ready",status="false"}==1
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter` → applied post-aggregation filter == 1
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE condition == "Ready"
+| WHERE status == "false"
+| WHERE kube_node_status_condition IS NOT NULL
+| STATS kube_node_status_condition = MAX(LAST_OVER_TIME(kube_node_status_condition)) BY time_bucket = TBUCKET(5 minute)
+| WHERE kube_node_status_condition == 1
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `kube_node_status_condition`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_node_status_condition`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=16, y=0, w=16, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Node Pressure
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+kube_node_status_condition{condition="DiskPressure",cluster=~"$cluster",status="true"}==1 ||| kube_node_status_condition{condition="MemoryPressure",node=~"$node",cluster=~"$cluster",status="true"}==1 ||| kube_node_status_condition{condition=~"PIDPressure",node=~"$node",cluster=~"$cluster",status="true"}==1
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter` → applied post-aggregation filter == 1
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE status == "true"
+| WHERE kube_node_status_condition IS NOT NULL
+| STATS kube_node_status_condition_A = AVG(CASE((condition == "DiskPressure"), kube_node_status_condition, NULL)), kube_node_status_condition_B = AVG(CASE((condition == "MemoryPressure"), kube_node_status_condition, NULL)), kube_node_status_condition_C = AVG(CASE((condition RLIKE "PIDPressure"), kube_node_status_condition, NULL)) BY time_bucket = TBUCKET(5 minute), node, condition
+| EVAL node_condition = CASE(kube_node_status_condition_A == 1, kube_node_status_condition_A, NULL)
+| EVAL node_condition_B = CASE(kube_node_status_condition_B == 1, kube_node_status_condition_B, NULL)
+| EVAL node_condition_C = CASE(kube_node_status_condition_C == 1, kube_node_status_condition_C, NULL)
+| EVAL legend = CONCAT(COALESCE(TO_STRING(node), ""), " ", COALESCE(TO_STRING(condition), ""))
+| KEEP time_bucket, node, condition, node_condition, node_condition_B, node_condition_C, legend
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `kube_node_status_condition`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `node_condition`
+- Output groups: `time_bucket, node, condition`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=32, y=0, w=16, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 3
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### node number
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+sum(kube_node_info{cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_node_info IS NOT NULL
+| STATS kube_node_info = SUM(kube_node_info) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_node_info`
+- Outer agg: `sum`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_node_info`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=4, w=48, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Deployment Replicas - Up To Date
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (table-old):**
+
+```
+kube_deployment_status_replicas{namespace=~"$namespace",cluster=~"$cluster"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel` → mapped to datatable panel
+
+**Translated (datatable):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_deployment_status_replicas IS NOT NULL
+| STATS kube_deployment_status_replicas = MAX(LAST_OVER_TIME(kube_deployment_status_replicas)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_deployment_status_replicas = MAX(kube_deployment_status_replicas)
+| KEEP time_bucket, kube_deployment_status_replicas
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `kube_deployment_status_replicas`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_deployment_status_replicas`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `datatable`
+- Layout: x=0, y=0, w=12, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Deployment Replicas
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_deployment_status_replicas{namespace=~"$namespace",cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_deployment_status_replicas IS NOT NULL
+| STATS kube_deployment_status_replicas = SUM(kube_deployment_status_replicas) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_deployment_status_replicas = MAX(kube_deployment_status_replicas)
+| KEEP time_bucket, kube_deployment_status_replicas
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_deployment_status_replicas`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_deployment_status_replicas`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=0, w=12, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Deployment Replicas - Updated
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_deployment_status_replicas_updated{namespace=~"$namespace",cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_deployment_status_replicas_updated IS NOT NULL
+| STATS kube_deployment_status_replicas_updated = SUM(kube_deployment_status_replicas_updated) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_deployment_status_replicas_updated = MAX(kube_deployment_status_replicas_updated)
+| KEEP time_bucket, kube_deployment_status_replicas_updated
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_deployment_status_replicas_updated`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_deployment_status_replicas_updated`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=12, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Deployment Replicas - Unavailable
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+sum(kube_deployment_status_replicas_unavailable{namespace=~"$namespace",cluster=~"$cluster"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE kube_deployment_status_replicas_unavailable IS NOT NULL
+| STATS kube_deployment_status_replicas_unavailable = SUM(kube_deployment_status_replicas_unavailable) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), kube_deployment_status_replicas_unavailable = MAX(kube_deployment_status_replicas_unavailable)
+| KEEP time_bucket, kube_deployment_status_replicas_unavailable
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `kube_deployment_status_replicas_unavailable`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `kube_deployment_status_replicas_unavailable`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=36, y=0, w=12, h=8
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (3)</summary>
+
+- `cluster` (type: `options`)
+- `node` (type: `options`)
+- `namespace` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Multi Pattern Coverage
 
 **File:** `multi-pattern-coverage.json` — **Panels:** 11
@@ -12866,6 +23477,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -12953,6 +23565,7 @@ avg(queue_depth)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13043,6 +23656,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13129,6 +23743,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13262,6 +23877,7 @@ sum(kube_pod_info) by (pod)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13351,6 +23967,7 @@ avg(slo_burn_rate)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13438,6 +24055,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=logql_stream backend=regex
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family logql_stream bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13534,41 +24152,41 @@ FROM logs-*
 | MySQL Table Definition Cache | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | System Charts | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | MySQL Uptime | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | mysql_global_status_uptime{instance="$host"} | TS metrics-prometheus-* \| WHERE mysql_global_status_uptime IS NOT NULL \| STATS... |
-| Current QPS | `singlestat` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_queries{instance="$host"}[$interval]) or irate(mysql_gl... | — |
+| Current QPS | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_queries{instance="$host"}[$interval]) or irate(mysql_gl... | TS metrics-prometheus-* \| WHERE mysql_global_status_queries IS NOT NULL \| STAT... |
 | InnoDB Buffer Pool Size | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | mysql_global_variables_innodb_buffer_pool_size{instance="$host"} | TS metrics-prometheus-* \| WHERE mysql_global_variables_innodb_buffer_pool_size ... |
 | Buffer Pool Size of Total RAM | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | (mysql_global_variables_innodb_buffer_pool_size{instance="$host"} * 100) / on (i... | TS metrics-prometheus-* \| WHERE mysql_global_variables_innodb_buffer_pool_size ... |
 | MySQL Connections | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | max(max_over_time(mysql_global_status_threads_connected{instance="$host"}[$inter... | TS metrics-prometheus-* \| STATS mysql_global_status_threads_connected = MAX(MAX... |
-| MySQL Client Thread Activity | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | max_over_time(mysql_global_status_threads_connected{instance="$host"}[$interval]... | — |
-| MySQL Questions | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_questions{instance="$host"}[$interval]) or irate(mysql_... | — |
+| MySQL Client Thread Activity | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | max_over_time(mysql_global_status_threads_connected{instance="$host"}[$interval]... | TS metrics-prometheus-* \| WHERE mysql_global_status_threads_connected IS NOT NU... |
+| MySQL Questions | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_questions{instance="$host"}[$interval]) or irate(mysql_... | TS metrics-prometheus-* \| WHERE mysql_global_status_questions IS NOT NULL \| ST... |
 | MySQL Thread Cache | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | mysql_global_variables_thread_cache_size{instance="$host"} \|\|\| mysql_global_s... | TS metrics-prometheus-* \| WHERE mysql_global_variables_thread_cache_size IS NOT... |
-| MySQL Temporary Objects | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or ira... | — |
-| MySQL Select Types | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate... | — |
-| MySQL Sorts | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_... | — |
-| MySQL Slow Queries | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_slow_queries{instance="$host"}[$interval]) or irate(mys... | — |
-| MySQL Aborted Connections | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate... | — |
-| MySQL Table Locks | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or ... | — |
-| MySQL Network Traffic | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m... | — |
+| MySQL Temporary Objects | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or ira... | TS metrics-prometheus-* \| WHERE mysql_global_status_created_tmp_tables IS NOT N... |
+| MySQL Select Types | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate... | TS metrics-prometheus-* \| WHERE mysql_global_status_select_full_join IS NOT NUL... |
+| MySQL Sorts | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_... | TS metrics-prometheus-* \| WHERE mysql_global_status_sort_rows IS NOT NULL OR my... |
+| MySQL Slow Queries | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_slow_queries{instance="$host"}[$interval]) or irate(mys... | TS metrics-prometheus-* \| WHERE mysql_global_status_slow_queries IS NOT NULL \|... |
+| MySQL Aborted Connections | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate... | TS metrics-prometheus-* \| WHERE mysql_global_status_aborted_connects IS NOT NUL... |
+| MySQL Table Locks | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or ... | TS metrics-prometheus-* \| WHERE mysql_global_status_table_locks_immediate IS NO... |
+| MySQL Network Traffic | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m... | TS metrics-prometheus-* \| WHERE mysql_global_status_bytes_received IS NOT NULL ... |
 | MySQL Network Usage Hourly | `graph` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | increase(mysql_global_status_bytes_received{instance="$host"}[1h]) \|\|\| increa... | TS metrics-prometheus-* \| WHERE mysql_global_status_bytes_received IS NOT NULL ... |
 | MySQL Internal Memory Overview | `graph` → `area` | migrated | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$host"} \|\|\| mysql_global_status_innodb_p... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR mysql... |
-| Top Command Counters | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | topk(5, rate(mysql_global_status_commands_total{instance="$host"}[$interval])>0)... | — |
+| Top Command Counters | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | topk(5, rate(mysql_global_status_commands_total{instance="$host"}[$interval])>0)... | TS metrics-prometheus-* \| WHERE mysql_global_status_commands_total IS NOT NULL ... |
 | Top Command Counters Hourly | `graph` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | topk(5, increase(mysql_global_status_commands_total{instance="$host"}[1h])>0) | TS metrics-prometheus-* \| WHERE mysql_global_status_commands_total IS NOT NULL ... |
-| MySQL Handlers | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_handlers_total{instance="$host", handler!~"commit\|roll... | — |
-| MySQL Transaction Handlers | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_handlers_total{instance="$host", handler=~"commit\|roll... | — |
+| MySQL Handlers | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_handlers_total{instance="$host", handler!~"commit\|roll... | TS metrics-prometheus-* \| WHERE NOT (handler RLIKE "commit\|rollback\|savepoint... |
+| MySQL Transaction Handlers | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_handlers_total{instance="$host", handler=~"commit\|roll... | TS metrics-prometheus-* \| WHERE handler RLIKE "commit\|rollback\|savepoint.*\|p... |
 | Process States | `graph` → `line` | migrated | **MINOR_ISSUE** | mysql_info_schema_threads{instance="$host"} | TS metrics-prometheus-* \| WHERE mysql_info_schema_threads IS NOT NULL \| STATS ... |
 | Top Process States Hourly | `graph` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | topk(5, avg_over_time(mysql_info_schema_threads{instance="$host"}[1h])) | TS metrics-prometheus-* \| WHERE mysql_info_schema_threads IS NOT NULL \| STATS ... |
 | MySQL Query Cache Memory | `graph` → `line` | migrated | **MINOR_ISSUE** | mysql_global_status_qcache_free_memory{instance="$host"} \|\|\| mysql_global_var... | TS metrics-prometheus-* \| WHERE mysql_global_status_qcache_free_memory IS NOT N... |
-| MySQL Query Cache Activity | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_qcache_hits{instance="$host"}[$interval]) or irate(mysq... | TS metrics-prometheus-* \| WHERE mysql_global_status_qcache_queries_in_cache IS ... |
-| MySQL File Openings | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_opened_files{instance="$host"}[$interval]) or irate(mys... | — |
+| MySQL Query Cache Activity | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_qcache_hits{instance="$host"}[$interval]) or irate(mysq... | TS metrics-prometheus-* \| WHERE mysql_global_status_qcache_hits IS NOT NULL OR ... |
+| MySQL File Openings | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_opened_files{instance="$host"}[$interval]) or irate(mys... | TS metrics-prometheus-* \| WHERE mysql_global_status_opened_files IS NOT NULL \|... |
 | MySQL Open Files | `graph` → `line` | migrated | **MINOR_ISSUE** | mysql_global_status_open_files{instance="$host"} \|\|\| mysql_global_variables_o... | TS metrics-prometheus-* \| WHERE mysql_global_status_open_files IS NOT NULL OR m... |
-| MySQL Table Open Cache Status | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(mysql_global_status_opened_tables{instance="$host"}[$interval]) or irate(my... | — |
+| MySQL Table Open Cache Status | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(mysql_global_status_opened_tables{instance="$host"}[$interval]) or irate(my... | TS metrics-prometheus-* \| WHERE mysql_global_status_opened_tables IS NOT NULL O... |
 | MySQL Open Tables | `graph` → `line` | migrated | **MINOR_ISSUE** | mysql_global_status_open_tables{instance="$host"} \|\|\| mysql_global_variables_... | TS metrics-prometheus-* \| WHERE mysql_global_status_open_tables IS NOT NULL OR ... |
 | MySQL Table Definition Cache | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | mysql_global_status_open_table_definitions{instance="$host"} \|\|\| mysql_global... | TS metrics-prometheus-* \| WHERE mysql_global_status_open_table_definitions IS N... |
-| I/O Activity | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(node_vmstat_pgpgin{instance="$host"}[$interval]) * 1024 or irate(node_vmsta... | — |
+| I/O Activity | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(node_vmstat_pgpgin{instance="$host"}[$interval]) * 1024 or irate(node_vmsta... | TS metrics-prometheus-* \| WHERE node_vmstat_pgpgin IS NOT NULL OR node_vmstat_p... |
 | Memory Distribution | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$host"} - (node_memory_MemFree_bytes{instan... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | CPU Usage / Load | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | clamp_max(((avg by (mode) ( (clamp_max(rate(node_cpu_seconds_total{instance="$ho... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL \| STATS node_load1 = AV... |
-| Disk Latency | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum((rate(node_disk_read_time_seconds_total{device!~"dm-.+", instance="$host"}[$... | TS metrics-prometheus-* \| STATS node_disk_read_time_seconds_total = SUM(RATE(no... |
+| Disk Latency | `graph` → `line` | migrated_with_warnings | **CORRECT** | sum((rate(node_disk_read_time_seconds_total{device!~"dm-.+", instance="$host"}[$... | TS metrics-prometheus-* \| STATS node_disk_read_time_seconds_total_A = SUM(RATE(... |
 | Network Traffic | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{instance="$host", device!="lo"}[$inter... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
-| Swap Activity | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | rate(node_vmstat_pswpin{instance="$host"}[$interval]) * 4096 or irate(node_vmsta... | — |
+| Swap Activity | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(node_vmstat_pswpin{instance="$host"}[$interval]) * 4096 or irate(node_vmsta... | TS metrics-prometheus-* \| WHERE node_vmstat_pswpin IS NOT NULL OR node_vmstat_p... |
 
 <details>
 <summary>Detailed traces (36 panels)</summary>
@@ -13590,6 +24208,7 @@ mysql_global_status_uptime{instance="$host"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13664,7 +24283,7 @@ TS metrics-prometheus-*
 
 #### Current QPS
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (singlestat):**
 
@@ -13679,6 +24298,7 @@ rate(mysql_global_status_queries{instance="$host"}[$interval]) or irate(mysql_gl
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13686,29 +24306,49 @@ rate(mysql_global_status_queries{instance="$host"}[$interval]) or irate(mysql_gl
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_queries IS NOT NULL
+| STATS mysql_global_status_queries_instance_rate = RATE(mysql_global_status_queries, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = mysql_global_status_queries_instance_rate
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `single_value`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `metric`
 - Layout: x=12, y=0, w=12, h=6
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, primary, titles_and_text
 
 **Operational IR:**
 
@@ -13720,13 +24360,13 @@ rate(mysql_global_status_queries{instance="$host"}[$interval]) or irate(mysql_gl
 - links: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### InnoDB Buffer Pool Size
 
@@ -13745,6 +24385,7 @@ mysql_global_variables_innodb_buffer_pool_size{instance="$host"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13835,6 +24476,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -13921,6 +24563,7 @@ max(max_over_time(mysql_global_status_threads_connected{instance="$host"}[$inter
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14009,13 +24652,15 @@ TS metrics-prometheus-*
 
 #### MySQL Client Thread Activity
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
 max_over_time(mysql_global_status_threads_connected{instance="$host"}[$interval]) or
-max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])
+max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m]) ||| max_over_time(mysql_global_status_threads_running{instance="$host"}[$interval]) or
+max_over_time(mysql_global_status_threads_running{instance="$host"}[5m]) ||| avg_over_time(mysql_global_status_threads_running{instance="$host"}[$interval]) or
+avg_over_time(mysql_global_status_threads_running{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14025,6 +24670,7 @@ max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14032,29 +24678,52 @@ max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_threads_connected IS NOT NULL OR mysql_global_status_threads_running IS NOT NULL
+| STATS mysql_global_status_threads_connected_A = AVG(MAX_OVER_TIME(mysql_global_status_threads_connected, 5m)), mysql_global_status_threads_running_B = AVG(MAX_OVER_TIME(mysql_global_status_threads_running, 5m)), mysql_global_status_threads_running_C = AVG(AVG_OVER_TIME(mysql_global_status_threads_running, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Peak_Threads_Connected = mysql_global_status_threads_connected_A
+| EVAL Peak_Threads_Running = mysql_global_status_threads_running_B
+| EVAL Avg_Threads_Running = mysql_global_status_threads_running_C
+| KEEP time_bucket, instance, Peak_Threads_Connected, Peak_Threads_Running, Avg_Threads_Running
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Peak_Threads_Connected`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left range-window operand and dropped the alternate-window fallback; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14065,17 +24734,17 @@ max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])
 - targets: 3
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left range-window operand and dropped the alternate-window fallback; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left range-window operand and dropped the alternate-window fallback; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Questions
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
@@ -14090,6 +24759,7 @@ rate(mysql_global_status_questions{instance="$host"}[$interval]) or irate(mysql_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14097,29 +24767,50 @@ rate(mysql_global_status_questions{instance="$host"}[$interval]) or irate(mysql_
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_questions IS NOT NULL
+| STATS mysql_global_status_questions_instance_rate = AVG(RATE(mysql_global_status_questions, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL computed_value = mysql_global_status_questions_instance_rate
+| KEEP time_bucket, instance, computed_value
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `computed_value`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14131,13 +24822,13 @@ rate(mysql_global_status_questions{instance="$host"}[$interval]) or irate(mysql_
 - links: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Thread Cache
 
@@ -14156,6 +24847,7 @@ mysql_global_variables_thread_cache_size{instance="$host"} ||| mysql_global_stat
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14190,11 +24882,12 @@ mysql_global_variables_thread_cache_size{instance="$host"} ||| mysql_global_stat
 
 ```
 TS metrics-prometheus-*
-| WHERE mysql_global_variables_thread_cache_size IS NOT NULL OR mysql_global_status_threads_cached IS NOT NULL
-| STATS mysql_global_variables_thread_cache_size_B = AVG(mysql_global_variables_thread_cache_size), mysql_global_status_threads_cached_C = AVG(mysql_global_status_threads_cached) BY time_bucket = TBUCKET(5 minute), instance
+| WHERE mysql_global_variables_thread_cache_size IS NOT NULL OR mysql_global_status_threads_cached IS NOT NULL OR mysql_global_status_threads_created IS NOT NULL
+| STATS mysql_global_variables_thread_cache_size_B = AVG(AVG_OVER_TIME(mysql_global_variables_thread_cache_size, 5m)), mysql_global_status_threads_cached_C = AVG(AVG_OVER_TIME(mysql_global_status_threads_cached, 5m)), mysql_global_status_threads_created_A = AVG(RATE(mysql_global_status_threads_created, 5m)) BY time_bucket = TBUCKET(5 minute), instance
 | EVAL Thread_Cache_Size = mysql_global_variables_thread_cache_size_B
 | EVAL Threads_Cached = mysql_global_status_threads_cached_C
-| KEEP time_bucket, instance, Thread_Cache_Size, Threads_Cached
+| EVAL Threads_Created = mysql_global_status_threads_created_A
+| KEEP time_bucket, instance, Thread_Cache_Size, Threads_Cached, Threads_Created
 | SORT time_bucket ASC
 ```
 
@@ -14207,7 +24900,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `Thread_Cache_Size`
 - Output groups: `time_bucket, instance`
-- Semantic losses: Dropped variable-driven label filters during migration, Dropped 1 incompatible target(s); showing 2 mergeable targets
+- Semantic losses: Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
@@ -14226,9 +24919,9 @@ TS metrics-prometheus-*
 - links: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; Dropped 1 incompatible target(s); showing 2 mergeable targets
+**Warnings:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Dropped 1 incompatible target(s); showing 2 mergeable targets
+**Semantic losses:** Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried into Kibana YAML automatically
 
@@ -14236,12 +24929,12 @@ TS metrics-prometheus-*
 
 #### MySQL Temporary Objects
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or irate(mysql_global_status_created_tmp_tables{instance="$host"}[5m])
+rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or irate(mysql_global_status_created_tmp_tables{instance="$host"}[5m]) ||| rate(mysql_global_status_created_tmp_disk_tables{instance="$host"}[$interval]) or irate(mysql_global_status_created_tmp_disk_tables{instance="$host"}[5m]) ||| rate(mysql_global_status_created_tmp_files{instance="$host"}[$interval]) or irate(mysql_global_status_created_tmp_files{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14251,6 +24944,7 @@ rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or ira
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14258,29 +24952,52 @@ rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or ira
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_created_tmp_tables IS NOT NULL OR mysql_global_status_created_tmp_disk_tables IS NOT NULL OR mysql_global_status_created_tmp_files IS NOT NULL
+| STATS mysql_global_status_created_tmp_tables_A = AVG(RATE(mysql_global_status_created_tmp_tables, 5m)), mysql_global_status_created_tmp_disk_tables_B = AVG(RATE(mysql_global_status_created_tmp_disk_tables, 5m)), mysql_global_status_created_tmp_files_C = AVG(RATE(mysql_global_status_created_tmp_files, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Created_Tmp_Tables = mysql_global_status_created_tmp_tables_A
+| EVAL Created_Tmp_Disk_Tables = mysql_global_status_created_tmp_disk_tables_B
+| EVAL Created_Tmp_Files = mysql_global_status_created_tmp_files_C
+| KEEP time_bucket, instance, Created_Tmp_Tables, Created_Tmp_Disk_Tables, Created_Tmp_Files
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Created_Tmp_Tables`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14290,20 +25007,20 @@ rate(mysql_global_status_created_tmp_tables{instance="$host"}[$interval]) or ira
 
 - targets: 3
 
-**Warnings:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Select Types
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate(mysql_global_status_select_full_join{instance="$host"}[5m])
+rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate(mysql_global_status_select_full_join{instance="$host"}[5m]) ||| rate(mysql_global_status_select_full_range_join{instance="$host"}[$interval]) or irate(mysql_global_status_select_full_range_join{instance="$host"}[5m]) ||| rate(mysql_global_status_select_range{instance="$host"}[$interval]) or irate(mysql_global_status_select_range{instance="$host"}[5m]) ||| rate(mysql_global_status_select_range_check{instance="$host"}[$interval]) or irate(mysql_global_status_select_range_check{instance="$host"}[5m]) ||| rate(mysql_global_status_select_scan{instance="$host"}[$interval]) or irate(mysql_global_status_select_scan{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14313,6 +25030,7 @@ rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14320,29 +25038,54 @@ rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_select_full_join IS NOT NULL OR mysql_global_status_select_full_range_join IS NOT NULL OR mysql_global_status_select_range IS NOT NULL OR mysql_global_status_select_range_check IS NOT NULL OR mysql_global_status_select_scan IS NOT NULL
+| STATS mysql_global_status_select_full_join_A = AVG(RATE(mysql_global_status_select_full_join, 5m)), mysql_global_status_select_full_range_join_B = AVG(RATE(mysql_global_status_select_full_range_join, 5m)), mysql_global_status_select_range_C = AVG(RATE(mysql_global_status_select_range, 5m)), mysql_global_status_select_range_check_D = AVG(RATE(mysql_global_status_select_range_check, 5m)), mysql_global_status_select_scan_E = AVG(RATE(mysql_global_status_select_scan, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Select_Full_Join = mysql_global_status_select_full_join_A
+| EVAL Select_Full_Range_Join = mysql_global_status_select_full_range_join_B
+| EVAL Select_Range = mysql_global_status_select_range_C
+| EVAL Select_Range_Check = mysql_global_status_select_range_check_D
+| EVAL Select_Scan = mysql_global_status_select_scan_E
+| KEEP time_bucket, instance, Select_Full_Join, Select_Full_Range_Join, Select_Range, Select_Range_Check, Select_Scan
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Select_Full_Join`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14353,22 +25096,22 @@ rate(mysql_global_status_select_full_join{instance="$host"}[$interval]) or irate
 - targets: 5
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Sorts
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_global_status_sort_rows{instance="$host"}[5m])
+rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_global_status_sort_rows{instance="$host"}[5m]) ||| rate(mysql_global_status_sort_range{instance="$host"}[$interval]) or irate(mysql_global_status_sort_range{instance="$host"}[5m]) ||| rate(mysql_global_status_sort_merge_passes{instance="$host"}[$interval]) or irate(mysql_global_status_sort_merge_passes{instance="$host"}[5m]) ||| rate(mysql_global_status_sort_scan{instance="$host"}[$interval]) or irate(mysql_global_status_sort_scan{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14378,6 +25121,7 @@ rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14385,29 +25129,53 @@ rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_sort_rows IS NOT NULL OR mysql_global_status_sort_range IS NOT NULL OR mysql_global_status_sort_merge_passes IS NOT NULL OR mysql_global_status_sort_scan IS NOT NULL
+| STATS mysql_global_status_sort_rows_A = AVG(RATE(mysql_global_status_sort_rows, 5m)), mysql_global_status_sort_range_B = AVG(RATE(mysql_global_status_sort_range, 5m)), mysql_global_status_sort_merge_passes_C = AVG(RATE(mysql_global_status_sort_merge_passes, 5m)), mysql_global_status_sort_scan_D = AVG(RATE(mysql_global_status_sort_scan, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Sort_Rows = mysql_global_status_sort_rows_A
+| EVAL Sort_Range = mysql_global_status_sort_range_B
+| EVAL Sort_Merge_Passes = mysql_global_status_sort_merge_passes_C
+| EVAL Sort_Scan = mysql_global_status_sort_scan_D
+| KEEP time_bucket, instance, Sort_Rows, Sort_Range, Sort_Merge_Passes, Sort_Scan
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Sort_Rows`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14418,17 +25186,17 @@ rate(mysql_global_status_sort_rows{instance="$host"}[$interval]) or irate(mysql_
 - targets: 4
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Slow Queries
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
@@ -14443,6 +25211,7 @@ rate(mysql_global_status_slow_queries{instance="$host"}[$interval]) or irate(mys
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14450,29 +25219,50 @@ rate(mysql_global_status_slow_queries{instance="$host"}[$interval]) or irate(mys
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_slow_queries IS NOT NULL
+| STATS mysql_global_status_slow_queries_instance_rate = AVG(RATE(mysql_global_status_slow_queries, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL computed_value = mysql_global_status_slow_queries_instance_rate
+| KEEP time_bucket, instance, computed_value
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `computed_value`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14483,22 +25273,22 @@ rate(mysql_global_status_slow_queries{instance="$host"}[$interval]) or irate(mys
 - targets: 1
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Aborted Connections
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate(mysql_global_status_aborted_connects{instance="$host"}[5m])
+rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate(mysql_global_status_aborted_connects{instance="$host"}[5m]) ||| rate(mysql_global_status_aborted_clients{instance="$host"}[$interval]) or irate(mysql_global_status_aborted_clients{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14508,6 +25298,7 @@ rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14515,29 +25306,51 @@ rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_aborted_connects IS NOT NULL OR mysql_global_status_aborted_clients IS NOT NULL
+| STATS mysql_global_status_aborted_connects_A = AVG(RATE(mysql_global_status_aborted_connects, 5m)), mysql_global_status_aborted_clients_B = AVG(RATE(mysql_global_status_aborted_clients, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Aborted_Connects_attempts = mysql_global_status_aborted_connects_A
+| EVAL Aborted_Clients_timeout = mysql_global_status_aborted_clients_B
+| KEEP time_bucket, instance, Aborted_Connects_attempts, Aborted_Clients_timeout
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Aborted_Connects_attempts`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14548,22 +25361,22 @@ rate(mysql_global_status_aborted_connects{instance="$host"}[$interval]) or irate
 - targets: 2
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Table Locks
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or irate(mysql_global_status_table_locks_immediate{instance="$host"}[5m])
+rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or irate(mysql_global_status_table_locks_immediate{instance="$host"}[5m]) ||| rate(mysql_global_status_table_locks_waited{instance="$host"}[$interval]) or irate(mysql_global_status_table_locks_waited{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14573,6 +25386,7 @@ rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14580,29 +25394,51 @@ rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or 
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_table_locks_immediate IS NOT NULL OR mysql_global_status_table_locks_waited IS NOT NULL
+| STATS mysql_global_status_table_locks_immediate_A = AVG(RATE(mysql_global_status_table_locks_immediate, 5m)), mysql_global_status_table_locks_waited_B = AVG(RATE(mysql_global_status_table_locks_waited, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Table_Locks_Immediate = mysql_global_status_table_locks_immediate_A
+| EVAL Table_Locks_Waited = mysql_global_status_table_locks_waited_B
+| KEEP time_bucket, instance, Table_Locks_Immediate, Table_Locks_Waited
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Table_Locks_Immediate`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -14613,22 +25449,22 @@ rate(mysql_global_status_table_locks_immediate{instance="$host"}[$interval]) or 
 - targets: 2
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### MySQL Network Traffic
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (graph):**
 
 ```
-rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(mysql_global_status_bytes_received{instance="$host"}[5m])
+rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(mysql_global_status_bytes_received{instance="$host"}[5m]) ||| rate(mysql_global_status_bytes_sent{instance="$host"}[$interval]) or irate(mysql_global_status_bytes_sent{instance="$host"}[5m])
 ```
 
 **Pipeline trace:**
@@ -14638,6 +25474,7 @@ rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14645,29 +25482,51 @@ rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m
 - `query_translators` / `logql_count_family`
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
-- `query_translators` / `binary_expr_family` → or union not alignable; marked not_feasible
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to area panel
+
+**Translated (area):**
+
+```
+TS metrics-prometheus-*
+| WHERE mysql_global_status_bytes_received IS NOT NULL OR mysql_global_status_bytes_sent IS NOT NULL
+| STATS mysql_global_status_bytes_received_A = AVG(RATE(mysql_global_status_bytes_received, 5m)), mysql_global_status_bytes_sent_B = AVG(RATE(mysql_global_status_bytes_sent, 5m)) BY time_bucket = TBUCKET(5 minute), instance
+| EVAL Inbound = mysql_global_status_bytes_received_A
+| EVAL Outbound = mysql_global_status_bytes_sent_B
+| KEEP time_bucket, instance, Inbound, Outbound
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
 - Family: `binary_expr`
+- Metric: `computed_value`
 - Binary op: `or`
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+- Output metric: `Inbound`
+- Output groups: `time_bucket, instance`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `area`
 - Layout: x=0, y=0, w=24, h=11
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -14678,13 +25537,13 @@ rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m
 - targets: 2
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
-**Semantic losses:** PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
 
 **Notes:** Grafana panel description is not carried into Kibana YAML automatically
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -14741,7 +25600,7 @@ rate(mysql_global_status_bytes_received{instance="$host"}[$interval]) or irate(m
 | Disk IOps | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
 | I/O Usage Read / Write | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job",device=~"$diskdevic... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
 | I/O Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL \| ... |
-| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator = SUM(IRATE(CASE((mode == "user"), no... |
+| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator_A = SUM(IRATE(CASE((mode == "user"), ... |
 | Memory Active / Inactive | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_bytes{instance="$node",job="$job"} \|\|\| node_memory_Activ... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_bytes IS NOT NULL OR node_... |
 | Memory Committed | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Committed_AS_bytes{instance="$node",job="$job"} \|\|\| node_memory_C... | TS metrics-prometheus-* \| WHERE node_memory_Committed_AS_bytes IS NOT NULL OR n... |
 | Memory Active / Inactive Detail | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_file_bytes{instance="$node",job="$job"} \|\|\| node_memory_... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_file_bytes IS NOT NULL OR ... |
@@ -14856,6 +25715,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -14956,6 +25816,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15046,6 +25907,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15135,6 +25997,7 @@ FROM metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15224,6 +26087,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15313,6 +26177,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15404,6 +26269,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15489,6 +26355,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15574,6 +26441,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15665,6 +26533,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15754,6 +26623,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15843,6 +26713,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15935,6 +26806,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -15976,7 +26848,8 @@ TS metrics-prometheus-*
 | EVAL RAM_Cache_Buffer = ((node_memory_Cached_bytes_C_lhs_lhs + node_memory_Buffers_bytes_C_lhs_rhs) + node_memory_SReclaimable_bytes_C_rhs)
 | EVAL RAM_Free = node_memory_MemFree_bytes_D
 | EVAL SWAP_Used = (node_memory_SwapTotal_bytes_E_lhs - node_memory_SwapFree_bytes_E_rhs)
-| KEEP time_bucket, instance, job, RAM_Total, RAM_Used, RAM_Cache_Buffer, RAM_Free, SWAP_Used
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(job), ""))
+| KEEP time_bucket, instance, job, RAM_Total, RAM_Used, RAM_Cache_Buffer, RAM_Free, SWAP_Used, series_group
 | SORT time_bucket ASC
 ```
 
@@ -16008,7 +26881,7 @@ TS metrics-prometheus-*
 - field_overrides: 23
 - has_description: True
 
-**Warnings:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Composited multi-label grouping (instance, job) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -16033,6 +26906,7 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16121,6 +26995,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16239,6 +27114,7 @@ irate(process_cpu_user_seconds_total{instance=~"$instance"}[2m]) * 100 ||| irate
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16323,6 +27199,7 @@ nodejs_eventloop_lag_seconds{instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16409,6 +27286,7 @@ sum(nodejs_version_info{instance=~"$instance"}) by (version)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16544,6 +27422,7 @@ process_resident_memory_bytes{instance=~"$instance"} ||| nodejs_heap_size_total_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16635,6 +27514,7 @@ nodejs_active_handles_total{instance=~"$instance"} ||| nodejs_active_requests_to
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16726,6 +27606,7 @@ nodejs_heap_space_size_total_bytes{instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16812,6 +27693,7 @@ nodejs_heap_space_size_used_bytes{instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16898,6 +27780,7 @@ nodejs_heap_space_size_available_bytes{instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -16978,6 +27861,2133 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: NVIDIA DCGM Exporter Dashboard
+
+**File:** `nvidia-dcgm-12239.json` — **Panels:** 8
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| GPU Temperature | `graph` → `line` | migrated | **MINOR_ISSUE** | DCGM_FI_DEV_GPU_TEMP{instance=~"${instance}", gpu=~"${gpu}"} | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_GPU_TEMP IS NOT NULL \| STATS DCGM_... |
+| GPU Avg. Temp | `gauge` → `gauge` | migrated | **MINOR_ISSUE** | avg(DCGM_FI_DEV_GPU_TEMP{instance=~"${instance}", gpu=~"${gpu}"}) | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_GPU_TEMP IS NOT NULL \| STATS DCGM_... |
+| GPU Power Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | DCGM_FI_DEV_POWER_USAGE{instance=~"${instance}", gpu=~"${gpu}"} | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_POWER_USAGE IS NOT NULL \| STATS DC... |
+| GPU Power Total | `gauge` → `gauge` | migrated | **MINOR_ISSUE** | sum(DCGM_FI_DEV_POWER_USAGE{instance=~"${instance}", gpu=~"${gpu}"}) | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_POWER_USAGE IS NOT NULL \| STATS DC... |
+| GPU SM Clocks | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | DCGM_FI_DEV_SM_CLOCK{instance=~"${instance}", gpu=~"${gpu}"} * 1000000 | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_SM_CLOCK IS NOT NULL \| STATS DCGM_... |
+| Tensor Core Utilization | `graph` → `line` | migrated | **MINOR_ISSUE** | DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{instance=~"${instance}", gpu=~"${gpu}"} | TS metrics-prometheus-* \| WHERE DCGM_FI_PROF_PIPE_TENSOR_ACTIVE IS NOT NULL \| ... |
+| GPU Utilization | `graph` → `line` | migrated | **MINOR_ISSUE** | DCGM_FI_DEV_GPU_UTIL{instance=~"${instance}", gpu=~"${gpu}"} | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_GPU_UTIL IS NOT NULL \| STATS DCGM_... |
+| GPU Framebuffer Mem Used | `graph` → `line` | migrated | **MINOR_ISSUE** | DCGM_FI_DEV_FB_USED{instance=~"${instance}", gpu=~"${gpu}"} | TS metrics-prometheus-* \| WHERE DCGM_FI_DEV_FB_USED IS NOT NULL \| STATS DCGM_F... |
+
+<details>
+<summary>Detailed traces (8 panels)</summary>
+
+#### GPU Temperature
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_DEV_GPU_TEMP{instance=~"${instance}", gpu=~"${gpu}"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_GPU_TEMP IS NOT NULL
+| STATS DCGM_FI_DEV_GPU_TEMP = MAX(LAST_OVER_TIME(DCGM_FI_DEV_GPU_TEMP)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `DCGM_FI_DEV_GPU_TEMP`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_GPU_TEMP`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=0, w=36, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU Avg. Temp
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+avg(DCGM_FI_DEV_GPU_TEMP{instance=~"${instance}", gpu=~"${gpu}"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_GPU_TEMP IS NOT NULL
+| STATS DCGM_FI_DEV_GPU_TEMP = AVG(DCGM_FI_DEV_GPU_TEMP) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), DCGM_FI_DEV_GPU_TEMP = MAX(DCGM_FI_DEV_GPU_TEMP)
+| KEEP time_bucket, DCGM_FI_DEV_GPU_TEMP
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `DCGM_FI_DEV_GPU_TEMP`
+- Outer agg: `avg`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_GPU_TEMP`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=36, y=0, w=12, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU Power Usage
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_DEV_POWER_USAGE{instance=~"${instance}", gpu=~"${gpu}"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_POWER_USAGE IS NOT NULL
+| STATS DCGM_FI_DEV_POWER_USAGE = MAX(LAST_OVER_TIME(DCGM_FI_DEV_POWER_USAGE)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `DCGM_FI_DEV_POWER_USAGE`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_POWER_USAGE`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=12, w=36, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU Power Total
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (gauge):**
+
+```
+sum(DCGM_FI_DEV_POWER_USAGE{instance=~"${instance}", gpu=~"${gpu}"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel` → mapped to gauge panel
+
+**Translated (gauge):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_POWER_USAGE IS NOT NULL
+| STATS DCGM_FI_DEV_POWER_USAGE = SUM(DCGM_FI_DEV_POWER_USAGE) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), DCGM_FI_DEV_POWER_USAGE = MAX(DCGM_FI_DEV_POWER_USAGE)
+| KEEP time_bucket, DCGM_FI_DEV_POWER_USAGE
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `DCGM_FI_DEV_POWER_USAGE`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_POWER_USAGE`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `gauge`
+- Layout: x=36, y=12, w=12, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, metric, appearance
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU SM Clocks
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_DEV_SM_CLOCK{instance=~"${instance}", gpu=~"${gpu}"} * 1000000
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_SM_CLOCK IS NOT NULL
+| STATS DCGM_FI_DEV_SM_CLOCK_instance_gpu = AVG(DCGM_FI_DEV_SM_CLOCK) BY time_bucket = TBUCKET(5 minute), gpu
+| EVAL computed_value = (DCGM_FI_DEV_SM_CLOCK_instance_gpu * 1000000)
+| KEEP time_bucket, gpu, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket, gpu`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=24, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Tensor Core Utilization
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{instance=~"${instance}", gpu=~"${gpu}"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_PROF_PIPE_TENSOR_ACTIVE IS NOT NULL
+| STATS DCGM_FI_PROF_PIPE_TENSOR_ACTIVE = MAX(LAST_OVER_TIME(DCGM_FI_PROF_PIPE_TENSOR_ACTIVE)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=36, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU Utilization
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_DEV_GPU_UTIL{instance=~"${instance}", gpu=~"${gpu}"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_GPU_UTIL IS NOT NULL
+| STATS DCGM_FI_DEV_GPU_UTIL = MAX(LAST_OVER_TIME(DCGM_FI_DEV_GPU_UTIL)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `DCGM_FI_DEV_GPU_UTIL`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_GPU_UTIL`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=36, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### GPU Framebuffer Mem Used
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+DCGM_FI_DEV_FB_USED{instance=~"${instance}", gpu=~"${gpu}"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE DCGM_FI_DEV_FB_USED IS NOT NULL
+| STATS DCGM_FI_DEV_FB_USED = MAX(LAST_OVER_TIME(DCGM_FI_DEV_FB_USED)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `DCGM_FI_DEV_FB_USED`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `DCGM_FI_DEV_FB_USED`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=48, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `instance` (type: `options`)
+- `gpu` (type: `options`)
+
+</details>
+
+---
+
+### Grafana: PostgreSQL Database
+
+**File:** `postgresql-9628.json` — **Panels:** 35
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| General Counters, CPU, Memory and File Descriptor Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Settings | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Database Stats | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Version | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_static{release="$release", instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_static IS NOT NULL \| STATS pg_static = MAX(... |
+| Start Time | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_postmaster_start_time_seconds{release="$release", instance="$instance"} * 100... | TS metrics-prometheus-* \| WHERE pg_postmaster_start_time_seconds IS NOT NULL \|... |
+| Current fetch data | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | SUM(pg_stat_database_tup_fetched{datname=~"$datname", instance=~"$instance"}) | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_fetched IS NOT NULL \| STA... |
+| Current insert data | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | SUM(pg_stat_database_tup_inserted{release="$release", datname=~"$datname", insta... | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_inserted IS NOT NULL \| ST... |
+| Current update data | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | SUM(pg_stat_database_tup_updated{datname=~"$datname", instance=~"$instance"}) | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_updated IS NOT NULL \| STA... |
+| Max Connections | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_max_connections{release="$release", instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_max_connections IS NOT NULL \| STAT... |
+| Average CPU Usage | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(rate(process_cpu_seconds_total{release="$release", instance="$instance"}[5m]... | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL \| STATS ... |
+| Average Memory Usage | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(rate(process_resident_memory_bytes{release="$release", instance="$instance"}... | TS metrics-prometheus-* \| WHERE process_resident_memory_bytes IS NOT NULL OR pr... |
+| Open File Descriptors | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | process_open_fds{release="$release", instance="$instance"} | TS metrics-prometheus-* \| WHERE process_open_fds IS NOT NULL \| STATS process_o... |
+| Shared Buffers | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_shared_buffers_bytes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_shared_buffers_bytes IS NOT NULL \|... |
+| Effective Cache | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_effective_cache_size_bytes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_effective_cache_size_bytes IS NOT N... |
+| Maintenance Work Mem | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_maintenance_work_mem_bytes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_maintenance_work_mem_bytes IS NOT N... |
+| Work Mem | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_work_mem_bytes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_work_mem_bytes IS NOT NULL \| STATS... |
+| Max WAL Size | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_max_wal_size_bytes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_max_wal_size_bytes IS NOT NULL \| S... |
+| Random Page Cost | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_random_page_cost{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_random_page_cost IS NOT NULL \| STA... |
+| Seq Page Cost | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_seq_page_cost{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_seq_page_cost IS NOT NULL \| STATS ... |
+| Max Worker Processes | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_max_worker_processes{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_max_worker_processes IS NOT NULL \|... |
+| Max Parallel Workers | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | pg_settings_max_parallel_workers{instance="$instance"} | TS metrics-prometheus-* \| WHERE pg_settings_max_parallel_workers IS NOT NULL \|... |
+| Active sessions | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_activity_count{datname=~"$datname", instance=~"$instance", state="active... | TS metrics-prometheus-* \| WHERE state == "active" \| WHERE pg_stat_activity_cou... |
+| Transactions | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(pg_stat_database_xact_commit{instance="$instance", datname=~"$datname"}[5m... | TS metrics-prometheus-* \| WHERE pg_stat_database_xact_commit IS NOT NULL OR pg_... |
+| Update data | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_tup_updated{datname=~"$datname", instance=~"$instance"} != 0 | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_updated IS NOT NULL \| STA... |
+| Fetch data (SELECT) | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_tup_fetched{datname=~"$datname", instance=~"$instance"} != 0 | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_fetched IS NOT NULL \| STA... |
+| Insert data | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_tup_inserted{datname=~"$datname", instance=~"$instance"} != 0 | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_inserted IS NOT NULL \| ST... |
+| Lock tables | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_locks_count{datname=~"$datname", instance=~"$instance", mode=~"$mode"} != 0 | TS metrics-prometheus-* \| WHERE pg_locks_count IS NOT NULL \| STATS pg_locks_co... |
+| Return data | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_tup_returned{datname=~"$datname", instance=~"$instance"} != 0 | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_returned IS NOT NULL \| ST... |
+| Idle sessions | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_activity_count{datname=~"$datname", instance=~"$instance", state=~"idle\... | TS metrics-prometheus-* \| WHERE state RLIKE "idle\|idle in transaction\|idle in... |
+| Delete data | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_tup_deleted{datname=~"$datname", instance=~"$instance"} != 0 | TS metrics-prometheus-* \| WHERE pg_stat_database_tup_deleted IS NOT NULL \| STA... |
+| Cache Hit Rate | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | pg_stat_database_blks_hit{instance="$instance", datname=~"$datname"} / (pg_stat_... | TS metrics-prometheus-* \| WHERE pg_stat_database_blks_hit IS NOT NULL OR pg_sta... |
+| Buffers (bgwriter) | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(pg_stat_bgwriter_buffers_backend_total{instance="$instance"}[5m]) \|\|\| i... | TS metrics-prometheus-* \| WHERE pg_stat_bgwriter_buffers_backend_total IS NOT N... |
+| Conflicts/Deadlocks | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(pg_stat_database_conflicts{instance="$instance", datname=~"$datname"}[5m])... | TS metrics-prometheus-* \| WHERE pg_stat_database_conflicts IS NOT NULL OR pg_st... |
+| Temp File (Bytes) | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(pg_stat_database_temp_bytes{instance="$instance", datname=~"$datname"}[5m]... | TS metrics-prometheus-* \| WHERE pg_stat_database_temp_bytes IS NOT NULL \| STAT... |
+| Checkpoint Stats | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(pg_stat_bgwriter_checkpoint_write_time_total{instance="$instance"}[5m]) \|... | TS metrics-prometheus-* \| WHERE pg_stat_bgwriter_checkpoint_write_time_total IS... |
+
+<details>
+<summary>Detailed traces (32 panels)</summary>
+
+#### Version
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_static{release="$release", instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_static IS NOT NULL
+| STATS pg_static = MAX(LAST_OVER_TIME(pg_static)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_static = MAX(pg_static)
+| KEEP time_bucket, pg_static
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_static`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_static`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Start Time
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_postmaster_start_time_seconds{release="$release", instance="$instance"} * 1000
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_postmaster_start_time_seconds IS NOT NULL
+| STATS pg_postmaster_start_time_seconds_release_instance = AVG(pg_postmaster_start_time_seconds) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (pg_postmaster_start_time_seconds_release_instance * 1000)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Collapsed all series of `pg_postmaster_start_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=8, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary, titles_and_text
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `pg_postmaster_start_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `pg_postmaster_start_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Current fetch data
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+SUM(pg_stat_database_tup_fetched{datname=~"$datname", instance=~"$instance"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_stat_database_tup_fetched IS NOT NULL
+| STATS pg_stat_database_tup_fetched = SUM(pg_stat_database_tup_fetched) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_stat_database_tup_fetched = MAX(pg_stat_database_tup_fetched)
+| KEEP time_bucket, pg_stat_database_tup_fetched
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `pg_stat_database_tup_fetched`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_stat_database_tup_fetched`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=16, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Current insert data
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+SUM(pg_stat_database_tup_inserted{release="$release", datname=~"$datname", instance=~"$instance"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_stat_database_tup_inserted IS NOT NULL
+| STATS pg_stat_database_tup_inserted = SUM(pg_stat_database_tup_inserted) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_stat_database_tup_inserted = MAX(pg_stat_database_tup_inserted)
+| KEEP time_bucket, pg_stat_database_tup_inserted
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `pg_stat_database_tup_inserted`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_stat_database_tup_inserted`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Current update data
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+SUM(pg_stat_database_tup_updated{datname=~"$datname", instance=~"$instance"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_stat_database_tup_updated IS NOT NULL
+| STATS pg_stat_database_tup_updated = SUM(pg_stat_database_tup_updated) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_stat_database_tup_updated = MAX(pg_stat_database_tup_updated)
+| KEEP time_bucket, pg_stat_database_tup_updated
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `pg_stat_database_tup_updated`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_stat_database_tup_updated`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=32, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Max Connections
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_max_connections{release="$release", instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_max_connections IS NOT NULL
+| STATS pg_settings_max_connections = MAX(LAST_OVER_TIME(pg_settings_max_connections)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_max_connections = MAX(pg_settings_max_connections)
+| KEEP time_bucket, pg_settings_max_connections
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_max_connections`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_max_connections`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=40, y=0, w=8, h=3
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Average CPU Usage
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+avg(rate(process_cpu_seconds_total{release="$release", instance="$instance"}[5m]) * 1000)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE process_cpu_seconds_total IS NOT NULL
+| STATS process_cpu_seconds_total_release_instance_rate_avg = AVG(RATE(process_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = (process_cpu_seconds_total_release_instance_rate_avg * 1000)
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=3, w=16, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Average Memory Usage
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+avg(rate(process_resident_memory_bytes{release="$release", instance="$instance"}[5m])) ||| avg(rate(process_virtual_memory_bytes{release="$release", instance="$instance"}[5m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE process_resident_memory_bytes IS NOT NULL OR process_virtual_memory_bytes IS NOT NULL
+| STATS process_resident_memory_bytes_A = AVG(RATE(process_resident_memory_bytes, 5m)), process_virtual_memory_bytes_B = AVG(RATE(process_virtual_memory_bytes, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL Resident_Mem = process_resident_memory_bytes_A
+| EVAL Virtual_Mem = process_virtual_memory_bytes_B
+| KEEP time_bucket, Resident_Mem, Virtual_Mem
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `process_resident_memory_bytes`
+- Range func: `rate`
+- Range window: `5m`
+- Outer agg: `avg`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `Resident_Mem`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=16, y=3, w=16, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 2
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Open File Descriptors
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (graph):**
+
+```
+process_open_fds{release="$release", instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE process_open_fds IS NOT NULL
+| STATS process_open_fds = AVG(process_open_fds) BY time_bucket = TBUCKET(5 minute), release, instance
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(release), ""), " / ", COALESCE(TO_STRING(instance), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `process_open_fds`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `process_open_fds`
+- Output groups: `time_bucket, release, instance`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=32, y=3, w=16, h=10
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Dropped variable-driven label filters during migration; Composited multi-label grouping (release, instance) into a single XY breakdown column
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Shared Buffers
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_shared_buffers_bytes{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_shared_buffers_bytes IS NOT NULL
+| STATS pg_settings_shared_buffers_bytes = MAX(LAST_OVER_TIME(pg_settings_shared_buffers_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_shared_buffers_bytes = MAX(pg_settings_shared_buffers_bytes)
+| KEEP time_bucket, pg_settings_shared_buffers_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_shared_buffers_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_shared_buffers_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Effective Cache
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_effective_cache_size_bytes{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_effective_cache_size_bytes IS NOT NULL
+| STATS pg_settings_effective_cache_size_bytes = MAX(LAST_OVER_TIME(pg_settings_effective_cache_size_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_effective_cache_size_bytes = MAX(pg_settings_effective_cache_size_bytes)
+| KEEP time_bucket, pg_settings_effective_cache_size_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_effective_cache_size_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_effective_cache_size_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=6, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Maintenance Work Mem
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_maintenance_work_mem_bytes{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_maintenance_work_mem_bytes IS NOT NULL
+| STATS pg_settings_maintenance_work_mem_bytes = MAX(LAST_OVER_TIME(pg_settings_maintenance_work_mem_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_maintenance_work_mem_bytes = MAX(pg_settings_maintenance_work_mem_bytes)
+| KEEP time_bucket, pg_settings_maintenance_work_mem_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_maintenance_work_mem_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_maintenance_work_mem_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Work Mem
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_work_mem_bytes{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_work_mem_bytes IS NOT NULL
+| STATS pg_settings_work_mem_bytes = MAX(LAST_OVER_TIME(pg_settings_work_mem_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_work_mem_bytes = MAX(pg_settings_work_mem_bytes)
+| KEEP time_bucket, pg_settings_work_mem_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_work_mem_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_work_mem_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=18, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Max WAL Size
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_max_wal_size_bytes{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_max_wal_size_bytes IS NOT NULL
+| STATS pg_settings_max_wal_size_bytes = MAX(LAST_OVER_TIME(pg_settings_max_wal_size_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_max_wal_size_bytes = MAX(pg_settings_max_wal_size_bytes)
+| KEEP time_bucket, pg_settings_max_wal_size_bytes
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_max_wal_size_bytes`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_max_wal_size_bytes`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Random Page Cost
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (singlestat):**
+
+```
+pg_settings_random_page_cost{instance="$instance"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family`
+- `query_translators` / `simple_metric_family` → translated simple metric expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE pg_settings_random_page_cost IS NOT NULL
+| STATS pg_settings_random_page_cost = MAX(LAST_OVER_TIME(pg_settings_random_page_cost)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), pg_settings_random_page_cost = MAX(pg_settings_random_page_cost)
+| KEEP time_bucket, pg_settings_random_page_cost
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_metric`
+- Metric: `pg_settings_random_page_cost`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `pg_settings_random_page_cost`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=30, y=0, w=6, h=6
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `Database` (type: `options`)
+- `Lock table` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Prometheus 2.0 Overview
 
 **File:** `prometheus-2-overview-3662.json` — **Panels:** 30
@@ -17035,6 +30045,7 @@ avg(avg_over_time(up{instance=~"$instance",job=~"$job"}[$interval]) * 100)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17120,6 +30131,7 @@ up{instance=~"$instance",job=~"$job"} < 1
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17214,6 +30226,7 @@ sum(prometheus_tsdb_head_series{job=~"$job",instance=~"$instance"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17305,6 +30318,7 @@ sum(prometheus_tsdb_head_chunks{job=~"$job",instance=~"$instance"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17393,6 +30407,7 @@ sum(sum_over_time(prometheus_evaluator_iterations_missed_total{job=~"$job",insta
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17485,6 +30500,7 @@ sum(sum_over_time(prometheus_evaluator_iterations_skipped_total{job=~"$job",inst
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17577,6 +30593,7 @@ sum(sum_over_time(prometheus_target_scrapes_exceeded_sample_limit_total{job=~"$j
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17669,6 +30686,7 @@ sum(sum_over_time(prometheus_tsdb_reloads_failures_total{job=~"$job",instance=~"
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17764,6 +30782,7 @@ sum(sum_over_time(prometheus_target_scrapes_sample_out_of_order_total{job=~"$job
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17849,6 +30868,7 @@ sum(increase(net_conntrack_dialer_conn_failed_total{instance=~"$instance"}[5m]))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -17962,6 +30982,7 @@ up{instance=~"$instance",job=~"$job"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18050,6 +31071,7 @@ prometheus_tsdb_head_chunks{job=~"$job",instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18138,6 +31160,7 @@ prometheus_tsdb_head_series{job=~"$job",instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18226,6 +31249,7 @@ sum( increase(prometheus_tsdb_head_series_created_total{instance=~"$instance"}[5
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18318,6 +31342,7 @@ rate(prometheus_tsdb_head_samples_appended_total{job=~"$job",instance=~"$instanc
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18467,6 +31492,7 @@ time() - process_start_time_seconds{instance="$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18544,6 +31570,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18630,6 +31657,7 @@ prometheus_build_info{instance="$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18716,6 +31744,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18798,6 +31827,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=scalar backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family scalar bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family` → translated scalar constant
@@ -18862,6 +31892,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -18897,6 +31928,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 TS metrics-prometheus-*
 | WHERE prometheus_engine_query_duration_seconds IS NOT NULL
 | STATS prometheus_engine_query_duration_seconds = MAX(prometheus_engine_query_duration_seconds) BY time_bucket = TBUCKET(5 minute), instance, slice
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(slice), ""))
 | SORT time_bucket ASC
 ```
 
@@ -18928,7 +31960,7 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Warnings:** XY chart shows a single breakdown; additional grouping dimension(s) ['slice'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Composited multi-label grouping (instance, slice) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -18951,6 +31983,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19043,6 +32076,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19144,6 +32178,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19228,6 +32263,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19263,6 +32299,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 TS metrics-prometheus-*
 | WHERE prometheus_evaluator_duration_seconds IS NOT NULL
 | STATS prometheus_evaluator_duration_seconds = SUM(prometheus_evaluator_duration_seconds) BY time_bucket = TBUCKET(5 minute), instance, quantile
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(quantile), ""))
 | SORT time_bucket ASC
 ```
 
@@ -19294,7 +32331,7 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Warnings:** XY chart shows a single breakdown; additional grouping dimension(s) ['quantile'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Composited multi-label grouping (instance, quantile) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -19317,6 +32354,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19407,6 +32445,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19493,6 +32532,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19586,6 +32626,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19623,7 +32664,8 @@ TS metrics-prometheus-*
 | STATS prometheus_engine_queries_A = SUM(prometheus_engine_queries), prometheus_engine_queries_concurrent_max_B = SUM(prometheus_engine_queries_concurrent_max) BY time_bucket = TBUCKET(5 minute), instance, handler
 | EVAL Current_count = prometheus_engine_queries_A
 | EVAL Max_count = prometheus_engine_queries_concurrent_max_B
-| KEEP time_bucket, instance, handler, Current_count, Max_count
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(handler), ""))
+| KEEP time_bucket, instance, handler, Current_count, Max_count, series_group
 | SORT time_bucket ASC
 ```
 
@@ -19655,7 +32697,7 @@ TS metrics-prometheus-*
 
 - targets: 2
 
-**Warnings:** XY chart shows a single breakdown; additional grouping dimension(s) ['handler'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Composited multi-label grouping (instance, handler) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -19678,6 +32720,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19762,6 +32805,1349 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: RabbitMQ-Overview
+
+**File:** `rabbitmq-overview-10991.json` — **Panels:** 47
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| NODES | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| QUEUED MESSAGES | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| INCOMING MESSAGES | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| OUTGOING MESSAGES | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| QUEUES | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| CHANNELS | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| CONNECTIONS | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
+| Ready messages | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluste... | TS metrics-prometheus-* \| WHERE rabbitmq_queue_messages_ready IS NOT NULL \| ST... |
+| Outgoing messages / s | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(rabbitmq_global_messages_delivered_total[$__rate_interval]) * on(insta... | TS metrics-prometheus-* \| WHERE rabbitmq_global_messages_delivered_total IS NOT... |
+| Publishers | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_global_publishers * on(instance, job) group_left(rabbitmq_cluster) ... | TS metrics-prometheus-* \| WHERE rabbitmq_global_publishers IS NOT NULL \| STATS... |
+| Connections | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_connections * on(instance, job) group_left(rabbitmq_cluster) rabbit... | TS metrics-prometheus-* \| WHERE rabbitmq_connections IS NOT NULL \| STATS rabbi... |
+| Queues | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_queues * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_id... | TS metrics-prometheus-* \| WHERE rabbitmq_queues IS NOT NULL \| STATS rabbitmq_q... |
+| Unacknowledged messages | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_queue_messages_unacked * on(instance, job) group_left(rabbitmq_clus... | TS metrics-prometheus-* \| WHERE rabbitmq_queue_messages_unacked IS NOT NULL \| ... |
+| Incoming messages / s | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(rabbitmq_global_messages_received_total[$__rate_interval]) * on(instan... | TS metrics-prometheus-* \| WHERE rabbitmq_global_messages_received_total IS NOT ... |
+| Consumers | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_global_consumers * on(instance, job) group_left(rabbitmq_cluster) r... | TS metrics-prometheus-* \| WHERE rabbitmq_global_consumers IS NOT NULL \| STATS ... |
+| Channels | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(rabbitmq_channels * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_... | TS metrics-prometheus-* \| WHERE rabbitmq_channels IS NOT NULL \| STATS rabbitmq... |
+| Nodes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(rabbitmq_identity_info{namespace="$namespace",rabbitmq_cluster="$rabbitmq_... | TS metrics-prometheus-* \| WHERE rabbitmq_identity_info IS NOT NULL \| STATS rab... |
+| Rabbitmq Erlang Uptime Seconds | `table` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | rabbitmq_erlang_uptime_seconds *on(instance,job) group_left(rabbitmq_version, er... | FROM metrics-prometheus-* \| WHERE rabbitmq_erlang_uptime_seconds IS NOT NULL \|... |
+| Memory available before publishers blocked | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | (rabbitmq_resident_memory_limit_bytes * on(instance, job) group_left(rabbitmq_cl... | TS metrics-prometheus-* \| WHERE rabbitmq_resident_memory_limit_bytes IS NOT NUL... |
+| Disk space available before publishers blocked | `timeseries` → `line` | migrated_with_warnings | **CORRECT** | rabbitmq_disk_space_available_bytes * on(instance, job) group_left(rabbitmq_clus... | FROM metrics-prometheus-* \| WHERE rabbitmq_disk_space_available_bytes IS NOT NU... |
+| Messages ready to be delivered to consumers | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluste... | — |
+| Messages pending consumer acknowledgement | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rabbitmq_queue_messages_unacked * on(instance, job) group_left(rabbitmq_clus... | — |
+| Messages published / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_received_total[60s]) * on(instance, job) group... | — |
+| Avg Size | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum (increase(rabbitmq_message_size_bytes_sum[$__range]) * on(instance, job) gro... | TS metrics-prometheus-* \| WHERE rabbitmq_message_size_bytes_sum IS NOT NULL OR ... |
+| Message Size Distribution | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum(increase(rabbitmq_message_size_bytes_bucket{le="100.0"}[$__range]) * on(inst... | TS metrics-prometheus-* \| WHERE rabbitmq_message_size_bytes_bucket IS NOT NULL ... |
+| Messages routed to queues / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_routed_total[60s]) * on(instance, job) group_l... | — |
+| Messages confirmed to publishers / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_confirmed_total[60s]) * on(instance, job) grou... | — |
+| Unroutable messages dropped & returned / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_unroutable_dropped_total[60s]) * on(instance, ... | — |
+| Messages unconfirmed to publishers / s | `timeseries` → `area` | migrated | **CORRECT** | sum(rate(rabbitmq_global_messages_received_confirm_total[60s]) * on(instance, jo... | TS metrics-prometheus-* \| STATS rabbitmq_global_messages_received_confirm_total... |
+| Messages delivered / s | `timeseries` → `area` | migrated | **CORRECT** | sum(   (rate(rabbitmq_global_messages_delivered_consume_auto_ack_total[60s]) * o... | TS metrics-prometheus-* \| STATS rabbitmq_global_messages_delivered_consume_auto... |
+| Messages redelivered / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_redelivered_total[60s]) * on(instance, job) gr... | — |
+| Messages delivered with manual ack / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_delivered_consume_manual_ack_total[60s]) * on(... | — |
+| Messages delivered auto ack / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_delivered_consume_auto_ack_total[60s]) * on(in... | — |
+| Messages acknowledged / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_acknowledged_total[60s]) * on(instance, job) g... | — |
+| Polling operations with auto ack / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_delivered_get_auto_ack_total[60s]) * on(instan... | — |
+| Polling operations that yield no result / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_get_empty_total[60s]) * on(instance, job) grou... | — |
+| Polling operations with manual ack / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_global_messages_delivered_get_manual_ack_total[60s]) * on(inst... | — |
+| Total queues | `timeseries` → `area` | migrated_with_warnings | **CORRECT** | rabbitmq_queues * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) ... | FROM metrics-prometheus-* \| WHERE rabbitmq_queues IS NOT NULL \| STATS rabbitmq... |
+| Queues declared / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_queues_declared_total[60s]) * on(instance, job) group_left(rab... | — |
+| Queues created / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_queues_created_total[60s]) * on(instance, job) group_left(rabb... | — |
+| Queues deleted / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_queues_deleted_total[60s]) * on(instance, job) group_left(rabb... | — |
+| Total channels | `timeseries` → `area` | migrated_with_warnings | **CORRECT** | rabbitmq_channels * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node... | FROM metrics-prometheus-* \| WHERE rabbitmq_channels IS NOT NULL \| STATS rabbit... |
+| Channels opened / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_channels_opened_total[60s]) * on(instance, job) group_left(rab... | — |
+| Channels closed / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_channels_closed_total[60s]) * on(instance, job) group_left(rab... | — |
+| Total connections | `timeseries` → `area` | migrated_with_warnings | **CORRECT** | rabbitmq_connections * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_n... | FROM metrics-prometheus-* \| WHERE rabbitmq_connections IS NOT NULL \| STATS rab... |
+| Connections opened / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_connections_opened_total[60s]) * on(instance, job) group_left(... | — |
+| Connections closed / s | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(rate(rabbitmq_connections_closed_total[60s]) * on(instance, job) group_left(... | — |
+
+<details>
+<summary>Detailed traces (40 panels)</summary>
+
+#### Ready messages
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_queue_messages_ready IS NOT NULL
+| STATS rabbitmq_queue_messages_ready = SUM(rabbitmq_queue_messages_ready) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_queue_messages_ready = MAX(rabbitmq_queue_messages_ready)
+| KEEP time_bucket, rabbitmq_queue_messages_ready
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_queue_messages_ready`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_queue_messages_ready`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=0, w=48, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Outgoing messages / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(rabbitmq_global_messages_delivered_total[$__rate_interval]) * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_global_messages_delivered_total IS NOT NULL
+| STATS rabbitmq_global_messages_delivered_total = SUM(IRATE(rabbitmq_global_messages_delivered_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_global_messages_delivered_total = MAX(rabbitmq_global_messages_delivered_total)
+| KEEP time_bucket, rabbitmq_global_messages_delivered_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `rabbitmq_global_messages_delivered_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_global_messages_delivered_total`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=0, w=12, h=5
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Publishers
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_global_publishers * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_global_publishers IS NOT NULL
+| STATS rabbitmq_global_publishers = SUM(rabbitmq_global_publishers) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_global_publishers = MAX(rabbitmq_global_publishers)
+| KEEP time_bucket, rabbitmq_global_publishers
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_global_publishers`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_global_publishers`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=0, w=8, h=5
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Connections
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_connections * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_connections IS NOT NULL
+| STATS rabbitmq_connections = SUM(rabbitmq_connections) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_connections = MAX(rabbitmq_connections)
+| KEEP time_bucket, rabbitmq_connections
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_connections`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_connections`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=32, y=0, w=8, h=5
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Queues
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_queues * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_queues IS NOT NULL
+| STATS rabbitmq_queues = SUM(rabbitmq_queues) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_queues = MAX(rabbitmq_queues)
+| KEEP time_bucket, rabbitmq_queues
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_queues`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_queues`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=40, y=0, w=8, h=5
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Unacknowledged messages
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_queue_messages_unacked * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_queue_messages_unacked IS NOT NULL
+| STATS rabbitmq_queue_messages_unacked = SUM(rabbitmq_queue_messages_unacked) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_queue_messages_unacked = MAX(rabbitmq_queue_messages_unacked)
+| KEEP time_bucket, rabbitmq_queue_messages_unacked
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_queue_messages_unacked`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_queue_messages_unacked`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=5, w=12, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Incoming messages / s
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(irate(rabbitmq_global_messages_received_total[$__rate_interval]) * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_global_messages_received_total IS NOT NULL
+| STATS rabbitmq_global_messages_received_total = SUM(IRATE(rabbitmq_global_messages_received_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_global_messages_received_total = MAX(rabbitmq_global_messages_received_total)
+| KEEP time_bucket, rabbitmq_global_messages_received_total
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `rabbitmq_global_messages_received_total`
+- Range func: `irate`
+- Range window: `5m`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_global_messages_received_total`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=12, y=5, w=12, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Consumers
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_global_consumers * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_global_consumers IS NOT NULL
+| STATS rabbitmq_global_consumers = SUM(rabbitmq_global_consumers) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_global_consumers = MAX(rabbitmq_global_consumers)
+| KEEP time_bucket, rabbitmq_global_consumers
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_global_consumers`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_global_consumers`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=24, y=5, w=8, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Verdict:** MINOR_ISSUE
+
+#### Channels
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(rabbitmq_channels * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check` → 1 join(s) recognized as label-only; RHS stripped
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_channels IS NOT NULL
+| STATS rabbitmq_channels = SUM(rabbitmq_channels) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_channels = MAX(rabbitmq_channels)
+| KEEP time_bucket, rabbitmq_channels
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_channels`
+- Outer agg: `sum`
+- Binary op: `*`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_channels`
+- Semantic losses: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=32, y=5, w=8, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary, titles_and_text
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- has_description: True
+
+**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Semantic losses:** Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
+
+**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Nodes
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+count(rabbitmq_identity_info{namespace="$namespace",rabbitmq_cluster="$rabbitmq_cluster",rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_identity_info IS NOT NULL
+| STATS rabbitmq_identity_info = COUNT(rabbitmq_identity_info) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), rabbitmq_identity_info = MAX(rabbitmq_identity_info)
+| KEEP time_bucket, rabbitmq_identity_info
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `rabbitmq_identity_info`
+- Outer agg: `count`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_identity_info`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=40, y=5, w=8, h=4
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Dropped variable-driven label filters during migration
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Rabbitmq Erlang Uptime Seconds
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (table):**
+
+```
+rabbitmq_erlang_uptime_seconds *on(instance,job) group_left(rabbitmq_version, erlang_version) rabbitmq_build_info * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{namespace="$namespace", rabbitmq_cluster="$rabbitmq_cluster", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel`
+- `panel_translators` / `gauge_panel`
+- `panel_translators` / `datatable_panel` → mapped to datatable panel
+
+**Translated (datatable):**
+
+```
+FROM metrics-prometheus-*
+| WHERE rabbitmq_erlang_uptime_seconds IS NOT NULL
+| STATS rabbitmq_erlang_uptime_seconds = AVG(rabbitmq_erlang_uptime_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance, job
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `rabbitmq_erlang_uptime_seconds`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_erlang_uptime_seconds`
+- Output groups: `time_bucket, instance, job`
+- Semantic losses: Dropped group_left label enrichment; kept primary metric series only
+
+**Visual IR:**
+
+- Kibana type: `datatable`
+- Layout: x=0, y=0, w=48, h=7
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- transformations: 1
+- field_overrides: 15
+
+**Warnings:** Grafana panel has 1 transformation(s); manual review recommended; Grafana panel has 15 field override(s); verify visual mappings manually; Dropped group_left label enrichment; kept primary metric series only
+
+**Semantic losses:** Dropped group_left label enrichment; kept primary metric series only
+
+**Notes:** Grafana panel has 1 transformation(s); manual review recommended; Grafana panel has 15 field override(s); verify visual mappings manually
+
+**Verdict:** MINOR_ISSUE
+
+#### Memory available before publishers blocked
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+(rabbitmq_resident_memory_limit_bytes * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) -
+(rabbitmq_process_resident_memory_bytes * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE rabbitmq_resident_memory_limit_bytes IS NOT NULL OR rabbitmq_process_resident_memory_bytes IS NOT NULL
+| STATS rabbitmq_resident_memory_limit_bytes = AVG(rabbitmq_resident_memory_limit_bytes), rabbitmq_process_resident_memory_bytes = AVG(rabbitmq_process_resident_memory_bytes) BY time_bucket = TBUCKET(5 minute), rabbitmq_node, rabbitmq_cluster
+| EVAL computed_value = (rabbitmq_resident_memory_limit_bytes - rabbitmq_process_resident_memory_bytes)
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " / ", COALESCE(TO_STRING(rabbitmq_cluster), ""))
+| KEEP time_bucket, rabbitmq_node, rabbitmq_cluster, computed_value, series_group
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `-`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `time_bucket, rabbitmq_node, rabbitmq_cluster`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=0, y=7, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Composited multi-label grouping (rabbitmq_node, rabbitmq_cluster) into a single XY breakdown column
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** MINOR_ISSUE
+
+#### Disk space available before publishers blocked
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+rabbitmq_disk_space_available_bytes * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=join backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family join bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family` → translated label enrichment join
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+FROM metrics-prometheus-*
+| WHERE rabbitmq_disk_space_available_bytes IS NOT NULL
+| STATS rabbitmq_disk_space_available_bytes = AVG(rabbitmq_disk_space_available_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node, rabbitmq_cluster
+| EVAL series_group = CONCAT(COALESCE(TO_STRING(rabbitmq_node), ""), " / ", COALESCE(TO_STRING(rabbitmq_cluster), ""))
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `join`
+- Metric: `rabbitmq_disk_space_available_bytes`
+- Group labels: `instance, job`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `rabbitmq_disk_space_available_bytes`
+- Output groups: `time_bucket, rabbitmq_node, rabbitmq_cluster`
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=24, y=7, w=24, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Composited multi-label grouping (rabbitmq_node, rabbitmq_cluster) into a single XY breakdown column
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** CORRECT
+
+#### Messages ready to be delivered to consumers
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) by(rabbitmq_node)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails` → Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_ready'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `rabbitmq_queue_messages_ready`
+- Outer agg: `sum`
+- Group labels: `rabbitmq_node`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_ready'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=0, w=24, h=7
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_ready'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Semantic losses:** Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_ready'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Messages pending consumer acknowledgement
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+sum(rabbitmq_queue_messages_unacked * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info{rabbitmq_cluster="$rabbitmq_cluster", namespace="$namespace", rabbitmq_endpoint="$endpoint"}) by(rabbitmq_node)
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
+- `query_classifiers` / `fragment_guardrails` → Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_unacked'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Query IR:**
+
+- Family: `unknown`
+- Metric: `rabbitmq_queue_messages_unacked`
+- Outer agg: `sum`
+- Group labels: `rabbitmq_node`
+- Binary op: `*`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_unacked'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=24, y=0, w=24, h=7
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 10
+- has_description: True
+
+**Warnings:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_unacked'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Semantic losses:** Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_unacked'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+
+**Notes:** Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+
+**Verdict:** EXPECTED_LIMITATION
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `Namespace` (type: `options`)
+- `RabbitMQ Cluster` (type: `options`)
+
+</details>
+
+---
+
 ### Grafana: Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)
 
 **File:** `redis-11835.json` — **Panels:** 12
@@ -19801,6 +34187,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19888,6 +34275,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -19974,6 +34362,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20056,6 +34445,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20142,6 +34532,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20231,6 +34622,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20320,6 +34712,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20408,6 +34801,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20495,6 +34889,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20579,6 +34974,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20672,6 +35068,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=topk backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family topk bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20759,6 +35156,7 @@ redis_connected_clients{instance="$instance"}
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20881,6 +35279,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -20968,6 +35367,7 @@ sum(redis_connected_clients{instance=~"$instance"})
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21099,6 +35499,7 @@ sum(rate(redis_commands_total{instance=~"$instance"} [1m])) by (cmd)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21187,6 +35588,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21276,6 +35678,7 @@ redis_memory_used_bytes{instance=~"$instance"} ||| redis_memory_max_bytes{instan
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21368,6 +35771,7 @@ sum(rate(redis_net_input_bytes_total{instance=~"$instance"}[5m])) ||| sum(rate(r
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21457,6 +35861,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db, instance)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21548,6 +35953,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (instance) - sum (redis_db_keys_ex
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21632,6 +36038,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21726,6 +36133,7 @@ sum(redis_connected_clients{instance=~"$instance"}) ||| sum(redis_blocked_client
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21818,6 +36226,7 @@ sum(irate(redis_commands_total{instance =~ "$instance"}[1m])) by (cmd)
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21904,6 +36313,7 @@ sum(irate(redis_commands_duration_seconds_total{instance=~"$instance"}[1m])) by 
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
 - `query_classifiers` / `unsupported_patterns`
 - `query_classifiers` / `warning_patterns`
 - `query_translators` / `scalar_family`
@@ -21988,6 +36398,840 @@ TS metrics-prometheus-*
 
 ---
 
+### Grafana: Spring Boot Observability
+
+**File:** `spring-boot-17175.json` — **Panels:** 11
+
+| Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
+|-------|---------------------|--------|---------|-------------|-----------------|
+| Total Requests | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(http_server_requests_seconds_count{application="$app_name", uri!="/actuator/... | TS metrics-prometheus-* \| WHERE uri != "/actuator/prometheus" \| WHERE http_ser... |
+| Requests Count | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum by(uri) (http_server_requests_seconds_count{application="$app_name", uri!="/... | TS metrics-prometheus-* \| WHERE uri != "/actuator/prometheus" \| WHERE http_ser... |
+| Requests Average Duration | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(uri)(http_server_requests_seconds_sum{application="$app_name"}) / sum by(... | TS metrics-prometheus-* \| WHERE http_server_requests_seconds_sum IS NOT NULL OR... |
+| Total Exceptions | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(http_server_requests_seconds_count{application="$app_name", outcome="SERVER_... | TS metrics-prometheus-* \| WHERE outcome == "SERVER_ERROR" \| WHERE http_server_... |
+| Percent of 2xx Requests | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum by(uri) (http_server_requests_seconds_count{application="$app_name", status=... | — |
+| Percent of 5xx Requests | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum by(uri) (http_server_requests_seconds_count{application="$app_name", status=... | — |
+| PR 99 Requests Duration | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(.99,sum(rate(http_server_requests_seconds_bucket{application=... | — |
+| PR 95 Requests Duration | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(.95,sum(rate(http_server_requests_seconds_bucket{application=... | — |
+| Request Per Sec | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum by(uri)(rate(http_server_requests_seconds_count{application="$app_name"}[1m]... | TS metrics-prometheus-* \| WHERE http_server_requests_seconds_count IS NOT NULL ... |
+| Log Type Rate | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum by(type) (rate({compose_service=~"app-.*"} \| pattern `<date> <time> <_>=<tr... | — |
+| Log of All Spring Boot Apps | `logs` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | {compose_service=~"app-.*"} \| pattern `<date> <time> <_>=<trace_id> <_>=<span_i... | — |
+
+<details>
+<summary>Detailed traces (11 panels)</summary>
+
+#### Total Requests
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(http_server_requests_seconds_count{application="$app_name", uri!="/actuator/prometheus"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → approximated grouped stat as datatable
+
+**Translated (datatable):**
+
+```
+TS metrics-prometheus-*
+| WHERE uri != "/actuator/prometheus"
+| WHERE http_server_requests_seconds_count IS NOT NULL
+| STATS http_server_requests_seconds_count = SUM(LAST_OVER_TIME(http_server_requests_seconds_count)) BY time_bucket = TBUCKET(5 minute)
+| STATS time_bucket = MAX(time_bucket), http_server_requests_seconds_count = MAX(http_server_requests_seconds_count)
+| KEEP time_bucket, http_server_requests_seconds_count
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `http_server_requests_seconds_count`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `http_server_requests_seconds_count`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated grouped stat panel as summary table
+
+**Visual IR:**
+
+- Kibana type: `datatable`
+- Layout: x=0, y=0, w=8, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- transformations: 2
+
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; Applied Grafana transformation 'sortBy' as ES|QL rewrite; Approximated grouped stat panel as summary table
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
+
+**Notes:** Grafana panel has 2 transformation(s); manual review recommended
+
+**Verdict:** MINOR_ISSUE
+
+#### Requests Count
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum by(uri) (http_server_requests_seconds_count{application="$app_name", uri!="/actuator/prometheus"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → approximated grouped stat as datatable
+
+**Translated (datatable):**
+
+```
+TS metrics-prometheus-*
+| WHERE uri != "/actuator/prometheus"
+| WHERE http_server_requests_seconds_count IS NOT NULL
+| STATS http_server_requests_seconds_count = SUM(LAST_OVER_TIME(http_server_requests_seconds_count)) BY time_bucket = TBUCKET(5 minute), uri
+| SORT time_bucket ASC
+| STATS http_server_requests_seconds_count = MAX(http_server_requests_seconds_count) BY uri
+| KEEP uri, http_server_requests_seconds_count
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `http_server_requests_seconds_count`
+- Outer agg: `sum`
+- Group labels: `uri`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `http_server_requests_seconds_count`
+- Output groups: `uri`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated grouped stat panel as summary table
+
+**Visual IR:**
+
+- Kibana type: `datatable`
+- Layout: x=8, y=0, w=16, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, metrics, breakdowns
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+- transformations: 3
+
+**Warnings:** Grafana panel has 3 transformation(s); manual review recommended; Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; Approximated grouped stat panel as summary table
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
+
+**Notes:** Grafana panel has 3 transformation(s); manual review recommended
+
+**Verdict:** MINOR_ISSUE
+
+#### Requests Average Duration
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (bargauge):**
+
+```
+sum by(uri)(http_server_requests_seconds_sum{application="$app_name"}) / sum by(uri)(http_server_requests_seconds_count{application="$app_name"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → translated arithmetic expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel` → approximated bargauge panel
+
+**Translated (bar):**
+
+```
+TS metrics-prometheus-*
+| WHERE http_server_requests_seconds_sum IS NOT NULL OR http_server_requests_seconds_count IS NOT NULL
+| STATS http_server_requests_seconds_sum_application_sum = SUM(LAST_OVER_TIME(http_server_requests_seconds_sum)), http_server_requests_seconds_count_application_sum = SUM(LAST_OVER_TIME(http_server_requests_seconds_count)) BY time_bucket = TBUCKET(5 minute), uri
+| EVAL computed_value = (http_server_requests_seconds_sum_application_sum / http_server_requests_seconds_count_application_sum)
+| SORT time_bucket ASC
+| STATS computed_value = MAX(computed_value) BY uri
+| KEEP uri, computed_value
+```
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Metric: `computed_value`
+- Binary op: `/`
+- Output shape: `table`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `computed_value`
+- Output groups: `uri`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
+
+**Visual IR:**
+
+- Kibana type: `bar`
+- Layout: x=24, y=0, w=24, h=9
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, legend
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; Approximated bargauge as bar chart
+
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
+
+**Verdict:** MINOR_ISSUE
+
+#### Total Exceptions
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (stat):**
+
+```
+sum(http_server_requests_seconds_count{application="$app_name", outcome="SERVER_ERROR"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family`
+- `query_translators` / `simple_agg_family` → translated simple aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel` → mapped to metric panel
+
+**Translated (metric):**
+
+```
+TS metrics-prometheus-*
+| WHERE outcome == "SERVER_ERROR"
+| WHERE http_server_requests_seconds_count IS NOT NULL
+| STATS http_server_requests_seconds_count = SUM(LAST_OVER_TIME(http_server_requests_seconds_count)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), http_server_requests_seconds_count = MAX(http_server_requests_seconds_count)
+| KEEP time_bucket, http_server_requests_seconds_count
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `simple_agg`
+- Metric: `http_server_requests_seconds_count`
+- Outer agg: `sum`
+- Output shape: `single_value`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `http_server_requests_seconds_count`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `metric`
+- Layout: x=0, y=9, w=8, h=11
+- Presentation kind: `esql`
+- Config keys: type, query, primary
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Percent of 2xx Requests
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+sum by(uri) (http_server_requests_seconds_count{application="$app_name", status=~"2.*", uri!="/actuator/prometheus"}) / sum by(uri) (http_server_requests_seconds_count{application="$app_name", uri!="/actuator/prometheus"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → binary expression requires unsafe measure merge; marked not_feasible
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=8, y=9, w=20, h=11
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Percent of 5xx Requests
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+sum by(uri) (http_server_requests_seconds_count{application="$app_name", status=~"5.*", uri!="/actuator/prometheus"}) / sum by(uri) (http_server_requests_seconds_count{application="$app_name", uri!="/actuator/prometheus"})
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family` → binary expression requires unsafe measure merge; marked not_feasible
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `binary_expr`
+- Binary op: `/`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=28, y=9, w=20, h=11
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### PR 99 Requests Duration
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+histogram_quantile(.99,sum(rate(http_server_requests_seconds_bucket{application="$app_name", uri!="/actuator/prometheus"}[1m])) by(uri, le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `histogram_quantile`
+- Metric: `http_server_requests_seconds`
+- Range window: `1m`
+- Group labels: `uri`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=20, w=16, h=12
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### PR 95 Requests Duration
+
+**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+histogram_quantile(.95,sum(rate(http_server_requests_seconds_bucket{application="$app_name", uri!="/actuator/prometheus"}[1m])) by(uri, le))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+
+**Query IR:**
+
+- Family: `histogram_quantile`
+- Metric: `http_server_requests_seconds`
+- Range window: `1m`
+- Group labels: `uri`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=16, y=20, w=16, h=12
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Request Per Sec
+
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
+
+**Source (timeseries):**
+
+```
+sum by(uri)(rate(http_server_requests_seconds_count{application="$app_name"}[1m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
+- `query_classifiers` / `fragment_guardrails`
+- `query_classifiers` / `family_classifier`
+- `query_classifiers` / `join_label_enrichment_check`
+- `query_classifiers` / `unsupported_patterns`
+- `query_classifiers` / `warning_patterns`
+- `query_translators` / `scalar_family`
+- `query_translators` / `logql_stream_family`
+- `query_translators` / `logql_count_family`
+- `query_translators` / `uptime_family`
+- `query_translators` / `join_family`
+- `query_translators` / `binary_expr_family`
+- `query_translators` / `topk_family`
+- `query_translators` / `label_replace_family`
+- `query_translators` / `scaled_agg_family`
+- `query_translators` / `histogram_quantile_family`
+- `query_translators` / `nested_agg_family`
+- `query_translators` / `range_agg_family` → translated range aggregation expression
+- `query_postprocessors` / `index_rewrite`
+- `query_postprocessors` / `render_esql`
+- `query_postprocessors` / `value_wrapper_transforms`
+- `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `post_filter`
+- `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE http_server_requests_seconds_count IS NOT NULL
+| STATS http_server_requests_seconds_count = SUM(RATE(http_server_requests_seconds_count, 1m)) BY time_bucket = TBUCKET(5 minute), uri
+| SORT time_bucket ASC
+```
+
+**Query IR:**
+
+- Family: `range_agg`
+- Metric: `http_server_requests_seconds_count`
+- Range func: `rate`
+- Range window: `1m`
+- Outer agg: `sum`
+- Group labels: `uri`
+- Output shape: `time_series`
+- Source lang: `promql`
+- Target index: `metrics-prometheus-*`
+- Output metric: `http_server_requests_seconds_count`
+- Output groups: `time_bucket, uri`
+- Semantic losses: Dropped variable-driven label filters during migration
+
+**Visual IR:**
+
+- Kibana type: `line`
+- Layout: x=32, y=20, w=16, h=12
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
+
+**Operational IR:**
+
+- Query language: `promql`
+
+**Inventory:**
+
+- targets: 1
+
+**Semantic losses:** Dropped variable-driven label filters during migration
+
+**Verdict:** MINOR_ISSUE
+
+#### Log Type Rate
+
+**Translation path:** `logql` · **Query language:** `logql` · **Readiness:** `manual_only`
+
+**Source (timeseries):**
+
+```
+sum by(type) (rate({compose_service=~"app-.*"} | pattern `<date> <time> <_>=<trace_id> <_>=<span_id> <_>=<trace_flags> <type> <_> --- <msg>` | type != "" |= "$log_keyword" [1m]))
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=regex
+- `query_classifiers` / `fragment_guardrails`
+
+**Query IR:**
+
+- Family: `unknown`
+- Output shape: `time_series`
+- Source lang: `logql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: LogQL pipeline stages require manual redesign
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=0, y=32, w=12, h=13
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `logql`
+
+**Inventory:**
+
+- targets: 1
+- field_overrides: 3
+
+**Warnings:** Grafana panel has 3 field override(s); verify visual mappings manually; LogQL pipeline stages require manual redesign
+
+**Semantic losses:** LogQL pipeline stages require manual redesign
+
+**Notes:** Grafana panel has 3 field override(s); verify visual mappings manually
+
+**Verdict:** EXPECTED_LIMITATION
+
+#### Log of All Spring Boot Apps
+
+**Translation path:** `logql` · **Query language:** `logql` · **Readiness:** `manual_only`
+
+**Source (logs):**
+
+```
+{compose_service=~"app-.*"} | pattern `<date> <time> <_>=<trace_id> <_>=<span_id> <_>=<trace_flags> <type> <_> --- <msg>` | line_format "{{.compose_service}}\t{{.type}}\ttrace_id={{.trace_id}}\t{{.msg}}" |= "$log_keyword"
+```
+
+**Pipeline trace:**
+
+- `query_preprocessors` / `template_variable_guardrails`
+- `query_preprocessors` / `grafana_macros` → expanded Grafana macros
+- `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=regex
+- `query_classifiers` / `fragment_guardrails`
+
+**Query IR:**
+
+- Family: `unknown`
+- Output shape: `event_rows`
+- Source lang: `logql`
+- Target index: `metrics-prometheus-*`
+- Semantic losses: LogQL pipeline stages require manual redesign
+
+**Visual IR:**
+
+- Kibana type: `markdown`
+- Layout: x=12, y=32, w=36, h=13
+- Presentation kind: `markdown`
+- Config keys: content
+
+**Operational IR:**
+
+- Query language: `logql`
+
+**Inventory:**
+
+- targets: 1
+
+**Warnings:** LogQL pipeline stages require manual redesign
+
+**Semantic losses:** LogQL pipeline stages require manual redesign
+
+**Verdict:** EXPECTED_LIMITATION
+
+</details>
+
+<details>
+<summary>Controls / Variables (1)</summary>
+
+- `Application Name` (type: `options`)
+
+</details>
+
+---
+
 <!-- /GENERATED:PER_DASHBOARD_TRACES -->
 
 ---
@@ -21998,21 +37242,21 @@ TS metrics-prometheus-*
 From the latest trace run:
 
 ```
-Elements:            548 total (496 panels + 52 rows)
-Renderable panels:   496
-  Migrated:             183 (36.9%)
-  With warnings:        275 (55.4%)
-  Requires manual:        5 (1.0%)
-  Not feasible:          32 (6.5%)
-  Skipped:                1 (0.2%)
+Elements:            881 total (786 panels + 95 rows)
+Renderable panels:   786
+  Migrated:             294 (37.4%)
+  With warnings:        430 (54.7%)
+  Requires manual:        5 (0.6%)
+  Not feasible:          56 (7.1%)
+  Skipped:                1 (0.1%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                   24
-  MINOR_ISSUE:              427
-  EXPECTED_LIMITATION:       97
+  CORRECT:                   62
+  MINOR_ISSUE:              650
+  EXPECTED_LIMITATION:      169
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -22021,59 +37265,89 @@ Verdict breakdown:
 ## Appendix: Not-Feasible Panel Breakdown
 
 <!-- GENERATED:NOT_FEASIBLE_BREAKDOWN -->
-Every panel marked `not_feasible` in the trace run (32 total):
+Every panel marked `not_feasible` in the trace run (56 total):
 
 | Panel Title | Dashboard | Source | Reason |
 |-------------|-----------|--------|--------|
+| Sync Activity | ArgoCD | grafana | BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at m... |
+| Reconciliation Activity | ArgoCD | grafana | BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at m... |
+| Responses (latency, internet zone) | CoreDNS | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
+| Requests (size, internet zone) | CoreDNS | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
+| Responses (size, internet zone) | CoreDNS | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
+| Responses (latency) | CoreDNS | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
 | Disk space | Docker and system monitoring | grafana | Aggregating over a per-element / between two time-series (min(A / B)) cannot be expressed accurately... |
 | Disk space | Docker and system monitoring | grafana | Aggregating over a per-element / between two time-series (min(A / B)) cannot be expressed accurately... |
-| Load | Docker and system monitoring | grafana | PromQL arithmetic with divergent filters/groupings cannot be translated safely yet |
-| Load | Docker and system monitoring | grafana | PromQL arithmetic with divergent filters/groupings cannot be translated safely yet |
+| Established distribution links | Erlang-Distribution | grafana | Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL v... |
+| Connecting distribution links | Erlang-Distribution | grafana | Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL v... |
+| Waiting distribution links | Erlang-Distribution | grafana | Grafana panel description is not carried into Kibana YAML automatically; Aggregating over a PromQL v... |
 | Request duration 95th percentile | Express Prometheus Middleware | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
 | Request duration 99th percentile | Express Prometheus Middleware | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
 | Primary: Request Duration | Flagger Canary Status | grafana | PromQL '/' arithmetic where an operand contains a nested set operator or vector-matching join that c... |
 | Canary: Request Duration | Flagger Canary Status | grafana | PromQL '/' arithmetic where an operand contains a nested set operator or vector-matching join that c... |
 | Top Metrics by Series Count | Home - Migration Test Lab | grafana | PromQL metric-name introspection via __name__ requires manual redesign |
-| CPU Utilization by namespace | Kubernetes / Views / Global | grafana | PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that c... |
-| Memory Utilization by namespace | Kubernetes / Views / Global | grafana | PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that c... |
-| Network Received by namespace | Kubernetes / Views / Global | grafana | PromQL '+' arithmetic where an operand contains a nested set operator or vector-matching join that c... |
-| Current QPS | MySQL Overview | grafana | Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried in... |
-| MySQL Client Thread Activity | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Questions | MySQL Overview | grafana | Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried in... |
-| MySQL Temporary Objects | MySQL Overview | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
-| MySQL Select Types | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Sorts | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Slow Queries | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Aborted Connections | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Table Locks | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Network Traffic | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| Top Command Counters | MySQL Overview | grafana | Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried in... |
-| MySQL Handlers | MySQL Overview | grafana | Grafana panel description is not carried into Kibana YAML automatically; PromQL 'or' between metrics... |
-| MySQL Transaction Handlers | MySQL Overview | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
-| MySQL File Openings | MySQL Overview | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
-| MySQL Table Open Cache Status | MySQL Overview | grafana | Grafana panel has 1 link(s); verify drilldowns manually; Grafana panel description is not carried in... |
-| I/O Activity | MySQL Overview | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
-| Swap Activity | MySQL Overview | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
+| Client Request Duration | Istio Service Dashboard | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
+| Server Request Duration | Istio Service Dashboard | grafana | PromQL 'or' between metrics that cannot be aligned in ES\|QL (differing grouping dimensions or source... |
+| Incoming Request Duration By Source | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; PromQL 'or' between metrics ... |
+| Incoming Request Size By Source | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven labe... |
+| Response Size By Source | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven labe... |
+| Incoming Success Rate (non-5xx responses) By Destination Workload | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; PromQL arithmetic with diver... |
+| Incoming Request Duration By Service Workload | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; PromQL 'or' between metrics ... |
+| Incoming Request Size By Service Workload | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven labe... |
+| Response Size By Service Workload | Istio Service Dashboard | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Dropped variable-driven labe... |
+| Pods restart in 30m | kube-state-metrics-v2 | grafana | changes() counts value transitions and has no ES\|QL equivalent |
+| Containers Restarts (Last 30 Minutes) | kube-state-metrics-v2 | grafana | changes() counts value transitions and has no ES\|QL equivalent |
 | Process Restart Times | NodeJS Application Dashboard | grafana | changes() counts value transitions and has no ES\|QL equivalent |
 | Compaction duration | Prometheus 2.0 (by FUSAKLA) | grafana | Aggregating over a per-element / between two time-series (sum(A / B)) cannot be expressed accurately... |
+| Messages ready to be delivered to consumers | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages pending consumer acknowledgement | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages published / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages routed to queues / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages confirmed to publishers / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Unroutable messages dropped & returned / s | RabbitMQ-Overview | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is... |
+| Messages redelivered / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages delivered with manual ack / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages delivered auto ack / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Messages acknowledged / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Polling operations with auto ack / s | RabbitMQ-Overview | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is... |
+| Polling operations that yield no result / s | RabbitMQ-Overview | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is... |
+| Polling operations with manual ack / s | RabbitMQ-Overview | grafana | Grafana panel has 1 field override(s); verify visual mappings manually; Grafana panel description is... |
+| Queues declared / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Queues created / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Queues deleted / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Channels opened / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Channels closed / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Connections opened / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
+| Connections closed / s | RabbitMQ-Overview | grafana | Grafana panel has 10 field override(s); verify visual mappings manually; Grafana panel description i... |
 | Memory Usage | Redis Dashboard for Prometheus Redis Exporter 1.x | grafana | Aggregating over a per-element * between two time-series (sum(A * B)) cannot be expressed accurately... |
+| Percent of 2xx Requests | Spring Boot Observability | grafana | PromQL arithmetic with divergent filters/groupings cannot be translated safely yet |
+| Percent of 5xx Requests | Spring Boot Observability | grafana | PromQL arithmetic with divergent filters/groupings cannot be translated safely yet |
+| PR 99 Requests Duration | Spring Boot Observability | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
+| PR 95 Requests Duration | Spring Boot Observability | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
+| Log Type Rate | Spring Boot Observability | grafana | Grafana panel has 3 field override(s); verify visual mappings manually; LogQL pipeline stages requir... |
+| Log of All Spring Boot Apps | Spring Boot Observability | grafana | LogQL pipeline stages require manual redesign |
 
 **Pattern analysis:**
 
-- **17×** PromQL 'or' between metrics that cannot be aligned in ES|QL
-- **12×** Grafana panel description is not carried into Kibana YAML au
-- **4×** Grafana panel has 1 link(s); verify drilldowns manually
-- **3×** PromQL '+' arithmetic where an operand contains a nested set
+- **23×** Grafana panel description is not carried into Kibana YAML au
+- **20×** Aggregating by 'rabbitmq_node' over a PromQL vector-matching
+- **16×** Grafana panel has 10 field override(s); verify visual mappin
+- **12×** histogram_quantile target field type could not be determined
+- **11×** Grafana panel has 1 field override(s); verify visual mapping
+- **4×** PromQL 'or' between metrics that cannot be aligned in ES|QL
+- **4×** Dropped variable-driven label filters during migration
+- **3×** Aggregating over a PromQL vector-matching join requires manu
+- **3×** PromQL arithmetic with divergent filters/groupings cannot be
+- **3×** changes() counts value transitions and has no ES|QL equivale
+- **2×** BY/WITHOUT clause contains Grafana template variable ($group
 - **2×** Aggregating over a per-element / between two time-series (mi
-- **2×** PromQL arithmetic with divergent filters/groupings cannot be
-- **2×** histogram_quantile target field type could not be determined
 - **2×** PromQL '/' arithmetic where an operand contains a nested set
+- **2×** LogQL pipeline stages require manual redesign
 - **1×** PromQL metric-name introspection via __name__ requires manua
-- **1×** changes() counts value transitions and has no ES|QL equivale
 - **1×** Aggregating over a per-element / between two time-series (su
 - **1×** Aggregating over a per-element * between two time-series (su
+- **1×** Grafana panel has 3 field override(s); verify visual mapping
 <!-- /GENERATED:NOT_FEASIBLE_BREAKDOWN -->
 
 ---
 
-*Last generated: 2026-07-09 10:11 UTC*
+*Last generated: 2026-07-13 06:19 UTC*

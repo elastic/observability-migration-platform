@@ -243,11 +243,12 @@ jobs:
             /tmp/cleanenv/bin/pip install "$(ls dist/*.whl)[grafana,datadog]"
           fi
 
-      - name: Grafana end-to-end (offline) produces NDJSON
+      - name: Grafana end-to-end (offline) produces native artifact and NDJSON
         run: |
           mkdir -p /tmp/gin && cp infra/grafana/dashboards/home.json /tmp/gin/
           /tmp/cleanenv/bin/grafana-migrate --source files --input-dir /tmp/gin \
-            --output-dir /tmp/gout --assets dashboards
+            --output-dir /tmp/gout --assets dashboards --compile
+          test -f "$(find /tmp/gout -path '*/native/*.native.json' | head -1)"
           test -f "$(find /tmp/gout -name compiled_dashboards.ndjson | head -1)"
 
       - name: Datadog end-to-end (offline) produces NDJSON

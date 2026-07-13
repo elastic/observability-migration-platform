@@ -90,6 +90,12 @@ derived from YAML as the long-term source of truth. Standalone
 `DashboardIR`. See `docs/command-contract.md` for the operator-facing
 contract (full YAML retirement remains out of scope).
 
+Treat YAML, `--compile`, `--legacy-import`, and `--compiled-dir` as
+compatibility surfaces. They remain supported for existing scripts and legacy
+review/import workflows, but new dashboard migration behavior should be
+specified in terms of `DashboardIR`, `NativeDashboard`, and the persisted
+`native/*.native.json` review artifact.
+
 ### Native Dashboard-as-Code review artifacts, not a compile step
 
 The pre-typed-API pipeline had a `--compile` step that turned YAML into

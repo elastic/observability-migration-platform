@@ -85,6 +85,7 @@ field profile setup
   -> translate_widget()
   -> generate_dashboard_artifacts() (assemble DashboardIR; derive native + YAML)
   -> optional emitted-query validation
+  -> persist native/IR review artifacts
   -> optional compile
   -> optional upload (typed API prefers native_dashboard from IR)
   -> optional post-upload smoke validation
@@ -104,8 +105,9 @@ field profile setup
 | Translate | `translate.py` | Translate metric, log, and formula queries according to the widget plan |
 | Emit | `generate.py` | Assemble `DashboardIR`, then derive native Dashboards API payload + YAML (controls included) |
 | Optional validate | `grafana/esql_validate.py`, `datadog/cli.py` | Validate emitted ES|QL with live Elasticsearch, auto-apply safe fixes, and regenerate artifacts via `generate_dashboard_artifacts` |
+| Native/IR review artifacts | `targets/kibana/native_artifacts.py` | Persist `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`, and `dashboards/native/index.json` after final IR/native regeneration so review artifacts match an immediate upload |
 | Optional compile | `targets/kibana/compile.py` | Compile generated YAML to NDJSON when `--compile` is requested |
-| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py` | Dedicated Datadog CLI prefers in-memory `native_dashboard` from IR; shared `obs-migrate upload --artifact-dir` prefers the persisted native review artifact when present, else maps YAML files |
+| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Dedicated Datadog CLI prefers in-memory `native_dashboard` from IR; shared `obs-migrate upload --artifact-dir` prefers the persisted native review artifact when present, rejects mixed native/YAML artifact roots, and falls back to YAML only when native artifacts are absent or YAML is selected |
 | Optional smoke | `targets/kibana/adapter.py`, `targets/kibana/smoke.py` | Inspect uploaded dashboards in Kibana, validate runnable panel ES|QL, and merge smoke/browser rollups back into results |
 | Verification | `verification.py`, `execution.py` | Build semantic gates, compare target execution with live Datadog metric evidence when configured, and persist `OperationalIR` snapshots |
 | Report / artifacts | `report.py`, `manifest.py`, `rollout.py` | Save `migration_report.json`, `migration_manifest.json`, `rollout_plan.json`, smoke/validation evidence, and per-dashboard/widget status details |
@@ -308,9 +310,10 @@ Use that doc for:
   always emits a deprecation warning; if the requested asset selection is
   `dashboards`, including explicit `--assets dashboards`, runtime normalization
   upgrades the run to `--assets all`.
-- Dashboard artifacts are written under `<output-dir>/dashboards`; alert
-  artifacts are written under `<output-dir>/alerts`; Datadog also writes a root
-  `run_summary.json`.
+- Dashboard artifacts are written under `<output-dir>/dashboards`, including
+  native review artifacts, IR review artifacts, YAML, reports, manifests, and
+  rollout evidence; alert artifacts are written under `<output-dir>/alerts`;
+  Datadog also writes a root `run_summary.json`.
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
 - `--env-file` loads Datadog API credentials for API extraction and live metric
   source execution during verification.
@@ -328,9 +331,9 @@ Use that doc for:
   dashboard extraction is skipped.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes
   `<output-dir>/alerts/monitor_rule_upload_results.json`.
-- `--compile` is opt-in on the dedicated `datadog-migrate` CLI; unified
-  `obs-migrate migrate --source datadog` compiles dashboard output by default
-  when the dashboard pipeline runs.
+- `--compile` is opt-in on both the dedicated `datadog-migrate` CLI and unified
+  `obs-migrate migrate --source datadog`; typed-API upload does not require the
+  compiled NDJSON artifact.
 - `obs-migrate extensions --source datadog --template-out ...` emits a
   validated starter field-profile template, and
   `examples/cue/datadog-field-profile.cue` remains the optional CUE authoring
@@ -344,7 +347,8 @@ The Datadog path is now organized around executable stages:
 2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked`.
 3. `preflight.py`: resolve mapped target fields and surface capability risks before translation.
 4. `translate.py`: run registry-backed metric, log, and Lens translation rules.
-5. `generate.py`: emit kb-dashboard YAML and hand off to report/compile steps.
+5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload
+   and kb-dashboard YAML, then hand off to review-artifact/report/compile steps.
 
 ### Formula Translation Specifics
 

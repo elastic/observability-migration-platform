@@ -239,6 +239,7 @@ field profile setup
   -> translate_widget()
   -> generate_dashboard_artifacts() (assemble DashboardIR; derive native + YAML)
   -> optional emitted-query validation (regenerate via generate_dashboard_artifacts)
+  -> persist native/IR review artifacts
   -> optional compile
   -> optional upload (typed API prefers native_dashboard from IR)
   -> optional smoke validation
@@ -280,6 +281,7 @@ The shared target runtime is centered on `targets/kibana/`:
 - `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate compile/upload` and the Datadog smoke path
 - `compile.py` wraps YAML lint, optional `kb-dashboard-cli` compile (pinned `uvx` fallback), compiled-layout validation, upload helpers, and post-validation IR rebuild / YAML sync
 - `dashboards_api.py` maps `DashboardIR` / YAML to the typed Dashboards API and is the default upload path
+- `native_artifacts.py` persists reviewed `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` artifacts for two-step review/upload workflows
 - `smoke.py` inspects uploaded saved objects, runs ES|QL runtime checks, and supports browser audits/screenshots
 
 Some runtime-validation behavior still lives in Grafana modules because it is
