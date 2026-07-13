@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +77,12 @@ _WARN_FAILURE_CLASSES = frozenset(
 )
 
 _MAX_SNAPSHOT_TEXT = 32 * 1024
+
+_URL_USERINFO_RE = re.compile(r"https?://[^\s/]+:[^\s/@]+@[^\s/]+", re.IGNORECASE)
+_SENSITIVE_LINE_ASSIGNMENT_RE = re.compile(
+    r"^(\s*(?:authorization|cookie|set-cookie|x-elastic-api-key|api_key)\s*[:=]\s*).+$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -308,6 +315,49 @@ def _bound_snapshot_text(observation: BrowserObservation) -> str:
     return text[:_MAX_SNAPSHOT_TEXT]
 
 
+def _redact_url_userinfo_in_text(text: str) -> str:
+    def _strip_userinfo(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        scheme_sep = raw.find("://")
+        if scheme_sep < 0:
+            return raw
+        scheme = raw[: scheme_sep + 3]
+        remainder = raw[scheme_sep + 3 :]
+        if "@" not in remainder:
+            return raw
+        _userinfo, _sep, hostpart = remainder.rpartition("@")
+        return f"{scheme}{hostpart}"
+
+    return _URL_USERINFO_RE.sub(_strip_userinfo, text)
+
+
+def _redact_sensitive_line_assignments(text: str) -> str:
+    redacted_lines: list[str] = []
+    for line in text.splitlines():
+        match = _SENSITIVE_LINE_ASSIGNMENT_RE.match(line)
+        if match is None:
+            redacted_lines.append(line)
+            continue
+        redacted_lines.append(f"{match.group(1)}[REDACTED]")
+    result = "\n".join(redacted_lines)
+    if text.endswith("\n"):
+        return result + "\n"
+    return result
+
+
+def _redact_artifact_text(text: str) -> str:
+    """Redact secrets from bounded text artifacts while preserving panel/query prose."""
+    cleaned = _redact_url_userinfo_in_text(str(text or ""))
+    return _redact_sensitive_line_assignments(cleaned)
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(_redact_artifact_text(text), encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def _network_payload(network: Sequence[NetworkEvidence]) -> list[dict[str, object]]:
     payload: list[dict[str, object]] = []
     for item in network:
@@ -336,6 +386,21 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         encoding="utf-8",
     )
     tmp_path.replace(path)
+
+
+def _result_payload(
+    result: InteractionResult,
+    artifact_flags: Mapping[str, bool],
+    cursor: CaptureCursor | None,
+) -> dict[str, object]:
+    return {
+        **result.to_dict(),
+        "artifact_flags": dict(artifact_flags),
+        "cursor": {
+            "network_index": cursor.network_index if cursor else 0,
+            "console_index": cursor.console_index if cursor else 0,
+        },
+    }
 
 
 def _selection_changes_from_baseline(
@@ -710,7 +775,7 @@ class InteractionRunner:
             )
         )
 
-        if merged.expect_data_change and _selection_changes_from_baseline(
+        if not settle_timed_out and merged.expect_data_change and _selection_changes_from_baseline(
             step.selections,
             discovered_by_key,
         ):
@@ -744,6 +809,8 @@ class InteractionRunner:
             preliminary=preliminary,
             findings=findings,
             capability=capability,
+            artifact_flags=artifact_flags,
+            cursor=cursor,
         )
 
     def _finalize_step(
@@ -772,6 +839,8 @@ class InteractionRunner:
             preliminary=preliminary,
             findings=list(preliminary.findings),
             capability=capability,
+            artifact_flags=artifact_flags,
+            cursor=None,
         )
 
     def _finalize_written_step(
@@ -781,25 +850,28 @@ class InteractionRunner:
         preliminary: InteractionResult,
         findings: list[InteractionFinding],
         capability: CapabilityCategory,
+        artifact_flags: Mapping[str, bool],
+        cursor: CaptureCursor | None,
     ) -> InteractionResult:
         clear_finding = _clear_evidence_best_effort(self._browser)
         if clear_finding is not None:
             findings.append(clear_finding)
         findings = _dedupe_findings(findings)
-        if findings == preliminary.findings and preliminary.status == _step_status(
-            findings,
-            capability,
-        ):
+        final_status = _step_status(findings, capability)
+        if findings == preliminary.findings and preliminary.status == final_status:
             return preliminary
         final = InteractionResult(
             name=preliminary.name,
-            status=_step_status(findings, capability),
+            status=final_status,
             capability=capability,
             findings=findings,
             network=preliminary.network,
             panels=preliminary.panels,
         )
-        _write_json_atomic(self._step_dir(step) / "result.json", final.to_dict())
+        _write_json_atomic(
+            self._step_dir(step) / "result.json",
+            _result_payload(final, artifact_flags, cursor),
+        )
         return final
 
     def _network_findings(
@@ -981,13 +1053,12 @@ class InteractionRunner:
                     ]
                 },
             )
-            snapshot_path = step_dir / "snapshot.txt"
-            snapshot_path.write_text(_bound_snapshot_text(observation), encoding="utf-8")
+            _write_text_atomic(step_dir / "snapshot.txt", _bound_snapshot_text(observation))
         else:
             _write_json_atomic(step_dir / "network.json", {"requests": []})
             _write_json_atomic(step_dir / "console.json", {"errors": []})
             _write_json_atomic(step_dir / "pending-requests.json", {"pending": []})
-            (step_dir / "snapshot.txt").write_text("", encoding="utf-8")
+            _write_text_atomic(step_dir / "snapshot.txt", "")
 
         _write_json_atomic(
             step_dir / "selection.json",
@@ -995,14 +1066,7 @@ class InteractionRunner:
         )
         _write_json_atomic(
             step_dir / "result.json",
-            {
-                **result.to_dict(),
-                "artifact_flags": dict(artifact_flags),
-                "cursor": {
-                    "network_index": cursor.network_index if cursor else 0,
-                    "console_index": cursor.console_index if cursor else 0,
-                },
-            },
+            _result_payload(result, artifact_flags, cursor),
         )
 
 

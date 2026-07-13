@@ -70,6 +70,8 @@ class FakeBrowser:
     controls: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     selected: dict[str, tuple[str, ...]] = field(default_factory=dict)
     panel_details: dict[str, str] = field(default_factory=dict)
+    accessibility_snapshot: str = ""
+    visible_text: str = ""
     network_by_step: list[tuple[NetworkEvidence, ...]] = field(default_factory=list)
     console_by_step: list[tuple[str, ...]] = field(default_factory=list)
     pending_after_step: bool = False
@@ -150,8 +152,8 @@ class FakeBrowser:
             console = self.console_by_step[self._capture_index]
         return BrowserObservation(
             url=self.opened_url,
-            accessibility_snapshot="a11y",
-            visible_text="visible",
+            accessibility_snapshot=self.accessibility_snapshot,
+            visible_text=self.visible_text,
             network=network,
             panels=panels,
             console_errors=console,
@@ -206,6 +208,7 @@ def _esql_network(
     columns: tuple[str, ...] = ("value",),
     row_count: int = 10,
 ) -> NetworkEvidence:
+    resolved_params = params or {"namespace": "ns_1"}
     return NetworkEvidence(
         endpoint="/internal/search/esql",
         method="POST",
@@ -213,8 +216,8 @@ def _esql_network(
         url=f"http://localhost:5601/internal/search/esql?panel={panel_id}",
         query=query,
         panel_id=panel_id,
-        params=params or {"namespace": "ns_1"},
-        param_kinds={"namespace": "value"},
+        params=resolved_params,
+        param_kinds={str(key): "value" for key in resolved_params},
         response_columns=columns,
         row_count=row_count,
     )
@@ -302,6 +305,21 @@ def _step_dir(tmp_path: Path, step_id: str) -> Path:
 
 def _scan_artifacts(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*") if path.is_file())
+
+
+def _assert_no_temp_artifacts(root: Path) -> None:
+    temp_files = [path for path in root.rglob("*") if path.name.startswith(".") and path.name.endswith(".tmp")]
+    assert temp_files == []
+
+
+def _load_cli_module(monkeypatch: pytest.MonkeyPatch, stub: Any) -> Any:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_interaction_audit.py"
+    spec = importlib.util.spec_from_file_location("run_interaction_audit", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "PlaywrightKibanaBrowser", lambda: stub)
+    return module
 
 
 def _assert_no_sensitive_text(path: Path) -> None:
@@ -675,6 +693,413 @@ def test_artifact_file_set_atomic_writes_and_no_response_rows(tmp_path: Path) ->
     assert expected.issubset({path.name for path in step_dir.iterdir()})
     serialized = (step_dir / "network.json").read_text(encoding="utf-8")
     assert "values" not in serialized
+    _assert_no_temp_artifacts(tmp_path)
+
+
+def test_snapshot_text_redaction_scans_all_text_artifacts(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        accessibility_snapshot="Authorization: ApiKey secret\nCookie: sid=secret",
+        visible_text="Visit https://user:secret@localhost:5601/app?namespace=prod",
+        panel_details={
+            "panel-a": "api_key=leaked and Set-Cookie: session=abc",
+        },
+        network_by_step=[(_esql_network("panel-a"),)],
+    )
+    _run(browser, _scenario(), tmp_path)
+    for path in _scan_artifacts(tmp_path):
+        if path.suffix in {".json", ".txt"}:
+            _assert_no_sensitive_text(path)
+    snapshot = (_step_dir(tmp_path, "namespace=ns_1") / "snapshot.txt").read_text(encoding="utf-8")
+    assert "Authorization: [REDACTED]" in snapshot
+    assert "https://localhost:5601" in snapshot
+    assert "namespace=prod" in snapshot
+    assert "ApiKey secret" not in snapshot
+    assert "sid=secret" not in snapshot
+
+
+def test_clear_evidence_failure_preserves_result_payload(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        network_by_step=[(_esql_network("panel-a"),)],
+        pending_after_step=True,
+    )
+    _run(browser, _scenario(), tmp_path)
+    result_path = _step_dir(tmp_path, "namespace=ns_1") / "result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["artifact_flags"]["before_screenshot"] is True
+    assert payload["artifact_flags"]["after_screenshot"] is True
+    assert payload["cursor"]["network_index"] == 1
+    assert any(
+        finding["failure_class"] == FailureClass.FRAMEWORK_ERROR.value
+        and "clear_evidence failed" in finding["detail"]
+        for finding in payload["findings"]
+    )
+
+
+def test_settle_timeout_skips_data_change_regression(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        selected={"namespace": ("ns_1",)},
+        panel_details={"panel-a": "unchanged after timeout"},
+        settle_timeout=True,
+        network_by_step=[(_esql_network("panel-a", params={"namespace": "ns_2"}),)],
+    )
+    report = _run(
+        browser,
+        _scenario(
+            controls=(
+                ControlScenario(
+                    label="namespace",
+                    key="namespace",
+                    adapter="esql_value",
+                    capability=CapabilityCategory.MIGRATED_LIVE,
+                    options=OptionPolicy(strategy="declared", include=("ns_2",)),
+                    assertions=Assertions(
+                        selection=("namespace",),
+                        affected_panels=("panel-a",),
+                        expect_data_change=True,
+                    ),
+                ),
+            )
+        ),
+        tmp_path,
+        PanelContract(all_query_panels=("panel-a",), by_control={"namespace": ("panel-a",)}),
+    )
+    result = report.results[0]
+    assert any(f.failure_class is FailureClass.SETTLE_TIMEOUT for f in result.findings)
+    assert not any(
+        f.failure_class is FailureClass.INTERACTION_REGRESSION and "fingerprints" in f.detail
+        for f in result.findings
+    )
+
+
+def test_conflicting_stable_alias_is_framework_error(tmp_path: Path) -> None:
+    left = ControlScenario(
+        label="left",
+        key="left",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("a",)),
+        assertions=Assertions(
+            affected_panels=("panel-a",),
+            stable_alias="alias_left",
+        ),
+    )
+    right = ControlScenario(
+        label="right",
+        key="right",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("b",)),
+        assertions=Assertions(
+            affected_panels=("panel-b",),
+            stable_alias="alias_right",
+        ),
+    )
+    browser = FakeBrowser(
+        controls={"left": ("a",), "right": ("b",)},
+        network_by_step=[
+            (_esql_network("panel-a"),),
+            (_esql_network("panel-b"),),
+            (
+                _esql_network("panel-a"),
+                _esql_network("panel-b"),
+            ),
+        ],
+    )
+    scenario = _scenario(
+        controls=(left, right),
+        combinations=(
+            CombinationScenario(
+                id="both",
+                selections=MappingProxyType({"left": "a", "right": "b"}),
+            ),
+        ),
+    )
+    report = _run(browser, scenario, tmp_path)
+    combo = next(result for result in report.results if result.name == "both")
+    assert any(
+        f.failure_class is FailureClass.FRAMEWORK_ERROR and "conflicting stable_alias" in f.detail
+        for f in combo.findings
+    )
+
+
+def test_compatible_stable_alias_is_allowed(tmp_path: Path) -> None:
+    control = ControlScenario(
+        label="namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("ns_1",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels=("panel-a",),
+            stable_alias="value",
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        network_by_step=[
+            (
+                NetworkEvidence(
+                    endpoint="/internal/search/esql",
+                    method="POST",
+                    status=200,
+                    url="http://localhost:5601/internal/search/esql",
+                    query="FROM metrics-* | WHERE service.environment == ?namespace",
+                    panel_id="panel-a",
+                    params={"namespace": "ns_1"},
+                    param_kinds={"namespace": "value"},
+                    response_columns=("value",),
+                    row_count=3,
+                ),
+            )
+        ],
+    )
+    report = _run(
+        browser,
+        _scenario(controls=(control,)),
+        tmp_path,
+        PanelContract(all_query_panels=("panel-a",), by_control={"namespace": ("panel-a",)}),
+    )
+    assert not any(
+        f.failure_class is FailureClass.FRAMEWORK_ERROR and "stable_alias" in f.detail
+        for f in report.results[0].findings
+    )
+
+
+def _identifier_network(
+    panel_id: str,
+    *,
+    query: str,
+    param_name: str,
+    identifier: str,
+) -> NetworkEvidence:
+    return NetworkEvidence(
+        endpoint="/internal/search/esql",
+        method="POST",
+        status=200,
+        url=f"http://localhost:5601/internal/search/esql?panel={panel_id}",
+        query=query,
+        panel_id=panel_id,
+        params={param_name: identifier},
+        param_kinds={param_name: "identifier"},
+        response_columns=("value",),
+        row_count=3,
+    )
+
+
+@pytest.mark.parametrize(
+    ("adapter", "param_name", "query", "selection"),
+    [
+        (
+            "esql_field",
+            "grouping",
+            "FROM metrics-* | STATS value=AVG(x) BY grouping=??grouping",
+            "host.name",
+        ),
+        (
+            "esql_function",
+            "aggregate",
+            "FROM metrics-* | STATS value=??aggregate(x)",
+            "AVG",
+        ),
+    ],
+)
+def test_identifier_adapters_use_expected_identifier_params(
+    tmp_path: Path,
+    adapter: str,
+    param_name: str,
+    query: str,
+    selection: str,
+) -> None:
+    control = ControlScenario(
+        label=param_name,
+        key=param_name,
+        adapter=adapter,
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=(selection,)),
+        assertions=Assertions(
+            selection=(param_name,),
+            affected_panels=("panel-a",),
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={param_name: (selection,)},
+        network_by_step=[(_identifier_network("panel-a", query=query, param_name=param_name, identifier=selection),)],
+    )
+    report = _run(
+        browser,
+        _scenario(controls=(control,)),
+        tmp_path,
+        PanelContract(all_query_panels=("panel-a",), by_control={param_name: ("panel-a",)}),
+    )
+    assert report.results[0].status is InteractionStatus.PASS
+
+
+def test_esql_value_and_interval_use_expected_value_params(tmp_path: Path) -> None:
+    value_control = ControlScenario(
+        label="environment",
+        key="environment",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("prod",)),
+        assertions=Assertions(
+            selection=("environment",),
+            affected_panels=("panel-a",),
+            query_contains=("?environment",),
+            expect_data_change=False,
+        ),
+    )
+    interval_control = ControlScenario(
+        label="interval",
+        key="interval",
+        adapter="esql_interval",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("5 minutes",)),
+        assertions=Assertions(
+            selection=("interval",),
+            affected_panels=("panel-b",),
+            query_contains=("?interval",),
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={"environment": ("prod",), "interval": ("5 minutes",)},
+        network_by_step=[
+            (
+                _esql_network(
+                    "panel-a",
+                    query="FROM metrics-* | WHERE environment == ?environment",
+                    params={"environment": "prod"},
+                ),
+                _esql_network(
+                    "panel-b",
+                    query="TS metrics-* | STATS value=AVG(x) BY bucket=TBUCKET(?interval)",
+                    params={"interval": "5 minutes"},
+                ),
+            ),
+            (
+                _esql_network(
+                    "panel-b",
+                    query="TS metrics-* | STATS value=AVG(x) BY bucket=TBUCKET(?interval)",
+                    params={"interval": "5 minutes"},
+                ),
+            ),
+        ],
+    )
+    contract = PanelContract(
+        all_query_panels=("panel-a", "panel-b"),
+        by_control={"environment": ("panel-a",), "interval": ("panel-b",)},
+    )
+    report = _run(browser, _scenario(controls=(value_control, interval_control)), tmp_path, contract)
+    assert all(result.status is InteractionStatus.PASS for result in report.results)
+
+
+def test_unaffected_panel_success_triggers_unexpected_panel_request(tmp_path: Path) -> None:
+    control = ControlScenario(
+        label="namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("ns_1",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels=("panel-a",),
+            unaffected_panels=("panel-b",),
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        network_by_step=[
+            (
+                _esql_network("panel-a", params={"namespace": "ns_1"}),
+                _esql_network("panel-b", params={"namespace": "ns_1"}),
+            )
+        ],
+    )
+    report = _run(
+        browser,
+        _scenario(controls=(control,)),
+        tmp_path,
+        PanelContract(all_query_panels=("panel-a", "panel-b"), by_control={"namespace": ("panel-a",)}),
+    )
+    assert any(
+        f.failure_class is FailureClass.UNEXPECTED_PANEL_REQUEST
+        for f in report.results[0].findings
+    )
+
+
+def test_selection_json_records_post_read_state(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        incompatible_warnings={"namespace": "Incompatible selections (2)"},
+        network_by_step=[(_esql_network("panel-a"),)],
+    )
+    _run(
+        browser,
+        _scenario(controls=(_namespace_control(allow_incompatible_selections=True),)),
+        tmp_path,
+    )
+    payload = json.loads((_step_dir(tmp_path, "namespace=ns_1") / "selection.json").read_text())
+    assert payload["selections"] == [
+        {
+            "control_key": "namespace",
+            "selected_value": "ns_1",
+            "selected_count": 1,
+            "incompatible_warning": "Incompatible selections (2)",
+        }
+    ]
+
+
+def test_cli_missing_and_invalid_manifest_return_two_without_browser_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _TrackingBrowser:
+        started = False
+
+        def start(self, **kwargs: Any) -> None:
+            self.started = True
+
+        def close(self) -> None:
+            return
+
+    stub = _TrackingBrowser()
+    module = _load_cli_module(monkeypatch, stub)
+
+    missing = module.main(
+        [
+            "--manifest",
+            str(tmp_path / "missing.yaml"),
+            "--dashboard-url",
+            "http://localhost:5601/app/dashboards#/view/test",
+        ]
+    )
+    assert missing == 2
+    assert stub.started is False
+    assert "ERROR:" in capsys.readouterr().err
+
+    invalid_manifest = tmp_path / "invalid.yaml"
+    invalid_manifest.write_text("version: 2\nunknown: true\n", encoding="utf-8")
+    invalid = module.main(
+        [
+            "--manifest",
+            str(invalid_manifest),
+            "--dashboard-url",
+            "http://localhost:5601/app/dashboards#/view/test",
+        ]
+    )
+    assert invalid == 2
+    assert stub.started is False
+    err = capsys.readouterr().err
+    assert "ERROR:" in err
+    assert "secret" not in err.lower()
 
 
 def test_recursive_redaction_scan_over_artifacts(tmp_path: Path) -> None:
@@ -859,12 +1284,7 @@ noise_allowances: []
             return
 
     stub = _StubBrowser()
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_interaction_audit.py"
-    spec = importlib.util.spec_from_file_location("run_interaction_audit", script_path)
-    assert spec and spec.loader
-    run_interaction_audit = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(run_interaction_audit)
-    monkeypatch.setattr(run_interaction_audit, "PlaywrightKibanaBrowser", lambda: stub)
+    run_interaction_audit = _load_cli_module(monkeypatch, stub)
 
     exit_code = run_interaction_audit.main(
         [

@@ -58,6 +58,7 @@ test-interactions: sync ## Run offline interaction-audit unit tests
 	  tests/test_interaction_audit.py \
 	  tests/test_interaction_scenarios.py \
 	  tests/test_interaction_driver.py \
+	  tests/test_interaction_runner.py \
 	  tests/test_interaction_canary.py
 
 interaction-audit-local: setup-browser ## Run live interaction scenarios on local Kibana
