@@ -490,7 +490,7 @@ def test_parse_esql_request_parses_value_identifier_and_multi_value_params():
         "params": [
             {"namespace": "prod"},
             {"tags": ["a", "b"]},
-            {"grouping": {"identifier": "host.name"}},
+            {"grouping": "host.name"},
         ],
     }
     evidence = parse_esql_request(
@@ -510,6 +510,119 @@ def test_parse_esql_request_parses_value_identifier_and_multi_value_params():
         "tags": "value",
         "grouping": "identifier",
     }
+
+
+def test_parse_esql_request_infers_identifier_kind_from_plain_string_wire_format():
+    body = {
+        "query": "FROM metrics-* | STATS value=MAX(up) BY grouping=??grouping",
+        "params": [{"grouping": "host.name"}],
+    }
+    evidence = parse_esql_request(
+        url="http://localhost:5601/internal/search/esql_async",
+        method="POST",
+        headers={},
+        body=body,
+    )
+    assert evidence is not None
+    assert evidence.params == {"grouping": "host.name"}
+    assert evidence.param_kinds == {"grouping": "identifier"}
+
+
+def test_parse_esql_request_infers_value_kind_from_plain_string_wire_format():
+    body = {
+        "query": "FROM metrics-* | WHERE namespace == ?namespace",
+        "params": [{"namespace": "prod"}],
+    }
+    evidence = parse_esql_request(
+        url="http://localhost:5601/internal/search/esql_async",
+        method="POST",
+        headers={},
+        body=body,
+    )
+    assert evidence is not None
+    assert evidence.params == {"namespace": "prod"}
+    assert evidence.param_kinds == {"namespace": "value"}
+
+
+def test_parse_esql_request_infers_function_identifier_from_query_token():
+    body = {
+        "query": "FROM metrics-* | STATS value=??aggregate(field)",
+        "params": [{"aggregate": "MAX"}],
+    }
+    evidence = parse_esql_request(
+        url="http://localhost:5601/internal/search/esql_async",
+        method="POST",
+        headers={},
+        body=body,
+    )
+    assert evidence is not None
+    assert evidence.params == {"aggregate": "MAX"}
+    assert evidence.param_kinds == {"aggregate": "identifier"}
+
+
+def test_parse_esql_request_rejects_dual_value_and_identifier_query_tokens():
+    with pytest.raises(EvidenceParseError, match="ambiguous dual query tokens"):
+        parse_esql_request(
+            url="http://localhost:5601/internal/search/esql_async",
+            method="POST",
+            headers={},
+            body={
+                "query": "FROM metrics-* | WHERE ?name == ??name",
+                "params": [{"name": "prod"}],
+            },
+        )
+
+
+def test_parse_esql_request_accepts_legacy_identifier_wrapper_when_compatible():
+    body = {
+        "query": "FROM metrics-* | STATS BY ??grouping",
+        "params": [{"grouping": {"identifier": "host.name"}}],
+    }
+    evidence = parse_esql_request(
+        url="http://localhost:5601/internal/search/esql_async",
+        method="POST",
+        headers={},
+        body=body,
+    )
+    assert evidence is not None
+    assert evidence.params == {"grouping": "host.name"}
+    assert evidence.param_kinds == {"grouping": "identifier"}
+
+
+def test_parse_esql_request_rejects_identifier_wrapper_with_value_query_token():
+    with pytest.raises(EvidenceParseError, match="identifier wrapper conflicts with value token"):
+        parse_esql_request(
+            url="http://localhost:5601/internal/search/esql_async",
+            method="POST",
+            headers={},
+            body={
+                "query": "FROM metrics-* | WHERE grouping == ?grouping",
+                "params": [{"grouping": {"identifier": "host.name"}}],
+            },
+        )
+
+
+def test_parse_esql_request_rejects_non_string_query_value():
+    with pytest.raises(EvidenceParseError, match="query must be a string"):
+        parse_esql_request(
+            url="http://localhost:5601/internal/search/esql_async",
+            method="POST",
+            headers={},
+            body={"query": {"invalid": True}, "params": []},
+        )
+
+
+def test_parse_esql_request_allows_missing_query_for_graceful_capture():
+    evidence = parse_esql_request(
+        url="http://localhost:5601/internal/search/esql_async",
+        method="POST",
+        headers={},
+        body={"params": [{"namespace": "prod"}]},
+    )
+    assert evidence is not None
+    assert evidence.query == ""
+    assert evidence.params == {"namespace": "prod"}
+    assert evidence.param_kinds == {"namespace": "value"}
 
 
 @pytest.mark.parametrize(
@@ -787,6 +900,75 @@ def test_check_network_contract_deduplicates_findings_deterministically():
     keys = [(finding.failure_class, finding.detail) for finding in findings]
     assert len(keys) == len(set(keys))
     assert len(findings) > 1
+
+
+def test_check_network_contract_ignores_stale_wrong_success_when_later_attempt_matches():
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[
+            _successful_evidence(
+                params={"namespace": "staging"},
+                param_kinds={"namespace": "value", "grouping": "identifier"},
+            ),
+            _successful_evidence(),
+        ],
+        expected_value_params={"namespace": "prod"},
+        expected_identifier_params={"grouping": "host.name"},
+    )
+    assert findings == []
+
+
+def test_check_network_contract_reports_latest_success_when_all_attempts_fail_contract():
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[
+            _successful_evidence(
+                query="FROM metrics-*",
+                params={"namespace": "first"},
+                param_kinds={"namespace": "value", "grouping": "value"},
+            ),
+            _successful_evidence(
+                query="FROM metrics-*",
+                params={"namespace": "latest"},
+                param_kinds={"namespace": "value", "grouping": "value"},
+            ),
+        ],
+        expected_value_params={"namespace": "prod"},
+    )
+    assert findings == [
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: param namespace expected value 'prod'",
+        ),
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: query missing value token ?namespace",
+        ),
+    ]
+
+
+def test_check_network_contract_framework_error_for_uncorrelated_successful_evidence():
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[_successful_evidence(panel_id="", status=200)],
+    )
+    assert findings == [
+        InteractionFinding(
+            FailureClass.FRAMEWORK_ERROR,
+            "ES|QL response could not be correlated to a panel",
+        ),
+        InteractionFinding(
+            FailureClass.EXPECTED_REQUEST_MISSING,
+            "panel panel-7: expected ES|QL request missing",
+        ),
+    ]
+    for finding in findings:
+        assert "Authorization" not in finding.detail
+        assert "headers" not in finding.detail
+        assert "body" not in finding.detail
 
 
 def test_check_network_contract_pending_status_does_not_count_as_success():

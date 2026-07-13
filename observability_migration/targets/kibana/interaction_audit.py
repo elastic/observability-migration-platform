@@ -138,9 +138,40 @@ def _parse_kbn_context(raw: str) -> tuple[str, str]:
     return panel_id, panel_title
 
 
+def _param_token_sets(query: str) -> tuple[set[str], set[str]]:
+    value_names = set(_VALUE_PARAM_TOKEN.findall(query))
+    identifier_names = set(_IDENTIFIER_PARAM_TOKEN.findall(query))
+    dual = value_names & identifier_names
+    if dual:
+        names = ", ".join(sorted(dual))
+        raise EvidenceParseError(f"ambiguous dual query tokens for param(s): {names}")
+    return value_names, identifier_names
+
+
+def _kind_for_param_name(
+    name: str,
+    *,
+    value_names: set[str],
+    identifier_names: set[str],
+) -> str:
+    if name in identifier_names:
+        return "identifier"
+    if name in value_names:
+        return "value"
+    return "value"
+
+
 def _merge_named_params(
     raw: object,
+    query: str,
 ) -> tuple[dict[str, object], dict[str, str]]:
+    """Merge wire-format params; infer identifier vs value kinds from query tokens.
+
+    Live Kibana sends plain values such as ``[{"grouping": "host.name"}]``; the
+    ``??grouping`` token marks identifier semantics. The legacy ``{"identifier": ...}``
+    wrapper remains accepted when it does not conflict with a value token.
+    """
+    value_names, identifier_names = _param_token_sets(query)
     if raw is None:
         return {}, {}
     entries: list[tuple[str, object]]
@@ -171,6 +202,10 @@ def _merge_named_params(
             identifier = value.get("identifier")
             if not isinstance(identifier, str) or not identifier:
                 raise EvidenceParseError(f"identifier param must be a non-empty string: {name}")
+            if name in value_names:
+                raise EvidenceParseError(
+                    f"identifier wrapper conflicts with value token ?{name} for param: {name}"
+                )
             params[name] = identifier
             param_kinds[name] = "identifier"
             continue
@@ -178,11 +213,19 @@ def _merge_named_params(
             if any(isinstance(item, bool) for item in value):
                 raise EvidenceParseError(f"boolean list values are not supported: {name}")
             params[name] = list(value)
-            param_kinds[name] = "value"
+            param_kinds[name] = _kind_for_param_name(
+                name,
+                value_names=value_names,
+                identifier_names=identifier_names,
+            )
             continue
         if value is None or isinstance(value, (str, int, float)):
             params[name] = value
-            param_kinds[name] = "value"
+            param_kinds[name] = _kind_for_param_name(
+                name,
+                value_names=value_names,
+                identifier_names=identifier_names,
+            )
             continue
         raise EvidenceParseError(f"unsupported param value type for: {name}")
 
@@ -213,11 +256,18 @@ def parse_esql_request(
     params: dict[str, object] = {}
     param_kinds: dict[str, str] = {}
     if body is not None:
-        raw_query = body.get("query")
-        if isinstance(raw_query, str):
-            query = raw_query
+        if "query" in body:
+            raw_query = body.get("query")
+            if raw_query is None:
+                query = ""
+            elif isinstance(raw_query, str):
+                query = raw_query
+            else:
+                raise EvidenceParseError("query must be a string")
+        if query:
+            _param_token_sets(query)
         if "params" in body:
-            params, param_kinds = _merge_named_params(body.get("params"))
+            params, param_kinds = _merge_named_params(body.get("params"), query)
 
     return NetworkEvidence(
         endpoint=path,
@@ -260,6 +310,114 @@ def _append_finding(
     findings.append(InteractionFinding(failure_class, detail))
 
 
+def _contract_violations_for_evidence(
+    item: NetworkEvidence,
+    panel_label: str,
+    *,
+    query_contains: Sequence[str],
+    query_not_contains: Sequence[str],
+    value_params: Mapping[str, object],
+    identifier_params: Mapping[str, str],
+    required_columns: Sequence[str],
+    stable_alias: str,
+    minimum_rows: int,
+) -> list[InteractionFinding]:
+    violations: list[InteractionFinding] = []
+    for fragment in query_contains:
+        if fragment not in item.query:
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: expected query fragment {fragment!r} not found",
+                )
+            )
+    for fragment in query_not_contains:
+        if fragment in item.query:
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: forbidden query fragment {fragment!r} found",
+                )
+            )
+
+    for name, expected_value in value_params.items():
+        actual_value = item.params.get(name)
+        actual_kind = item.param_kinds.get(name)
+        if actual_kind != "value" or actual_value != expected_value:
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: param {name} expected value {expected_value!r}",
+                )
+            )
+        if not _query_has_value_token(item.query, name):
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: query missing value token ?{name}",
+                )
+            )
+        if _query_has_identifier_token(item.query, name):
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: param {name} bound as identifier token ??{name}",
+                )
+            )
+
+    for name, expected_identifier in identifier_params.items():
+        actual_value = item.params.get(name)
+        actual_kind = item.param_kinds.get(name)
+        if actual_kind != "identifier" or actual_value != expected_identifier:
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: param {name} expected identifier {expected_identifier!r}",
+                )
+            )
+        if not _query_has_identifier_token(item.query, name):
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: query missing identifier token ??{name}",
+                )
+            )
+        if _query_has_value_token(item.query, name):
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: param {name} bound as value token ?{name}",
+                )
+            )
+
+    for column in required_columns:
+        if column not in item.response_columns:
+            violations.append(
+                InteractionFinding(
+                    FailureClass.QUERY_CONTRACT_ERROR,
+                    f"panel {panel_label}: missing response column {column!r}",
+                )
+            )
+
+    if stable_alias and stable_alias not in item.response_columns:
+        violations.append(
+            InteractionFinding(
+                FailureClass.QUERY_CONTRACT_ERROR,
+                f"panel {panel_label}: missing stable alias column {stable_alias!r}",
+            )
+        )
+
+    if minimum_rows > 0 and item.row_count < minimum_rows:
+        violations.append(
+            InteractionFinding(
+                FailureClass.QUERY_CONTRACT_ERROR,
+                f"panel {panel_label}: row_count {item.row_count} below minimum {minimum_rows}",
+            )
+        )
+
+    return violations
+
+
 def check_network_contract(
     *,
     expected_panel_ids: Collection[str],
@@ -283,6 +441,13 @@ def check_network_contract(
     successful_by_panel: dict[str, list[NetworkEvidence]] = {panel_id: [] for panel_id in expected}
     for item in evidence:
         if _is_successful_status(item.status):
+            if not item.panel_id:
+                _append_finding(
+                    findings,
+                    seen,
+                    FailureClass.FRAMEWORK_ERROR,
+                    "ES|QL response could not be correlated to a panel",
+                )
             if item.panel_id in unaffected:
                 _append_finding(
                     findings,
@@ -327,99 +492,40 @@ def check_network_contract(
             )
             continue
 
+        matched = False
         for item in panel_successes:
             panel_label = item.panel_id or panel_id
-            for fragment in query_contains:
-                if fragment not in item.query:
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: expected query fragment {fragment!r} not found",
-                    )
-            for fragment in query_not_contains:
-                if fragment in item.query:
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: forbidden query fragment {fragment!r} found",
-                    )
+            if not _contract_violations_for_evidence(
+                item,
+                panel_label,
+                query_contains=query_contains,
+                query_not_contains=query_not_contains,
+                value_params=value_params,
+                identifier_params=identifier_params,
+                required_columns=required_columns,
+                stable_alias=stable_alias,
+                minimum_rows=minimum_rows,
+            ):
+                matched = True
+                break
 
-            for name, expected_value in value_params.items():
-                actual_value = item.params.get(name)
-                actual_kind = item.param_kinds.get(name)
-                if actual_kind != "value" or actual_value != expected_value:
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: param {name} expected value {expected_value!r}",
-                    )
-                if not _query_has_value_token(item.query, name):
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: query missing value token ?{name}",
-                    )
-                if _query_has_identifier_token(item.query, name):
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: param {name} bound as identifier token ??{name}",
-                    )
+        if matched:
+            continue
 
-            for name, expected_identifier in identifier_params.items():
-                actual_value = item.params.get(name)
-                actual_kind = item.param_kinds.get(name)
-                if actual_kind != "identifier" or actual_value != expected_identifier:
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: param {name} expected identifier {expected_identifier!r}",
-                    )
-                if not _query_has_identifier_token(item.query, name):
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: query missing identifier token ??{name}",
-                    )
-                if _query_has_value_token(item.query, name):
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: param {name} bound as value token ?{name}",
-                    )
-
-            for column in required_columns:
-                if column not in item.response_columns:
-                    _append_finding(
-                        findings,
-                        seen,
-                        FailureClass.QUERY_CONTRACT_ERROR,
-                        f"panel {panel_label}: missing response column {column!r}",
-                    )
-
-            if stable_alias and stable_alias not in item.response_columns:
-                _append_finding(
-                    findings,
-                    seen,
-                    FailureClass.QUERY_CONTRACT_ERROR,
-                    f"panel {panel_label}: missing stable alias column {stable_alias!r}",
-                )
-
-            if minimum_rows > 0 and item.row_count < minimum_rows:
-                _append_finding(
-                    findings,
-                    seen,
-                    FailureClass.QUERY_CONTRACT_ERROR,
-                    f"panel {panel_label}: row_count {item.row_count} below minimum {minimum_rows}",
-                )
+        latest = panel_successes[-1]
+        panel_label = latest.panel_id or panel_id
+        for violation in _contract_violations_for_evidence(
+            latest,
+            panel_label,
+            query_contains=query_contains,
+            query_not_contains=query_not_contains,
+            value_params=value_params,
+            identifier_params=identifier_params,
+            required_columns=required_columns,
+            stable_alias=stable_alias,
+            minimum_rows=minimum_rows,
+        ):
+            _append_finding(findings, seen, violation.failure_class, violation.detail)
 
     return findings
 
