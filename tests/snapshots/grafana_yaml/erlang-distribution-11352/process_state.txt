@@ -1,0 +1,10 @@
+title: Process state
+grafana_type: status-history
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['erlang_vm_dist_proc_status']
+breakdown: legend
+warning: Dropped variable-driven label filters during migration
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Grafana status-history panel approximated as a Kibana line chart: the underlying time series is preserved, but Kibana has no periodic discrete-state (status cell) visualization so values render as a line

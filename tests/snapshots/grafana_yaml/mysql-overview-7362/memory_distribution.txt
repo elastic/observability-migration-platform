@@ -1,0 +1,9 @@
+title: Memory Distribution
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['Used', 'Free', 'Buffers', 'Cached']
+breakdown: instance
+mode: stacked
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math

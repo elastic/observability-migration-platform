@@ -1,0 +1,8 @@
+title: Transactions
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['commits', 'rollbacks']
+breakdown: datname
+warning: Dropped variable-driven label filters during migration

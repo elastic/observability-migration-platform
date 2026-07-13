@@ -1,0 +1,9 @@
+title: Number of requests
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['produce', 'fetch_consumer', 'fetch_follower']
+breakdown: instance
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Fused multi-target panel from independently translated ES|QL queries

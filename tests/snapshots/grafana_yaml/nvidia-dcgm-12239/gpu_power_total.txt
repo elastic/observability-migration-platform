@@ -1,0 +1,6 @@
+title: GPU Power Total
+grafana_type: gauge
+status: migrated
+chart_type: gauge
+metric: DCGM_FI_DEV_POWER_USAGE
+gauge_shape: arc

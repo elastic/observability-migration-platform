@@ -1,0 +1,8 @@
+title: All number of requests
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['kafka_network_requestmetrics_requestspersec_count']
+breakdown: request
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

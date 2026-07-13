@@ -54,6 +54,11 @@ from observability_migration.core.verification.disposition import (
 )
 from observability_migration.targets.kibana.compile import validate_compiled_layout
 from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
+from observability_migration.targets.kibana.native_artifacts import (
+    write_ir_artifact,
+    write_native_artifact,
+    write_native_artifact_index,
+)
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
 from .extract import (
@@ -209,12 +214,27 @@ def main(argv: list[str] | None = None) -> None:
     )
 
 
-def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+def _clear_dashboard_artifacts(
+    yaml_dir: Path,
+    compiled_dir: Path,
+    *,
+    native_dir: Path | None = None,
+    ir_dir: Path | None = None,
+) -> int:
     removed = 0
     if yaml_dir.exists():
         for yaml_file in yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+    for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
+        if artifact_dir is not None and artifact_dir.exists():
+            for artifact_file in artifact_dir.glob(pattern):
+                artifact_file.unlink()
+                removed += 1
+            index_file = artifact_dir / "index.json"
+            if index_file.exists():
+                index_file.unlink()
+                removed += 1
     if compiled_dir.exists():
         for child in compiled_dir.iterdir():
             if child.is_dir():
@@ -264,8 +284,12 @@ def _run_dashboard_pipeline(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     yaml_dir = output_dir / "yaml"
+    native_dir = output_dir / "native"
+    ir_dir = output_dir / "ir"
     yaml_dir.mkdir(parents=True, exist_ok=True)
-    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, output_dir / "compiled")
+    removed_stale_artifacts = _clear_dashboard_artifacts(
+        yaml_dir, output_dir / "compiled", native_dir=native_dir, ir_dir=ir_dir,
+    )
     if removed_stale_artifacts:
         print(f"  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {output_dir}")
 
@@ -303,7 +327,7 @@ def _run_dashboard_pipeline(
                     panel_results.append(_translate_widget(child, field_map, args))
 
         dashboard_result.panel_results = panel_results
-        dashboard_yaml, native_dashboard, native_stats = generate_dashboard_artifacts(
+        dashboard_yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             panel_results,
             data_view=field_map.metric_index,
@@ -312,6 +336,7 @@ def _run_dashboard_pipeline(
             logs_index=field_map.logs_index,
             field_map=field_map,
         )
+        dashboard_result.dashboard_ir = dashboard_ir
         dashboard_result.native_dashboard = native_dashboard
         dashboard_result.native_dashboard_stats = native_stats
 
@@ -341,6 +366,39 @@ def _run_dashboard_pipeline(
         )
     elif args.validate:
         print("  Validation: skipped (pass --es-url to enable)")
+
+    print("  Writing native Dashboard-as-Code review artifacts...")
+    native_index_entries: list[dict[str, Any]] = []
+    for dashboard_result, _dashboard in dashboard_outputs:
+        if (
+            not dashboard_result.yaml_path
+            or dashboard_result.dashboard_ir is None
+            or dashboard_result.native_dashboard is None
+        ):
+            continue
+        stem = Path(dashboard_result.yaml_path).stem
+        native_path = write_native_artifact(
+            dashboard_ir=dashboard_result.dashboard_ir,
+            native_dashboard=dashboard_result.native_dashboard,
+            native_stats=dashboard_result.native_dashboard_stats,
+            native_dir=native_dir,
+            stem=stem,
+        )
+        ir_path = write_ir_artifact(dashboard_ir=dashboard_result.dashboard_ir, ir_dir=ir_dir, stem=stem)
+        dashboard_result.native_artifact_path = str(native_path)
+        dashboard_result.ir_artifact_path = str(ir_path)
+        native_index_entries.append(
+            {
+                "stem": stem,
+                "title": dashboard_result.dashboard_title,
+                "dashboard_id": dashboard_result.native_dashboard.dashboard_id,
+                "native_path": str(native_path.relative_to(output_dir)),
+                "ir_path": str(ir_path.relative_to(output_dir)),
+            }
+        )
+    if native_index_entries:
+        write_native_artifact_index(native_dir, native_index_entries)
+    print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
 
     if compile_requested:
         _compile_all_dashboards(all_results, output_dir, target_adapter)
@@ -843,7 +901,7 @@ def _rewrite_dashboard_yaml(
 ) -> None:
     if not result.yaml_path:
         return
-    yaml_str, native_dashboard, native_stats = generate_dashboard_artifacts(
+    yaml_str, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         result.panel_results,
         data_view=field_map.metric_index,
@@ -853,6 +911,7 @@ def _rewrite_dashboard_yaml(
         field_map=field_map,
     )
     Path(result.yaml_path).write_text(yaml_str, encoding="utf-8")
+    result.dashboard_ir = dashboard_ir
     result.native_dashboard = native_dashboard
     result.native_dashboard_stats = native_stats
 

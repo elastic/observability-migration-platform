@@ -1,0 +1,3 @@
+control: type=options field=cluster multiple=False
+control: type=options field=node multiple=False
+control: type=options field=namespace multiple=False

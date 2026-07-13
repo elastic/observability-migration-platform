@@ -65,6 +65,15 @@ _UPLOAD_SHAPE_HELP = (
     "'migration_output/dashboards/compiled')."
 )
 
+_UPLOAD_ARTIFACT_DIR_HELP = (
+    "Canonical upload input: the dashboard artifact directory written by "
+    "'obs-migrate migrate' (for example 'migration_output/dashboards'), or "
+    "directly its 'native/' or 'yaml/' child. Combine with --artifact-format "
+    "to pick a representation; the default 'auto' prefers reviewed native "
+    "Dashboard-as-Code artifacts ('native/*.native.json') when present, else "
+    f"falls back to YAML. {_UPLOAD_SHAPE_HELP}"
+)
+
 
 def _env_truthy_default(name: str) -> bool:
     """Default for a store_true flag backed by an environment variable."""
@@ -266,18 +275,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     upload_cmd = sub.add_parser(
         "upload",
-        help="Deploy dashboard YAML to Kibana via the typed Dashboards API",
+        help="Deploy a dashboard artifact directory to Kibana via the typed Dashboards API",
         description=(
-            "Deploy dashboard YAML to Kibana via the typed Dashboards API "
-            "(POST /api/dashboards) by default, with per-dashboard fallback to the "
-            "legacy kb-dashboard-cli saved-objects import. Pass --legacy-import to "
-            f"force the legacy compile+import path. {_UPLOAD_SHAPE_HELP}"
+            "Deploy a dashboard artifact directory to Kibana via the typed Kibana "
+            "Dashboards API (PUT /api/dashboards/{id}) by default, with "
+            "per-dashboard fallback to the legacy kb-dashboard-cli saved-objects "
+            "import. Pass --legacy-import to force the legacy compile+import path. "
+            f"{_UPLOAD_SHAPE_HELP}"
         ),
     )
     upload_group = upload_cmd.add_mutually_exclusive_group(required=True)
     upload_group.add_argument(
+        "--artifact-dir",
+        help=_UPLOAD_ARTIFACT_DIR_HELP,
+    )
+    upload_group.add_argument(
         "--yaml-dir",
-        help="Path to a dashboard YAML directory input for compile+upload. "
+        help="[Compatibility alias for --artifact-dir --artifact-format yaml] "
+             "Path to a dashboard YAML directory input for compile+upload. "
              f"{_UPLOAD_SHAPE_HELP}",
     )
     upload_group.add_argument(
@@ -288,6 +303,20 @@ def _build_parser() -> argparse.ArgumentParser:
              "this upload step recompiles YAML from the matching 'yaml/' directory; "
              "it does not consume pre-compiled NDJSON.",
     )
+    upload_cmd.add_argument(
+        "--artifact-format",
+        choices=["auto", "native", "yaml"],
+        default="auto",
+        help=(
+            "Representation to upload from --artifact-dir. 'auto' (default) "
+            "prefers reviewed native Dashboard-as-Code artifacts when present, "
+            "else falls back to YAML; 'native' uploads the reviewed typed API "
+            "payload exactly, with no YAML re-mapping and no legacy fallback; "
+            "'yaml' forces the existing YAML-to-native mapping path. Ignored "
+            "(forced to 'yaml') when --yaml-dir/--compiled-dir or "
+            "--legacy-import is used."
+        ),
+    )
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
@@ -297,7 +326,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Force the legacy kb-dashboard-cli saved-objects import instead of the "
-            "default typed Kibana Dashboards API (POST /api/dashboards)."
+            "default typed Kibana Dashboards API (POST /api/dashboards). Requires "
+            "YAML artifacts (--artifact-format is forced to 'yaml')."
         ),
     )
     upload_cmd.add_argument(
@@ -872,6 +902,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--logs-index", args.logs_index])
     if args.validate:
         legacy_argv.append("--validate")
+    if getattr(args, "compile", False):
+        legacy_argv.append("--compile")
     if args.upload:
         legacy_argv.append("--upload")
     if getattr(args, "legacy_import", False):
@@ -1071,17 +1103,52 @@ def _run_compile(args: Any) -> None:
         sys.exit(1)
 
 
-def _run_upload(args: Any) -> None:
-    """Deploy YAML dashboards to Kibana via the typed Dashboards API by default."""
-    raw_path = getattr(args, "yaml_dir", None) or getattr(args, "compiled_dir", None) or ""
-    if getattr(args, "compiled_dir", None) and not getattr(args, "yaml_dir", None):
+def _resolve_upload_input(args: Any) -> tuple[Path, str]:
+    """Resolve the effective ``(artifact_dir, artifact_format)`` for upload.
+
+    ``--artifact-dir`` is the canonical input; ``--yaml-dir``/``--compiled-dir``
+    are compatibility aliases that pin the format to ``"yaml"`` so existing
+    scripts keep their exact prior behavior (see docs/command-contract.md).
+    """
+    artifact_dir_raw = getattr(args, "artifact_dir", None)
+    yaml_dir_raw = getattr(args, "yaml_dir", None)
+    compiled_dir_raw = getattr(args, "compiled_dir", None)
+    artifact_format = str(getattr(args, "artifact_format", "") or "auto")
+
+    if artifact_dir_raw:
+        return Path(artifact_dir_raw), artifact_format
+    if compiled_dir_raw and not yaml_dir_raw:
         print(
             "  NOTE: --compiled-dir is a deprecated alias for --yaml-dir. "
-            "Upload recompiles YAML internally; prefer --yaml-dir in new scripts.",
+            "Upload recompiles YAML internally; prefer --yaml-dir or "
+            "--artifact-dir in new scripts.",
             file=sys.stderr,
         )
-    input_dir = Path(raw_path)
-    if not input_dir.is_dir():
+        return Path(compiled_dir_raw), "yaml"
+    if yaml_dir_raw:
+        return Path(yaml_dir_raw), "yaml"
+    return Path(""), artifact_format
+
+
+def _run_upload(args: Any) -> None:
+    """Deploy a dashboard artifact directory to Kibana via the typed Dashboards API by default."""
+    input_dir, artifact_format = _resolve_upload_input(args)
+    legacy_import = bool(getattr(args, "legacy_import", False))
+    if legacy_import:
+        # The legacy importer compiles saved objects from YAML, so it has no
+        # native-payload equivalent; forcing yaml here keeps
+        # --artifact-format meaningless-but-harmless when combined with
+        # --legacy-import instead of silently ignoring an explicit 'native'.
+        if artifact_format == "native":
+            print(
+                "  ERROR: --legacy-import requires YAML artifacts (it compiles "
+                "through kb-dashboard-cli) but --artifact-format native was "
+                "requested. Pass --artifact-format yaml (or --yaml-dir) instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        artifact_format = "yaml"
+    if not input_dir or not input_dir.is_dir():
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
@@ -1093,13 +1160,38 @@ def _run_upload(args: Any) -> None:
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
         verify=verify,
-        use_dashboards_api=not getattr(args, "legacy_import", False),
+        use_dashboards_api=not legacy_import,
+        artifact_format=artifact_format,
     )
+    if upload_payload["summary"].get("error") == "no_native_artifacts_found":
+        print(
+            f"No native Dashboard-as-Code artifacts (native/*.native.json) found "
+            f"under {input_dir}. Pass --artifact-format auto or yaml to fall back "
+            "to YAML, or point --artifact-dir at a directory containing 'native/'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if upload_payload["summary"].get("error") == "mixed_native_yaml_artifacts":
+        missing = upload_payload["summary"].get("missing_native_artifacts") or []
+        extra = upload_payload["summary"].get("extra_native_artifacts") or []
+        detail = ""
+        if missing:
+            detail = f" Missing native artifacts for: {', '.join(str(item) for item in missing[:5])}."
+        elif extra:
+            detail = f" Native artifacts without YAML siblings: {', '.join(str(item) for item in extra[:5])}."
+        print(
+            "Native Dashboard-as-Code artifacts and YAML artifacts do not match under "
+            f"{input_dir}; refusing an auto upload that would skip dashboards.{detail} "
+            "Regenerate the migration output, pass --artifact-format yaml, or point "
+            "--artifact-dir directly at the native/ directory.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not upload_payload["records"]:
         print(
             f"No dashboard YAML files found under {input_dir}. "
-            "Point --yaml-dir at a directory of .yaml files, a dashboard "
-            "artifact dir containing 'yaml/' (e.g. "
+            "Point --yaml-dir (or --artifact-dir) at a directory of .yaml files, "
+            "a dashboard artifact dir containing 'yaml/' (e.g. "
             "'migration_output/dashboards' or "
             "'migration_output/dashboards/yaml'), or that dir's sibling "
             "'compiled/' directory (e.g. "

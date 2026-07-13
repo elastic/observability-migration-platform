@@ -1,0 +1,11 @@
+title: Primary: App CPU Usage (Avg all PODs, excludes Istio proxy)
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: k8s.cluster.name
+axis_title: CPU Usage (Percent)
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Dropped variable-driven label filters during migration
+warning: Panel has 2 PromQL targets but only 1 could be migrated

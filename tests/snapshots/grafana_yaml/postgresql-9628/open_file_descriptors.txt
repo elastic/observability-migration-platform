@@ -1,0 +1,9 @@
+title: Open File Descriptors
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['process_open_fds']
+breakdown: series_group
+warning: Dropped variable-driven label filters during migration
+warning: Composited multi-label grouping (release, instance) into a single XY breakdown column

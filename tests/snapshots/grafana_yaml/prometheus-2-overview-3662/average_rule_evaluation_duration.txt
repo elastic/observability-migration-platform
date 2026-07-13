@@ -1,0 +1,10 @@
+title: Average Rule Evaluation Duration
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: instance
+axis_title: Milliseconds
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Dropped variable-driven label filters during migration

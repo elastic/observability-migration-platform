@@ -1,7 +1,9 @@
 title: Network Saturation - Packets dropped
 grafana_type: timeseries
-status: migrated
+status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
-metrics: ['Linux_Packets_dropped_receive', 'Linux_Packets_dropped_transmit', 'Windows_Packets_dropped_receive', 'Windows_Packets_dropped_transmit']
+metrics: ['Packets_dropped_receive', 'Packets_dropped_transmit']
 axis_title: DROPPED PACKETS
+warning: Applied Grafana transformation 'calculateField' as ES|QL rewrite
+warning: Applied Grafana transformation 'organize' as ES|QL rewrite

@@ -1,0 +1,5 @@
+title: Nodes Unavailable
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kube_node_spec_unschedulable

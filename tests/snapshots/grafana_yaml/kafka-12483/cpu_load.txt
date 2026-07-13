@@ -1,0 +1,8 @@
+title: CPU load
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['system', 'process']
+breakdown: instance
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math

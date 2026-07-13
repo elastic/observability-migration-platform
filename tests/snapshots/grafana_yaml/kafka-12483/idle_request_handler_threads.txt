@@ -1,0 +1,6 @@
+title: Idle request handler threads
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['kafka_server_kafkarequesthandlerpool_total_requesthandleravgidlepercent_oneminuterate']

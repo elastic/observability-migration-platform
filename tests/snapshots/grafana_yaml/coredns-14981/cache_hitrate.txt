@@ -1,0 +1,8 @@
+title: Cache (hitrate)
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['hits_success', 'hits_denial', 'misses', 'hits_DNSSEC', 'misses_DNSSEC']
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

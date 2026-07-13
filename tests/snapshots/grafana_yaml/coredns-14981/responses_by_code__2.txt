@@ -1,0 +1,6 @@
+title: Responses (by code)
+grafana_type: piechart
+status: migrated
+chart_type: pie
+metrics: ['coredns_forward_responses_total']
+breakdowns: ['rcode']

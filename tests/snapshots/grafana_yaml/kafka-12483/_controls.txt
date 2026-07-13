@@ -1,0 +1,2 @@
+control: type=options field=namespace multiple=False
+control: type=options field=instance multiple=False

@@ -1,0 +1,10 @@
+title: CPU Usage / Load
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['node_load1']
+breakdown: instance
+mode: stacked
+axis_extent: custom [0.0, 100.0]
+warning: Panel has 2 PromQL targets but only 1 could be migrated

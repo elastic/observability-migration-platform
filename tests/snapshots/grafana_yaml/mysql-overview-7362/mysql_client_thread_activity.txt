@@ -1,0 +1,10 @@
+title: MySQL Client Thread Activity
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Peak_Threads_Connected', 'Peak_Threads_Running', 'Avg_Threads_Running']
+breakdown: instance
+axis_title: Threads
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL same-metric 'or': preferred left range-window operand and dropped the alternate-window fallback; Grafana uses the right side only when the left lacks samples

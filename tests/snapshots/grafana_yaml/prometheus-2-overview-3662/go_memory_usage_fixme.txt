@@ -1,0 +1,8 @@
+title: Go Memory Usage (FIXME)
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['allocated', 'profiling_bucket_hash_table', 'GC_metadata', 'heap_in_use', 'heap_idle', 'heap_in_use_G', 'heap_released', 'heap_system', 'mcache_in_use', 'mcache_sys', 'mspan_in_use', 'mspan_sys', 'heap_next_gc', 'other_sys', 'stack_in_use', 'stack_sys', 'sys']
+mode: stacked
+warning: Dropped variable-driven label filters during migration

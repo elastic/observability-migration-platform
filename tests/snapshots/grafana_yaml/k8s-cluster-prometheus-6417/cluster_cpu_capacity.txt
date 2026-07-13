@@ -1,0 +1,8 @@
+title: Cluster CPU Capacity
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['allocatable', 'capacity', 'requested']
+axis_title: cores
+warning: Dropped variable-driven label filters during migration

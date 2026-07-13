@@ -1,0 +1,11 @@
+title: Primary: Node & AZ Distribution
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['container_cpu_usage_seconds_total']
+breakdown: series_group
+mode: stacked
+warning: Dropped variable-driven label filters during migration
+warning: Detected counter metric; defaulting to RATE over 5m
+warning: Composited multi-label grouping (k8s.cluster.name, node_type, failure_domain_beta_kubernetes_io_zone) into a single XY breakdown column

@@ -1,0 +1,8 @@
+title: Sent Network Traffic per Container
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['container_network_transmit_bytes_total']
+breakdown: name
+axis_extent: custom [0.0, 8.0]

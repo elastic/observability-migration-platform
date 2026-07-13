@@ -1,0 +1,6 @@
+title: Reload Failures
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: prometheus_tsdb_reloads_failures_total
+warning: Dropped variable-driven label filters during migration

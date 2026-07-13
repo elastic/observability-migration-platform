@@ -1,0 +1,6 @@
+title: Messages IN
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['kafka_server_brokertopicmetrics_total_messagesinpersec_oneminuterate']

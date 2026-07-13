@@ -1,0 +1,8 @@
+title: Primary: Max POD Memory Usage
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['container_memory_working_set_bytes_max']
+warning: Dropped variable-driven label filters during migration
+warning: Panel has 3 PromQL targets but only 1 could be migrated

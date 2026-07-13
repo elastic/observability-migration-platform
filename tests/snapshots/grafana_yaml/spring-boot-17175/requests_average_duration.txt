@@ -1,0 +1,9 @@
+title: Requests Average Duration
+grafana_type: bargauge
+status: migrated_with_warnings
+chart_type: bar
+dimension: uri
+metrics: ['computed_value']
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Approximated bargauge as bar chart

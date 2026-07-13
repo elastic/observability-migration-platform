@@ -1,0 +1,9 @@
+title: Appended Samples per Second
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['prometheus_tsdb_head_samples_appended_total']
+breakdown: instance
+axis_title: Samples / Second
+warning: Dropped variable-driven label filters during migration

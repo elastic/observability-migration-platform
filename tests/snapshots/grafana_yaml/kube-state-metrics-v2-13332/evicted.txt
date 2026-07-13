@@ -1,0 +1,6 @@
+title: Evicted
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['kube_pod_status_reason']

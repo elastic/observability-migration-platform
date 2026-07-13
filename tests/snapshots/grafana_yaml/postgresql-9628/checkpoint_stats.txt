@@ -1,0 +1,8 @@
+title: Checkpoint Stats
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['write_time_Total_amount_of_time_that_has_been_spent_in_the_portion_of_checkpoint_processing_where_files_are_written_to_disk', 'sync_time_Total_amount_of_time_that_has_been_spent_in_the_portion_of_checkpoint_processing_where_files_are_synchronized_to_disk']
+breakdown: instance
+warning: Dropped variable-driven label filters during migration

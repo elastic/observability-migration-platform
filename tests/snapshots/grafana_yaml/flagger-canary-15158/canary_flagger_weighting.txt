@@ -1,0 +1,8 @@
+title: Canary: Flagger Weighting
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['flagger_canary_weight']
+axis_extent: custom [0.0, 100.0]
+warning: Dropped variable-driven label filters during migration

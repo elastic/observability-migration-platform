@@ -1,0 +1,9 @@
+title: Primary: PODs by replicaSet
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['kube_replicaset_status_ready_replicas']
+breakdown: series_group
+warning: Dropped variable-driven label filters during migration
+warning: Composited multi-label grouping (k8s.cluster.name, k8s.replicaset.name) into a single XY breakdown column

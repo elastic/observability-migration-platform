@@ -1,0 +1,9 @@
+title: Active sessions
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['pg_stat_activity_count']
+breakdown: datname
+warning: Dropped variable-driven label filters during migration
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

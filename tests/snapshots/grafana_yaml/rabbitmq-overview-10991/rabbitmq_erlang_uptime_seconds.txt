@@ -1,0 +1,7 @@
+title: Rabbitmq Erlang Uptime Seconds
+grafana_type: table
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['rabbitmq_erlang_uptime_seconds']
+breakdowns: ['time_bucket', 'instance', 'service.name']
+warning: Dropped group_left label enrichment; kept primary metric series only

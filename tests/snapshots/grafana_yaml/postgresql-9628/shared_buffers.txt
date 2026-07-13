@@ -1,0 +1,6 @@
+title: Shared Buffers
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: pg_settings_shared_buffers_bytes
+warning: Dropped variable-driven label filters during migration

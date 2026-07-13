@@ -1,0 +1,9 @@
+title: Applications
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['argocd_app_info']
+breakdown: namespace
+mode: stacked
+warning: Dropped variable-driven label filters during migration

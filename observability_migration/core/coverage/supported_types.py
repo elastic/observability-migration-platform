@@ -42,6 +42,12 @@ GRAFANA_SUPPORTED_PANEL_TYPES: dict[str, str] = {
     "piechart": "pie",
     "grafana-piechart-panel": "pie",
     "barchart": "bar",
+    # Discrete-state visualizations approximated as line charts (the query is an
+    # ordinary metric time series; the state-band/status-cell rendering has no
+    # Kibana equivalent so the loss is disclosed as a warning). See
+    # grafana.panels.APPROXIMATED_VIS_TYPE_NOTES.
+    "state-timeline": "line",
+    "status-history": "line",
 }
 
 # Grafana panel types deliberately skipped (no Kibana equivalent / not a chart).

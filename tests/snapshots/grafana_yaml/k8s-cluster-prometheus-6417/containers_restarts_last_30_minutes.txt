@@ -1,0 +1,5 @@
+title: Containers Restarts (Last 30 Minutes)
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kube_pod_container_status_restarts

@@ -1,0 +1,2 @@
+control: type=options field=instance multiple=True
+control: type=options field=gpu multiple=True

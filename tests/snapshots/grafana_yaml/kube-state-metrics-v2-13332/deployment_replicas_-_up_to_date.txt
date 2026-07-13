@@ -1,0 +1,6 @@
+title: Deployment Replicas - Up To Date
+grafana_type: table-old
+status: migrated
+chart_type: datatable
+metrics: ['kube_deployment_status_replicas']
+breakdowns: ['time_bucket']

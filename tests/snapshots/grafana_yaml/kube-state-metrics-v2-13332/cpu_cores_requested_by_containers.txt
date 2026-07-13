@@ -1,0 +1,5 @@
+title: CPU Cores Requested by Containers
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kube_pod_container_resource_requests_cpu_cores

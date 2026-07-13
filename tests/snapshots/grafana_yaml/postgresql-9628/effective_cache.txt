@@ -1,0 +1,6 @@
+title: Effective Cache
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: pg_settings_effective_cache_size_bytes
+warning: Dropped variable-driven label filters during migration

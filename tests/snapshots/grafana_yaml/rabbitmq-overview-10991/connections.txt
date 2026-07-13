@@ -1,0 +1,6 @@
+title: Connections
+grafana_type: stat
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: Aggregating over a PromQL vector-matching join requires manual redesign; dropping the joined metric would change numeric values

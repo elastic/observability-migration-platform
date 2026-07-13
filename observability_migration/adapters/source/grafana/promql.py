@@ -3287,7 +3287,10 @@ def _build_measure_spec(
             esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
         )
     elif frag.family == "nested_agg":
-        inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+        raw_inner_groups = list(frag.extra.get("inner_group", []) or [])
+        inner_groups = (
+            resolver.resolve_labels(raw_inner_groups) if resolver else list(raw_inner_groups)
+        )
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
             # A plain COUNT_DISTINCT(label) has no time-series-specific
             # semantics, so it is safe on either source. Prefer TS whenever
@@ -3307,6 +3310,22 @@ def _build_measure_spec(
             # pinned there (e.g. a ``scalar()``-wrapped gauge). Without this,
             # a same-metric ratio against a scalar-wrapped gauge sibling would
             # regress from feasible (both FROM) to not_feasible (FROM vs TS).
+            #
+            # Prefer the *exclusive* inner label (in the inner ``by(...)`` but
+            # not the outer) for COUNT_DISTINCT — e.g. ``count by(job, instance)
+            # (count by(job, instance, cpu)(...))`` must count distinct ``cpu``,
+            # not ``job``. Falling back to ``inner_groups[0]`` would pick a
+            # grouping key and under-count cores (Docker/node Load panels).
+            outer_raw = {
+                lbl for lbl in (frag.group_labels or []) if not str(lbl).startswith("label_")
+            }
+            exclusive_raw = [lbl for lbl in raw_inner_groups if lbl not in outer_raw]
+            if exclusive_raw:
+                count_field = (
+                    resolver.resolve_label(exclusive_raw[0]) if resolver else exclusive_raw[0]
+                )
+            else:
+                count_field = inner_groups[0]
             is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
             gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
             if allow_tsds_gauge_promotion and (is_counter or gauge_uses_ts):
@@ -3317,10 +3336,53 @@ def _build_measure_spec(
                 source = "FROM"
                 time_filter = rule_pack.from_time_filter
                 bucket_expr = rule_pack.from_bucket
-            stats_expr = f"COUNT_DISTINCT({inner_groups[0]})"
-            warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({inner_groups[0]})")
+            stats_expr = f"COUNT_DISTINCT({count_field})"
+            warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})")
         else:
             return None
+    elif frag.family == "histogram_quantile":
+        phi = frag.extra.get("quantile_phi")
+        if phi is None or not 0.0 <= phi <= 1.0:
+            return None
+        bucket_agg = frag.extra.get("bucket_agg") or ""
+        if bucket_agg and bucket_agg != "sum":
+            return None
+        bucket_metric = frag.extra.get("bucket_metric") or ""
+        if bucket_metric.endswith("_bucket"):
+            has_le_matcher = any(
+                isinstance(m, dict) and m.get("label") == "le" for m in (frag.matchers or [])
+            )
+            if has_le_matcher or not frag.extra.get("had_le_grouping"):
+                return None
+
+        # Match the direct histogram_quantile translator: only emit PERCENTILE()
+        # when target schema proves the base field is a native histogram. Unknown
+        # or scalar fields fail closed so formula wrapping never hides that gap.
+        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=None)
+        field_type = (
+            (resolver.field_type(physical_metric) if resolver else "") or ""
+        ).strip().lower()
+        if field_type == "exponential_histogram":
+            value_expr = physical_metric
+        elif field_type == "histogram":
+            value_expr = f"TO_TDIGEST({physical_metric})"
+        else:
+            return None
+
+        source = "TS"
+        time_filter = rule_pack.ts_time_filter
+        bucket_expr = rule_pack.ts_bucket
+        metric_field = physical_metric
+        percentile_value = _format_scalar_value(round(phi * 100, 10))
+        stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
+        warnings.append(
+            "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is "
+            "approximate — PERCENTILE uses t-digest, which treats histogram buckets as point "
+            "masses rather than interpolating within them as Prometheus does, so results can "
+            "diverge noticeably when traffic concentrates in a few wide buckets (the common "
+            "latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for "
+            "exact results."
+        )
     elif frag.family == "uptime":
         start_metric = frag.metric
         start_matchers = frag.matchers
@@ -3899,6 +3961,335 @@ def _flatten_or_operands(frag):
     return [frag]
 
 
+def _matcher_identity(frag) -> frozenset[tuple[str, str, str]]:
+    """Stable matcher identity for comparing OR operands."""
+    out: set[tuple[str, str, str]] = set()
+    for matcher in frag.matchers or []:
+        label = str(matcher.get("label") or "")
+        if not label:
+            continue
+        out.add((label, str(matcher.get("op") or "="), str(matcher.get("value") or "")))
+    return frozenset(out)
+
+
+def _scalar_identity(frag) -> str | None:
+    if frag is None or frag.family != "scalar":
+        return None
+    if frag.binary_rhs is not None:
+        return str(frag.binary_rhs)
+    return str(frag.extra.get("scalar_value") or frag.metric or "")
+
+
+def _range_fallback_identity(frag) -> tuple | None:
+    """Structural identity that ignores ``range_func`` / ``range_window``.
+
+    Used to detect the Grafana ``rate(M[$interval]) or irate(M[5m])`` (and
+    ``max_over_time(M[$interval]) or max_over_time(M[5m])``) idiom: same
+    metric + matchers + wrapper shape, differing only in the range window
+    or the rate-vs-irate choice. Returns ``None`` when the fragment is too
+    complex to treat as a range-fallback operand.
+    """
+    if frag is None:
+        return None
+    if frag.family == "binary_expr":
+        op = (frag.binary_op or "").lower()
+        if op in _SET_OPERATORS:
+            return None
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        left_scalar = _scalar_identity(left)
+        right_scalar = _scalar_identity(right)
+        if right_scalar is not None and left is not None:
+            inner = _range_fallback_identity(left)
+            if inner is None:
+                return None
+            return ("binop", op, inner, ("scalar", right_scalar))
+        if left_scalar is not None and right is not None:
+            inner = _range_fallback_identity(right)
+            if inner is None:
+                return None
+            return ("binop", op, ("scalar", left_scalar), inner)
+        return None
+    if frag.family == "topk":
+        if not frag.metric:
+            return None
+        post = frag.extra.get("post_filter") or {}
+        post_key = (
+            str(post.get("op") or ""),
+            str(post.get("value") if post.get("value") is not None else ""),
+        )
+        return (
+            "topk",
+            int(frag.extra.get("topk_limit") or 0),
+            post_key,
+            str(frag.metric),
+            _matcher_identity(frag),
+            str(frag.outer_agg or ""),
+        )
+    if frag.family in {"range_agg", "simple_agg", "simple_metric"}:
+        if not frag.metric:
+            return None
+        return (
+            frag.family,
+            str(frag.metric),
+            _matcher_identity(frag),
+            str(frag.outer_agg or ""),
+        )
+    return None
+
+
+def _operands_are_same_metric_range_fallback(operands: list) -> bool:
+    """True when OR operands are the Grafana same-metric range-window fallback idiom."""
+    if len(operands) < 2:
+        return False
+    identities = [_range_fallback_identity(op) for op in operands]
+    if any(identity is None for identity in identities):
+        return False
+    if len({identity for identity in identities}) != 1:
+        return False
+    # Require that at least one operand actually carries a range function /
+    # window so we don't steal the plain same-metric WHERE-OR case
+    # (``A{f1} or A{f2}``) — those differ in matchers and already fail the
+    # identity check above, but also refuse when every operand is a bare
+    # metric with no range shape (cross-metric COALESCE should own that).
+    if not any(getattr(op, "range_func", None) or getattr(op, "range_window", None) for op in operands):
+        # topk / scaled wrappers store range on the fragment itself for
+        # range_agg children; walk one level.
+        def _has_range(op) -> bool:
+            if getattr(op, "range_func", None) or getattr(op, "range_window", None):
+                return True
+            for key in ("left_frag", "right_frag", "inner_frag"):
+                child = (op.extra or {}).get(key)
+                if child is not None and _has_range(child):
+                    return True
+            return False
+
+        if not any(_has_range(op) for op in operands):
+            return False
+    # Prefer this rewrite only when the operands are *not* identical — if
+    # they are byte-identical after macro expansion there is nothing to
+    # fall back from, but translating the left is still correct. Always OK.
+    return True
+
+
+def _left_operand_of_same_metric_range_fallback(frag):
+    """Return the preferred left operand of a same-metric range-fallback ``or``.
+
+    Detects the Grafana ``rate(M[$interval]) or irate(M[5m])`` (and
+    ``topk(rate) or topk(irate)``, ``rate*N or irate*N``) idiom. Returns
+    ``None`` when the fragment is not that pattern. Callers that can
+    translate the left via ``_build_formula_plan`` or a dedicated family
+    rule (e.g. ``topk``) should prefer that operand and warn that the
+    short-window fallback was dropped.
+    """
+    if frag is None or frag.family != "binary_expr":
+        return None
+    if (frag.binary_op or "").lower() != "or":
+        return None
+    if _or_chain_has_vector_matching(frag):
+        return None
+    operands = _flatten_or_operands(frag)
+    if not operands or not _operands_are_same_metric_range_fallback(operands):
+        return None
+    return operands[0]
+
+
+def _same_metric_range_fallback_warning(frag) -> str:
+    """Warning text for preferring the left operand of a range-fallback ``or``."""
+    operands = _flatten_or_operands(frag) if frag is not None else []
+    left = operands[0] if operands else None
+    left_range = (left.range_func if left is not None else None) or ""
+    right_ranges = sorted(
+        {
+            str(getattr(op, "range_func", None) or "")
+            for op in operands[1:]
+            if getattr(op, "range_func", None)
+        }
+    )
+    if left_range and right_ranges and any(r != left_range for r in right_ranges):
+        return (
+            f"PromQL same-metric 'or': preferred left '{left_range}(...)' and "
+            f"dropped short-window fallback {', '.join(repr(r + '(...)') for r in right_ranges)}; "
+            "Grafana uses the right side only when the left lacks samples"
+        )
+    return (
+        "PromQL same-metric 'or': preferred left range-window operand and "
+        "dropped the alternate-window fallback; Grafana uses the right "
+        "side only when the left lacks samples"
+    )
+
+
+def _is_zero_scaled_operand(frag) -> bool:
+    """True for ``0 * X`` / ``X * 0`` (including ``scaled_agg`` with scalar 0)."""
+    if frag is None:
+        return False
+    if frag.family == "scaled_agg":
+        rhs = frag.binary_rhs
+        return bool(rhs is not None and rhs.is_scalar and rhs.scalar_value == 0.0)
+    if frag.family == "binary_expr" and (frag.binary_op or "") == "*":
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        for side in (left, right):
+            if side is not None and side.is_scalar and side.scalar_value == 0.0:
+                return True
+    return False
+
+
+def _mixed_os_or_operands(frag):
+    """Return ``(windows_side, zero_side)`` for a mixed-OS ``or`` zero-fill.
+
+    Accepts both shapes used by Kubernetes Views Global:
+
+    * bare ``windows_join or 0*linux`` / ``windows_join or metric*0``
+    * ``sum(windows_join or metric*0) by (namespace)`` — the community
+      dashboard nests the ``OR`` *inside* the outer aggregation, so the
+      right operand of ``+`` is an ``unknown``/agg fragment whose
+      ``inner_frag`` is the ``or``.
+    """
+    if frag is None:
+        return None
+    or_frag = frag
+    if frag.family != "binary_expr" or (frag.binary_op or "").lower() != "or":
+        # Nested: sum(... OR ...) by (...) lands as unknown/agg with inner_frag.
+        inner = (frag.extra or {}).get("inner_frag")
+        if (
+            inner is not None
+            and inner.family == "binary_expr"
+            and (inner.binary_op or "").lower() == "or"
+            and (frag.outer_agg or frag.family in {"unknown", "nested_agg", "simple_agg"})
+        ):
+            or_frag = inner
+        else:
+            return None
+    win_side = or_frag.extra.get("left_frag")
+    zero_side = or_frag.extra.get("right_frag")
+    if win_side is None or zero_side is None:
+        return None
+    if not _is_zero_scaled_operand(zero_side):
+        if _is_zero_scaled_operand(win_side):
+            win_side, zero_side = zero_side, win_side
+        else:
+            return None
+    win_blocked = bool(
+        (win_side.extra or {}).get("not_feasible_reasons")
+        or _contains_join_frag(win_side)
+        or win_side.family in {"join", "unknown"}
+    )
+    if not win_blocked:
+        return None
+    return win_side, zero_side
+
+
+def _try_rewrite_mixed_os_zero_fill_plus(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    preferred_group_labels_origin=None,
+    allow_direct_ts_gauge=False,
+    allow_tsds_gauge_promotion=False,
+):
+    """Prefer the Linux left of ``linux + on(ns) (windows_join or zero_fill)``.
+
+    Kubernetes Views Global (and similar mixed-OS dashboards) add a Windows
+    contribution that is itself a vector-matching join, then ``or`` a
+    zero-fill (``0 * linux`` or ``kube_namespace_created * 0``) so namespaces
+    without Windows still appear. The community form nests that ``OR`` inside
+    ``sum(...) by (namespace)``. The join cannot be expressed in ES|QL; keeping
+    only the Linux left is correct for Linux-only clusters and an honest
+    degradation (with warning) for mixed clusters — better than marking the
+    whole panel not_feasible.
+    """
+    op = (frag.binary_op or "").lower()
+    if op not in {"+", "-"}:
+        return None
+    left = frag.extra.get("left_frag")
+    right = frag.extra.get("right_frag")
+    if left is None or right is None:
+        return None
+    if _mixed_os_or_operands(right) is None:
+        return None
+
+    plan = _build_formula_plan(
+        left,
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+    )
+    if plan is None:
+        return None
+    detail = (
+        "PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : "
+        "preferred left (Linux) operand and dropped the Windows join contribution; "
+        "Windows namespaces will under-report until the join is redesigned"
+    )
+    if detail not in plan.warnings:
+        plan.warnings.append(detail)
+    return plan
+
+
+def _try_rewrite_set_or_same_metric_range_fallback(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    preferred_group_labels_origin=None,
+    allow_direct_ts_gauge=False,
+    allow_tsds_gauge_promotion=False,
+):
+    """Prefer the left operand of ``rate(M[$i]) or irate(M[5m])``-style ORs.
+
+    Grafana community dashboards (MySQL/Percona, node vmstat panels, …)
+    commonly write ``rate(M[$interval]) or irate(M[5m])`` so a short
+    ``irate`` fills in when the dashboard interval is too long for
+    ``rate`` to have two samples. Both sides share the metric and
+    matchers; only the range function / window differs. The same-metric
+    WHERE-OR rewrite refuses range functions, and the cross-metric
+    COALESCE rewrite requires distinct metric names — so without this
+    bridge the panel was marked ``not_feasible`` even though the left
+    operand alone is an honest, high-fidelity translation.
+
+    Prefer the left operand (dashboard-interval ``rate`` / ``max_over_time``)
+    and warn that the short-window fallback was dropped.
+
+    Returns a ``FormulaPlan`` when the left operand is formula-planable.
+    Families handled outside ``_build_formula_plan`` (notably ``topk``)
+    are re-dispatched by ``binary_expr_family_rule`` via
+    ``_left_operand_of_same_metric_range_fallback``.
+    """
+    left = _left_operand_of_same_metric_range_fallback(frag)
+    if left is None:
+        return None
+
+    plan = _build_formula_plan(
+        left,
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+    )
+    if plan is None:
+        return None
+
+    detail = _same_metric_range_fallback_warning(frag)
+    if detail not in plan.warnings:
+        plan.warnings.append(detail)
+    return plan
+
+
 def _vector_matching_restricts_or(matching):
     """Return True when an ``or`` modifier narrows the series-matching key.
 
@@ -4174,6 +4565,25 @@ def _build_formula_plan(
             if rewritten is not None:
                 return rewritten
             if op_lower == "or":
+                # Same-metric OR that only differs by range func / window
+                # (``rate(M[$interval]) or irate(M[5m])``,
+                # ``max_over_time(M[$i]) or max_over_time(M[5m])``) — prefer
+                # the left operand. Neither WHERE-OR (refuses range funcs)
+                # nor cross-metric COALESCE (requires distinct metrics) can
+                # own this Grafana idiom.
+                range_fallback = _try_rewrite_set_or_same_metric_range_fallback(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                )
+                if range_fallback is not None:
+                    return range_fallback
                 # Cross-metric ``A or B``: keep both metrics as a COALESCE union
                 # (left precedence, right fills the gaps) instead of dropping the
                 # right operand (issue #167). Returns ``None`` when the operands
@@ -4192,6 +4602,23 @@ def _build_formula_plan(
             return None
 
         if op_lower in ("+", "-"):
+            # Kubernetes mixed-OS: ``linux + on(ns) (windows_join or 0*linux)``.
+            # Prefer the Linux left when the Windows side is an untranslatable
+            # vector-matching join (Views Global CPU/Memory/Network panels).
+            mixed_os = _try_rewrite_mixed_os_zero_fill_plus(
+                frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+                allow_direct_ts_gauge=allow_direct_ts_gauge,
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            )
+            if mixed_os is not None:
+                return mixed_os
+
             left_frag_peek = frag.extra.get("left_frag")
             right_frag_peek = frag.extra.get("right_frag")
             phantom_side = None
@@ -4309,6 +4736,59 @@ def _build_formula_plan(
         )
         if not left_plan or not right_plan:
             return None
+
+        # Align groupings when one operand is ungrouped and the other carries
+        # an explicit ``by(...)`` (Docker/node Load: ``load / count by(job,
+        # instance)(count by(..., cpu)(...))``). PromQL matches on the shared
+        # label set; ES|QL needs both measures in the same STATS BY. Rebuild
+        # the ungrouped side with the sibling's group fields as preferred
+        # labels so the merge succeeds without inventing new dimensions.
+        #
+        # Skip this when the binary op carries an explicit ``on(...)``/
+        # ``ignoring(...)`` key that narrows the match away from full-label
+        # equality. That modifier is PromQL's own signal that the operands do
+        # NOT share the same label set, so forcing the ungrouped side into
+        # ``BY <donor labels>`` can silently aggregate together multiple
+        # distinct series (e.g. across an ``instance`` dimension the modifier
+        # deliberately ignores) behind whatever aggregate function this
+        # fragment happens to use — a real correctness risk, not just an
+        # approximation. Fall through to the unmergeable path below instead
+        # so a divergent-grouping ratio like ``sum(rate(a)) by (application)
+        # / on(application) b`` is marked ``not_feasible`` rather than
+        # silently coalesced.
+        vector_matching_narrows = _vector_matching_restricts_or(frag.extra.get("vector_matching"))
+        left_groups = {tuple(spec.group_fields) for spec in left_plan.specs}
+        right_groups = {tuple(spec.group_fields) for spec in right_plan.specs}
+        if len(left_groups | right_groups) > 1 and not vector_matching_narrows:
+            left_empty = left_groups == {()}
+            right_empty = right_groups == {()}
+            if left_empty ^ right_empty:
+                donor = right_plan if left_empty else left_plan
+                needy_frag = (
+                    frag.extra.get("left_frag") if left_empty else frag.extra.get("right_frag")
+                )
+                donor_labels = list(donor.specs[0].group_fields) if donor.specs else []
+                if needy_frag is not None and donor_labels:
+                    rebuilt = _build_formula_plan(
+                        needy_frag,
+                        resolver,
+                        rule_pack,
+                        f"{alias_hint}_lhs" if left_empty and alias_hint else (
+                            f"{alias_hint}_rhs" if alias_hint else alias_hint
+                        ),
+                        summary_mode=summary_mode,
+                        preferred_group_labels=donor_labels,
+                        allow_direct_ts_gauge=False,
+                        preferred_group_labels_origin="sibling_binary",
+                        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                        drop_legend_labels=False,
+                    )
+                    if rebuilt is not None:
+                        if left_empty:
+                            left_plan = rebuilt
+                        else:
+                            right_plan = rebuilt
+
         # If one operand was promoted to TS (proven TSDS gauge) but the other
         # stayed on FROM (unknown / non-TSDS), rebuild both with promotion
         # disabled so they share a source command. FROM is the safe common

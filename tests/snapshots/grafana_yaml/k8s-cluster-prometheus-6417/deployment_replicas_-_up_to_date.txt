@@ -1,0 +1,7 @@
+title: Deployment Replicas - Up To Date
+grafana_type: table
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['kube_deployment_status_replicas']
+breakdowns: ['time_bucket']
+warning: Dropped variable-driven label filters during migration

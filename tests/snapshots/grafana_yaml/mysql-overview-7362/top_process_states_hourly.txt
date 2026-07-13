@@ -1,0 +1,7 @@
+title: Top Process States Hourly
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: metric
+primary: value
+warning: topk() without group labels: collapsed to single-series top N; add preferred_group_labels hint for per-series breakdown
+warning: Rendered instant/single-value query as a metric (no time dimension to plot)

@@ -1,0 +1,7 @@
+title: Cluster Mem Capacity
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['allocatable', 'capacity', 'requested']
+warning: Dropped variable-driven label filters during migration

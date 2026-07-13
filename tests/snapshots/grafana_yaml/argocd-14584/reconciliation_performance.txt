@@ -1,0 +1,5 @@
+title: Reconciliation Performance
+grafana_type: heatmap
+status: migrated
+chart_type: heatmap
+metric: argocd_app_reconcile_bucket

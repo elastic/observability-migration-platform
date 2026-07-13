@@ -260,6 +260,8 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "folder_title": getattr(result, "folder_title", ""),
             "yaml_path": getattr(result, "yaml_path", ""),
             "compiled_path": getattr(result, "compiled_path", ""),
+            "native_artifact_path": getattr(result, "native_artifact_path", ""),
+            "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),
             "uploaded_kibana_url": getattr(result, "uploaded_kibana_url", ""),
             "runtime_summary": runtime_summary,

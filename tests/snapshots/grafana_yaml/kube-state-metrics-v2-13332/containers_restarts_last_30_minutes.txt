@@ -1,0 +1,6 @@
+title: Containers Restarts (Last 30 Minutes)
+grafana_type: singlestat
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: changes() counts value transitions and has no ES|QL equivalent

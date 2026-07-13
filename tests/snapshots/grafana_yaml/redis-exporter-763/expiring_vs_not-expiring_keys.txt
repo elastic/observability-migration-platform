@@ -1,0 +1,9 @@
+title: Expiring vs Not-Expiring Keys
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['not_expiring', 'expiring']
+breakdown: instance
+mode: stacked
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math

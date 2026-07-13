@@ -1,0 +1,6 @@
+title: Current update data
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: pg_stat_database_tup_updated
+warning: Dropped variable-driven label filters during migration

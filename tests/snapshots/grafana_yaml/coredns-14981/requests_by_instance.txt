@@ -1,0 +1,6 @@
+title: Requests (by instance)
+grafana_type: piechart
+status: migrated
+chart_type: pie
+metrics: ['coredns_dns_requests_total']
+breakdowns: ['instance']

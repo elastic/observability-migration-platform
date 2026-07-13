@@ -1,0 +1,7 @@
+title: Currently Down
+grafana_type: table
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['up']
+breakdowns: ['time_bucket', 'service.instance.id']
+warning: Dropped variable-driven label filters during migration

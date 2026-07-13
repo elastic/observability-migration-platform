@@ -1,0 +1,6 @@
+title: Percent of 5xx Requests
+grafana_type: timeseries
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: PromQL arithmetic with divergent filters/groupings cannot be translated safely yet

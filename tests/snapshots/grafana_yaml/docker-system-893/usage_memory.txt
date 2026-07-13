@@ -1,0 +1,6 @@
+title: Usage memory
+grafana_type: table
+status: migrated
+chart_type: datatable
+metrics: ['container_memory_usage_bytes']
+breakdowns: ['time_bucket']

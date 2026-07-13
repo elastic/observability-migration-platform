@@ -1,0 +1,6 @@
+title: Deployment Replicas - Updated
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: kube_deployment_status_replicas_updated
+warning: Dropped variable-driven label filters during migration

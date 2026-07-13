@@ -1,0 +1,8 @@
+title: Requests Count
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['http_server_requests_seconds_count']
+breakdowns: ['uri']
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Approximated grouped stat panel as summary table

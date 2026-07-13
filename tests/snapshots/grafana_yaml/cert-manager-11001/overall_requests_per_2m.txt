@@ -1,0 +1,7 @@
+title: Overall requests per 2m
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['certmanager_http_acme_client_request_count']
+breakdown: status

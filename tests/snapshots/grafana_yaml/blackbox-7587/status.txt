@@ -1,0 +1,5 @@
+title: Status
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: probe_success

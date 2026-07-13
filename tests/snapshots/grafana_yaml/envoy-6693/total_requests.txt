@@ -1,0 +1,7 @@
+title: Total requests
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['envoy_cluster_upstream_rq_total']
+breakdown: host

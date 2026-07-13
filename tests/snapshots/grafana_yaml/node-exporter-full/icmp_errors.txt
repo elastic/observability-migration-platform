@@ -4,6 +4,6 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['node_netstat_Icmp_InErrors']
-breakdown: instance
+breakdown: series_group
 axis_title: messages out (-) / in (+)
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -1,0 +1,2 @@
+control: type=options field=instance multiple=False
+control: type=options field=container_label_namespace multiple=True

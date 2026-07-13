@@ -1,0 +1,6 @@
+title: Random Page Cost
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: pg_settings_random_page_cost
+warning: Dropped variable-driven label filters during migration

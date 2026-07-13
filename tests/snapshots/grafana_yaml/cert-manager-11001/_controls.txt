@@ -1,0 +1,2 @@
+control: type=options field=exported_namespace multiple=False
+control: type=options field=name multiple=False

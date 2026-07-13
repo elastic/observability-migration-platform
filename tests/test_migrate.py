@@ -270,11 +270,29 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("Could not extract metric name", result.warnings)
 
-    def test_grouping_template_variable_reports_specific_not_feasible_reason(self):
+    def test_grouping_template_variable_with_concrete_labels_is_rescued(self):
+        # ``by (exporter $grouping)`` — $grouping is Grafana's *optional* extra
+        # breakdown selector (its default/unset state adds no dimension). Dropping
+        # the unresolved token and grouping by the explicit label is a faithful
+        # degrade, far better than blocking the whole panel. (OpenTelemetry
+        # Collector dashboard, real-world report.)
         result = self.translate(
-            "max(otelcol_exporter_queue_size) by (exporter $grouping) "
-            "/ min(otelcol_exporter_queue_size) by (exporter $grouping)"
+            'max(otelcol_exporter_queue_size{exporter=~"$exporter"}) by (exporter $grouping)'
         )
+
+        self.assertNotEqual(result.feasibility, "not_feasible")
+        self.assertTrue(result.esql_query)
+        self.assertNotIn("label_grouping", result.esql_query)
+        self.assertNotIn("grouping", result.esql_query)
+        joined = " ".join(result.warnings)
+        self.assertIn("$grouping", joined)
+        self.assertIn("optional", joined.lower())
+
+    def test_grouping_template_variable_only_stays_not_feasible(self):
+        # ``by (${grouping})`` alone has no concrete dimension; defaulting to
+        # "aggregate everything into one series" would silently change the
+        # result, so it stays an honest not_feasible.
+        result = self.translate("sum(rate(http_requests_total[5m])) by (${grouping})")
 
         self.assertEqual(result.feasibility, "not_feasible")
         self.assertIn(
@@ -283,6 +301,34 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
         self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_template_variable_function_name_reports_clear_reason(self):
+        # ``${metric:value}(...)`` selects the rate/increase function
+        # dynamically — genuinely manual, but the reason must be clear, not a
+        # confusing "unknown function 'label_metric'".
+        result = self.translate(
+            "sum(${metric:value}(otelcol_rpc_server_responses_per_rpc_count{}[$__rate_interval])) "
+            "by (rpc_grpc_status_code)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings).lower()
+        self.assertIn("function", joined)
+        self.assertIn("template variable", joined)
+        self.assertNotIn("unknown function", joined)
+
+    def test_template_variable_in_metric_name_suffix_is_not_feasible(self):
+        # ``otelcol_process_cpu_seconds${suffix}`` — the suffix var changes
+        # *which* metric is queried; it must not silently resolve to a garbage
+        # ``..._secondslabel_suffix`` field name.
+        result = self.translate(
+            'max(rate(otelcol_process_cpu_seconds${suffix}{job="$job"}[$__rate_interval])) by (job $grouping)'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings).lower()
+        self.assertIn("template variable", joined)
+        self.assertNotIn("label_suffix", result.esql_query or "")
 
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
@@ -2263,7 +2309,173 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotEqual(translated.feasibility, "not_feasible")
         self.assertIn("http_requests_total", translated.esql_query or "")
         reasons = " ".join(getattr(translated, "warnings", []) or [])
-        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand")
+        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand|COALESCE|kept both")
+
+    def test_set_or_same_metric_rate_or_irate_prefers_left(self):
+        """Grafana MySQL/Percona idiom: ``rate(M[$interval]) or irate(M[5m])``.
+
+        Same metric + same matchers; the right side is only a short-window
+        fallback when ``rate`` lacks enough samples. Prefer the left operand
+        (dashboard-interval ``rate``) instead of marking the panel not_feasible
+        — the previous hole between the same-metric WHERE-OR rewrite (which
+        forbids range funcs) and the cross-metric COALESCE rewrite (which
+        requires distinct metric names).
+        """
+        expr = (
+            'rate(mysql_global_status_queries{instance="$host"}[5m]) '
+            'or irate(mysql_global_status_queries{instance="$host"}[5m])'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_queries", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("IRATE(", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(
+            reasons,
+            r"(?i)rate.*irate|irate.*fallback|preferred left|same-metric.*or",
+        )
+
+    def test_set_or_same_metric_max_over_time_window_fallback_prefers_left(self):
+        """``max_over_time(M[$interval]) or max_over_time(M[5m])`` — same
+        range func, different windows; prefer the left (dashboard interval)."""
+        expr = (
+            'max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m]) '
+            'or max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])'
+        )
+        # Distinct windows after macro expansion in real dashboards; use
+        # explicit different windows here.
+        expr = (
+            'max_over_time(mysql_global_status_threads_connected{instance="$host"}[2m]) '
+            'or max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_threads_connected", esql)
+        self.assertIn("2m", esql)
+        self.assertNotIn("5m", esql.split("STATS", 1)[-1] if "STATS" in esql else esql)
+
+    def test_set_or_same_metric_rate_scaled_prefers_left(self):
+        """``rate(M[5m]) * 1024 or irate(M[5m]) * 1024`` (MySQL I/O Activity)."""
+        expr = (
+            'rate(node_vmstat_pgpgin{instance="$host"}[5m]) * 1024 '
+            'or irate(node_vmstat_pgpgin{instance="$host"}[5m]) * 1024'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("node_vmstat_pgpgin", esql)
+        self.assertIn("RATE(", esql)
+        self.assertIn("1024", esql)
+        self.assertNotIn("IRATE(", esql)
+
+    def test_set_or_same_metric_topk_rate_or_irate_prefers_left(self):
+        """``topk(5, rate(M[5m])>0) or topk(5, irate(M[5m])>0)``."""
+        expr = (
+            'topk(5, rate(mysql_global_status_commands_total{instance="$host"}[5m])>0) '
+            'or topk(5, irate(mysql_global_status_commands_total{instance="$host"}[5m])>0)'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_commands_total", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("IRATE(", esql)
+
+    def test_load_over_nested_cpu_count_aligns_groupings(self):
+        """Docker/node Load panel: ``load / count by(job, instance)(count by(..., cpu)(...))``.
+
+        The nested count(count()) must COUNT_DISTINCT the exclusive inner
+        label (``cpu``), and the ungrouped load gauge must inherit the
+        outer count's grouping so the two measures can share one STATS.
+        """
+        expr = (
+            'node_load1{instance=~"$server:.*"} '
+            "/ count by(job, instance)("
+            "count by(job, instance, cpu)(node_cpu{instance=~\"$server:.*\"})"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("node_load1", esql)
+        self.assertIn("COUNT_DISTINCT(cpu)", esql)
+        self.assertIn("computed_value", esql)
+
+    def test_k8s_mixed_os_plus_prefers_linux_left_operand(self):
+        """Kubernetes Views Global idiom: Linux sum + on(ns) (Windows join or 0*Linux).
+
+        The Windows side needs a vector-matching join that ES|QL cannot
+        express; prefer the Linux left operand (correct for Linux-only
+        clusters) and warn that the Windows contribution was dropped.
+        """
+        expr = (
+            'sum(rate(container_cpu_usage_seconds_total{image!="",cluster="$cluster"}[5m])) '
+            "by (namespace) "
+            "+ on (namespace) ("
+            "sum(rate(windows_container_cpu_usage_seconds_total{container_id!=\"\",cluster=\"$cluster\"}[5m]) "
+            "* on (container_id) group_left (container, pod, namespace) "
+            "max by (container, container_id, pod, namespace) ("
+            "windows_pod_container_info{container_id!=\"\",cluster=\"$cluster\"})"
+            ") by (namespace) "
+            "or on (namespace) ("
+            "0 * sum(rate(container_cpu_usage_seconds_total{image!=\"\",cluster=\"$cluster\"}[5m])) "
+            "by (namespace))"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("container_cpu_usage_seconds_total", esql)
+        self.assertNotIn("windows_container_cpu_usage_seconds_total", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(
+            reasons,
+            r"(?i)windows|mixed-os|preferred left|dropped.*windows|zero-fill",
+        )
+
+    def test_k8s_mixed_os_or_nested_inside_sum_prefers_linux(self):
+        """Community Views Global form: OR nested inside ``sum(...) by (ns)``.
+
+        ``linux + on(ns) (sum(windows_join OR kube_namespace_created * 0) by (ns))``
+        — the zero-fill is a different metric scaled by 0, and the OR sits
+        under the outer aggregation rather than beside it.
+        """
+        expr = (
+            'sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[5m])) '
+            "by (namespace) "
+            "+ on (namespace) ("
+            "sum(rate(windows_container_cpu_usage_seconds_total{container_id!=\"\", cluster=\"$cluster\"}[5m]) "
+            "* on (container_id) group_left (container, pod, namespace) "
+            "max by (container, container_id, pod, namespace) ("
+            "kube_pod_container_info{container_id!=\"\", cluster=\"$cluster\"}"
+            ") OR kube_namespace_created{cluster=\"$cluster\"} * 0) by (namespace))"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("container_cpu_usage_seconds_total", esql)
+        self.assertNotIn("windows_container_cpu_usage_seconds_total", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(reasons, r"(?i)windows|mixed-os|preferred left|zero.?fill")
 
     def test_set_and_between_metrics_is_not_feasible(self):
         translated = self.translate("http_requests_total and http_other_total")
@@ -2633,9 +2845,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"unexpected under-count caveat for grouped count: {translated.warnings}",
         )
 
-    def test_xy_panel_with_extra_grouping_dimension_warns(self):
-        # A query grouped by two non-time dimensions can only show one as the XY
-        # breakdown; the dropped dimension must be surfaced, not hidden.
+    def test_xy_panel_with_extra_grouping_dimension_composites_breakdown(self):
+        # A query grouped by two non-time dimensions can only show a single
+        # Lens XY breakdown field. Rather than picking one dimension and
+        # silently merging series that differ only in the other, both labels
+        # are composited into one synthetic ``series_group`` column so every
+        # distinct label tuple stays a separate series; the approximation is
+        # disclosed via a warning, not hidden.
         panel = {
             "title": "Pods",
             "type": "timeseries",
@@ -2644,11 +2860,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, result = self.translate_panel(panel)
         self.assertEqual(result.status, "migrated_with_warnings")
-        # Only one field is used as the visual breakdown.
-        self.assertIn("breakdown", yaml_panel["esql"])
+        # A single composite field is used as the visual breakdown.
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "series_group")
         self.assertTrue(
-            any("not on the chart" in w for w in result.reasons),
-            f"Expected dropped-dimension warning, got {result.reasons}",
+            any("Composited multi-label grouping" in w for w in result.reasons),
+            f"Expected composite-breakdown disclosure, got {result.reasons}",
         )
 
     def test_xy_panel_with_single_grouping_dimension_does_not_warn(self):
@@ -4531,13 +4747,14 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        # Grouped by (instance, quantile): one dimension drives the XY
-        # breakdown and the other is surfaced as a dropped-dimension warning.
+        # Grouped by (instance, quantile): Lens XY allows one breakdown, so both
+        # labels are composited into ``series_group`` (not silently dropped).
         self.assertEqual(result.status, "migrated_with_warnings")
         self.assertTrue(
-            any("not on the chart" in w for w in result.reasons),
-            f"Expected dropped-dimension warning, got {result.reasons}",
+            any("Composited multi-label grouping" in w for w in result.reasons),
+            f"Expected series_group composite warning, got {result.reasons}",
         )
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "series_group")
         metric = yaml_panel["esql"]["metrics"][0]
         self.assertEqual(metric["label"], "Queue length")
         self.assertEqual(metric["axis"], "right")
@@ -5482,6 +5699,75 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIsNotNone(tend)
         self.assertRegex(tend, r"^\d{4}-\d{2}-\d{2}T")
 
+    def test_sync_result_queries_to_yaml_pairs_by_title_when_leaf_order_diverges(self):
+        """Regression: section/layout reorder must not zip validation fixes onto
+        the wrong panel (docker-4271 visual_ir / YAML bleed)."""
+        result = migrate.MigrationResult("Dashboard", "uid")
+        containers = migrate.PanelResult("Containers", "singlestat", "metric", "migrated", 0.9)
+        containers.source_panel_id = "31"
+        containers.esql_query = "FROM metrics-*\n| STATS containers = COUNT(*)"
+        load = migrate.PanelResult("Load [1m]", "singlestat", "metric", "migrated", 0.9)
+        load.source_panel_id = "27"
+        load.esql_query = "FROM metrics-*\n| STATS load = AVG(node_load1)"
+        report.mark_panel_requires_manual_after_validation(
+            load,
+            {"error": "Found 1 problem", "analysis": {}},
+        )
+        # Translation order: Containers then Load.
+        result.panel_results = [containers, load]
+        result.yaml_panel_results = [containers, load]
+
+        # YAML leaf order diverges (Uptime-first section order from audit).
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Dashboard Row",
+                        "section": {
+                            "collapsed": False,
+                            "panels": [
+                                {
+                                    "title": "Load [1m]",
+                                    "_source_panel_id": "27",
+                                    "esql": {
+                                        "type": "metric",
+                                        "query": "FROM metrics-*\n| STATS load = AVG(node_load1)",
+                                    },
+                                },
+                                {
+                                    "title": "Containers",
+                                    "_source_panel_id": "31",
+                                    "esql": {
+                                        "type": "metric",
+                                        "query": "FROM metrics-*\n| STATS containers = COUNT(*)",
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        section_panels = rewritten["dashboards"][0]["panels"][0]["section"]["panels"]
+        load_yaml = next(p for p in section_panels if p["title"] == "Load [1m]")
+        containers_yaml = next(p for p in section_panels if p["title"] == "Containers")
+        self.assertIn("markdown", load_yaml)
+        self.assertNotIn("esql", load_yaml)
+        self.assertIn("esql", containers_yaml)
+        self.assertNotIn("markdown", containers_yaml)
+        self.assertEqual(load.visual_ir.title, "Load [1m]")
+        self.assertEqual(containers.visual_ir.title, "Containers")
+        self.assertEqual(load.visual_ir.presentation.kind, "markdown")
+        self.assertEqual(containers.visual_ir.presentation.kind, "esql")
+
     def test_sync_result_queries_to_yaml_persists_validation_fixes(self):
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
@@ -5565,6 +5851,50 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(updated)
         rebuilt_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
         self.assertEqual(rebuilt_query, "FROM metrics-prometheus-synthetic\n| LIMIT 10")
+
+    def test_sync_result_queries_to_yaml_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+        # IR-first: the sync must refresh `result.dashboard_ir` (not just
+        # `result.native_dashboard`), and the on-disk YAML it writes must be
+        # exactly what that rebuilt IR serializes to.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+
+            migrate.sync_result_queries_to_yaml(result, path)
+            on_disk = yaml.safe_load(path.read_text())
+
+        self.assertIsNotNone(result.dashboard_ir)
+        self.assertEqual(
+            result.dashboard_ir.panels[0].visual.presentation.config["query"],
+            "FROM metrics-prometheus-synthetic\n| LIMIT 10",
+        )
+        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
 
     def test_sync_result_queries_to_yaml_leaves_missing_native_dashboard_alone(self):
         # Callers that never set result.native_dashboard (e.g. legacy-only
@@ -7248,6 +7578,26 @@ class TranslatorRegressionTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()):
                 parse_args(["--no-native-promql"])
 
+    def test_parse_args_skips_legacy_compile_by_default(self):
+        """The default native Dashboards API path never needs the compiled
+        NDJSON, so kb-dashboard-cli compilation is off unless asked (matches
+        datadog-migrate)."""
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        args = parse_args([])
+
+        self.assertFalse(args.compile)
+
+    def test_parse_args_compile_opts_into_legacy_compile(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertTrue(parse_args(["--compile"]).compile)
+
+    def test_parse_args_can_disable_default_compile(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertFalse(parse_args(["--no-compile"]).compile)
+
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
@@ -8737,6 +9087,49 @@ class TranslatorRegressionTests(unittest.TestCase):
         rebuilt_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
         self.assertEqual(rebuilt_title, "Foo Total")
 
+    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+        # IR-first: metadata polish must refresh `result.dashboard_ir` (not
+        # just `result.native_dashboard`), and the on-disk YAML it writes
+        # must be exactly what that rebuilt IR serializes to.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+
+            migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+            on_disk = yaml.safe_load(yaml_path.read_text())
+
+        self.assertIsNotNone(result.dashboard_ir)
+        self.assertEqual(result.dashboard_ir.panels[0].title, "Foo Total")
+        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+
     def test_apply_metadata_polish_leaves_missing_native_dashboard_alone(self):
         # Callers that never set result.native_dashboard must not trip the
         # rebuild path or its deferred import.
@@ -9740,6 +10133,69 @@ class TranslatorRegressionTests(unittest.TestCase):
         target = {"legendFormat": "{{ method }}"}
         hints = _target_translation_hints(panel, panel_type="timeseries", target=target)
         self.assertNotIn("legend_format_template", hints)
+
+    def test_multi_by_xy_composites_series_group_breakdown(self):
+        """Lens XY has one breakdown field; multi-label ``by (a, b)`` must
+        composite into ``series_group`` instead of silently merging on ``a``."""
+        panel = {
+            "id": 1,
+            "title": "Pods",
+            "type": "timeseries",
+            "gridPos": {"w": 24, "h": 8, "x": 0, "y": 0},
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "sum by (namespace, pod) (kube_pod_info)",
+                }
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "line")
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        self.assertIn("EVAL series_group = CONCAT(", esql["query"])
+        self.assertTrue(
+            any("Composited multi-label grouping" in r for r in result.reasons),
+            result.reasons,
+        )
+        self.assertFalse(
+            any("XY chart shows a single breakdown" in r for r in result.reasons),
+            result.reasons,
+        )
+
+    def test_mysql_network_traffic_fuses_both_or_chain_targets(self):
+        """MySQL Overview Network Traffic has receive + transmit OR-chains;
+        both must land as series columns, not 'only 1 could be migrated'."""
+        dashboard = json.loads(
+            (pathlib.Path(__file__).resolve().parent.parent
+             / "infra/grafana/dashboards/mysql-overview-7362.json").read_text()
+        )
+
+        def _walk(panels_list):
+            for panel in panels_list or []:
+                yield panel
+                yield from _walk(panel.get("panels"))
+
+        panel = next(
+            p
+            for p in _walk(dashboard.get("panels"))
+            if p.get("title") == "Network Traffic" and p.get("type") != "row"
+        )
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIsNotNone(yaml_panel)
+        metrics = [m["field"] for m in yaml_panel["esql"]["metrics"]]
+        self.assertGreaterEqual(len(metrics), 2, metrics)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(
+            ("receive" in query.lower() and "transmit" in query.lower())
+            or ("Inbound" in metrics and "Outbound" in metrics),
+            query,
+        )
+        self.assertFalse(
+            any("only 1 could be migrated" in r for r in result.reasons),
+            result.reasons,
+        )
 
     def test_apply_composite_legend_to_xy_panel_inserts_concat(self):
         from observability_migration.adapters.source.grafana.panels import (
@@ -13715,6 +14171,24 @@ class NativePromqlTests(unittest.TestCase):
         self.assertTrue(can_use_native_promql("up"))
         self.assertTrue(can_use_native_promql("rate(foo[5m])"))
         self.assertTrue(can_use_native_promql('sum by (job) (rate(http_requests_total[5m]))'))
+        self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
+
+    def test_rejects_nested_aggregation_for_native_promql(self):
+        """Nested aggregations (count(count(...))) pass offline can_use historically
+        but fail at ES PROMQL runtime (docker Load [1m]). Defer to ES|QL."""
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(
+            can_use_native_promql(
+                'avg(node_load1) / count(count(node_cpu) by (cpu))'
+            )
+        )
+        self.assertFalse(can_use_native_promql("count(count(node_cpu) by (cpu))"))
+        self.assertFalse(
+            can_use_native_promql(
+                "avg(sum by (job) (rate(http_requests_total[5m])))"
+            )
+        )
+        # Range-vector wrappers are not nested aggregations.
         self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
 
     def test_rejects_range_selector_on_aggregation(self):

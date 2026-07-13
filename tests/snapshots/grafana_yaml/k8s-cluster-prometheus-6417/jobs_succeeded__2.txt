@@ -1,0 +1,6 @@
+title: Jobs Succeeded
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: kube_job_status_active
+warning: Dropped variable-driven label filters during migration
