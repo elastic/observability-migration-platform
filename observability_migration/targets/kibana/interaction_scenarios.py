@@ -223,6 +223,14 @@ def _require_str(value: Any, manifest_path: Path, field: str) -> str:
     return value
 
 
+def _optional_str(value: Any, manifest_path: Path, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ManifestError(f"{manifest_path}: {field} must be a string")
+    return value.strip()
+
+
 def _require_bool(value: Any, manifest_path: Path, field: str) -> bool:
     if not isinstance(value, bool):
         raise ManifestError(f"{manifest_path}: {field} must be a boolean")
@@ -263,7 +271,7 @@ def _parse_root(document: dict[str, Any], manifest_path: Path) -> DashboardScena
     _reject_unknown_keys(source, _SOURCE_KEYS, manifest_path, "source")
     source_kind = _require_non_empty_str(source.get("kind"), manifest_path, "source kind")
     source_path = _require_non_empty_str(source.get("path"), manifest_path, "source path")
-    control_schema_path = _require_str(
+    control_schema_path = _optional_str(
         source.get("control_schema"), manifest_path, "source.control_schema"
     )
 
