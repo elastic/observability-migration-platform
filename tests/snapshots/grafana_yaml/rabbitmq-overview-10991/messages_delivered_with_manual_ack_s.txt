@@ -3,4 +3,4 @@ grafana_type: timeseries
 status: not_feasible
 chart_type: none
 chart_type: markdown
-warning: Aggregating over a PromQL vector-matching join requires manual redesign; dropping the joined metric would change numeric values
+warning: Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_global_messages_delivered_consume_manual_ack_total'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
