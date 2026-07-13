@@ -1,5 +1,0 @@
-title: Request duration method = "PUT" Heatmap
-grafana_type: heatmap
-status: migrated
-chart_type: heatmap
-metric: keycloak_request_duration_bucket

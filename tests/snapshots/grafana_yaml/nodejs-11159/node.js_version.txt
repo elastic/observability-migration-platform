@@ -1,7 +1,0 @@
-title: Node.js Version
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['nodejs_version_info']
-breakdowns: ['version']
-warning: Approximated grouped stat panel as summary table

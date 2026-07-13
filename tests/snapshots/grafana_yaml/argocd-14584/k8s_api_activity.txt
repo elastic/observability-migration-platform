@@ -1,7 +1,0 @@
-title: K8s API Activity
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['argocd_app_k8s_request_total']
-breakdown: legend

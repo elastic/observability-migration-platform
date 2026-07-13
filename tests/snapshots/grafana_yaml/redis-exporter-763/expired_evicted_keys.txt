@@ -1,7 +1,0 @@
-title: Expired/Evicted Keys
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['expired', 'evicted']
-breakdown: instance

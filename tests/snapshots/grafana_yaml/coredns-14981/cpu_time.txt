@@ -1,8 +1,0 @@
-title: CPU Time
-grafana_type: gauge
-status: migrated
-chart_type: gauge
-metric: process_cpu_seconds_total
-gauge_shape: arc
-gauge_range: [0, 0.03]
-gauge_thresholds: 0.03:#54B399

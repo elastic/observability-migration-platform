@@ -1,7 +1,0 @@
-title: Connections
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: rabbitmq_connections
-primary_color: background <=0:#C4162A, <=10:#1F60C4, <=10.00001:#37872D
-warning: Dropped group_left label-enrichment join on 'rabbitmq_identity_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Label filters on the partner (rabbitmq_cluster='__obs_migration_param_rabbitmq_cluster', namespace='__obs_migration_param_namespace', rabbitmq_endpoint='__obs_migration_param_endpoint') were also dropped, so the aggregation may span series (e.g. other clusters/namespaces) the original query excluded. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.

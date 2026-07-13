@@ -1,8 +1,0 @@
-title: Cluster State
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: computed_value
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
-warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

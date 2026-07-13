@@ -1,7 +1,0 @@
-title: Process Memory Usage
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Process_Memory', 'Heap_Total', 'Heap_Used', 'External_Memory']
-breakdown: instance

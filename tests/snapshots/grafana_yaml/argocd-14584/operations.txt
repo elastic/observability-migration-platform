@@ -1,9 +1,0 @@
-title: Operations
-grafana_type: gauge
-status: migrated_with_warnings
-chart_type: gauge
-metric: argocd_app_info
-gauge_shape: arc
-gauge_range: [0, 100]
-gauge_thresholds: 80:#54B399, 100:#E7664C
-warning: Dropped variable-driven label filters during migration

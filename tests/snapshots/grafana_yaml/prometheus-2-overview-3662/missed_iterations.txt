@@ -1,6 +1,0 @@
-title: Missed Iterations
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: prometheus_evaluator_iterations_missed_total
-warning: Dropped variable-driven label filters during migration

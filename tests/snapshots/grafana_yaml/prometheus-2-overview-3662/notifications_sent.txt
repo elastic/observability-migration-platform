@@ -1,8 +1,0 @@
-title: Notifications Sent
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['prometheus_notifications_sent_total']
-breakdown: instance
-axis_title: Notifications

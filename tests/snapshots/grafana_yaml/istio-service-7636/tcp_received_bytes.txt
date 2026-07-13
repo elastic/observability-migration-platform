@@ -1,6 +1,0 @@
-title: TCP Received Bytes
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: istio_tcp_received_bytes_total
-warning: Dropped variable-driven label filters during migration

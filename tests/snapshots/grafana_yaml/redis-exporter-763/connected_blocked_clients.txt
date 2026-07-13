@@ -1,6 +1,0 @@
-title: Connected/Blocked Clients
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['connected', 'blocked']

@@ -1,7 +1,0 @@
-title: Nodes
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: rabbitmq_identity_info
-primary_color: background <=3:#1F60C4, <=8:#37872D, <=8.000008:#C4162A
-warning: Dropped variable-driven label filters during migration

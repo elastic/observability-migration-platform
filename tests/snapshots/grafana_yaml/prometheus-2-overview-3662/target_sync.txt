@@ -1,9 +1,0 @@
-title: Target Sync
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['prometheus_target_sync_length_seconds_sum_calc']
-breakdown: scrape_job
-axis_title: Milliseconds
-warning: Dropped variable-driven label filters during migration

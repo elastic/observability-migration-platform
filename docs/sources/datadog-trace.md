@@ -61,7 +61,7 @@ the `$var` LIKE-broadening in individual panel queries.
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
 | datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 13 | 0 | 1 | 6 | 0 |
+| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
 | datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 28 | 3 | 2 | 9 | 0 |
 | datadog | Kubernetes - Overview | 57 | 2 | 39 | 4 | 2 | 10 | 0 |
 | datadog | MongoDB - Overview | 43 | 13 | 20 | 1 | 0 | 9 | 0 |
@@ -81,8 +81,8 @@ the `$var` LIKE-broadening in individual panel queries.
 | Verdict | Count | Meaning |
 |---------|-------|---------|
 | **CORRECT** | 226 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 26 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 174 | Known unsupported feature — placeholder or skip |
+| **MINOR_ISSUE** | 27 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 173 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -2135,7 +2135,7 @@ FROM metrics-*
 | Backend p99 Response Time | `timeseries` → `xy` | ok | **CORRECT** | avg:haproxy.backend.response.time{*,*,*,*} by {release} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Pod Statistics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Top Resource Consumers | `query_table` → `table` | ok | **CORRECT** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
-| CPU Usage by Pod | `timeseries` → `xy` | not_feasible | **EXPECTED_LIMITATION** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | — |
+| CPU Usage by Pod | `timeseries` → `xy` | requires_manual | **MINOR_ISSUE** | sum:kubernetes.cpu.usage.total{*,*,*,*,*,*,kube_namespace:ingress-haproxy,*,shor... | — |
 | Memory Usage % | `timeseries` → `xy` | ok | **CORRECT** | max:kubernetes.memory.usage{team:logs,*,*,*,datacenter:us1.prod.dog,*,*,*,kube_c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND team... |
 
 <details>
@@ -7069,8 +7069,8 @@ Elements:            426 total (426 panels)
 Renderable panels:   426
   OK:                   107 (25.1%)
   Warning:              222 (52.1%)
-  Requires manual:       24 (5.6%)
-  Not feasible:          11 (2.6%)
+  Requires manual:       25 (5.9%)
+  Not feasible:          10 (2.3%)
   Skipped:               62 (14.6%)
 ```
 
@@ -7078,8 +7078,8 @@ Verdict breakdown:
 
 ```
   CORRECT:                  226
-  MINOR_ISSUE:               26
-  EXPECTED_LIMITATION:      174
+  MINOR_ISSUE:               27
+  EXPECTED_LIMITATION:      173
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -7088,14 +7088,13 @@ Verdict breakdown:
 ## Appendix: Not-Feasible Panel Breakdown
 
 <!-- GENERATED:NOT_FEASIBLE_BREAKDOWN -->
-Every panel marked `not_feasible` in the trace run (11 total):
+Every panel marked `not_feasible` in the trace run (10 total):
 
 | Panel Title | Dashboard | Source | Reason |
 |-------------|-----------|--------|--------|
 | Requests per second per host | Apache - Overview | datadog | — |
 | 9 | Docker - Overview | datadog | — |
 | 10 | Docker - Overview | datadog | — |
-| CPU Usage by Pod | HAProxy - Overview | datadog | multi-query formula had mismatched groupings; united dimensions (k8s.pod.name) so the panel can migr... |
 | Kafka Topology for $topic, $env | Kafka, Zookeeper and Kafka Consumer Overview | datadog | — |
 | Topic Health | Kafka, Zookeeper and Kafka Consumer Overview | datadog | Scope filter with template variable could not be bound exactly; apply specific values via Kibana das... |
 | CPU utilization per node | Kubernetes - Overview | datadog | — |
@@ -7106,8 +7105,6 @@ Every panel marked `not_feasible` in the trace run (11 total):
 
 **Pattern analysis:**
 
-- **1×** multi-query formula had mismatched groupings; united dimensi
-- **1×** translation error: unsupported formula function: autosmooth
 - **1×** Scope filter with template variable could not be bound exact
 - **1×** rate semantics approximated with delta over observed bucket 
 - **1×** translation error: multi-query widgets with different reques
@@ -7115,4 +7112,4 @@ Every panel marked `not_feasible` in the trace run (11 total):
 
 ---
 
-*Last generated: 2026-07-13 06:19 UTC*
+*Last generated: 2026-07-13 08:53 UTC*

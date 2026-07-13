@@ -1,5 +1,0 @@
-title: pvc is bound
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kube_persistentvolumeclaim_status_phase_sum

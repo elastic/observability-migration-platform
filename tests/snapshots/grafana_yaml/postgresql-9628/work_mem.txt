@@ -1,6 +1,0 @@
-title: Work Mem
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: pg_settings_work_mem_bytes
-warning: Dropped variable-driven label filters during migration

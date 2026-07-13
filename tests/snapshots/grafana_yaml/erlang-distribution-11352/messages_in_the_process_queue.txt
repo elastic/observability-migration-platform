@@ -1,9 +1,0 @@
-title: Messages in the process queue
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['erlang_vm_dist_proc_message_queue_len']
-breakdown: legend
-warning: Dropped variable-driven label filters during migration
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged

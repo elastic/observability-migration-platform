@@ -1,5 +1,0 @@
-title: Used
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: container_cpu_usage_seconds_total

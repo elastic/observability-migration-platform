@@ -1,8 +1,0 @@
-title: Total Commands / sec
-grafana_type: timeseries
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['redis_commands_total']
-breakdown: cmd
-mode: stacked

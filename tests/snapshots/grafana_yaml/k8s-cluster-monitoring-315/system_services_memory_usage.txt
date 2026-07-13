@@ -1,7 +1,0 @@
-title: System services memory usage
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['container_memory_working_set_bytes']
-breakdown: systemd_service_name

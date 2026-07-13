@@ -1,5 +1,0 @@
-title: Average DNS Lookup
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: probe_dns_lookup_time_seconds

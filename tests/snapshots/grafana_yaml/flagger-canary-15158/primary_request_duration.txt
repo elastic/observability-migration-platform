@@ -1,6 +1,0 @@
-title: Primary: Request Duration
-grafana_type: timeseries
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: PromQL '/' arithmetic where an operand contains a nested set operator or vector-matching join that cannot be safely combined; marked for manual review so data is not silently dropped

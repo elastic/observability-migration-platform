@@ -2412,6 +2412,30 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("COUNT_DISTINCT(cpu)", esql)
         self.assertIn("computed_value", esql)
 
+    def test_multi_exclusive_nested_count_stays_not_feasible(self):
+        """``... / count by(job)(count by(job, instance, cpu)(node_cpu))``.
+
+        The outer count() counts distinct ``(instance, cpu)`` *tuples* per
+        job. ES|QL COUNT_DISTINCT takes a single field, so collapsing to one
+        exclusive inner label (``instance``) would under-count whenever an
+        instance has multiple CPUs. There is no faithful single-field
+        expression, so the nested count must fail closed as not_feasible
+        rather than emit ``COUNT_DISTINCT(instance)`` (wrong math).
+        """
+        expr = (
+            "node_load1 "
+            "/ count by(job)("
+            "count by(job, instance, cpu)(node_cpu)"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertNotIn("COUNT_DISTINCT(instance)", translated.esql_query or "")
+
     def test_k8s_mixed_os_plus_prefers_linux_left_operand(self):
         """Kubernetes Views Global idiom: Linux sum + on(ns) (Windows join or 0*Linux).
 
@@ -10168,23 +10192,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
     def test_mysql_network_traffic_fuses_both_or_chain_targets(self):
-        """MySQL Overview Network Traffic has receive + transmit OR-chains;
-        both must land as series columns, not 'only 1 could be migrated'."""
-        dashboard = json.loads(
-            (pathlib.Path(__file__).resolve().parent.parent
-             / "infra/grafana/dashboards/mysql-overview-7362.json").read_text()
-        )
+        """MySQL Overview "Network Traffic" has receive + transmit OR-chains;
+        both must land as series columns, not 'only 1 could be migrated'.
 
-        def _walk(panels_list):
-            for panel in panels_list or []:
-                yield panel
-                yield from _walk(panel.get("panels"))
-
-        panel = next(
-            p
-            for p in _walk(dashboard.get("panels"))
-            if p.get("title") == "Network Traffic" and p.get("type") != "row"
-        )
+        The panel below is an inlined minimal repro of the receive/transmit
+        OR-chain shape (the upstream grafana.com MySQL Overview dashboard JSON
+        is intentionally not committed; fetch it via the pinned
+        ``community_corpus.json`` when you need the full dashboard)."""
+        panel = {
+            "title": "Network Traffic",
+            "type": "graph",
+            "targets": [
+                {
+                    "expr": (
+                        'sum(rate(node_network_receive_bytes_total{instance="$host", device!="lo"}[$interval])) '
+                        'or sum(irate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
+                        'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[$interval])) '
+                        'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[5m]))'
+                    ),
+                    "legendFormat": "Inbound",
+                    "refId": "B",
+                },
+                {
+                    "expr": (
+                        'sum(rate(node_network_transmit_bytes_total{instance="$host", device!="lo"}[$interval])) '
+                        'or sum(irate(node_network_transmit_bytes_total{instance="$host", device!="lo"}[5m])) '
+                        'or sum(max_over_time(rdsosmetrics_network_tx{instance="$host"}[$interval])) '
+                        'or sum(max_over_time(rdsosmetrics_network_tx{instance="$host"}[5m]))'
+                    ),
+                    "legendFormat": "Outbound",
+                    "refId": "A",
+                },
+            ],
+        }
         yaml_panel, result = self.translate_panel(panel)
         self.assertIsNotNone(yaml_panel)
         metrics = [m["field"] for m in yaml_panel["esql"]["metrics"]]

@@ -1,6 +1,0 @@
-title: GPU Avg. Temp
-grafana_type: gauge
-status: migrated
-chart_type: gauge
-metric: DCGM_FI_DEV_GPU_TEMP
-gauge_shape: arc

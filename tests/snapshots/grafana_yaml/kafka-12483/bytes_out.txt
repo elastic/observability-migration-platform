@@ -1,7 +1,0 @@
-title: Bytes OUT
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['kafka_server_brokertopicmetrics_total_bytesoutpersec_count']
-breakdown: instance

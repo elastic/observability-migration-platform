@@ -1,8 +1,0 @@
-title: Downstream Network Traffic
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['in', 'out']
-breakdown: host
-warning: Dropped variable-driven label filters during migration

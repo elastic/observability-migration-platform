@@ -1,6 +1,0 @@
-title: Failed Reloads
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: coredns_reload_failed_total
-primary_color: value <=80:#54B399, <=80.00008:#E7664C

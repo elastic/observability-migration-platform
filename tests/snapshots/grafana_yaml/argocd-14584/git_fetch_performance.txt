@@ -1,5 +1,0 @@
-title: Git Fetch Performance
-grafana_type: heatmap
-status: migrated
-chart_type: heatmap
-metric: argocd_git_request_duration_seconds_bucket

@@ -1,6 +1,0 @@
-title: Total requests
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: certmanager_http_acme_client_request_count
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

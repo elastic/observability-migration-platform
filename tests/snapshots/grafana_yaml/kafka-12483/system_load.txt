@@ -1,8 +1,0 @@
-title: System load
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['System_load_average', 'Available_Processors']
-breakdown: series_group
-warning: Composited multi-label grouping (namespace, instance) into a single XY breakdown column

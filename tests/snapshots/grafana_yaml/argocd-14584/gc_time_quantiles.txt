@@ -1,6 +1,0 @@
-title: GC Time Quantiles
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['go_gc_duration_seconds']

@@ -1,6 +1,0 @@
-title: Remaining memory
-grafana_type: table
-status: migrated
-chart_type: datatable
-metrics: ['container_spec_memory_limit_bytes']
-breakdowns: ['time_bucket']

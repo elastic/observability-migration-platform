@@ -1,9 +1,0 @@
-title: Containers memory usage
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['container_memory_working_set_bytes']
-breakdown: series_group
-warning: Panel has 3 PromQL targets but only 1 could be migrated
-warning: Composited multi-label grouping (k8s.container.name, k8s.pod.name) into a single XY breakdown column

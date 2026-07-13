@@ -1,6 +1,0 @@
-title: Max Worker Processes
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: pg_settings_max_worker_processes
-warning: Dropped variable-driven label filters during migration

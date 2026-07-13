@@ -1,6 +1,0 @@
-title: Requests (total)
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['coredns_forward_requests_total']

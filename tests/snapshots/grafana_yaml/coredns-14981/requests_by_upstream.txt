@@ -1,6 +1,0 @@
-title: Requests (by upstream)
-grafana_type: piechart
-status: migrated
-chart_type: pie
-metrics: ['coredns_forward_requests_total']
-breakdowns: ['to']

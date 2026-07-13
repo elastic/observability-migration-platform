@@ -3396,6 +3396,72 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
             f"expected a group-related warning, got {result.warnings}",
         )
 
+    def test_autosmooth_formula_widget_is_requires_manual_not_feasible(self):
+        # Regression for the pinned HAProxy "CPU Usage by Pod" widget: its two
+        # requests both apply autosmooth() (a Datadog display transform with no
+        # ES|QL analogue) and have mismatched groupings (one `by {pod_name}`,
+        # one ungrouped). The grouping-union shortcut must NOT report "the panel
+        # can migrate as one ES|QL query" and then fail as not_feasible; the
+        # untranslatable display function is caught up-front so the panel is
+        # surfaced for manual review (requires_manual) with an accurate reason.
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "haproxy.json"
+        )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        dashboard = normalize_dashboard(raw)
+
+        def _iter(widgets):
+            for widget in widgets or []:
+                yield widget
+                yield from _iter(getattr(widget, "children", []) or [])
+
+        result = None
+        for widget in _iter(dashboard.widgets):
+            if getattr(widget, "title", "") == "CPU Usage by Pod":
+                result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+                break
+        self.assertIsNotNone(result, "CPU Usage by Pod widget not found in fixture")
+        self.assertEqual(
+            result.status,
+            "requires_manual",
+            msg=f"warnings={result.warnings} esql={result.esql_query!r}",
+        )
+        joined = " ".join(result.warnings or [])
+        self.assertIn("autosmooth", joined)
+        # The success-oriented grouping-union warning must never be emitted for
+        # a panel that ultimately cannot migrate automatically.
+        self.assertNotIn("can migrate as one ES|QL query", joined)
+
+    def test_manual_review_formula_funcs_flags_smoothing_only(self):
+        from observability_migration.adapters.source.datadog.models import (
+            FormulaFuncCall,
+            FormulaRef,
+        )
+        from observability_migration.adapters.source.datadog.translate import (
+            _FormulaSpec,
+            _manual_review_formula_funcs,
+        )
+
+        smoothed = _FormulaSpec(
+            ast=FormulaFuncCall(name="autosmooth", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="autosmooth(query1)",
+        )
+        # A semantic transform (anomalies) is NOT flagged for manual review here
+        # so its existing not_feasible disposition is preserved.
+        semantic = _FormulaSpec(
+            ast=FormulaFuncCall(name="anomalies", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="anomalies(query1)",
+        )
+        self.assertEqual(_manual_review_formula_funcs([smoothed]), ["autosmooth"])
+        self.assertEqual(_manual_review_formula_funcs([semantic]), [])
+
     def test_log_widget_with_modern_search_query_translates(self):
         # Modern Datadog log widgets put the filter in raw_q["search"]["query"]
         # instead of raw_q["query"]. Verify normalize captures it.

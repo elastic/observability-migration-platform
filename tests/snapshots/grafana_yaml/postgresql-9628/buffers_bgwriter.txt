@@ -1,8 +1,0 @@
-title: Buffers (bgwriter)
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['buffers_backend', 'buffers_alloc', 'backend_fsync', 'buffers_checkpoint', 'buffers_clean']
-breakdown: instance
-warning: Dropped variable-driven label filters during migration

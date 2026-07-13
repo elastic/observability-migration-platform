@@ -1,2 +1,0 @@
-control: type=options field=container_group multiple=True
-control: type=options field=instance multiple=True

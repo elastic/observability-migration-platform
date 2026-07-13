@@ -1,7 +1,0 @@
-title: In-sync replicas shrinks
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: kafka_server_replicamanager_total_isrshrinkspersec_count
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
-warning: Applied negation to match leading minus in original expression

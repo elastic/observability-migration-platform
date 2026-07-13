@@ -1,9 +1,0 @@
-title: MySQL Aborted Connections
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Aborted_Connects_attempts', 'Aborted_Clients_timeout']
-breakdown: instance
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples

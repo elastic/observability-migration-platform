@@ -1,8 +1,0 @@
-title: Flagger Canary: Last Result
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['flagger_canary_status']
-breakdowns: ['k8s.cluster.name']
-warning: Dropped variable-driven label filters during migration
-warning: Approximated grouped stat panel as summary table

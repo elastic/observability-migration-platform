@@ -1,6 +1,0 @@
-title: Upstream Health Check Fails
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: coredns_forward_healthcheck_broken_total
-primary_color: value <=80:#54B399, <=80.00008:#E7664C

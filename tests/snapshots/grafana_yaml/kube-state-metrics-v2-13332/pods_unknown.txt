@@ -1,5 +1,0 @@
-title: Pods Unknown
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kube_pod_status_phase

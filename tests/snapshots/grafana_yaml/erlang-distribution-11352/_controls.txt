@@ -1,3 +1,0 @@
-control: type=options field=namespace multiple=False
-control: type=options field=rabbitmq_cluster multiple=False
-control: type=options field=type multiple=False

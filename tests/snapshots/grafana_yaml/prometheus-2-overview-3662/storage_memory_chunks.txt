@@ -1,8 +1,0 @@
-title: Storage Memory Chunks
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['prometheus_tsdb_head_chunks']
-axis_title: Chunks
-warning: Dropped variable-driven label filters during migration

@@ -1,6 +1,0 @@
-title: Nodes Out of Disk
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: kube_node_status_condition
-warning: Dropped variable-driven label filters during migration

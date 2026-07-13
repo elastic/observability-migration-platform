@@ -1,6 +1,0 @@
-title: Unclean leader election
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: kafka_controller_controllerstats_uncleanleaderelectionspersec_count
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

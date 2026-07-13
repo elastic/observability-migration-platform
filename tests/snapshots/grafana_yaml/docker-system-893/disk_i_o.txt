@@ -1,8 +1,0 @@
-title: Disk I/O
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['OUT_on', 'IN_on']
-breakdown: device
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math

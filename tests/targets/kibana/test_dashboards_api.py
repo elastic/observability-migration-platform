@@ -1827,6 +1827,62 @@ def test_upload_native_artifact_rejection_has_no_legacy_fallback():
     assert session.put.call_count == 1
 
 
+def test_upload_native_artifact_rejects_non_object_envelope():
+    # ``json.loads`` of a ``.native.json`` containing ``[]`` is valid JSON but
+    # a list, not the expected envelope; must be a per-record rejection, not
+    # an AttributeError crashing the whole staged upload.
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact([], "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "object envelope" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_unexpected_kind():
+    artifact = _native_artifact_envelope(kind="dashboard_ir")
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "kind" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_unsupported_version():
+    artifact = _native_artifact_envelope(version=999)
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "version" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_non_object_payload():
+    artifact = _native_artifact_envelope(payload=[])
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "payload" in result.message
+    session.put.assert_not_called()
+
+
+def test_upload_native_artifact_rejects_non_numeric_mapping_counter():
+    # ``mapping.mapped: "corrupt"`` is valid JSON but would raise ValueError
+    # in ``int(...)``; must be reported as a rejected record instead.
+    artifact = _native_artifact_envelope(
+        mapping={"mapped": "corrupt", "unmapped": 0, "reasons": {}},
+    )
+    session = mock.Mock()
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+    assert result.status == "rejected"
+    assert "mapping.mapped" in result.message
+    session.put.assert_not_called()
+
+
 def test_upload_native_artifact_resolves_pinned_control_data_view_id():
     artifact = _native_artifact_envelope(
         payload={

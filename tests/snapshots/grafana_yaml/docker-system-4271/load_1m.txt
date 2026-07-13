@@ -1,9 +1,0 @@
-title: Load [1m]
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: computed_value
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Dropped variable-driven label filters during migration
-warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)
-warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

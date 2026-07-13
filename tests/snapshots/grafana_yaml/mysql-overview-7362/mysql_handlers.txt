@@ -1,9 +1,0 @@
-title: MySQL Handlers
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['computed_value']
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples
-warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series

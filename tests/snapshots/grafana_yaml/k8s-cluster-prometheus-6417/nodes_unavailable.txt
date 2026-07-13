@@ -1,6 +1,0 @@
-title: Nodes Unavailable
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: kube_node_spec_unschedulable
-warning: Dropped variable-driven label filters during migration

@@ -511,6 +511,24 @@ def _translate_formula_metric_widget(
         return count_formula_query
 
     used_specs = _resolve_used_specs(formulas, spec_map)
+
+    # Preflight cosmetic display/smoothing functions (autosmooth, ewma_*,
+    # median_*) *before* _ensure_formula_specs_compatible unions mismatched
+    # groupings and appends its success-oriented "the panel can migrate as one
+    # ES|QL query" warning. Without this, a widget that has both a grouping
+    # mismatch and a smoothing function would emit that warning and then fail
+    # deep in AST translation with a bare ValueError -> not_feasible,
+    # contradicting the warning and regressing the operator disposition from the
+    # accurate requires_manual (a human can simply drop the cosmetic smoothing)
+    # to a hard block.
+    smoothing_funcs = _manual_review_formula_funcs(formulas)
+    if smoothing_funcs:
+        raise _RequiresManualError(
+            "formula uses Datadog display/smoothing function(s) with no ES|QL "
+            f"equivalent ({', '.join(smoothing_funcs)}); drop the cosmetic "
+            "smoothing or hand-write the query for manual review"
+        )
+
     _ensure_formula_specs_compatible(
         used_specs,
         result=result,
@@ -1251,6 +1269,52 @@ def _formula_ref_names(node: Any) -> list[str]:
 
 _BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
 _DERIVATIVE_FORMULA_FNS = {"rate", "diff", "monotonic_diff"}
+
+# Datadog display/smoothing formula functions that have no ES|QL analogue but
+# are purely cosmetic: a reviewer can drop the smoothing and the underlying
+# panel still migrates. These are surfaced up-front as ``requires_manual`` (a
+# human decision) rather than being allowed to fail deep in AST translation as
+# a hard ``not_feasible`` block. Semantic transforms (clamp/timeshift/cumsum/
+# anomalies/...) are intentionally *not* here so their existing disposition is
+# preserved.
+_MANUAL_REVIEW_FORMULA_FUNCS = frozenset(
+    {
+        "autosmooth",
+        "ewma_3",
+        "ewma_5",
+        "ewma_10",
+        "ewma_20",
+        "median_3",
+        "median_5",
+        "median_7",
+        "median_9",
+    }
+)
+
+
+def _collect_formula_func_names(node: Any) -> set[str]:
+    """Return the lowercased names of every function call in a formula AST."""
+    names: set[str] = set()
+    if isinstance(node, FormulaFuncCall):
+        names.add((node.name or "").lower())
+        for arg in node.args or []:
+            names |= _collect_formula_func_names(arg)
+    elif isinstance(node, FormulaBinOp):
+        names |= _collect_formula_func_names(node.left)
+        names |= _collect_formula_func_names(node.right)
+    elif isinstance(node, FormulaUnary):
+        names |= _collect_formula_func_names(node.operand)
+    return names
+
+
+def _manual_review_formula_funcs(formulas: list[_FormulaSpec]) -> list[str]:
+    """Return sorted cosmetic-smoothing formula funcs that force manual review."""
+    return sorted(
+        name
+        for formula in formulas
+        for name in _collect_formula_func_names(formula.ast)
+        if name in _MANUAL_REVIEW_FORMULA_FUNCS
+    )
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:

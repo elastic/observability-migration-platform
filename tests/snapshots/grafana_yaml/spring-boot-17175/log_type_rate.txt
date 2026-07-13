@@ -1,6 +1,0 @@
-title: Log Type Rate
-grafana_type: timeseries
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: LogQL pipeline stages require manual redesign

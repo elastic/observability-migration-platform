@@ -1,5 +1,0 @@
-title: Jobs Succeeded
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kube_job_status_succeeded

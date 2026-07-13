@@ -1,2 +1,0 @@
-control: type=options field=datname multiple=True
-control: type=options field=mode multiple=True

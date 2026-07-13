@@ -1,7 +1,0 @@
-title: Server Request Volume
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: istio_requests_total
-warning: Dropped variable-driven label filters during migration
-warning: round(v, step) emitted as ROUND(v / step) * step

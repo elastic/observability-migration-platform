@@ -1,7 +1,0 @@
-title: Logins Per REALM for past 24h
-grafana_type: grafana-piechart-panel
-status: migrated_with_warnings
-chart_type: pie
-metrics: ['keycloak_logins']
-breakdowns: ['realm']
-warning: Source PromQL used increase() but keycloak_logins is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.

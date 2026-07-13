@@ -1,7 +1,0 @@
-title: Number of partitions
-grafana_type: graph
-status: migrated
-chart_type: bar
-dimension: time_bucket
-metrics: ['kafka_server_replicamanager_total_partitioncount_value']
-mode: unstacked

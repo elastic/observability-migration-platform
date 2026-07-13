@@ -1,7 +1,0 @@
-title: MySQL Connections
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['mysql_global_status_threads_connected']
-warning: Panel has 3 PromQL targets but only 1 could be migrated

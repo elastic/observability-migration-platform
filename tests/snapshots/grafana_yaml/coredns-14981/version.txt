@@ -1,5 +1,0 @@
-title: Version
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: coredns_build_info

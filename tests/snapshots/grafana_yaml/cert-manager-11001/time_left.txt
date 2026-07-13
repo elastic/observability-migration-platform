@@ -1,7 +1,0 @@
-title: Time Left
-grafana_type: table
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['certmanager_certificate_expiration_timestamp_seconds']
-breakdowns: ['time_bucket']
-warning: sort_desc() applied — ES|QL output sorted by value DESC

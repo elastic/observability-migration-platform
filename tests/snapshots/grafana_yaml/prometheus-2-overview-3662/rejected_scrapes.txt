@@ -1,9 +1,0 @@
-title: Rejected Scrapes
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['exceeded_sample_limit', 'duplicate_timestamp', 'out_of_bounds', 'out_of_order']
-axis_title: Scrapes
-warning: Dropped variable-driven label filters during migration
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

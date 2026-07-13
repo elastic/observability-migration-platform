@@ -1,5 +1,0 @@
-title: Offline partitions count
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kafka_controller_kafkacontroller_offlinepartitionscount_value

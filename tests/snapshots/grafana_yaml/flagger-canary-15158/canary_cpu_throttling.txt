@@ -1,9 +1,0 @@
-title: Canary: CPU Throttling
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: area
-dimension: time_bucket
-metrics: ['container_cpu_cfs_throttled_seconds_total']
-breakdown: k8s.cluster.name
-mode: stacked
-warning: Dropped variable-driven label filters during migration

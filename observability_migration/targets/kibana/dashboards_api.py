@@ -85,6 +85,10 @@ from observability_migration.core.assets.native_dashboard import (
 )
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
+from observability_migration.targets.kibana.native_artifacts import (
+    ARTIFACT_ENVELOPE_VERSION,
+    NATIVE_ARTIFACT_KIND,
+)
 
 # Current typed Dashboards API caps. The API schema is still preview and its
 # full reference is externally hosted, so keep these in sync with
@@ -1855,6 +1859,44 @@ def upload_native_dashboard(
     )
 
 
+def _validate_native_artifact_envelope(artifact: Any) -> str:
+    """Return a human-readable error if ``artifact`` is not a well-formed
+    native artifact envelope, or ``""`` when it is valid.
+
+    Guards :func:`upload_native_artifact` against structurally corrupt but
+    syntactically valid JSON. ``json.loads`` happily returns a bare list
+    (``[]``), a scalar, or an object with the wrong ``kind``/``version`` or a
+    non-numeric ``mapping`` counter (``"corrupt"``); without this check those
+    would raise ``AttributeError``/``ValueError`` mid-upload instead of
+    becoming the promised per-record rejection.
+    """
+    if not isinstance(artifact, dict):
+        return f"expected a JSON object envelope, got {type(artifact).__name__}"
+    kind = artifact.get("kind")
+    if kind != NATIVE_ARTIFACT_KIND:
+        return f"unexpected artifact kind {kind!r} (expected {NATIVE_ARTIFACT_KIND!r})"
+    version = artifact.get("version")
+    if version != ARTIFACT_ENVELOPE_VERSION:
+        return (
+            f"unsupported artifact version {version!r} "
+            f"(expected {ARTIFACT_ENVELOPE_VERSION!r})"
+        )
+    payload = artifact.get("payload")
+    if not isinstance(payload, dict):
+        return f"payload must be a JSON object, got {type(payload).__name__}"
+    mapping = artifact.get("mapping")
+    if mapping is not None and not isinstance(mapping, dict):
+        return f"mapping must be a JSON object, got {type(mapping).__name__}"
+    if isinstance(mapping, dict):
+        for counter in ("mapped", "unmapped"):
+            value = mapping.get(counter)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                return f"mapping.{counter} must be numeric, got {value!r}"
+    return ""
+
+
 def upload_native_artifact(
     artifact: dict[str, Any],
     kibana_url: str,
@@ -1877,6 +1919,19 @@ def upload_native_artifact(
     path (``obs-migrate upload --artifact-format yaml`` remains available
     for that, explicitly).
     """
+    envelope_error = _validate_native_artifact_envelope(artifact)
+    if envelope_error:
+        title = ""
+        dashboard_id = ""
+        if isinstance(artifact, dict):
+            title = str(artifact.get("title") or "")
+            dashboard_id = str(artifact.get("dashboard_id") or "")
+        return UploadResult(
+            dashboard=title,
+            dashboard_id=dashboard_id,
+            status="rejected",
+            message=f"invalid native artifact envelope: {envelope_error}",
+        )
     raw_payload = artifact.get("payload")
     payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
     mapping = artifact.get("mapping")

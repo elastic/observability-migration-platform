@@ -1,6 +1,0 @@
-title: Pods Unknown
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: kube_pod_status_phase
-warning: Dropped variable-driven label filters during migration

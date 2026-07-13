@@ -1,6 +1,0 @@
-title: Total Series
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: prometheus_tsdb_head_series
-warning: Dropped variable-driven label filters during migration

@@ -1,8 +1,0 @@
-title: MySQL Internal Memory Overview
-grafana_type: graph
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['System_Memory', 'InnoDB_Buffer_Pool_Data', 'InnoDB_Log_Buffer_Size', 'InnoDB_Additional_Memory_Pool_Size', 'InnoDB_Dictionary_Size', 'Key_Buffer_Size', 'Query_Cache_Size', 'Adaptive_Hash_Index_Size', 'TokuDB_Cache_Size']
-breakdown: instance
-mode: stacked

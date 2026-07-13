@@ -1,5 +1,0 @@
-title: Memory Usage
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: go_memstats_alloc_bytes

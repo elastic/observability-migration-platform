@@ -3704,6 +3704,18 @@ def _build_measure_spec(
                 lbl for lbl in (frag.group_labels or []) if not str(lbl).startswith("label_")
             }
             exclusive_raw = [lbl for lbl in raw_inner_groups if lbl not in outer_raw]
+            if len(exclusive_raw) > 1:
+                # The outer count() counts distinct *tuples* of every inner
+                # label that is not already an outer grouping key — e.g.
+                # ``count by(job)(count by(job, instance, cpu)(node_cpu))``
+                # counts distinct ``(instance, cpu)`` pairs per job. ES|QL
+                # COUNT_DISTINCT takes a single field, so collapsing to one
+                # exclusive label (``exclusive_raw[0]``) would under-count
+                # whenever another exclusive label varies within a group (an
+                # instance with multiple CPUs). There is no faithful
+                # single-field expression, so fail closed as not_feasible
+                # rather than emit wrong math.
+                return None
             if exclusive_raw:
                 count_field = (
                     resolver.resolve_label(exclusive_raw[0]) if resolver else exclusive_raw[0]

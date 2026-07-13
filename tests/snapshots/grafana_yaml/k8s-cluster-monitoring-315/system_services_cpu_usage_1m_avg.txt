@@ -1,8 +1,0 @@
-title: System services CPU usage (1m avg)
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['container_cpu_usage_seconds_total']
-breakdown: systemd_service_name
-axis_title: cores

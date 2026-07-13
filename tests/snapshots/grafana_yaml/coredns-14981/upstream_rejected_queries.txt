@@ -1,6 +1,0 @@
-title: Upstream Rejected Queries
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: coredns_forward_max_concurrent_rejects_total
-primary_color: value <=1:#54B399, <=1.000001:#E7664C

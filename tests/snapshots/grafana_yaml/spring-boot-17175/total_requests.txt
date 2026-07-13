@@ -1,9 +1,0 @@
-title: Total Requests
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['http_server_requests_seconds_count']
-breakdowns: ['time_bucket']
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
-warning: Applied Grafana transformation 'sortBy' as ES|QL rewrite
-warning: Approximated grouped stat panel as summary table

@@ -1,3 +1,0 @@
-control: type=options field=kubernetes_pod_name multiple=False
-control: type=options field=realm multiple=False
-control: type=options field=client_id multiple=False

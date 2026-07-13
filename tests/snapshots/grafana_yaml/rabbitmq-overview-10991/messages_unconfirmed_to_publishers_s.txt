@@ -1,8 +1,0 @@
-title: Messages unconfirmed to publishers / s
-grafana_type: timeseries
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['rabbitmq_global_messages_received_confirm_total']
-breakdown: rabbitmq_node
-mode: stacked

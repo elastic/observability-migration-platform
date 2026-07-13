@@ -1,5 +1,0 @@
-title: HTTP Status Code
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: probe_http_status_code

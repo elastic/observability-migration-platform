@@ -1,6 +1,0 @@
-title: Job failed
-grafana_type: table-old
-status: migrated
-chart_type: datatable
-metrics: ['kube_job_status_failed']
-breakdowns: ['time_bucket']

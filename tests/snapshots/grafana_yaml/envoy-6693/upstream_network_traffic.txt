@@ -1,7 +1,0 @@
-title: Upstream Network Traffic
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['in', 'out']
-breakdown: host

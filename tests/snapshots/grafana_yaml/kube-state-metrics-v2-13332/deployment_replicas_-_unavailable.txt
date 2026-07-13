@@ -1,5 +1,0 @@
-title: Deployment Replicas - Unavailable
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kube_deployment_status_replicas_unavailable

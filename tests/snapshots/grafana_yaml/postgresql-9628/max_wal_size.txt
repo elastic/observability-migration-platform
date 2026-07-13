@@ -1,6 +1,0 @@
-title: Max WAL Size
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: pg_settings_max_wal_size_bytes
-warning: Dropped variable-driven label filters during migration

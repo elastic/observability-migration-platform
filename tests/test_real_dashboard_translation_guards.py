@@ -165,12 +165,13 @@ def _translate_datadog_fixture(relative_path: str) -> tuple[list[Any], dict[str,
 
 class GrafanaRealDashboardTranslationGuardTests(unittest.TestCase):
     def test_real_grafana_dashboards_have_bound_params_and_valid_stage_order(self) -> None:
+        # Only first-party / already-noticed committed fixtures are used here;
+        # the grafana.com marketplace dashboards are fetched on demand from the
+        # pinned community_corpus.json rather than committed.
         fixtures = [
-            "blackbox-7587.json",
-            "flagger-canary-15158.json",
             "k8s-views-global.json",
+            "node-exporter-full.json",
             "prometheus-all.json",
-            "spring-boot-17175.json",
         ]
         failures: list[str] = []
         query_count = 0
@@ -198,28 +199,6 @@ class GrafanaRealDashboardTranslationGuardTests(unittest.TestCase):
 
         self.assertGreaterEqual(query_count, 100)
         self.assertEqual(failures, [], "\n\n".join(failures))
-
-    def test_blackbox_target_variable_filters_are_preserved_as_esql_control_params(self) -> None:
-        _result, yaml_doc = _translate_grafana_fixture("blackbox-7587.json")
-        dashboard = yaml_doc["dashboards"][0]
-        target_controls = [
-            control for control in dashboard.get("controls") or []
-            if control.get("variable_name") == "target"
-        ]
-        self.assertEqual(len(target_controls), 1)
-        target_control = target_controls[0]
-        self.assertEqual(target_control.get("type"), "esql")
-        self.assertEqual(str(target_control.get("default") or target_control.get("defaults")), ".*")
-
-        bound_queries = [
-            str((panel.get("esql") or {}).get("query") or "")
-            for panel in _esql_panels(yaml_doc)
-            if "?target" in str((panel.get("esql") or {}).get("query") or "")
-        ]
-        self.assertGreaterEqual(len(bound_queries), 8)
-        for query in bound_queries:
-            self.assertIn("RLIKE ?target", query)
-            self.assertNotIn("$target", query)
 
 
 class GrafanaRealPromQLTranslationGuardTests(unittest.TestCase):

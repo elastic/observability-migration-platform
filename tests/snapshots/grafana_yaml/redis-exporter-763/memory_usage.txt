@@ -1,6 +1,0 @@
-title: Memory Usage
-grafana_type: gauge
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: Aggregating over a per-element * between two time-series (sum(A * B)) cannot be expressed accurately in ES|QL; rewrite as a ratio of aggregates if the series are label-aligned

@@ -1,7 +1,0 @@
-title: Primary: Healthy POD Replicas
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['kube_deployment_status_replicas_available']
-warning: Dropped variable-driven label filters during migration

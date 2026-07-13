@@ -1,5 +1,0 @@
-title: Number of brokers
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: kafka_brokers

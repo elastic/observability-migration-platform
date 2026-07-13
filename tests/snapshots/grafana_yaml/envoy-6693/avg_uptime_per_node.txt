@@ -1,5 +1,0 @@
-title: Avg uptime per node
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: envoy_server_uptime

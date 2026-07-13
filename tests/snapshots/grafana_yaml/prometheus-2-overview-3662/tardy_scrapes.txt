@@ -1,6 +1,0 @@
-title: Tardy Scrapes
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: prometheus_target_scrapes_exceeded_sample_limit_total
-warning: Dropped variable-driven label filters during migration

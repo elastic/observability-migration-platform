@@ -1,9 +1,0 @@
-title: Primary: Incoming Request Volume
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['istio_requests_total']
-breakdown: k8s.cluster.name
-warning: Dropped variable-driven label filters during migration
-warning: round(v, step) emitted as ROUND(v / step) * step

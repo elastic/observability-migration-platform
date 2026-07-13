@@ -1,2 +1,0 @@
-control: type=options field=envoy_cluster_name multiple=False
-control: type=options field=host multiple=True

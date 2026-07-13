@@ -1,8 +1,0 @@
-title: MySQL Table Definition Cache
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Open_Table_Definitions', 'Table_Definitions_Cache_Size', 'Opened_Table_Definitions']
-breakdown: instance
-warning: PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples

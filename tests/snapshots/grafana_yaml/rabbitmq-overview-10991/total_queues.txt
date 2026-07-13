@@ -1,9 +1,0 @@
-title: Total queues
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: area
-dimension: time_bucket
-metrics: ['rabbitmq_queues']
-breakdown: series_group
-mode: stacked
-warning: Composited multi-label grouping (rabbitmq_node, rabbitmq_cluster) into a single XY breakdown column

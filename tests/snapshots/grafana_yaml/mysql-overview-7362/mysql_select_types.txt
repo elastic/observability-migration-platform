@@ -1,9 +1,0 @@
-title: MySQL Select Types
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Select_Full_Join', 'Select_Full_Range_Join', 'Select_Range', 'Select_Range_Check', 'Select_Scan']
-breakdown: instance
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: PromQL same-metric 'or': preferred left 'rate(...)' and dropped short-window fallback 'irate(...)'; Grafana uses the right side only when the left lacks samples

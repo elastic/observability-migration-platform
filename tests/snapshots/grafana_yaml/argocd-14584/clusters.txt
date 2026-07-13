@@ -1,7 +1,0 @@
-title: Clusters
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: argocd_cluster_info_count
-primary_color: value <=80:#54B399, <=80.00008:#E7664C
-warning: Approximated nested count(count()) as COUNT_DISTINCT(server)

@@ -1,5 +1,0 @@
-title: Clients
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: redis_connected_clients

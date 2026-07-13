@@ -1,7 +1,0 @@
-title: Pods network I/O (1m avg)
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['value', 'value_B']
-breakdown: k8s.pod.name

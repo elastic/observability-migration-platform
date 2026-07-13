@@ -1,8 +1,0 @@
-title: Total Time Spent by Command / sec
-grafana_type: timeseries
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['redis_commands_duration_seconds_total']
-breakdown: cmd
-mode: stacked
