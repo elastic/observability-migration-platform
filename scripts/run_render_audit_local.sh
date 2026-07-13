@@ -83,6 +83,7 @@ PY
   "$PY" -m observability_migration.targets.kibana.render_audit_driver \
     --kibana-url "$KIBANA_URL" --dashboard-id "$did" \
     --time-from now-3h --time-to now --fail-on-error \
+    --chrome-no-sandbox \
     --elements --migration-out "$report_dir" \
     --es-url "$ES_URL" --es-index "metrics-*,logs-*" || rc=1
 done <<< "$dashboard_rows"

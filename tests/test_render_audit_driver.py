@@ -36,6 +36,16 @@ def test_command_omits_profile_flag_when_no_dir():
     assert not any(c.startswith("--user-data-dir=") for c in cmd)
 
 
+def test_command_can_disable_chrome_sandbox_for_ci_runner():
+    cmd = build_render_audit_command(
+        "/usr/bin/chrome",
+        "https://kb/x",
+        "",
+        no_sandbox=True,
+    )
+    assert "--no-sandbox" in cmd
+
+
 def test_audit_passes_on_clean_dom():
     verdict = audit_dashboard_render(
         "https://kb", "dash-1", space_id="default", dom_fetcher=lambda _url: _CLEAN_DOM
