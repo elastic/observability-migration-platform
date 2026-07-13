@@ -16,7 +16,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from observability_migration.targets.kibana.interaction_driver import (  # noqa: E402
-    BrowserAdapterError,
     PlaywrightKibanaBrowser,
     SettlePolicy,
 )
@@ -141,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
             panel_contract,
             config,
         ).run()
-    except (OSError, BrowserAdapterError, ValueError) as exc:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
         print(format_runtime_error(exc), file=sys.stderr)
         return 1
     finally:

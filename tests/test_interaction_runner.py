@@ -318,6 +318,14 @@ def _assert_no_temp_artifacts(root: Path) -> None:
     assert temp_files == []
 
 
+def _foreign_browser_adapter_error() -> type[Exception]:
+    """Return BrowserAdapterError from the live driver module (reload-safe)."""
+    driver = importlib.import_module(
+        "observability_migration.targets.kibana.interaction_driver",
+    )
+    return driver.BrowserAdapterError
+
+
 def _load_cli_module(monkeypatch: pytest.MonkeyPatch, stub: Any) -> Any:
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_interaction_audit.py"
     spec = importlib.util.spec_from_file_location("run_interaction_audit", script_path)
@@ -1586,7 +1594,8 @@ def test_cli_runner_failure_returns_one_and_closes_without_traceback(
 
         def open_dashboard(self, url: str) -> None:
             del url
-            raise BrowserAdapterError("Cookie: sid=secret navigation failed")
+            foreign_error = _foreign_browser_adapter_error()
+            raise foreign_error("Cookie: sid=secret navigation failed")
 
         def reset(self, url: str) -> None:
             del url
@@ -1649,6 +1658,97 @@ def test_cli_runner_failure_returns_one_and_closes_without_traceback(
     err = capsys.readouterr().err
     assert "ERROR:" in err
     assert "sid=secret" not in err
+    assert "Cookie: [REDACTED]" in err
+    assert "Traceback" not in err
+
+
+def test_cli_arbitrary_runtime_error_returns_one_redacted_and_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = tmp_path / "cli-manifest.yaml"
+    manifest_path.write_text(MINIMAL.read_text(encoding="utf-8"), encoding="utf-8")
+
+    class _RuntimeFailBrowser:
+        closed = False
+
+        def start(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def close(self) -> None:
+            self.closed = True
+
+        def open_dashboard(self, url: str) -> None:
+            del url
+            raise RuntimeError(
+                "unexpected Authorization: ApiKey secret and api_key=leaked during runtime",
+            )
+
+        def reset(self, url: str) -> None:
+            del url
+
+        def discover(self, control: ControlScenario) -> DiscoveredControl:
+            del control
+            raise RuntimeError("unused")
+
+        def select(self, control: ControlScenario, option: str) -> None:
+            del control, option
+
+        def read_state(self, control: ControlScenario) -> ControlState:
+            del control
+            return ControlState()
+
+        def capture(
+            self,
+            expected_panels: Sequence[str],
+            cursor: CaptureCursor | None = None,
+        ) -> BrowserObservation:
+            del expected_panels, cursor
+            return BrowserObservation(url="", accessibility_snapshot="", visible_text="", panels=())
+
+        def begin_step(self) -> CaptureCursor:
+            return CaptureCursor(0, 0)
+
+        def settle(
+            self,
+            cursor: CaptureCursor,
+            expected_panels: Sequence[str],
+            *,
+            policy: Any = None,
+        ) -> BrowserObservation:
+            del cursor, expected_panels, policy
+            return BrowserObservation(url="", accessibility_snapshot="", visible_text="", panels=())
+
+        def screenshot(self, path: str | Path) -> bool:
+            del path
+            return False
+
+        def clear_evidence(self) -> None:
+            return
+
+    stub = _RuntimeFailBrowser()
+    module = _load_cli_module(monkeypatch, stub)
+    exit_code = module.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--dashboard-url",
+            "http://localhost:5601/app/dashboards#/view/test",
+            "--artifact-root",
+            str(tmp_path / "artifacts"),
+            "--run-id",
+            "cli-run",
+        ]
+    )
+    assert exit_code == 1
+    assert stub.closed is True
+    err = capsys.readouterr().err
+    assert "ERROR:" in err
+    assert "ApiKey secret" not in err
+    assert "api_key=leaked" not in err
+    assert "Authorization: [REDACTED]" in err
+    assert "api_key: [REDACTED]" in err
     assert "Traceback" not in err
 
 
