@@ -1022,3 +1022,108 @@ def test_safe_deterministic_ids_for_special_characters() -> None:
     step = plan[0]
     assert step.id == f"path=foo_bar_baz_{_stable_component_hash('foo/bar baz')}"
     assert dict(step.selections) == {"path": "foo/bar baz"}
+
+
+def test_all_discovered_options_excluded_yields_missing_option() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "namespace",
+                options=OptionPolicy(exclude=("ns_1", "ns_2")),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1", "ns_2"))],
+    )
+    assert len(plan) == 1
+    assert plan[0].kind == "missing_option"
+    assert plan[0].skipped_options == ("ns_1", "ns_2")
+
+
+def test_build_execution_plan_returns_tuple() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    assert isinstance(plan, tuple)
+
+
+def test_interaction_step_is_frozen() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    step = plan[0]
+    with pytest.raises(FrozenInstanceError):
+        step.id = "mutated"  # type: ignore[misc]
+
+
+def test_combination_selections_are_defensively_immutable() -> None:
+    mutable_selections = {"namespace": "ns_1"}
+    scenario = _scenario(
+        (_control("namespace"),),
+        (
+            CombinationScenario(
+                id="combo",
+                selections=mutable_selections,
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    combo = plan[-1]
+    assert isinstance(combo.selections, MappingProxyType)
+    mutable_selections["namespace"] = "mutated"
+    assert dict(combo.selections) == {"namespace": "ns_1"}
+    with pytest.raises(TypeError):
+        combo.selections["namespace"] = "mutated"  # type: ignore[index]
+
+
+def test_duplicate_step_id_from_combination_option_collision_rejects() -> None:
+    scenario = _scenario(
+        (_control("namespace"),),
+        (_combination("namespace=ns_1", {"namespace": "ns_1"}),),
+    )
+    with pytest.raises(ManifestError, match="duplicate interaction step id: 'namespace=ns_1'"):
+        build_execution_plan(
+            scenario,
+            [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+        )
+
+
+def test_duplicate_step_id_from_sanitized_combination_collision_rejects() -> None:
+    scenario = _scenario(
+        (_control("namespace"),),
+        (_combination("namespace=a_b", {"namespace": "ns_1"}),),
+    )
+    with pytest.raises(ManifestError, match="duplicate interaction step id: 'namespace=a_b'"):
+        build_execution_plan(
+            scenario,
+            [DiscoveredControl("namespace", "namespace", ("a_b",))],
+        )
+
+
+def test_duplicate_step_id_from_combination_gap_collision_rejects() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "namespace",
+                options=OptionPolicy(exclude=("ns_1",)),
+            ),
+        ),
+        (_combination("namespace:missing_option", {"namespace": "ns_1"}),),
+    )
+    with pytest.raises(
+        ManifestError,
+        match="duplicate interaction step id: 'namespace:missing_option'",
+    ):
+        build_execution_plan(
+            scenario,
+            [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+        )

@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -88,6 +88,15 @@ class ManifestError(ValueError):
     """Raised when a scenario manifest violates the strict contract."""
 
 
+InteractionStepKind = Literal[
+    "option",
+    "combination",
+    "coverage_gap",
+    "missing_control",
+    "missing_option",
+]
+
+
 @dataclass(frozen=True)
 class OptionPolicy:
     strategy: str = "every"
@@ -162,7 +171,7 @@ class DiscoveredControl:
 @dataclass(frozen=True)
 class InteractionStep:
     id: str
-    kind: str  # option | combination | coverage_gap | missing_control | missing_option
+    kind: InteractionStepKind
     selections: Mapping[str, str]
     reset_before: bool = True
     control_key: str = ""
@@ -174,7 +183,7 @@ class InteractionStep:
 
 _EMPTY_SELECTIONS: Mapping[str, str] = MappingProxyType({})
 
-_SAFE_STEP_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_STEP_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._:=-]+$")
 _ID_HASH_LENGTH = 8
 
 
@@ -203,6 +212,14 @@ def _gap_step_id(control_key: str, kind: str) -> str:
 
 def _combination_step_id(combination_id: str) -> str:
     return _safe_step_id_component(combination_id)
+
+
+def _validate_unique_step_ids(steps: Sequence[InteractionStep]) -> None:
+    seen: set[str] = set()
+    for step in steps:
+        if step.id in seen:
+            raise ManifestError(f"duplicate interaction step id: {step.id!r}")
+        seen.add(step.id)
 
 
 def _index_discovered_controls(
@@ -277,7 +294,7 @@ def _make_option_step(
 
 def _make_gap_step(
     control: ControlScenario,
-    kind: str,
+    kind: InteractionStepKind,
     *,
     skipped_options: tuple[str, ...] = (),
     missing_declared_options: tuple[str, ...] = (),
@@ -348,11 +365,12 @@ def build_execution_plan(
             InteractionStep(
                 id=_combination_step_id(combination.id),
                 kind="combination",
-                selections=combination.selections,
+                selections=MappingProxyType(dict(combination.selections)),
                 reset_before=True,
             )
         )
 
+    _validate_unique_step_ids(steps)
     return tuple(steps)
 
 
