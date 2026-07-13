@@ -789,6 +789,106 @@ def test_check_network_contract_deduplicates_findings_deterministically():
     assert len(findings) > 1
 
 
+def test_check_network_contract_pending_status_does_not_count_as_success():
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[NetworkEvidence(panel_id="panel-7", status=0, query="FROM metrics-*")],
+    )
+    assert findings == [
+        InteractionFinding(
+            FailureClass.EXPECTED_REQUEST_MISSING,
+            "panel panel-7: expected ES|QL request missing",
+        )
+    ]
+
+
+def test_check_network_contract_overlapping_expected_and_unaffected_panel():
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=["panel-7"],
+        evidence=[
+            _successful_evidence(
+                query="FROM metrics-*",
+                params={"namespace": "staging"},
+                param_kinds={"namespace": "value", "grouping": "value"},
+            )
+        ],
+        expected_value_params={"namespace": "prod"},
+    )
+    assert findings == [
+        InteractionFinding(
+            FailureClass.UNEXPECTED_PANEL_REQUEST,
+            "panel panel-7: unexpected successful ES|QL request",
+        ),
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: param namespace expected value 'prod'",
+        ),
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: query missing value token ?namespace",
+        ),
+    ]
+
+
+def test_check_network_contract_rejects_similar_but_distinct_param_tokens():
+    prefix_only_value = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[
+            _successful_evidence(
+                query="FROM metrics-* | WHERE namespace == ?namespace_extra",
+                params={"namespace": "prod"},
+                param_kinds={"namespace": "value", "grouping": "identifier"},
+            )
+        ],
+        expected_value_params={"namespace": "prod"},
+    )
+    assert prefix_only_value == [
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: query missing value token ?namespace",
+        )
+    ]
+
+    prefix_only_identifier = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[
+            _successful_evidence(
+                query="FROM metrics-* | STATS BY ??grouping_extra",
+            )
+        ],
+        expected_identifier_params={"grouping": "host.name"},
+    )
+    assert prefix_only_identifier == [
+        InteractionFinding(
+            FailureClass.QUERY_CONTRACT_ERROR,
+            "panel panel-7: query missing identifier token ??grouping",
+        )
+    ]
+
+    exact_tokens = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[_successful_evidence()],
+        expected_value_params={"namespace": "prod"},
+        expected_identifier_params={"grouping": "host.name"},
+    )
+    assert exact_tokens == []
+
+
+def test_parse_esql_request_rejects_multi_key_params_list_entry():
+    with pytest.raises(EvidenceParseError, match="single-key mapping"):
+        parse_esql_request(
+            url="http://localhost:5601/internal/search/esql_async",
+            method="POST",
+            headers={},
+            body={"query": "FROM metrics-*", "params": [{"a": 1, "b": 2}]},
+        )
+
+
 def test_redact_evidence_redacts_extended_network_evidence_fields():
     network = NetworkEvidence(
         endpoint="/internal/search/esql_async",
