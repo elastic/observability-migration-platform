@@ -101,7 +101,7 @@ against the schema, and is the fixture the live render audit uploads.
 | Mutation self-test | `verifier.mutations` | the invariant verifier catches deliberate corruptions | `tests/test_verifier_mutations.py` |
 
 Baselines: `parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`
-(223 / 426 panels, 0 errors). The ratchet re-migrates the committed corpus with
+(881 / 426 panels, 0 errors). The ratchet re-migrates the committed corpus with
 the *current* code and fails if ERROR counts rise. → See
 [Refreshing a fidelity baseline](#refreshing-a-fidelity-baseline).
 
@@ -198,7 +198,7 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 
 ### Running the pinned community corpus
 
-10 popular production dashboards from grafana.com are pinned (by id + revision +
+60 popular production dashboards from grafana.com are pinned (by id + revision +
 canonical-JSON sha256) in `parity-rig/benchmark/community_corpus.json`. The
 third-party JSON is **not committed** (marketplace-noise rule); fetch it on
 demand and run the gates:
@@ -212,7 +212,7 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --baseline parity-rig/benchmark/fidelity_baseline_community.json
 ```
 
-Baseline reference: 335 panels, **0 invariant ERRORs**, 10/10 schema-valid, and
+Baseline reference: 1,451 panels, **0 invariant ERRORs**, 60/60 schema-valid, and
 0 `real_bug` on `live_validate`. Bump pins intentionally with `--no-verify`
 (refetch) then refresh the baseline. `tests/test_community_corpus.py` guards the
 manifest offline.
