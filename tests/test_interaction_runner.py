@@ -38,6 +38,7 @@ from observability_migration.targets.kibana.interaction_runner import (
     PanelContract,
     RunConfig,
     load_panel_contract,
+    validate_run_artifact_paths,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (
     Assertions,
@@ -60,6 +61,11 @@ _SENSITIVE_PATTERNS = (
     re.compile(r'"Authorization"\s*:\s*"ApiKey', re.IGNORECASE),
     re.compile(r'"cookie"\s*:\s*"sid=', re.IGNORECASE),
     re.compile(r'"x-elastic-api-key"\s*:\s*"abc"', re.IGNORECASE),
+    re.compile(r"Authorization:\s*ApiKey\s+secret", re.IGNORECASE),
+    re.compile(r"Cookie:\s*sid=secret", re.IGNORECASE),
+    re.compile(r"Set-Cookie:\s*session=abc", re.IGNORECASE),
+    re.compile(r"X-Elastic-Api-Key:\s*abc", re.IGNORECASE),
+    re.compile(r"api_key=leaked", re.IGNORECASE),
 )
 
 
@@ -1323,5 +1329,331 @@ noise_allowances: []
     assert failed == 2
 
 
+def test_recursive_redaction_covers_inline_and_midline_strings(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        console_by_step=[
+            (
+                "preflight failed Authorization: ApiKey secret mid-request",
+                "retry Cookie: sid=secret after backoff",
+                "upstream Set-Cookie: session=abc blocked",
+                "header X-Elastic-Api-Key: abc rejected",
+                "body api_key=leaked in payload",
+            ),
+        ],
+        network_by_step=[
+            (
+                NetworkEvidence(
+                    endpoint="/internal/search/esql",
+                    method="POST",
+                    status=500,
+                    url="https://user:secret@localhost:5601/internal/search/esql",
+                    query="FROM metrics-* | WHERE service.environment == ?namespace",
+                    panel_id="panel-a",
+                    headers={"Authorization": "ApiKey secret"},
+                    body={"api_key": "secret"},
+                ),
+            )
+        ],
+        incompatible_warnings={"namespace": "inline Authorization: ApiKey secret in warning"},
+    )
+    _run(browser, _scenario(), tmp_path)
+    for path in _scan_artifacts(tmp_path):
+        if path.suffix in {".json", ".txt"}:
+            _assert_no_sensitive_text(path)
+    result = json.loads((_step_dir(tmp_path, "namespace=ns_1") / "result.json").read_text())
+    console = json.loads((_step_dir(tmp_path, "namespace=ns_1") / "console.json").read_text())
+    joined = "\n".join(console["errors"])
+    assert "Authorization: [REDACTED]" in joined
+    assert "Cookie: [REDACTED]" in joined
+    assert "Set-Cookie: [REDACTED]" in joined
+    assert "X-Elastic-Api-Key: [REDACTED]" in joined
+    assert "api_key: [REDACTED]" in joined
+    assert "?namespace" in json.dumps(result)
 
+
+@pytest.mark.parametrize(
+    ("scenario_id", "run_id"),
+    [
+        ("", "run-1"),
+        (".", "run-1"),
+        ("..", "run-1"),
+        ("../escape", "run-1"),
+        ("test-scenario", ""),
+        ("test-scenario", "."),
+        ("test-scenario", ".."),
+        ("test-scenario", "../escape"),
+        ("scenario/with/slash", "run-1"),
+        ("test-scenario", "run/with/slash"),
+        ("test-scenario", "run\\with\\slash"),
+    ],
+)
+def test_runner_rejects_unsafe_artifact_paths(
+    tmp_path: Path,
+    scenario_id: str,
+    run_id: str,
+) -> None:
+    browser = FakeBrowser(controls={"namespace": ("ns_1",)})
+    scenario = DashboardScenario(
+        version=1,
+        id=scenario_id,
+        title="Test",
+        source_kind="grafana",
+        source_path="path.json",
+        control_schema_path="",
+        dashboard_title="Test Dashboard",
+        time_from="now-3h",
+        time_to="now",
+        controls=(_namespace_control(),),
+        combinations=(),
+        noise_allowances=(),
+    )
+    with pytest.raises(ValueError, match=r"invalid|escapes"):
+        InteractionRunner(
+            browser,
+            scenario,
+            _panel_contract(),
+            RunConfig(
+                dashboard_url="http://localhost:5601/app/dashboards#/view/test",
+                artifact_root=tmp_path,
+                run_id=run_id,
+            ),
+        )
+
+
+def test_runner_step_directories_stay_under_run_root(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        network_by_step=[(_esql_network("panel-a"),), (_esql_network("panel-a"),)],
+    )
+    runner = InteractionRunner(
+        browser,
+        _scenario(),
+        _panel_contract(),
+        RunConfig(
+            dashboard_url="http://localhost:5601/app/dashboards#/view/test",
+            artifact_root=tmp_path,
+            run_id="run-1",
+        ),
+    )
+    report = runner.run()
+    run_root = (tmp_path / "test-scenario" / "run-1").resolve()
+    for result in report.results:
+        step_dir = (run_root / result.name).resolve()
+        assert step_dir == run_root or run_root in step_dir.parents
+
+
+def test_partial_report_written_after_each_step_and_survives_artifact_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import observability_migration.targets.kibana.interaction_runner as runner_module
+
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        network_by_step=[(_esql_network("panel-a"),), (_esql_network("panel-a"),)],
+    )
+    original_write = runner_module._write_json_atomic
+    write_calls: list[Path] = []
+
+    def guarded_write(path: Path, payload: object) -> None:
+        write_calls.append(path)
+        if "namespace=ns_2" in str(path) and path.name != "report.json":
+            raise OSError("disk full")
+        original_write(path, payload)
+
+    monkeypatch.setattr(runner_module, "_write_json_atomic", guarded_write)
+    report = _run(browser, _scenario(), tmp_path)
+    report_path = tmp_path / "test-scenario" / "run-1" / "report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["verification_total"] == 2
+    assert payload["counts"]["total"] == 2
+    assert payload["counts"]["fail"] >= 1
+    assert len(report.results) == 2
+    assert report.exit_code != 0
+    assert any(
+        finding.failure_class == FailureClass.FRAMEWORK_ERROR
+        for result in report.results
+        for finding in result.findings
+        if result.name == "namespace=ns_2"
+    )
+    assert report_path.exists()
+    _assert_no_temp_artifacts(tmp_path)
+
+
+def test_combination_capability_prefers_migration_gap_over_migrated_live(
+    tmp_path: Path,
+) -> None:
+    migrated = ControlScenario(
+        label="namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("ns_1",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels="query_dependency",
+            query_contains=("?namespace",),
+            expect_data_change=False,
+        ),
+    )
+    gap = ControlScenario(
+        label="gap",
+        key="gap",
+        adapter="esql_function",
+        capability=CapabilityCategory.MIGRATION_GAP,
+        options=OptionPolicy(strategy="declared", include=("sum",)),
+        assertions=Assertions(
+            selection=("gap",),
+            affected_panels="query_dependency",
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",), "gap": ("sum",)},
+        network_by_step=[(_esql_network("panel-a"),)],
+    )
+    scenario = _scenario(
+        controls=(migrated, gap),
+        combinations=(
+            CombinationScenario(
+                id="mixed-combo",
+                selections={"namespace": "ns_1", "gap": "sum"},
+            ),
+        ),
+    )
+    report = _run(browser, scenario, tmp_path)
+    combo = next(result for result in report.results if result.name == "mixed-combo")
+    assert combo.capability == CapabilityCategory.MIGRATION_GAP
+    payload = json.loads((tmp_path / "test-scenario" / "run-1" / "report.json").read_text())
+    assert payload["capabilities"]["migration_gap"]["total"] >= 1
+
+
+def test_cli_browser_start_failure_returns_one_and_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = tmp_path / "cli-manifest.yaml"
+    manifest_path.write_text(MINIMAL.read_text(encoding="utf-8"), encoding="utf-8")
+
+    class _FailingBrowser:
+        closed = False
+
+        def start(self, **kwargs: Any) -> None:
+            del kwargs
+            raise OSError("Authorization: ApiKey secret startup failure")
+
+        def close(self) -> None:
+            self.closed = True
+
+    module = _load_cli_module(monkeypatch, _FailingBrowser())
+    exit_code = module.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--dashboard-url",
+            "http://localhost:5601/app/dashboards#/view/test",
+            "--artifact-root",
+            str(tmp_path / "artifacts"),
+            "--run-id",
+            "cli-run",
+        ]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "ERROR:" in err
+    assert "ApiKey secret" not in err
+    assert "Authorization: [REDACTED]" in err
+
+
+def test_cli_runner_failure_returns_one_and_closes_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = tmp_path / "cli-manifest.yaml"
+    manifest_path.write_text(MINIMAL.read_text(encoding="utf-8"), encoding="utf-8")
+
+    class _RunnerFailBrowser:
+        closed = False
+
+        def start(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def close(self) -> None:
+            self.closed = True
+
+        def open_dashboard(self, url: str) -> None:
+            del url
+            raise BrowserAdapterError("Cookie: sid=secret navigation failed")
+
+        def reset(self, url: str) -> None:
+            del url
+
+        def discover(self, control: ControlScenario) -> DiscoveredControl:
+            del control
+            raise BrowserAdapterError("unused")
+
+        def select(self, control: ControlScenario, option: str) -> None:
+            del control, option
+
+        def read_state(self, control: ControlScenario) -> ControlState:
+            del control
+            return ControlState()
+
+        def capture(
+            self,
+            expected_panels: Sequence[str],
+            cursor: CaptureCursor | None = None,
+        ) -> BrowserObservation:
+            del expected_panels, cursor
+            return BrowserObservation(url="", accessibility_snapshot="", visible_text="", panels=())
+
+        def begin_step(self) -> CaptureCursor:
+            return CaptureCursor(0, 0)
+
+        def settle(
+            self,
+            cursor: CaptureCursor,
+            expected_panels: Sequence[str],
+            *,
+            policy: Any = None,
+        ) -> BrowserObservation:
+            del cursor, expected_panels, policy
+            return BrowserObservation(url="", accessibility_snapshot="", visible_text="", panels=())
+
+        def screenshot(self, path: str | Path) -> bool:
+            del path
+            return False
+
+        def clear_evidence(self) -> None:
+            return
+
+    stub = _RunnerFailBrowser()
+    module = _load_cli_module(monkeypatch, stub)
+    exit_code = module.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--dashboard-url",
+            "http://localhost:5601/app/dashboards#/view/test",
+            "--artifact-root",
+            str(tmp_path / "artifacts"),
+            "--run-id",
+            "cli-run",
+        ]
+    )
+    assert exit_code == 1
+    assert stub.closed is True
+    err = capsys.readouterr().err
+    assert "ERROR:" in err
+    assert "sid=secret" not in err
+    assert "Traceback" not in err
+
+
+def test_validate_run_artifact_paths_rejects_escape(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    with pytest.raises(ValueError, match=r"escapes|invalid"):
+        validate_run_artifact_paths(root, "..", "run-1")
 

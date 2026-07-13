@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from observability_migration.targets.kibana.interaction_driver import (  # noqa: E402
+    BrowserAdapterError,
     PlaywrightKibanaBrowser,
     SettlePolicy,
 )
@@ -23,7 +24,9 @@ from observability_migration.targets.kibana.interaction_runner import (  # noqa:
     InteractionRunner,
     PanelContract,
     RunConfig,
+    format_runtime_error,
     load_panel_contract,
+    validate_run_artifact_paths,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (  # noqa: E402
     ManifestError,
@@ -114,7 +117,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    try:
+        _, run_root = validate_run_artifact_paths(
+            config.artifact_root,
+            scenario.id,
+            run_id,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     browser = PlaywrightKibanaBrowser()
+    report = None
     try:
         browser.start(
             headless=not args.headed,
@@ -127,11 +141,16 @@ def main(argv: list[str] | None = None) -> int:
             panel_contract,
             config,
         ).run()
+    except (OSError, BrowserAdapterError, ValueError) as exc:
+        print(format_runtime_error(exc), file=sys.stderr)
+        return 1
     finally:
         browser.close()
 
-    report_path = config.artifact_root / scenario.id / run_id / "report.json"
+    report_path = run_root / "report.json"
     print(str(report_path))
+    if report is None:
+        return 1
     return report.exit_code
 
 

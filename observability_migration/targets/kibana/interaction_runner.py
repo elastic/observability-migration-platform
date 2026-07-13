@@ -26,6 +26,7 @@ from observability_migration.targets.kibana.interaction_audit import (
     redact_evidence,
 )
 from observability_migration.targets.kibana.interaction_driver import (
+    BrowserAdapter,
     BrowserAdapterError,
     BrowserObservation,
     CaptureCursor,
@@ -83,6 +84,18 @@ _SENSITIVE_LINE_ASSIGNMENT_RE = re.compile(
     r"^(\s*(?:authorization|cookie|set-cookie|x-elastic-api-key|api_key)\s*[:=]\s*).+$",
     re.IGNORECASE,
 )
+_INLINE_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)(authorization|cookie|set-cookie|x-elastic-api-key|api_key)\s*[:=]\s*\S+",
+)
+_UNSAFE_ARTIFACT_COMPONENTS = frozenset({".", ".."})
+_MAX_BOUND_IO_ERROR = 2048
+
+_CAPABILITY_PRECEDENCE: tuple[CapabilityCategory, ...] = (
+    CapabilityCategory.MIGRATION_GAP,
+    CapabilityCategory.SOURCE_ONLY,
+    CapabilityCategory.KIBANA_ONLY,
+    CapabilityCategory.MIGRATED_LIVE,
+)
 
 
 @dataclass(frozen=True)
@@ -113,6 +126,72 @@ class _MergedAssertions:
     unaffected_panels: tuple[str, ...]
     expected_value_params: dict[str, object]
     expected_identifier_params: dict[str, str]
+
+
+def _bound_io_error(message: str) -> str:
+    cleaned = " ".join(str(message or "").split())
+    if len(cleaned) <= _MAX_BOUND_IO_ERROR:
+        return cleaned
+    return cleaned[:_MAX_BOUND_IO_ERROR]
+
+
+def _validate_artifact_component(name: str, value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError(f"invalid {name}: must not be empty")
+    if cleaned in _UNSAFE_ARTIFACT_COMPONENTS:
+        raise ValueError(f"invalid {name}: {cleaned!r} is not allowed")
+    if "\0" in cleaned or "/" in cleaned or "\\" in cleaned:
+        raise ValueError(f"invalid {name}: path separators and NUL are not allowed")
+    return cleaned
+
+
+def _resolve_under_root(root: Path, *parts: str) -> Path:
+    resolved_root = root.resolve()
+    candidate = resolved_root.joinpath(*parts).resolve()
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        raise ValueError(
+            f"artifact path {candidate} escapes artifact root {resolved_root}"
+        )
+    return candidate
+
+
+def validate_run_artifact_paths(
+    artifact_root: Path,
+    scenario_id: str,
+    run_id: str,
+) -> tuple[Path, Path]:
+    """Validate scenario/run identifiers and return resolved run/step roots."""
+    safe_scenario_id = _validate_artifact_component("scenario_id", scenario_id)
+    safe_run_id = _validate_artifact_component("run_id", run_id)
+    resolved_root = artifact_root.expanduser().resolve()
+    run_root = _resolve_under_root(resolved_root, safe_scenario_id, safe_run_id)
+    return resolved_root, run_root
+
+
+def _derive_combination_capability(
+    controls: Sequence[ControlScenario],
+) -> CapabilityCategory:
+    present = {control.capability for control in controls}
+    for capability in _CAPABILITY_PRECEDENCE:
+        if capability in present:
+            return capability
+    return CapabilityCategory.MIGRATED_LIVE
+
+
+def _step_capability(
+    step: InteractionStep,
+    controls_by_key: Mapping[str, ControlScenario],
+) -> CapabilityCategory:
+    if step.kind != "combination":
+        return step.capability
+    controls = _controls_for_step(step, controls_by_key)
+    return _derive_combination_capability(controls)
+
+
+def format_runtime_error(exc: BaseException) -> str:
+    message = _bound_io_error(str(exc))
+    return f"ERROR: {_redact_artifact_text(message)}"
 
 
 def _ordered_unique(values: Sequence[str]) -> tuple[str, ...]:
@@ -345,10 +424,37 @@ def _redact_sensitive_line_assignments(text: str) -> str:
     return result
 
 
+def _redact_inline_sensitive_assignments(text: str) -> str:
+    return _INLINE_SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}: [REDACTED]",
+        text,
+    )
+
+
 def _redact_artifact_text(text: str) -> str:
     """Redact secrets from bounded text artifacts while preserving panel/query prose."""
     cleaned = _redact_url_userinfo_in_text(str(text or ""))
-    return _redact_sensitive_line_assignments(cleaned)
+    cleaned = _redact_sensitive_line_assignments(cleaned)
+    return _redact_inline_sensitive_assignments(cleaned)
+
+
+def _sanitize_artifact_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_artifact_text(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_artifact_strings(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_artifact_strings(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_artifact_strings(item) for item in value)
+    return value
+
+
+def _sanitize_artifact_payload(value: Any) -> Any:
+    return _sanitize_artifact_strings(redact_evidence(value))
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -381,8 +487,9 @@ def _network_payload(network: Sequence[NetworkEvidence]) -> list[dict[str, objec
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp")
+    sanitized = _sanitize_artifact_payload(payload)
     tmp_path.write_text(
-        json.dumps(redact_evidence(payload), indent=2, sort_keys=True) + "\n",
+        json.dumps(sanitized, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     tmp_path.replace(path)
@@ -420,7 +527,7 @@ def _selection_changes_from_baseline(
     return False
 
 
-def _clear_evidence_best_effort(browser: Any) -> InteractionFinding | None:
+def _clear_evidence_best_effort(browser: BrowserAdapter) -> InteractionFinding | None:
     try:
         browser.clear_evidence()
     except BrowserAdapterError as exc:
@@ -436,7 +543,7 @@ class InteractionRunner:
 
     def __init__(
         self,
-        browser: Any,
+        browser: BrowserAdapter,
         scenario: DashboardScenario,
         panel_contract: PanelContract,
         config: RunConfig,
@@ -445,6 +552,11 @@ class InteractionRunner:
         self._scenario = scenario
         self._panel_contract = panel_contract
         self._config = config
+        self._artifact_root, self._run_root = validate_run_artifact_paths(
+            config.artifact_root,
+            scenario.id,
+            config.run_id,
+        )
 
     def run(self) -> InteractionReport:
         controls_by_key = {control.key: control for control in self._scenario.controls}
@@ -474,22 +586,21 @@ class InteractionRunner:
                 discovery_errors=discovery_errors,
             )
             results.append(result)
+            self._write_report(InteractionReport(scenario=self._scenario.id, results=results))
 
         report = InteractionReport(scenario=self._scenario.id, results=results)
         self._write_report(report)
         return report
 
     def _step_dir(self, step: InteractionStep) -> Path:
-        return (
-            self._config.artifact_root
-            / self._scenario.id
-            / self._config.run_id
-            / step.id
-        )
+        safe_step_id = _validate_artifact_component("step_id", step.id)
+        step_dir = _resolve_under_root(self._run_root, safe_step_id)
+        if step_dir != self._run_root and self._run_root not in step_dir.parents:
+            raise ValueError(f"step directory {step_dir} escapes run root {self._run_root}")
+        return step_dir
 
     def _write_report(self, report: InteractionReport) -> None:
-        run_root = self._config.artifact_root / self._scenario.id / self._config.run_id
-        run_root.mkdir(parents=True, exist_ok=True)
+        self._run_root.mkdir(parents=True, exist_ok=True)
         counts = {"pass": 0, "warn": 0, "fail": 0, "skipped": 0, "total": len(report.results)}
         capabilities: dict[str, dict[str, int]] = {
             category.value: {
@@ -524,7 +635,7 @@ class InteractionRunner:
             "panels_total": len(panel_ids),
             "exit_code": report.exit_code,
         }
-        _write_json_atomic(run_root / "report.json", payload)
+        _write_json_atomic(self._run_root / "report.json", payload)
 
     def _execute_step(
         self,
@@ -534,7 +645,7 @@ class InteractionRunner:
         discovered_by_key: Mapping[str, DiscoveredControl],
         discovery_errors: Mapping[str, str],
     ) -> InteractionResult:
-        capability = step.capability
+        capability = _step_capability(step, controls_by_key)
         findings: list[InteractionFinding] = []
         artifact_flags: dict[str, bool] = {
             "before_screenshot": False,
@@ -796,7 +907,7 @@ class InteractionRunner:
             network=network_evidence,
             panels=list(observation.panels),
         )
-        self._write_step_artifacts(
+        artifact_error = self._write_step_artifacts(
             step,
             result=preliminary,
             observation=observation,
@@ -804,6 +915,17 @@ class InteractionRunner:
             artifact_flags=artifact_flags,
             cursor=cursor,
         )
+        if artifact_error is not None:
+            findings.append(artifact_error)
+            findings = _dedupe_findings(findings)
+            preliminary = InteractionResult(
+                name=step.id,
+                status=_step_status(findings, capability),
+                capability=capability,
+                findings=findings,
+                network=network_evidence,
+                panels=list(observation.panels),
+            )
         return self._finalize_written_step(
             step,
             preliminary=preliminary,
@@ -811,6 +933,7 @@ class InteractionRunner:
             capability=capability,
             artifact_flags=artifact_flags,
             cursor=cursor,
+            artifact_write_failed=artifact_error is not None,
         )
 
     def _finalize_step(
@@ -827,13 +950,21 @@ class InteractionRunner:
             capability=capability,
             findings=_dedupe_findings(findings),
         )
-        self._write_step_artifacts(
+        artifact_error = self._write_step_artifacts(
             step,
             result=preliminary,
             observation=None,
             selection_records=[],
             artifact_flags=artifact_flags,
         )
+        if artifact_error is not None:
+            findings.append(artifact_error)
+            preliminary = InteractionResult(
+                name=step.id,
+                status=_step_status(findings, capability),
+                capability=capability,
+                findings=_dedupe_findings(findings),
+            )
         return self._finalize_written_step(
             step,
             preliminary=preliminary,
@@ -841,6 +972,7 @@ class InteractionRunner:
             capability=capability,
             artifact_flags=artifact_flags,
             cursor=None,
+            artifact_write_failed=artifact_error is not None,
         )
 
     def _finalize_written_step(
@@ -852,13 +984,18 @@ class InteractionRunner:
         capability: CapabilityCategory,
         artifact_flags: Mapping[str, bool],
         cursor: CaptureCursor | None,
+        artifact_write_failed: bool = False,
     ) -> InteractionResult:
         clear_finding = _clear_evidence_best_effort(self._browser)
         if clear_finding is not None:
             findings.append(clear_finding)
         findings = _dedupe_findings(findings)
         final_status = _step_status(findings, capability)
-        if findings == preliminary.findings and preliminary.status == final_status:
+        if (
+            not artifact_write_failed
+            and findings == preliminary.findings
+            and preliminary.status == final_status
+        ):
             return preliminary
         final = InteractionResult(
             name=preliminary.name,
@@ -868,10 +1005,28 @@ class InteractionRunner:
             network=preliminary.network,
             panels=preliminary.panels,
         )
-        _write_json_atomic(
-            self._step_dir(step) / "result.json",
-            _result_payload(final, artifact_flags, cursor),
-        )
+        if not artifact_write_failed:
+            try:
+                _write_json_atomic(
+                    self._step_dir(step) / "result.json",
+                    _result_payload(final, artifact_flags, cursor),
+                )
+            except OSError as exc:
+                findings.append(
+                    InteractionFinding(
+                        FailureClass.FRAMEWORK_ERROR,
+                        f"artifact write failed for result.json: {_bound_io_error(exc)}",
+                    )
+                )
+                findings = _dedupe_findings(findings)
+                final = InteractionResult(
+                    name=preliminary.name,
+                    status=_step_status(findings, capability),
+                    capability=capability,
+                    findings=findings,
+                    network=preliminary.network,
+                    panels=preliminary.panels,
+                )
         return final
 
     def _network_findings(
@@ -1026,48 +1181,55 @@ class InteractionRunner:
         selection_records: Sequence[Mapping[str, object]],
         artifact_flags: Mapping[str, bool],
         cursor: CaptureCursor | None = None,
-    ) -> None:
-        step_dir = self._step_dir(step)
-        step_dir.mkdir(parents=True, exist_ok=True)
+    ) -> InteractionFinding | None:
+        try:
+            step_dir = self._step_dir(step)
+            step_dir.mkdir(parents=True, exist_ok=True)
 
-        if observation is not None:
-            _write_json_atomic(
-                step_dir / "network.json",
-                {"requests": _network_payload(result.network)},
-            )
-            _write_json_atomic(
-                step_dir / "console.json",
-                {"errors": list(observation.console_errors)},
-            )
-            _write_json_atomic(
-                step_dir / "pending-requests.json",
-                {
-                    "pending": [
-                        {
-                            "panel_id": item.panel_id,
-                            "endpoint": item.endpoint,
-                            "opaque_id": item.opaque_id,
-                            "age_ms": item.age_ms,
-                        }
-                        for item in observation.pending_requests
-                    ]
-                },
-            )
-            _write_text_atomic(step_dir / "snapshot.txt", _bound_snapshot_text(observation))
-        else:
-            _write_json_atomic(step_dir / "network.json", {"requests": []})
-            _write_json_atomic(step_dir / "console.json", {"errors": []})
-            _write_json_atomic(step_dir / "pending-requests.json", {"pending": []})
-            _write_text_atomic(step_dir / "snapshot.txt", "")
+            if observation is not None:
+                _write_json_atomic(
+                    step_dir / "network.json",
+                    {"requests": _network_payload(result.network)},
+                )
+                _write_json_atomic(
+                    step_dir / "console.json",
+                    {"errors": list(observation.console_errors)},
+                )
+                _write_json_atomic(
+                    step_dir / "pending-requests.json",
+                    {
+                        "pending": [
+                            {
+                                "panel_id": item.panel_id,
+                                "endpoint": item.endpoint,
+                                "opaque_id": item.opaque_id,
+                                "age_ms": item.age_ms,
+                            }
+                            for item in observation.pending_requests
+                        ]
+                    },
+                )
+                _write_text_atomic(step_dir / "snapshot.txt", _bound_snapshot_text(observation))
+            else:
+                _write_json_atomic(step_dir / "network.json", {"requests": []})
+                _write_json_atomic(step_dir / "console.json", {"errors": []})
+                _write_json_atomic(step_dir / "pending-requests.json", {"pending": []})
+                _write_text_atomic(step_dir / "snapshot.txt", "")
 
-        _write_json_atomic(
-            step_dir / "selection.json",
-            {"selections": list(selection_records)},
-        )
-        _write_json_atomic(
-            step_dir / "result.json",
-            _result_payload(result, artifact_flags, cursor),
-        )
+            _write_json_atomic(
+                step_dir / "selection.json",
+                {"selections": list(selection_records)},
+            )
+            _write_json_atomic(
+                step_dir / "result.json",
+                _result_payload(result, artifact_flags, cursor),
+            )
+        except OSError as exc:
+            return InteractionFinding(
+                FailureClass.FRAMEWORK_ERROR,
+                f"artifact write failed for step {step.id!r}: {_bound_io_error(exc)}",
+            )
+        return None
 
 
 def load_panel_contract(path: str | Path) -> PanelContract:

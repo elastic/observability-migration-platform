@@ -192,6 +192,9 @@ def _stable_component_hash(value: str) -> str:
 
 
 def _safe_step_id_component(value: str) -> str:
+    if value in {".", ".."}:
+        slug = re.sub(r"[^\w.-]+", "_", value.strip()) or "empty"
+        return f"{slug}_{_stable_component_hash(value)}"
     if _SAFE_STEP_ID_COMPONENT_RE.fullmatch(value):
         return value
     slug = re.sub(r"[^\w.-]+", "_", value.strip())

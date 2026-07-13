@@ -1127,3 +1127,42 @@ def test_duplicate_step_id_from_combination_gap_collision_rejects() -> None:
             scenario,
             [DiscoveredControl("namespace", "namespace", ("ns_1",))],
         )
+
+
+@pytest.mark.parametrize("unsafe_value", [".", ".."])
+def test_dot_and_dotdot_step_components_get_hash_suffix(unsafe_value: str) -> None:
+    assert _safe_step_id_component(unsafe_value) == f"{unsafe_value}_{_stable_component_hash(unsafe_value)}"
+    assert _safe_step_id_component(unsafe_value) != unsafe_value
+
+
+def test_dot_and_dotdot_option_values_are_sanitized_in_plan() -> None:
+    scenario = _scenario((_control("namespace"),))
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", (".", ".."))],
+    )
+    ids = {step.id for step in plan}
+    assert "." not in ids
+    assert ".." not in ids
+    assert all("/" not in step_id and "\\" not in step_id for step_id in ids)
+
+
+def test_dot_and_dotdot_combination_ids_are_sanitized_in_plan() -> None:
+    scenario = _scenario(
+        (_control("namespace"),),
+        (
+            _combination(".", {"namespace": "ns_1"}),
+            _combination("..", {"namespace": "ns_1"}),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("namespace", "namespace", ("ns_1",))],
+    )
+    combo_ids = [step.id for step in plan if step.kind == "combination"]
+    assert combo_ids == [
+        _safe_step_id_component("."),
+        _safe_step_id_component(".."),
+    ]
+    assert "." not in combo_ids
+    assert ".." not in combo_ids
