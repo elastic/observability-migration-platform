@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -240,7 +240,7 @@ def _require_bool(value: Any, manifest_path: Path, field: str) -> bool:
 def _require_int(value: Any, manifest_path: Path, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ManifestError(f"{manifest_path}: {field} must be an integer")
-    return value
+    return cast(int, value)
 
 
 def _string_tuple(value: Any, manifest_path: Path, field: str) -> tuple[str, ...]:
@@ -255,33 +255,47 @@ def _string_tuple(value: Any, manifest_path: Path, field: str) -> tuple[str, ...
     return tuple(parsed)
 
 
+def _stable_panel_list(
+    value: Any,
+    manifest_path: Path,
+    field: str,
+) -> tuple[str, ...]:
+    panel_ids = _string_tuple(value, manifest_path, field)
+    for panel_id in panel_ids:
+        if _KIBANA_UUID_RE.match(panel_id):
+            raise ManifestError(
+                f"{manifest_path}: {field} must not declare generated Kibana UUID panel identifiers"
+            )
+    return panel_ids
+
+
 def _parse_root(document: dict[str, Any], manifest_path: Path) -> DashboardScenario:
     _reject_unknown_keys(document, _ROOT_KEYS, manifest_path, "root")
 
     version = document.get("version")
     if not isinstance(version, int) or isinstance(version, bool):
-        raise ManifestError(f"{manifest_path}: version must be an integer")
+        raise ManifestError(f"{manifest_path}: root.version must be an integer")
     if version != 1:
         raise ManifestError(f"{manifest_path}: unsupported manifest version: {version}")
 
-    scenario_id = _require_non_empty_str(document.get("id"), manifest_path, "id")
-    title = _require_non_empty_str(document.get("title"), manifest_path, "title")
+    scenario_id = _require_non_empty_str(document.get("id"), manifest_path, "root.id")
+    title = _require_non_empty_str(document.get("title"), manifest_path, "root.title")
 
-    source = _require_mapping(document.get("source"), manifest_path, "source")
+    source = _require_mapping(document.get("source"), manifest_path, "root.source")
     _reject_unknown_keys(source, _SOURCE_KEYS, manifest_path, "source")
-    source_kind = _require_non_empty_str(source.get("kind"), manifest_path, "source kind")
-    source_path = _require_non_empty_str(source.get("path"), manifest_path, "source path")
+    source_kind = _require_non_empty_str(source.get("kind"), manifest_path, "source.kind")
+    source_path = _require_non_empty_str(source.get("path"), manifest_path, "source.path")
     control_schema_path = _optional_str(
         source.get("control_schema"), manifest_path, "source.control_schema"
     )
 
-    dashboard = _require_mapping(document.get("dashboard"), manifest_path, "dashboard")
+    dashboard = _require_mapping(document.get("dashboard"), manifest_path, "root.dashboard")
     _reject_unknown_keys(dashboard, _DASHBOARD_KEYS, manifest_path, "dashboard")
     dashboard_title = _require_non_empty_str(
-        dashboard.get("title"), manifest_path, "dashboard title"
+        dashboard.get("title"), manifest_path, "dashboard.title"
     )
-    time_from = _require_str(dashboard.get("time_from"), manifest_path, "dashboard.time_from")
-    time_to = _require_str(dashboard.get("time_to"), manifest_path, "dashboard.time_to")
+    time_from = _optional_str(dashboard.get("time_from"), manifest_path, "dashboard.time_from")
+    time_to = _optional_str(dashboard.get("time_to"), manifest_path, "dashboard.time_to")
 
     controls = _parse_controls(document.get("controls"), manifest_path)
     control_keys = {control.key for control in controls}
@@ -319,15 +333,19 @@ def _parse_controls(value: Any, manifest_path: Path) -> tuple[ControlScenario, .
         control = _require_mapping(raw_control, manifest_path, field_prefix)
         _reject_unknown_keys(control, _CONTROL_KEYS, manifest_path, "control")
 
-        label = _require_non_empty_str(control.get("label"), manifest_path, "control label")
-        key = _require_non_empty_str(control.get("key"), manifest_path, "control key")
+        label = _require_non_empty_str(
+            control.get("label"), manifest_path, f"{field_prefix}.label"
+        )
+        key = _require_non_empty_str(control.get("key"), manifest_path, f"{field_prefix}.key")
         if key in seen_keys:
             raise ManifestError(f"{manifest_path}: duplicate control key: {key}")
         seen_keys.add(key)
 
         adapter = _require_str(control.get("adapter"), manifest_path, f"{field_prefix}.adapter")
         if adapter not in _SUPPORTED_ADAPTERS:
-            raise ManifestError(f"{manifest_path}: unsupported adapter: {adapter}")
+            raise ManifestError(
+                f"{manifest_path}: {field_prefix}.adapter unsupported adapter: {adapter}"
+            )
 
         capability_raw = _require_str(
             control.get("capability"), manifest_path, f"{field_prefix}.capability"
@@ -335,7 +353,7 @@ def _parse_controls(value: Any, manifest_path: Path) -> tuple[ControlScenario, .
         capability = _CAPABILITY_BY_VALUE.get(capability_raw)
         if capability is None:
             raise ManifestError(
-                f"{manifest_path}: unsupported capability: {capability_raw}"
+                f"{manifest_path}: {field_prefix}.capability unsupported capability: {capability_raw}"
             )
 
         options = _parse_options(control.get("options"), manifest_path, field_prefix)
@@ -383,7 +401,7 @@ def _parse_options(
         )
         if strategy not in _SUPPORTED_STRATEGIES:
             raise ManifestError(
-                f"{manifest_path}: unsupported option strategy: {strategy}"
+                f"{manifest_path}: {field_prefix}.options.strategy unsupported option strategy: {strategy}"
             )
 
     include = _string_tuple(
@@ -417,13 +435,7 @@ def _parse_affected_panels(
             )
         return value
 
-    panel_ids = _string_tuple(value, manifest_path, field)
-    for panel_id in panel_ids:
-        if _KIBANA_UUID_RE.match(panel_id):
-            raise ManifestError(
-                f"{manifest_path}: {field} must not declare generated Kibana UUID panel identifiers"
-            )
-    return panel_ids
+    return _stable_panel_list(value, manifest_path, field)
 
 
 def _parse_assertions(
@@ -444,7 +456,7 @@ def _parse_assertions(
         manifest_path,
         f"{field_prefix}.assertions.affected_panels",
     )
-    unaffected_panels = _string_tuple(
+    unaffected_panels = _stable_panel_list(
         assertions.get("unaffected_panels", []),
         manifest_path,
         f"{field_prefix}.assertions.unaffected_panels",
@@ -535,10 +547,6 @@ def _parse_combinations(
         selections_raw = _require_mapping(
             combination.get("selections"), manifest_path, f"{field_prefix}.selections"
         )
-        if not isinstance(selections_raw, dict):
-            raise ManifestError(
-                f"{manifest_path}: {field_prefix}.selections must be a mapping"
-            )
 
         selections: dict[str, str] = {}
         for selection_key, selection_value in selections_raw.items():
@@ -548,7 +556,7 @@ def _parse_combinations(
                 )
             if selection_key not in control_keys:
                 raise ManifestError(
-                    f"{manifest_path}: undeclared control key in combination selections: {selection_key}"
+                    f"{manifest_path}: {field_prefix}.selections undeclared control key: {selection_key}"
                 )
             if not isinstance(selection_value, str):
                 raise ManifestError(

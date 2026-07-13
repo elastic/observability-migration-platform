@@ -222,19 +222,19 @@ def test_collection_fields_must_be_lists(
 @pytest.mark.parametrize(
     ("mutator", "match"),
     [
-        (lambda doc: doc.update({"id": 1}), "id must be a string"),
-        (lambda doc: doc["controls"][0].update({"adapter": 7}), "adapter must be a string"),
+        (lambda doc: doc.update({"id": 1}), "root.id must be a string"),
+        (lambda doc: doc["controls"][0].update({"adapter": 7}), r"controls\[0\]\.adapter must be a string"),
         (
             lambda doc: doc["controls"][0]["assertions"].update({"expect_data_change": "yes"}),
-            "expect_data_change must be a boolean",
+            r"controls\[0\]\.assertions\.expect_data_change must be a boolean",
         ),
         (
             lambda doc: doc["controls"][0]["assertions"].update({"selection": "namespace"}),
-            "selection must be a list",
+            r"controls\[0\]\.assertions\.selection must be a list",
         ),
         (
             lambda doc: doc["controls"][0]["assertions"].update({"minimum_rows": "1"}),
-            "minimum_rows must be an integer",
+            r"controls\[0\]\.assertions\.minimum_rows must be an integer",
         ),
     ],
 )
@@ -250,14 +250,14 @@ def test_wrong_scalar_and_collection_types_reject(
 @pytest.mark.parametrize(
     ("mutator", "match"),
     [
-        (lambda doc: doc.update({"version": True}), "version must be an integer"),
+        (lambda doc: doc.update({"version": True}), "root.version must be an integer"),
         (
             lambda doc: doc["controls"][0]["assertions"].update({"minimum_rows": True}),
-            "minimum_rows must be an integer",
+            r"controls\[0\]\.assertions\.minimum_rows must be an integer",
         ),
         (
             lambda doc: doc["noise_allowances"][0].update({"status": False}),
-            "status must be an integer",
+            r"noise_allowances\[0\]\.status must be an integer",
         ),
     ],
 )
@@ -280,16 +280,16 @@ def test_invalid_noise_status_rejects(tmp_path: Path, status: int) -> None:
         lambda doc: doc["noise_allowances"][0].update({"status": status}),
     )
 
-    with pytest.raises(ManifestError, match="status must be a valid HTTP status code"):
+    with pytest.raises(ManifestError, match=r"noise_allowances\[0\]\.status must be a valid HTTP status code"):
         load_scenario(path)
 
 
 @pytest.mark.parametrize(
     ("field", "match"),
     [
-        ("endpoint", "endpoint must be a string"),
-        ("method", "method must be a string"),
-        ("rationale", "rationale must be a string"),
+        ("endpoint", r"noise_allowances\[0\]\.endpoint must be a string"),
+        ("method", r"noise_allowances\[0\]\.method must be a string"),
+        ("rationale", r"noise_allowances\[0\]\.rationale must be a string"),
     ],
 )
 def test_missing_noise_allowance_fields_reject(
@@ -307,21 +307,19 @@ def test_missing_noise_allowance_fields_reject(
 @pytest.mark.parametrize(
     ("mutator", "match"),
     [
-        (lambda doc: doc.pop("id"), "id must be a string"),
-        (lambda doc: doc.pop("title"), "title must be a string"),
-        (lambda doc: doc.pop("source"), "source must be a mapping"),
-        (lambda doc: doc.pop("dashboard"), "dashboard must be a mapping"),
-        (lambda doc: doc["source"].pop("kind"), "source kind must be a string"),
-        (lambda doc: doc["source"].pop("path"), "source path must be a string"),
-        (lambda doc: doc["dashboard"].pop("title"), "dashboard title must be a string"),
-        (lambda doc: doc["dashboard"].pop("time_from"), "dashboard.time_from must be a string"),
-        (lambda doc: doc["dashboard"].pop("time_to"), "dashboard.time_to must be a string"),
-        (lambda doc: doc["controls"][0].pop("label"), "control label must be a string"),
-        (lambda doc: doc["controls"][0].pop("key"), "control key must be a string"),
-        (lambda doc: doc["controls"][0].pop("adapter"), "adapter must be a string"),
-        (lambda doc: doc["controls"][0].pop("capability"), "capability must be a string"),
-        (lambda doc: doc["controls"][0].pop("options"), "options must be a mapping"),
-        (lambda doc: doc["controls"][0].pop("assertions"), "assertions must be a mapping"),
+        (lambda doc: doc.pop("id"), "root.id must be a string"),
+        (lambda doc: doc.pop("title"), "root.title must be a string"),
+        (lambda doc: doc.pop("source"), "root.source must be a mapping"),
+        (lambda doc: doc.pop("dashboard"), "root.dashboard must be a mapping"),
+        (lambda doc: doc["source"].pop("kind"), "source.kind must be a string"),
+        (lambda doc: doc["source"].pop("path"), "source.path must be a string"),
+        (lambda doc: doc["dashboard"].pop("title"), "dashboard.title must be a string"),
+        (lambda doc: doc["controls"][0].pop("label"), r"controls\[0\]\.label must be a string"),
+        (lambda doc: doc["controls"][0].pop("key"), r"controls\[0\]\.key must be a string"),
+        (lambda doc: doc["controls"][0].pop("adapter"), r"controls\[0\]\.adapter must be a string"),
+        (lambda doc: doc["controls"][0].pop("capability"), r"controls\[0\]\.capability must be a string"),
+        (lambda doc: doc["controls"][0].pop("options"), r"controls\[0\]\.options must be a mapping"),
+        (lambda doc: doc["controls"][0].pop("assertions"), r"controls\[0\]\.assertions must be a mapping"),
     ],
 )
 def test_missing_required_fields_reject(
@@ -331,6 +329,33 @@ def test_missing_required_fields_reject(
 
     with pytest.raises(ManifestError, match=match):
         load_scenario(path)
+
+
+def test_missing_dashboard_time_fields_default_to_empty(tmp_path: Path) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: (
+            doc["dashboard"].pop("time_from"),
+            doc["dashboard"].pop("time_to"),
+        ),
+    )
+
+    scenario = load_scenario(path)
+
+    assert scenario.time_from == ""
+    assert scenario.time_to == ""
+
+
+def test_empty_dashboard_time_fields_are_allowed(tmp_path: Path) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["dashboard"].update({"time_from": "", "time_to": ""}),
+    )
+
+    scenario = load_scenario(path)
+
+    assert scenario.time_from == ""
+    assert scenario.time_to == ""
 
 
 def test_duplicate_control_keys_reject(tmp_path: Path) -> None:
@@ -372,15 +397,15 @@ def test_undeclared_combination_control_rejects(tmp_path: Path) -> None:
         name="undeclared-control.yaml",
     )
 
-    with pytest.raises(ManifestError, match="undeclared control key"):
+    with pytest.raises(ManifestError, match=r"combinations\[0\]\.selections undeclared control key"):
         load_scenario(path)
 
 
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
-        ("adapter", "unsupported_adapter", "unsupported adapter"),
-        ("capability", "unsupported_capability", "unsupported capability"),
+        ("adapter", "unsupported_adapter", r"controls\[0\]\.adapter unsupported adapter"),
+        ("capability", "unsupported_capability", r"controls\[0\]\.capability unsupported capability"),
     ],
 )
 def test_unsupported_adapter_and_capability_reject(
@@ -403,23 +428,23 @@ def test_unsupported_option_strategy_rejects(tmp_path: Path) -> None:
         name="bad-strategy.yaml",
     )
 
-    with pytest.raises(ManifestError, match="unsupported option strategy"):
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.options.strategy unsupported option strategy"):
         load_scenario(path)
 
 
 @pytest.mark.parametrize(
     ("mutator", "match"),
     [
-        (lambda doc: doc.update({"id": ""}), "id"),
-        (lambda doc: doc.update({"title": "   "}), "title"),
-        (lambda doc: doc["source"].update({"kind": ""}), "source kind"),
-        (lambda doc: doc["source"].update({"path": ""}), "source path"),
-        (lambda doc: doc["dashboard"].update({"title": ""}), "dashboard title"),
+        (lambda doc: doc.update({"id": ""}), "root.id must not be empty"),
+        (lambda doc: doc.update({"title": "   "}), "root.title must not be empty"),
+        (lambda doc: doc["source"].update({"kind": ""}), "source.kind must not be empty"),
+        (lambda doc: doc["source"].update({"path": ""}), "source.path must not be empty"),
+        (lambda doc: doc["dashboard"].update({"title": ""}), "dashboard.title must not be empty"),
         (
             lambda doc: doc["controls"][0].update({"label": ""}),
-            "control label",
+            r"controls\[0\]\.label must not be empty",
         ),
-        (lambda doc: doc["controls"][0].update({"key": ""}), "control key"),
+        (lambda doc: doc["controls"][0].update({"key": ""}), r"controls\[0\]\.key must not be empty"),
     ],
 )
 def test_empty_required_strings_reject(
@@ -438,7 +463,7 @@ def test_declared_strategy_without_include_rejects(tmp_path: Path) -> None:
         name="declared-no-include.yaml",
     )
 
-    with pytest.raises(ManifestError, match="include"):
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.options.include must be non-empty when strategy is declared"):
         load_scenario(path)
 
 
@@ -476,7 +501,7 @@ def test_affected_panels_invalid_string_rejects(tmp_path: Path) -> None:
         name="bad-affected-panels.yaml",
     )
 
-    with pytest.raises(ManifestError, match="affected_panels"):
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.assertions.affected_panels must be query_dependency"):
         load_scenario(path)
 
 
@@ -489,7 +514,20 @@ def test_affected_panels_rejects_kibana_uuid(tmp_path: Path) -> None:
         name="kibana-uuid-panels.yaml",
     )
 
-    with pytest.raises(ManifestError, match="Kibana UUID"):
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.assertions.affected_panels must not declare generated Kibana UUID"):
+        load_scenario(path)
+
+
+def test_unaffected_panels_rejects_kibana_uuid(tmp_path: Path) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0]["assertions"].update(
+            {"unaffected_panels": ["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]}
+        ),
+        name="kibana-uuid-unaffected-panels.yaml",
+    )
+
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.assertions.unaffected_panels must not declare generated Kibana UUID"):
         load_scenario(path)
 
 
@@ -500,7 +538,7 @@ def test_negative_minimum_rows_rejects(tmp_path: Path) -> None:
         name="negative-minimum-rows.yaml",
     )
 
-    with pytest.raises(ManifestError, match="minimum_rows"):
+    with pytest.raises(ManifestError, match=r"controls\[0\]\.assertions.minimum_rows must not be negative"):
         load_scenario(path)
 
 
@@ -515,7 +553,43 @@ def test_empty_noise_rationale_rejects(tmp_path: Path, rationale: str) -> None:
         name="empty-noise-rationale.yaml",
     )
 
-    with pytest.raises(ManifestError, match="rationale"):
+    with pytest.raises(ManifestError, match=r"noise_allowances\[0\]\.rationale must not be empty"):
+        load_scenario(path)
+
+
+@pytest.mark.parametrize("expected_gap", ["   ", "\t"])
+def test_whitespace_only_expected_gap_rejects(tmp_path: Path, expected_gap: str) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0].update({"expected_gap": expected_gap}),
+        name="whitespace-expected-gap.yaml",
+    )
+
+    with pytest.raises(
+        ManifestError,
+        match=r"controls\[0\]\.expected_gap must not be whitespace-only",
+    ):
+        load_scenario(path)
+
+
+def test_missing_manifest_path_rejects(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.yaml"
+
+    with pytest.raises(ManifestError, match=f"{missing}: unreadable manifest"):
+        load_scenario(missing)
+
+
+def test_non_string_combination_selection_value_rejects(tmp_path: Path) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["combinations"][0]["selections"].update({"namespace": 123}),
+        name="non-string-selection.yaml",
+    )
+
+    with pytest.raises(
+        ManifestError,
+        match=r"combinations\[0\]\.selections\['namespace'\] must be a string",
+    ):
         load_scenario(path)
 
 
