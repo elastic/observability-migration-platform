@@ -56,7 +56,11 @@ class CommandContractDocTests(unittest.TestCase):
     def test_command_contract_uses_split_dashboard_upload_path_for_legacy_flow(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn(
-            "--yaml-dir examples/alerting/generated/grafana/dashboards/yaml",
+            "--artifact-dir examples/alerting/generated/grafana/dashboards",
+            text,
+        )
+        self.assertIn(
+            "--artifact-format yaml",
             text,
         )
         self.assertNotIn(
