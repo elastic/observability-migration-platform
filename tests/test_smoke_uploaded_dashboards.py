@@ -373,6 +373,32 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(captured["body"]["params"], [{"job": ".*"}, {"instance": ".*"}])
 
+    def test_validate_esql_sends_identifier_control_params(self):
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse(
+                {
+                    "columns": [{"name": "grouping"}, {"name": "value"}],
+                    "values": [["transport"], [1]],
+                }
+            )
+
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            result = smoke.validate_esql(
+                "http://localhost:9200",
+                (
+                    "TS metrics-*\n"
+                    "| STATS value = SUM(metric) BY grouping = ??grouping"
+                ),
+                timeout=30,
+                identifier_params={"grouping": "transport"},
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(captured["body"]["params"], [{"grouping": "transport"}])
+
     def test_validate_esql_sends_api_key_header(self):
         captured = {}
 
@@ -644,6 +670,57 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
 
         self.assertEqual(result["runtime_checked_panels"], 2)
         self.assertEqual(mock_validate.call_count, 2)
+
+    def test_inspect_dashboard_threads_identifier_control_defaults(self):
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {
+                "title": "Dashboard",
+                "panelsJSON": json.dumps(
+                    [{
+                        "panelIndex": "lens-1",
+                        "type": "lens",
+                        "embeddableConfig": {
+                            "attributes": {
+                                "state": {
+                                    "query": {
+                                        "esql": (
+                                            "TS metrics-* | STATS value = SUM(metric) "
+                                            "BY grouping = ??grouping"
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        "gridData": {"x": 0, "y": 0, "w": 24, "h": 8},
+                    }]
+                ),
+            },
+        }
+
+        with mock.patch.object(
+            smoke,
+            "validate_esql",
+            return_value={
+                "status": "pass",
+                "rows": 1,
+                "columns": ["grouping", "value"],
+                "error": "",
+                "materialized_query": "TS metrics-* | LIMIT 1",
+            },
+        ) as mock_validate:
+            result = smoke.inspect_dashboard(
+                saved_object,
+                "http://localhost:9200",
+                timeout=30,
+                identifier_params={"grouping": "transport"},
+            )
+
+        self.assertEqual(result["runtime_checked_panels"], 1)
+        self.assertEqual(
+            mock_validate.call_args.kwargs["identifier_params"],
+            {"grouping": "transport"},
+        )
 
     def test_extract_panel_queries_reads_recursive_query_locations(self):
         panel = {

@@ -665,6 +665,30 @@ def _smoke_uploaded_dashboards(
 
     smoke_output = Path(args.smoke_output) if args.smoke_output else output_dir / "uploaded_dashboard_smoke_report.json"
     dashboard_titles = [result.dashboard_title for result in uploaded_results if result.dashboard_title]
+    identifier_params_by_dashboard: dict[str, dict[str, str]] = {}
+    for result in uploaded_results:
+        defaults: dict[str, str] = {}
+        for panel_result in result.panel_results:
+            query_ir = panel_result.query_ir if isinstance(panel_result.query_ir, dict) else {}
+            metadata = query_ir.get("metadata") if isinstance(query_ir.get("metadata"), dict) else {}
+            raw_defaults = metadata.get("esql_identifier_param_defaults")
+            if not isinstance(raw_defaults, dict):
+                continue
+            defaults.update(
+                {
+                    str(name): str(value)
+                    for name, value in raw_defaults.items()
+                    if name and value not in (None, "")
+                }
+            )
+        if not defaults:
+            continue
+        for dashboard_key in (
+            result.kibana_saved_object_id,
+            result.dashboard_title,
+        ):
+            if dashboard_key:
+                identifier_params_by_dashboard[dashboard_key] = dict(defaults)
 
     print(f"\n  Smoke validating uploaded dashboards ({len(uploaded_results)})...")
     try:
@@ -685,6 +709,7 @@ def _smoke_uploaded_dashboards(
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
             verify=_resolve_tls_from_args(args),
+            identifier_params_by_dashboard=identifier_params_by_dashboard,
         )
     except Exception as exc:
         message = str(exc)

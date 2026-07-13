@@ -164,7 +164,8 @@ Source template variables become Kibana `pinned_panels` controls via
   map to a `STATIC_VALUES` ES|QL control with `variable_type: fields`. The lint
   gate requires a `??var` identifier to be bound specifically by a `fields`
   control — a same-named `values` control does **not** satisfy it, because a
-  value is not a valid identifier for `STATS ... BY`.
+  value is not a valid identifier for `STATS ... BY`. The converse is also
+  enforced: a `fields` control does not bind a `?var` value parameter.
 
 ## Command Coverage
 

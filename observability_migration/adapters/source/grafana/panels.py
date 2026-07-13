@@ -5785,6 +5785,71 @@ def _collect_emitted_param_names(panels):
     return names
 
 
+def _degrade_conflicting_late_bound_group_panels(panels, panel_results):
+    """Replace ``??var`` panels when another dashboard panel emits ``?var``.
+
+    Kibana controls bind a variable as either a value or an identifier, not
+    both. The per-query validator catches dual use inside one query; this
+    dashboard-level pass catches the same conflict across separate panels.
+    Preserve the established values-control behavior and degrade only the new
+    late-bound grouping panel instead of shipping a field control that leaves
+    the value panel unbound.
+    """
+    value_vars = _collect_emitted_param_names(panels)
+    field_vars = _collect_emitted_field_control_vars(panels)
+    conflicts = value_vars & field_vars
+    if not conflicts:
+        return
+
+    for panel, panel_result in zip(panels, panel_results):
+        if not isinstance(panel, dict):
+            continue
+        esql_config = panel.get("esql")
+        query = esql_config.get("query") if isinstance(esql_config, dict) else None
+        if not isinstance(query, str):
+            continue
+        unquoted = _ESQL_QUOTED_RE.sub('""', query)
+        panel_conflicts = sorted(
+            {
+                match.group("name")
+                for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)
+            }
+            & conflicts
+        )
+        if not panel_conflicts:
+            continue
+
+        names = ", ".join(panel_conflicts)
+        reason = (
+            f"ES|QL parameter {names} is used as both value and field control "
+            "across dashboard panels; one dashboard control cannot preserve both semantics"
+        )
+        panel.pop("esql", None)
+        content = ["**Migration Required**", "", f"Reasons: {reason}"]
+        if panel_result.promql_expr:
+            content.extend(["", "Original PromQL:", "```", panel_result.promql_expr, "```"])
+        panel["markdown"] = {"content": "\n".join(content)}
+
+        panel_result.status = "not_feasible"
+        panel_result.kibana_type = "markdown"
+        panel_result.confidence = 0.0
+        panel_result.esql_query = ""
+        _append_unique(panel_result.reasons, reason)
+        query_ir_metadata = (
+            panel_result.query_ir.get("metadata")
+            if isinstance(panel_result.query_ir, dict)
+            and isinstance(panel_result.query_ir.get("metadata"), dict)
+            else {}
+        )
+        for metadata_key in (
+            "esql_identifier_param_defaults",
+            "late_bound_group_vars",
+            "late_bound_group_controls",
+        ):
+            query_ir_metadata.pop(metadata_key, None)
+        _sync_visual_ir(panel_result, panel)
+
+
 def _ensure_param_controls(
     controls,
     emitted_params,
@@ -7332,6 +7397,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # Parameters (``?var``) actually emitted by panel queries drive control
     # completeness: every one needs a binding control, and any variable that
     # became a control should no longer be reported as a dropped filter.
+    _degrade_conflicting_late_bound_group_panels(
+        flat_panels,
+        result.yaml_panel_results,
+    )
     emitted_params = _collect_emitted_param_names(flat_panels)
     emitted_field_vars = _collect_emitted_field_control_vars(flat_panels)
 

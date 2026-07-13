@@ -202,6 +202,30 @@ class UnboundParamGateTests(unittest.TestCase):
         self.assertIn("unbound-esql-field-control", output)
         self.assertIn("??grouping", output)
 
+    def test_fields_control_does_not_bind_value_param(self):
+        # Binding is type-symmetric: a fields control supplies an identifier for
+        # ``??var`` but cannot satisfy a scalar/string ``?var`` parameter.
+        yaml_text = textwrap.dedent(
+            """\
+            dashboards:
+              - name: Test Dashboard
+                controls:
+                  - type: esql
+                    variable_name: grouping
+                    variable_type: fields
+                    choices: [exporter, transport]
+                    default: exporter
+                panels:
+                  - title: Spans
+                    esql:
+                      query: "TS metrics-* | WHERE exporter RLIKE ?grouping | STATS v = SUM(x)"
+            """
+        )
+        ok, output = self._run(yaml_text)
+        self.assertFalse(ok, msg=output)
+        self.assertIn("unbound-esql-param", output)
+        self.assertIn("?grouping", output)
+
 
 if __name__ == "__main__":
     unittest.main()

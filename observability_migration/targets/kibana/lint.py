@@ -111,11 +111,16 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
             and control.get("type") == "esql"
             and control.get("variable_name")
         ]
-        bound = {str(control.get("variable_name")) for control in esql_controls}
+        value_bound = {
+            str(control.get("variable_name"))
+            for control in esql_controls
+            if control.get("variable_type") != "fields"
+        }
         # A ``??var`` identifier control must be bound specifically by a fields
         # control; a same-named ``values`` control supplies a value, not an
         # identifier for ``STATS ... BY ??var``, so the panel still fails to load
-        # (issue #282). Bind the ``??`` form only against fields controls.
+        # (issue #282). Binding is type-symmetric: fields controls satisfy only
+        # ``??var`` and values controls satisfy only ``?var``.
         field_bound = {
             str(control.get("variable_name"))
             for control in esql_controls
@@ -134,7 +139,8 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
             # them as plain ``?var`` params with a misleading message.
             param_scan = _ESQL_FIELD_CONTROL_RE.sub("", unquoted)
             for name in sorted(
-                {m.group("name") for m in _ESQL_PARAM_RE.finditer(param_scan)} - bound
+                {m.group("name") for m in _ESQL_PARAM_RE.finditer(param_scan)}
+                - value_bound
             ):
                 findings.append(
                     {

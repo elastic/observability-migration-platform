@@ -427,12 +427,23 @@ def extract_dashboard_filter_dsl(attributes):
     return {"bool": bool_query}
 
 
-def validate_esql(es_url, query, timeout, es_api_key="", session=None, dsl_filter=None):
+def validate_esql(
+    es_url,
+    query,
+    timeout,
+    es_api_key="",
+    session=None,
+    dsl_filter=None,
+    identifier_params=None,
+):
     materialized_query = materialize_dashboard_time_query(query)
     headers = {"Authorization": f"ApiKey {es_api_key}"} if es_api_key else None
     client = session or requests
     body = {"query": materialized_query}
-    params = _validation_params_for_query(materialized_query)
+    params = _validation_params_for_query(
+        materialized_query,
+        identifier_params=identifier_params,
+    )
     if params:
         body["params"] = params
     if dsl_filter:
@@ -995,7 +1006,7 @@ def _runtime_gap_reason(panel: dict) -> str:
 
 def _validate_panel_queries(
     es_url, queries, timeout, es_api_key="", validation_workers=1, verify: bool | str = True,
-    dsl_filter=None,
+    dsl_filter=None, identifier_params=None,
 ):
     if not queries:
         return []
@@ -1004,7 +1015,13 @@ def _validate_panel_queries(
         session = requests.Session()
         apply_tls(session, verify)
         return validate_esql(
-            es_url, query, timeout, es_api_key=es_api_key, session=session, dsl_filter=dsl_filter
+            es_url,
+            query,
+            timeout,
+            es_api_key=es_api_key,
+            session=session,
+            dsl_filter=dsl_filter,
+            identifier_params=identifier_params,
         )
 
     workers = max(1, int(validation_workers or 1))
@@ -1013,7 +1030,13 @@ def _validate_panel_queries(
         apply_tls(session, verify)
         return [
             validate_esql(
-                es_url, query, timeout, es_api_key=es_api_key, session=session, dsl_filter=dsl_filter
+                es_url,
+                query,
+                timeout,
+                es_api_key=es_api_key,
+                session=session,
+                dsl_filter=dsl_filter,
+                identifier_params=identifier_params,
             )
             for query in queries
         ]
@@ -1030,6 +1053,7 @@ def inspect_dashboard(
     es_api_key="",
     validation_workers=1,
     verify: bool | str = True,
+    identifier_params=None,
 ):
     attributes = saved_object.get("attributes", {})
     raw_panels = attributes.get("panelsJSON", "[]")
@@ -1104,6 +1128,7 @@ def inspect_dashboard(
             validation_workers=validation_workers,
             verify=verify,
             dsl_filter=dashboard_filter,
+            identifier_params=identifier_params,
         )
         failing = [item for item in validations if item["status"] == "fail"]
         rows = max((item["rows"] for item in validations), default=0)

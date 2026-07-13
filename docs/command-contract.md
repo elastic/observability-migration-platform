@@ -167,9 +167,12 @@ for reading the migration summary. `--smoke` writes and merges the smoke report
 into the dashboard artifacts; pass `--smoke-output <path>` to choose that report
 path. `--smoke-report <path>` is Grafana-only and only merges a pre-existing
 smoke report; it cannot be combined with `--smoke`, and it is not forwarded to
-Datadog. A run can still exit `0` while smoke reports empty panels or runtime
-errors, so inspect `migration_report.json`, `migration_summary.md`, and the
-smoke report before declaring the uploaded dashboard production-ready.
+Datadog. Grafana integrated smoke threads each QueryIR identifier-control
+default into direct ES|QL validation, so a `??field` grouping is checked with
+the same initial field selection as the uploaded dashboard. A run can still
+exit `0` while smoke reports empty panels or runtime errors, so inspect
+`migration_report.json`, `migration_summary.md`, and the smoke report before
+declaring the uploaded dashboard production-ready.
 
 Examples below use the canonical environment names
 (`$ELASTICSEARCH_ENDPOINT`, `$KIBANA_ENDPOINT`, `$KEY`) that match

@@ -264,7 +264,10 @@ at migration time.
   identifier (e.g. two-stage counts, binary expressions) all stay
   `not_feasible`. A validator reverts to `not_feasible` if a deferred `??var`
   never reached the emitted query, so a grouping dimension is never silently
-  dropped.
+  dropped. If another panel uses the same variable as a value parameter
+  (`?var`), the late-bound grouping panel also stays `not_feasible`: one
+  dashboard control cannot bind the same name as both a value and an identifier,
+  so the existing value-bound panel/control is preserved instead.
 
 This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the

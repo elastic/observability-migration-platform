@@ -568,6 +568,111 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("?", panel["esql"]["breakdown"]["field"])
         self.assertEqual(result.not_feasible, 0)
 
+    def test_dashboard_rejects_variable_used_as_value_and_field_across_panels(self):
+        # One Kibana control cannot bind the same Grafana variable as a values
+        # parameter in one panel and an identifier parameter in another. Preserve
+        # the existing values-panel behavior and degrade only the new late-bound
+        # grouping panel rather than replacing its values control with a fields
+        # control that leaves ``?grouping`` unbound.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+        from observability_migration.targets.kibana import lint as _lint
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        dashboard = {
+            "title": "Dual grouping semantics",
+            "uid": "dual-grouping",
+            "templating": {"list": [{
+                "name": "grouping",
+                "type": "custom",
+                "label": "Group by",
+                "query": "exporter,transport,receiver",
+                "current": {"text": "transport", "value": "transport"},
+                "options": [
+                    {"text": "exporter", "value": "exporter"},
+                    {"text": "transport", "value": "transport", "selected": True},
+                    {"text": "receiver", "value": "receiver"},
+                ],
+            }]},
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Dynamic grouping",
+                    "type": "timeseries",
+                    "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans[5m])) "
+                            "by ($grouping)"
+                        ),
+                    }],
+                },
+                {
+                    "id": 2,
+                    "title": "Value filter",
+                    "type": "timeseries",
+                    "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans"
+                            '{exporter=~"$grouping"}[5m])) by (exporter)'
+                        ),
+                    }],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result, path = migrate.translate_dashboard(
+                dashboard,
+                tmp,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(path).read_text())
+            self.assertEqual(_lint._unbound_param_findings(path), [])
+
+        dash = doc["dashboards"][0]
+        panels_by_title = {panel["title"]: panel for panel in dash["panels"]}
+        self.assertIn("markdown", panels_by_title["Dynamic grouping"])
+        self.assertNotIn("esql", panels_by_title["Dynamic grouping"])
+        self.assertIn("?grouping", panels_by_title["Value filter"]["esql"]["query"])
+        self.assertNotIn(
+            "??grouping",
+            " ".join(
+                panel.get("esql", {}).get("query", "")
+                for panel in dash["panels"]
+            ),
+        )
+        controls = dash.get("controls") or []
+        self.assertEqual(
+            [(control["variable_name"], control["variable_type"]) for control in controls],
+            [("grouping", "values")],
+        )
+        self.assertEqual(result.not_feasible, 1)
+        dynamic_result = next(
+            panel_result
+            for panel_result in result.panel_results
+            if panel_result.title == "Dynamic grouping"
+        )
+        self.assertEqual(dynamic_result.status, "not_feasible")
+        self.assertNotIn(
+            "esql_identifier_param_defaults",
+            dynamic_result.query_ir.get("metadata", {}),
+        )
+        self.assertTrue(
+            any("both value and field" in reason for reason in dynamic_result.reasons),
+            dynamic_result.reasons,
+        )
+
     def test_value_param_scanner_excludes_field_controls(self):
         query = (
             "TS metrics-* | WHERE service.name RLIKE ?service "
@@ -6485,6 +6590,51 @@ class TranslatorRegressionTests(unittest.TestCase):
             ),
             controls,
         )
+
+    def test_sync_result_queries_replaces_stale_field_control_for_value_param(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Filtered", "timeseries", "line", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| WHERE exporter RLIKE ?grouping\n"
+            "| STATS value = SUM(metric)"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "controls": [{
+                    "type": "esql",
+                    "label": "Group by",
+                    "variable_name": "grouping",
+                    "variable_type": "fields",
+                    "choices": ["exporter", "transport"],
+                    "default": "exporter",
+                }],
+                "panels": [{
+                    "title": "Filtered",
+                    "esql": {
+                        "type": "line",
+                        "query": "TS metrics-*\n| STATS value = SUM(metric)",
+                    },
+                }],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        controls = [
+            control
+            for control in rewritten["dashboards"][0].get("controls", [])
+            if control.get("variable_name") == "grouping"
+        ]
+        self.assertEqual(len(controls), 1, controls)
+        self.assertEqual(controls[0]["variable_type"], "values")
 
     def test_sync_result_queries_to_yaml_updates_metric_field_after_query_alias_change(self):
         result = migrate.MigrationResult("Dashboard", "uid")
