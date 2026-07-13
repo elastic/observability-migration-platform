@@ -134,8 +134,15 @@ def test_whitespace_control_schema_normalizes_to_empty(
 
 
 def test_invalid_fixture_rejects_version_and_unknown_key() -> None:
-    with pytest.raises(ManifestError, match=r"(version|unknown root key)"):
+    with pytest.raises(ManifestError, match="unknown root key"):
         load_scenario(INVALID)
+
+
+def test_unsupported_manifest_version_rejects(tmp_path: Path) -> None:
+    path = _mutated_manifest(tmp_path, lambda doc: doc.update({"version": 2}))
+
+    with pytest.raises(ManifestError, match="unsupported manifest version: 2"):
+        load_scenario(path)
 
 
 @pytest.mark.parametrize(
