@@ -398,21 +398,33 @@ class _NetworkEventCollector:
         except Exception as exc:
             self._record_framework_error(f"console listener failed: {exc}")
 
-    def _pending_requests(self) -> tuple[PendingRequest, ...]:
+    def _pending_requests_since(
+        self,
+        cursor: CaptureCursor | None = None,
+    ) -> tuple[PendingRequest, ...]:
         now = self._clock()
-        pending: list[PendingRequest] = []
-        for _request_id, (_index, started, panel_id, endpoint, opaque_id) in self._pending.items():
+        start_index = 0 if cursor is None else cursor.network_index
+        pending: list[tuple[int, PendingRequest]] = []
+        for _request_id, (index, started, panel_id, endpoint, opaque_id) in self._pending.items():
+            if index < start_index:
+                continue
             age_ms = max(0, int((now - started) * 1000))
             pending.append(
-                PendingRequest(
-                    panel_id=panel_id,
-                    endpoint=endpoint,
-                    opaque_id=opaque_id,
-                    age_ms=age_ms,
+                (
+                    index,
+                    PendingRequest(
+                        panel_id=panel_id,
+                        endpoint=endpoint,
+                        opaque_id=opaque_id,
+                        age_ms=age_ms,
+                    ),
                 )
             )
-        pending.sort(key=lambda item: (item.panel_id, item.opaque_id, item.endpoint))
-        return tuple(pending)
+        pending.sort(key=lambda item: item[0])
+        return tuple(item for _, item in pending)
+
+    def _pending_requests(self) -> tuple[PendingRequest, ...]:
+        return self._pending_requests_since(None)
 
     def network_since(self, cursor: CaptureCursor | None) -> tuple[NetworkEvidence, ...]:
         start = 0 if cursor is None else cursor.network_index
@@ -429,7 +441,11 @@ class _NetworkEventCollector:
         expected_panels: Collection[str],
     ) -> dict[str, bool]:
         network = self.network_since(cursor)
-        pending_panels = {item.panel_id for item in self._pending_requests() if item.panel_id}
+        pending_panels = {
+            item.panel_id
+            for item in self._pending_requests_since(cursor)
+            if item.panel_id
+        }
         terminal_by_panel: dict[str, bool] = {}
         for panel_id in expected_panels:
             has_terminal = any(
@@ -440,9 +456,10 @@ class _NetworkEventCollector:
 
     def _all_network_terminal_since(self, cursor: CaptureCursor) -> bool:
         network = self.network_since(cursor)
-        if not network and not self._pending:
+        pending = self._pending_requests_since(cursor)
+        if not network and not pending:
             return True
-        if self._pending:
+        if pending:
             return False
         return all(item.status != 0 for item in network)
 
@@ -472,7 +489,7 @@ class _NetworkEventCollector:
                 reasons.append(f"panel {panel_id}: snapshot missing")
             elif panel.status != "stable":
                 reasons.append(f"panel {panel_id}: status {panel.status}")
-        pending = self._pending_requests()
+        pending = self._pending_requests_since(cursor)
         if pending:
             for item in pending:
                 reasons.append(
@@ -1485,7 +1502,7 @@ class PlaywrightKibanaBrowser:
             network=self._collector.network_since(cursor),
             panels=panels,
             console_errors=self._collector.console_since(cursor),
-            pending_requests=self._collector._pending_requests(),
+            pending_requests=self._collector._pending_requests_since(cursor),
         )
 
     def settle(

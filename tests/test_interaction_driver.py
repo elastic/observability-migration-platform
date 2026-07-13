@@ -1839,3 +1839,83 @@ def test_settle_uses_wait_for_timeout_not_sleep(monkeypatch: pytest.MonkeyPatch)
         policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
     )
     assert page.wait_timeout_calls
+
+
+def test_settle_succeeds_despite_pre_step_pending_request() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="stable output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-0", opaque_id="pre-step")
+    cursor = browser.begin_step()
+    post_req = page.emit_esql_request("panel-1", opaque_id="post-step")
+    page.emit_esql_response(post_req)
+    result = browser.settle(
+        cursor,
+        ["panel-1"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
+    )
+    assert len(result.network) == 1
+    assert result.network[0].opaque_id == "post-step"
+    assert result.pending_requests == ()
+
+
+def test_capture_scopes_pending_requests_to_cursor() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock, body_text="dashboard body")
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-old", opaque_id="pre")
+    cursor = browser.begin_step()
+    page.emit_esql_request("panel-new", opaque_id="post")
+
+    scoped = browser.capture([], cursor=cursor)
+    all_observation = browser.capture([], cursor=None)
+
+    assert len(scoped.pending_requests) == 1
+    assert scoped.pending_requests[0].opaque_id == "post"
+    assert len(all_observation.pending_requests) == 2
+    assert {item.opaque_id for item in all_observation.pending_requests} == {"pre", "post"}
+
+
+def test_pre_step_pending_completion_does_not_reset_post_step_stable_polls() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="stable output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    pre_req = page.emit_esql_request("panel-0", opaque_id="pre-step")
+    cursor = browser.begin_step()
+    post_req = page.emit_esql_request("panel-1", opaque_id="post-step")
+    page.emit_esql_response(post_req)
+    policy = SettlePolicy(timeout_seconds=2.0, poll_interval_ms=10, stable_polls=3)
+    poll_count = 0
+    original_wait = page.wait_for_timeout
+
+    def wait_with_pre_step_completion(ms: int) -> None:
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count == 2:
+            page.emit_esql_response(pre_req)
+        original_wait(ms)
+
+    page.wait_for_timeout = wait_with_pre_step_completion  # type: ignore[method-assign]
+    result = browser.settle(cursor, ["panel-1"], policy=policy)
+    assert result.network[-1].opaque_id == "post-step"
+    assert result.pending_requests == ()
+
+
+def test_settle_timeout_lists_only_post_cursor_pending() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="still loading", loading=True, clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-0", opaque_id="pre-step")
+    cursor = browser.begin_step()
+    page.emit_esql_request("panel-1", opaque_id="post-step")
+    with pytest.raises(SettleTimeout) as exc_info:
+        browser.settle(
+            cursor,
+            ["panel-1"],
+            policy=SettlePolicy(timeout_seconds=0.05, poll_interval_ms=10, stable_polls=2),
+        )
+    timeout = exc_info.value
+    assert len(timeout.observation.pending_requests) == 1
+    assert timeout.observation.pending_requests[0].panel_id == "panel-1"
+    assert "panel-1" in timeout.reason
+    assert "panel-0" not in timeout.reason
