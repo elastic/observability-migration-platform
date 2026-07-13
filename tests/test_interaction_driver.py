@@ -30,6 +30,8 @@ from observability_migration.targets.kibana.interaction_driver import (
     SelectionDidNotStick,
     TimeRangeAdapter,
     _adapter_for,
+    _scoped_options_container,
+    _searchbox,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (
     Assertions,
@@ -60,6 +62,9 @@ class FakeElement:
     parent: FakeElement | None = None
     open: bool = False
     sticky: bool = True
+    mounted: bool = True
+    owner_name: str = ""
+    linked_listbox: FakeElement | None = None
 
 
 class FakeLocator:
@@ -193,6 +198,9 @@ class FakePage:
             return element_name == query
         return query in element_name
 
+    def _visible_elements(self, scope: list[FakeElement]) -> list[FakeElement]:
+        return [element for element in scope if element.mounted]
+
     def _find_by_role(
         self,
         scope: list[FakeElement],
@@ -202,13 +210,15 @@ class FakePage:
         exact: bool = False,
     ) -> FakeLocator:
         matches: list[FakeElement] = []
-        for element in scope:
+        for element in self._visible_elements(scope):
             if element.role == role and self._name_matches(element.name, name, exact=exact):
                 matches.append(element)
             matches.extend(
                 child
                 for child in element.children
-                if child.role == role and self._name_matches(child.name, name, exact=exact)
+                if child.mounted
+                and child.role == role
+                and self._name_matches(child.name, name, exact=exact)
             )
         return FakeLocator(self, matches)
 
@@ -220,7 +230,7 @@ class FakePage:
         if selector == "body":
             return FakeLocator(self, [self._body])
         matches: list[FakeElement] = []
-        for element in scope:
+        for element in self._visible_elements(scope):
             if element.selector == selector:
                 matches.append(element)
             if element.test_subj and f'[data-test-subj="{element.test_subj}"]' == selector:
@@ -232,17 +242,38 @@ class FakePage:
             matches.extend(
                 child
                 for child in element.children
-                if child.selector == selector
-                or (
-                    child.test_subj
-                    and f'[data-test-subj="{child.test_subj}"]' == selector
+                if child.mounted
+                and (
+                    child.selector == selector
+                    or (
+                        child.test_subj
+                        and f'[data-test-subj="{child.test_subj}"]' == selector
+                    )
                 )
             )
         return FakeLocator(self, matches)
 
+    def _mount_listbox_for(self, combobox: FakeElement) -> None:
+        self._unmount_all_listboxes()
+        if combobox.linked_listbox is not None:
+            combobox.linked_listbox.mounted = True
+            combobox.open = True
+
+    def _unmount_all_listboxes(self) -> None:
+        for element in self._elements:
+            if element.test_subj == "comboBoxOptionsList" or element.role == "listbox":
+                element.mounted = False
+            element.open = False
+
+    def _close_popovers(self) -> None:
+        self._unmount_all_listboxes()
+
     def _click(self, element: FakeElement) -> None:
         if element.role == "combobox":
-            element.open = True
+            self._mount_listbox_for(element)
+            return
+        if element.selector == "body":
+            self._close_popovers()
             return
         if element.role == "option":
             self.option_clicks[element.text] = self.option_clicks.get(element.text, 0) + 1
@@ -268,13 +299,12 @@ class FakePage:
                 for child in combobox.children:
                     if child.role == "option":
                         child.aria_selected = "true" if child.text == element.text else "false"
-            element.open = False
             return
         if element.test_subj == "superDatePickerShowDatesButton":
             element.open = True
             return
         if element.test_subj == "optionsListControlApplyButton":
-            element.open = False
+            self._close_popovers()
             return
         if element.test_subj == "addFilter":
             self.add(FakeElement(test_subj="filterFieldSuggestionList", role="combobox"))
@@ -328,7 +358,41 @@ class FakePage:
         for element in self._elements:
             if element.role == "combobox" and option in element.children:
                 return element
+            if (
+                element.role == "combobox"
+                and element.linked_listbox is not None
+                and option in element.linked_listbox.children
+            ):
+                return element
         return None
+
+
+def _attach_listbox(
+    page: FakePage,
+    combobox: FakeElement,
+    *,
+    options: list[str],
+    selected: list[str] | None = None,
+) -> FakeElement:
+    listbox = FakeElement(
+        role="listbox",
+        test_subj="comboBoxOptionsList",
+        owner_name=combobox.name,
+        mounted=False,
+    )
+    selected_set = set(selected or [])
+    for option_text in options:
+        option = FakeElement(
+            role="option",
+            name=option_text,
+            text=option_text,
+            aria_selected="true" if option_text in selected_set else "false",
+        )
+        listbox.children.append(option)
+        combobox.children.append(option)
+    combobox.linked_listbox = listbox
+    page.add(listbox)
+    return listbox
 
 
 def _control(
@@ -364,20 +428,8 @@ def _esql_page(
         sticky=sticky,
         data_selected_options=",".join(selected or []),
     )
-    listbox = FakeElement(role="listbox", test_subj="comboBoxOptionsList")
-    selected_set = set(selected or [])
-    for option_text in options:
-        listbox.children.append(
-            FakeElement(
-                role="option",
-                name=option_text,
-                text=option_text,
-                aria_selected="true" if option_text in selected_set else "false",
-            )
-        )
-    combobox.children.extend(listbox.children)
     page.add(combobox)
-    page.add(listbox)
+    _attach_listbox(page, combobox, options=options, selected=selected)
     if duplicate:
         page.add(FakeElement(role="combobox", name=combobox_name))
     if incompatible_warning:
@@ -481,6 +533,78 @@ def test_esql_incompatible_warning_state_extraction() -> None:
     assert state.selected_count == 2
 
 
+def test_esql_verifies_operated_control_after_popover_unmounts() -> None:
+    page = _esql_page(
+        combobox_name="namespace",
+        options=["ns_1", "ns_2"],
+        selected=["ns_1"],
+    )
+    EsqlControlAdapter(page).select(_control("namespace", "namespace", "esql_value"), "ns_2")
+    assert page.locator('[data-test-subj="comboBoxOptionsList"]').count() == 0
+    combobox = page.get_by_role("combobox", name="namespace", exact=True)
+    assert combobox.get_attribute("data-selected-options") == "ns_2"
+
+
+def _multi_esql_page() -> FakePage:
+    page = FakePage()
+    namespace = FakeElement(
+        role="combobox",
+        name="namespace",
+        data_selected_options="ns_1",
+    )
+    page.add(namespace)
+    _attach_listbox(
+        page,
+        namespace,
+        options=["ns_1", "ns_2"],
+        selected=["ns_1"],
+    )
+    instance = FakeElement(
+        role="combobox",
+        name="instance",
+        data_selected_options="redis_1",
+    )
+    page.add(instance)
+    _attach_listbox(
+        page,
+        instance,
+        options=["redis_1", "redis_2"],
+        selected=["redis_1"],
+    )
+    return page
+
+
+def test_multi_control_select_verifies_second_control_not_first() -> None:
+    page = _multi_esql_page()
+    EsqlControlAdapter(page).select(_control("instance", "instance", "esql_value"), "redis_2")
+    namespace = page.get_by_role("combobox", name="namespace", exact=True)
+    instance = page.get_by_role("combobox", name="instance", exact=True)
+    assert namespace.get_attribute("data-selected-options") == "ns_1"
+    assert instance.get_attribute("data-selected-options") == "redis_2"
+
+
+def test_scoped_options_container_raises_when_no_popover_or_listbox() -> None:
+    page = FakePage()
+    with pytest.raises(ControlNotFound, match="listbox: control not found"):
+        _scoped_options_container(page)
+
+
+def test_scoped_options_container_raises_when_multiple_listboxes() -> None:
+    page = FakePage()
+    page.add(FakeElement(role="listbox", name="first"))
+    page.add(FakeElement(role="listbox", name="second"))
+    with pytest.raises(ControlNotFound, match="listbox: ambiguous"):
+        _scoped_options_container(page)
+
+
+def test_scoped_options_container_raises_when_multiple_popovers() -> None:
+    page = FakePage()
+    page.add(FakeElement(test_subj="comboBoxOptionsList", role="listbox", name="a"))
+    page.add(FakeElement(test_subj="comboBoxOptionsList", role="listbox", name="b"))
+    with pytest.raises(ControlNotFound, match="popover: ambiguous"):
+        _scoped_options_container(page)
+
+
 def _options_list_page(
     *,
     combobox_name: str,
@@ -488,6 +612,7 @@ def _options_list_page(
     selected: list[str] | None = None,
     multiselect: bool = False,
     has_apply: bool = False,
+    sticky: bool = True,
 ) -> FakePage:
     page = FakePage()
     combobox = FakeElement(
@@ -496,21 +621,10 @@ def _options_list_page(
         aria_multiselectable="true" if multiselect else "false",
         data_multiselect="true" if multiselect else "false",
         data_selected_options=",".join(selected or []),
+        sticky=sticky,
     )
-    listbox = FakeElement(role="listbox", test_subj="comboBoxOptionsList")
-    selected_set = set(selected or [])
-    for option_text in options:
-        listbox.children.append(
-            FakeElement(
-                role="option",
-                name=option_text,
-                text=option_text,
-                aria_selected="true" if option_text in selected_set else "false",
-            )
-        )
-    combobox.children.extend(listbox.children)
     page.add(combobox)
-    page.add(listbox)
+    _attach_listbox(page, combobox, options=options, selected=selected)
     if has_apply:
         page.add(FakeElement(test_subj="optionsListControlApplyButton", role="button"))
     return page
@@ -563,6 +677,39 @@ def test_options_list_missing_option_raises() -> None:
             _control("region", "region", "options_list"),
             "missing",
         )
+
+
+def test_options_list_sticky_failure_single_select() -> None:
+    page = _options_list_page(
+        combobox_name="region",
+        options=["us-east", "eu-west"],
+        selected=["us-east"],
+        sticky=False,
+    )
+    with pytest.raises(SelectionDidNotStick):
+        OptionsListAdapter(page).select(
+            _control("region", "region", "options_list"),
+            "eu-west",
+        )
+    assert page.option_clicks["eu-west"] == 1
+
+
+def test_options_list_sticky_failure_multiselect_clicks_each_option_once() -> None:
+    page = _options_list_page(
+        combobox_name="services",
+        options=["api", "web", "worker"],
+        multiselect=True,
+        has_apply=True,
+        sticky=False,
+    )
+    with pytest.raises(SelectionDidNotStick):
+        OptionsListAdapter(page).select(
+            _control("services", "services", "options_list"),
+            "api,worker",
+        )
+    assert page.option_clicks.get("api", 0) == 1
+    assert page.option_clicks.get("worker", 0) == 1
+    assert page.option_clicks.get("web", 0) == 0
 
 
 def _range_slider_page(
@@ -658,6 +805,14 @@ def test_query_bar_uses_submit_button_when_present() -> None:
         "service:api",
     )
     assert page.get_by_role("searchbox").input_value() == "service:api"
+
+
+def test_query_bar_ambiguous_query_input_raises() -> None:
+    page = FakePage()
+    page.add(FakeElement(test_subj="queryInput", role="searchbox", input_value="a"))
+    page.add(FakeElement(test_subj="queryInput", role="searchbox", input_value="b"))
+    with pytest.raises(ControlNotFound, match="query bar: ambiguous"):
+        _searchbox(page)
 
 
 def _filter_pill_page() -> FakePage:
