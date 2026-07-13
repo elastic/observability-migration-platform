@@ -14165,13 +14165,19 @@ class NativePromqlTests(unittest.TestCase):
 
     def test_adaptive_step_omits_step_param(self):
         """Issue #272: a range dashboard panel opts into ``adaptive_step`` so no
-        ``step=`` is baked in; Elastic sizes the resolution to the view. The
-        range command still emits the ``step`` time column."""
+        fixed ``step=`` is baked in; Elastic sizes the resolution to the view via
+        the dashboard time picker. A bare stepless command is rejected by ES
+        ("provide either [step] or all of [start], [end], and [buckets]"), so the
+        adaptive form binds ``start=?_tstart end=?_tend buckets=50`` (Kibana
+        materializes the params at render). The command still emits the ``step``
+        time column."""
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
         q = build_native_promql_query("up", index="metrics-*", kibana_type="line", adaptive_step=True)
         self.assertTrue(q.startswith("PROMQL index=metrics-*"))
         self.assertNotIn("step=", q)
         self.assertNotIn("time=?_tend", q)
+        # Adaptive-but-executable: bound to the time picker, not stepless.
+        self.assertIn("start=?_tstart end=?_tend buckets=50", q)
         self.assertIn("value=(up)", q)
 
     def test_adaptive_step_ignored_for_instant_tile(self):

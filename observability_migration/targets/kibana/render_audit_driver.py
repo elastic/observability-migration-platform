@@ -305,6 +305,7 @@ def build_render_audit_command(
     window_width: int = 1600,
     window_height: int = 1200,
     virtual_time_budget_ms: int = 30000,
+    no_sandbox: bool = False,
 ) -> list[str]:
     """Headless-Chrome argv that loads ``url`` with a persistent profile and dumps the DOM."""
     cmd = [
@@ -315,6 +316,8 @@ def build_render_audit_command(
         f"--window-size={window_width},{window_height}",
         f"--virtual-time-budget={virtual_time_budget_ms}",
     ]
+    if no_sandbox:
+        cmd.append("--no-sandbox")
     if user_data_dir:
         cmd.append(f"--user-data-dir={user_data_dir}")
     cmd += ["--dump-dom", url]
@@ -328,13 +331,18 @@ def dump_dom(
     chrome_binary: str = "",
     virtual_time_budget_ms: int = 30000,
     timeout: int = 90,
+    no_sandbox: bool = False,
 ) -> str:
     """Render ``url`` in headless Chrome (reusing ``user_data_dir``) and return the DOM."""
     binary = discover_chrome_binary(chrome_binary)
     if not binary:
         raise RuntimeError("Chrome/Chromium binary not found for render audit")
     command = build_render_audit_command(
-        binary, url, user_data_dir, virtual_time_budget_ms=virtual_time_budget_ms
+        binary,
+        url,
+        user_data_dir,
+        virtual_time_budget_ms=virtual_time_budget_ms,
+        no_sandbox=no_sandbox,
     )
     proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
@@ -439,7 +447,13 @@ def run_audit_cli(
         # gemini-glic / SSO tab. Best-effort UX only — capture still uses the
         # headless path below regardless of which tab is active.
         activate_kibana_tab(args.kibana_url, args.dashboard_id, tab_driver=drive)
-    fetch = dom_fetcher or (lambda u: dump_dom(u, args.user_data_dir))
+    fetch = dom_fetcher or (
+        lambda u: dump_dom(
+            u,
+            args.user_data_dir,
+            no_sandbox=bool(getattr(args, "chrome_no_sandbox", False)),
+        )
+    )
     snapshot = fetch(url)
 
     report: dict | None = None
@@ -579,6 +593,12 @@ def _build_argparser() -> argparse.ArgumentParser:
              "host/dashboard-id in a live agent-browser session (ignores stray "
              "gemini-glic / SSO-interstitial tabs). DOM capture still uses the "
              "headless --user-data-dir path.",
+    )
+    parser.add_argument(
+        "--chrome-no-sandbox",
+        action="store_true",
+        help="Pass --no-sandbox to headless Chrome. Intended for trusted local CI runners "
+             "where Chrome cannot use the Linux sandbox.",
     )
     return parser
 

@@ -922,6 +922,22 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
+# Adaptive range resolution for dashboard panels (#272). A range plot must size
+# its bucketing to the dashboard time range at view time (like Grafana's
+# ``$__interval``) instead of freezing a fixed ``step=``. A *bare* stepless
+# ``PROMQL index=...`` command is NOT valid, however: Elasticsearch rejects it at
+# plan time with "unable to create a bucket; provide either [step] or all of
+# [start], [end], and [buckets]" (verified against ES 9.5 serverless). So the
+# adaptive form binds the window to the dashboard time picker via the
+# ``?_tstart`` / ``?_tend`` params Kibana materializes at render time, with a
+# fixed bucket count matching the ES|QL ``BUCKET(@timestamp, 50, ?_tstart,
+# ?_tend)`` path. This stays adaptive (no baked-in ``step=``) while remaining an
+# executable query.
+_NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
+_NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
+    f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
+)
+
 # Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
 # $__auto_interval_*). Grafana sizes these from the panel width and selected time
 # range at view time, i.e. they encode "size the lookback to the view", not a
@@ -1580,10 +1596,13 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     #   1. instant           -> ``time=?_tend`` (no step column)
     #   2. explicit ``step`` -> ``step=<value>`` (e.g. a migrated Grafana alert
     #      honoring the source query interval, issue #209)
-    #   3. ``adaptive_step`` -> omit ``step=`` so Elastic sizes the resolution
-    #      from the dashboard time range at view time, matching Grafana's
-    #      ``$__interval`` auto-bucketing instead of freezing a fixed step
-    #      (issue #272). The command still emits the ``step`` time column.
+    #   3. ``adaptive_step`` -> bind the window to the dashboard time picker via
+    #      ``start=?_tstart end=?_tend buckets=50`` so Elastic sizes the
+    #      resolution to the view (like Grafana's ``$__interval``) without a
+    #      frozen step (issue #272). A *bare* stepless command is rejected by ES
+    #      ("provide either [step] or all of [start], [end], and [buckets]"), so
+    #      the timing args must be present; Kibana materializes the params at
+    #      render time. The command still emits the ``step`` time column.
     #   4. otherwise         -> the documented ``step=1m`` default, preserving
     #      historical behavior for direct callers that opt into neither.
     if instant:
@@ -1591,7 +1610,7 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     elif step:
         selector = f"step={str(step).strip()}"
     elif adaptive_step:
-        selector = ""
+        selector = _NATIVE_PROMQL_ADAPTIVE_SELECTOR
     else:
         selector = f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
 
@@ -2196,10 +2215,14 @@ def _translate_multi_target_native_promql(
         )
 
     combined_expr = " or ".join(parts)
-    # #272: omit ``step=`` so Kibana/Elastic re-buckets the overlay to the
-    # dashboard time range at view time; the command still emits a ``step``
-    # column for the x-axis.
-    promql_query = f"PROMQL index={index} value=({combined_expr})"
+    # #272: bind the overlay to the dashboard time range at view time via
+    # ``start=?_tstart end=?_tend buckets=50`` (no baked-in ``step=``) so Elastic
+    # re-buckets it to the view while staying an executable query — a bare
+    # stepless range command is rejected by ES. The command still emits a
+    # ``step`` column for the x-axis.
+    promql_query = (
+        f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
+    )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
     # ES|QL translation; a data/field gap keeps native (issue #158).
