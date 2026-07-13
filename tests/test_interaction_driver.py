@@ -28,6 +28,8 @@ from observability_migration.targets.kibana.interaction_driver import (
     QueryBarAdapter,
     RangeSliderAdapter,
     SelectionDidNotStick,
+    SettlePolicy,
+    SettleTimeout,
     TimeRangeAdapter,
     _adapter_for,
     _scoped_options_container,
@@ -60,6 +62,7 @@ class FakeElement:
     data_test_embeddable_id: str = ""
     aria_valuemin: str = ""
     aria_valuemax: str = ""
+    aria_label: str = ""
     input_value: str = ""
     children: list[FakeElement] = field(default_factory=list)
     parent: FakeElement | None = None
@@ -149,6 +152,7 @@ class FakeLocator:
             "data-test-embeddable-id": element.data_test_embeddable_id,
             "aria-valuemin": element.aria_valuemin,
             "aria-valuemax": element.aria_valuemax,
+            "aria-label": element.aria_label,
         }
         return mapping.get(name, "")
 
@@ -203,6 +207,18 @@ class FakePage:
         self._elements: list[FakeElement] = []
         self._body = FakeElement(role="document", text=body_text, selector="body")
         self._elements.append(self._body)
+        self._listeners: dict[str, list[Any]] = {}
+
+    def on(self, event: str, handler: Any) -> None:
+        self._listeners.setdefault(event, []).append(handler)
+
+    def off(self, event: str, handler: Any) -> None:
+        handlers = self._listeners.get(event, [])
+        if handler in handlers:
+            handlers.remove(handler)
+
+    def wait_for_timeout(self, milliseconds: int) -> None:
+        del milliseconds
 
     def add(self, element: FakeElement) -> FakeElement:
         self._elements.append(element)
@@ -470,6 +486,179 @@ class FakePage:
             ):
                 return element
         return None
+
+
+class FakeClock:
+    def __init__(self, start: float = 1000.0) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def advance_ms(self, milliseconds: int) -> None:
+        self._now += milliseconds / 1000.0
+
+
+@dataclass
+class FakeRequestFailure:
+    error_text: str = ""
+
+
+@dataclass
+class FakeNetworkRequest:
+    method: str
+    url: str
+    headers: dict[str, str]
+    post_data_json: dict[str, object] | None = None
+    failure: FakeRequestFailure | None = None
+
+
+@dataclass
+class FakeNetworkResponse:
+    request: FakeNetworkRequest
+    status: int
+    body: object = None
+    json_error: str = ""
+
+    def json(self) -> object:
+        if self.json_error:
+            raise ValueError(self.json_error)
+        return self.body if self.body is not None else {}
+
+
+@dataclass
+class FakeConsoleMessage:
+    type: str
+    text: str
+
+
+_KBN_CONTEXT_PANEL = (
+    "%7B%22type%22%3A%22application%22%2C%22name%22%3A%22dashboards%22%2C%22child%22%3A%7B"
+    "%22type%22%3A%22lens%22%2C%22id%22%3A%22{panel_id}%22%2C%22description%22%3A%22{title}%22%7D%7D"
+)
+
+
+def _esql_headers(panel_id: str, *, title: str = "Panel", opaque_id: str = "") -> dict[str, str]:
+    encoded = _KBN_CONTEXT_PANEL.format(panel_id=panel_id, title=title.replace(" ", "%20"))
+    headers = {"x-kbn-context": encoded}
+    if opaque_id:
+        headers["x-opaque-id"] = opaque_id
+    return headers
+
+
+class InstrumentedFakePage(FakePage):
+    """FakePage with Playwright-style event listeners and deterministic timing."""
+
+    def __init__(
+        self,
+        *,
+        clock: FakeClock | None = None,
+        url: str = "about:blank",
+        body_text: str = "",
+        a11y_snapshot: str = "",
+    ) -> None:
+        super().__init__(url=url, body_text=body_text, a11y_snapshot=a11y_snapshot)
+        self._clock = clock or FakeClock()
+        self.wait_timeout_calls: list[int] = []
+
+    @property
+    def listener_counts(self) -> dict[str, int]:
+        return {event: len(handlers) for event, handlers in self._listeners.items()}
+
+    def wait_for_timeout(self, milliseconds: int) -> None:
+        self.wait_timeout_calls.append(milliseconds)
+        self._clock.advance_ms(milliseconds)
+
+    def emit_request(self, request: FakeNetworkRequest) -> None:
+        for handler in self._listeners.get("request", []):
+            handler(request)
+
+    def emit_response(self, response: FakeNetworkResponse) -> None:
+        for handler in self._listeners.get("response", []):
+            handler(response)
+
+    def emit_request_failed(self, request: FakeNetworkRequest) -> None:
+        for handler in self._listeners.get("requestfailed", []):
+            handler(request)
+
+    def emit_console(self, message: FakeConsoleMessage) -> None:
+        for handler in self._listeners.get("console", []):
+            handler(message)
+
+    def emit_esql_request(
+        self,
+        panel_id: str,
+        *,
+        title: str = "Panel",
+        opaque_id: str = "",
+        query: str = "FROM metrics-*",
+        params: list[dict[str, object]] | None = None,
+    ) -> FakeNetworkRequest:
+        request = FakeNetworkRequest(
+            method="POST",
+            url="http://localhost:5601/internal/search/esql_async",
+            headers=_esql_headers(panel_id, title=title, opaque_id=opaque_id),
+            post_data_json={"query": query, "params": params or []},
+        )
+        self.emit_request(request)
+        return request
+
+    def emit_esql_response(
+        self,
+        request: FakeNetworkRequest,
+        *,
+        status: int = 200,
+        body: object | None = None,
+        json_error: str = "",
+    ) -> None:
+        if body is None:
+            body = {
+                "columns": [{"name": "value"}],
+                "values": [[1]],
+            }
+        self.emit_response(
+            FakeNetworkResponse(
+                request=request,
+                status=status,
+                body=body,
+                json_error=json_error,
+            )
+        )
+
+
+def _panel_page(
+    panel_id: str,
+    *,
+    title: str = "",
+    text: str = "stable panel output",
+    loading: bool = False,
+    missing: bool = False,
+    identity: str = "dashboardPanel",
+    clock: FakeClock | None = None,
+) -> InstrumentedFakePage:
+    page = InstrumentedFakePage(clock=clock, body_text="dashboard body")
+    if missing:
+        return page
+    if identity == "dashboardPanel":
+        panel = FakeElement(test_subj=f"dashboardPanel-{panel_id}", text=text)
+    else:
+        panel = FakeElement(
+            test_subj="embeddablePanel",
+            data_panel_id=panel_id,
+            text=text,
+        )
+    if title:
+        panel.children.append(FakeElement(role="heading", name=title, text=title))
+    if loading:
+        panel.children.append(
+            FakeElement(test_subj="lnsEmbeddablePanelLoadingIndicator", text="Loading")
+        )
+        panel.text = f"{text} Loading"
+    page.add(panel)
+    return page
 
 
 def _attach_listbox(
@@ -1347,3 +1536,306 @@ def test_source_has_no_top_level_playwright_import() -> None:
         if line.strip().startswith(("import playwright", "from playwright"))
     ]
     assert import_lines == []
+
+
+# ---------------------------------------------------------------------------
+# Task 7: event capture, panel snapshots, deterministic settling
+# ---------------------------------------------------------------------------
+
+
+def test_listeners_correlate_same_url_requests_by_object_identity() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    req_a = page.emit_esql_request("panel-a", opaque_id="a-1")
+    req_b = page.emit_esql_request("panel-b", opaque_id="b-1")
+    page.emit_esql_response(req_a)
+    page.emit_esql_response(req_b)
+    observation = browser.capture(["panel-a", "panel-b"])
+    panel_ids = [item.panel_id for item in observation.network]
+    assert panel_ids == ["panel-a", "panel-b"]
+    assert all(item.status != 0 for item in observation.network)
+
+
+def test_malformed_esql_request_is_contained_in_console_errors() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    bad_request = FakeNetworkRequest(
+        method="POST",
+        url="http://localhost:5601/internal/search/esql_async",
+        headers=_esql_headers("panel-1"),
+        post_data_json={"query": {"invalid": True}},
+    )
+    page.emit_request(bad_request)
+    observation = browser.capture([])
+    assert any("query must be a string" in message for message in observation.console_errors)
+    assert observation.network == ()
+
+
+def test_requestfailed_becomes_terminal_error_evidence() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1")
+    request.failure = FakeRequestFailure(error_text="net::ERR_FAILED")
+    page.emit_request_failed(request)
+    observation = browser.capture(["panel-1"])
+    assert len(observation.network) == 1
+    assert observation.network[0].status == -1
+    assert "ERR_FAILED" in observation.network[0].error
+    assert observation.pending_requests == ()
+
+
+def test_only_error_console_messages_are_recorded_and_bounded() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_console(FakeConsoleMessage(type="log", text="ignored info"))
+    page.emit_console(FakeConsoleMessage(type="error", text="visible error"))
+    page.emit_console(FakeConsoleMessage(type="warning", text="ignored warning"))
+    observation = browser.capture([])
+    assert observation.console_errors == ("visible error",)
+
+
+def test_listeners_installed_once_and_detached_on_close() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    assert page.listener_counts.get("request", 0) == 1
+    browser.open_dashboard("https://kibana.example/dashboard")
+    assert page.listener_counts.get("request", 0) == 1
+    browser.close()
+    assert all(count == 0 for count in page.listener_counts.values())
+
+
+def test_begin_step_slices_network_and_console_since_cursor() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    page.emit_esql_request("panel-1")
+    page.emit_console(FakeConsoleMessage(type="error", text="before step"))
+    cursor = browser.begin_step()
+    req = page.emit_esql_request("panel-2")
+    page.emit_esql_response(req)
+    page.emit_console(FakeConsoleMessage(type="error", text="after step"))
+    observation = browser.capture(["panel-2"], cursor=cursor)
+    assert len(observation.network) == 1
+    assert observation.network[0].panel_id == "panel-2"
+    assert observation.console_errors == ("after step",)
+
+
+def test_panel_snapshot_missing_loading_stable_and_title() -> None:
+    missing_page = _panel_page("missing", missing=True)
+    browser = PlaywrightKibanaBrowser(missing_page)
+    missing = browser.capture(["missing"]).panels[0]
+    assert missing.status == "missing"
+    assert missing.title == "missing"
+
+    loading_page = _panel_page("panel-1", title="CPU Usage", loading=True)
+    loading = PlaywrightKibanaBrowser(loading_page).capture(["panel-1"]).panels[0]
+    assert loading.status == "loading"
+    assert loading.title == "CPU Usage"
+
+    stable_page = _panel_page("panel-2", title="Memory", text="42% used")
+    stable = PlaywrightKibanaBrowser(stable_page).capture(["panel-2"]).panels[0]
+    assert stable.status == "stable"
+    assert stable.title == "Memory"
+    assert "42% used" in stable.detail
+
+
+def test_panel_snapshot_prefers_aria_label_when_no_heading() -> None:
+    page = InstrumentedFakePage()
+    panel = FakeElement(
+        test_subj="dashboardPanel-panel-x",
+        aria_label="Network throughput",
+        text="1.2 Gbps",
+    )
+    page.add(panel)
+    evidence = PlaywrightKibanaBrowser(page).capture(["panel-x"]).panels[0]
+    assert evidence.title == "Network throughput"
+    assert evidence.status == "stable"
+
+
+def test_settle_succeeds_after_terminal_response_and_stable_panels() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", title="CPU", text="stable output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    result = browser.settle(
+        cursor,
+        ["panel-1"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=3),
+    )
+    assert result.panels[0].status == "stable"
+    assert result.network[0].status == 200
+    assert result.pending_requests == ()
+    assert len(page.wait_timeout_calls) >= 2
+
+
+def test_settle_late_request_resets_stable_counter() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="stable output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    first = page.emit_esql_request("panel-1", opaque_id="first")
+    page.emit_esql_response(first)
+    policy = SettlePolicy(timeout_seconds=2.0, poll_interval_ms=10, stable_polls=3)
+
+    poll_count_before_late = 0
+
+    def maybe_emit_late_request() -> None:
+        nonlocal poll_count_before_late
+        poll_count_before_late += 1
+        if poll_count_before_late == 2:
+            late = page.emit_esql_request("panel-1", opaque_id="late")
+            page.emit_esql_response(late)
+
+    original_wait = page.wait_for_timeout
+
+    def wait_with_late_request(ms: int) -> None:
+        maybe_emit_late_request()
+        original_wait(ms)
+
+    page.wait_for_timeout = wait_with_late_request  # type: ignore[method-assign]
+
+    result = browser.settle(cursor, ["panel-1"], policy=policy)
+    assert result.network[-1].opaque_id == "late"
+    assert len(page.wait_timeout_calls) >= 4
+
+
+def test_settle_panel_text_change_resets_stable_counter() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="initial output", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+    policy = SettlePolicy(timeout_seconds=2.0, poll_interval_ms=10, stable_polls=3)
+    poll_count = 0
+    panel = page.locator('[data-test-subj="dashboardPanel-panel-1"]')._elements[0]
+
+    original_wait = page.wait_for_timeout
+
+    def wait_with_text_change(ms: int) -> None:
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count == 2:
+            panel.text = "updated output"
+        original_wait(ms)
+
+    page.wait_for_timeout = wait_with_text_change  # type: ignore[method-assign]
+    result = browser.settle(cursor, ["panel-1"], policy=policy)
+    assert "updated output" in result.panels[0].detail
+
+
+def test_settle_requires_all_expected_panels() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-a", text="a output", clock=clock)
+    page.add(
+        FakeElement(
+            test_subj="dashboardPanel-panel-b",
+            text="b output",
+            children=[FakeElement(role="heading", name="Panel B", text="Panel B")],
+        )
+    )
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    req_a = page.emit_esql_request("panel-a")
+    req_b = page.emit_esql_request("panel-b")
+    page.emit_esql_response(req_a)
+    page.emit_esql_response(req_b)
+    result = browser.settle(
+        cursor,
+        ["panel-a", "panel-b"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
+    )
+    assert {panel.panel_id for panel in result.panels} == {"panel-a", "panel-b"}
+
+
+def test_settle_empty_expected_panels_requires_terminal_network_only() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock, body_text="dashboard body")
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-orphan")
+    page.emit_esql_response(request)
+    result = browser.settle(
+        cursor,
+        [],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
+    )
+    assert result.network[0].panel_id == "panel-orphan"
+    assert result.panels == ()
+
+
+def test_settle_treats_4xx_5xx_as_terminal() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="error panel", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request, status=503, body={"error": {"reason": "server busy"}})
+    result = browser.settle(
+        cursor,
+        ["panel-1"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
+    )
+    assert result.network[0].status == 503
+    assert result.network[0].error == "server busy"
+
+
+def test_settle_timeout_includes_pending_and_reason_without_secrets() -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="still loading", loading=True, clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    page.emit_esql_request("panel-1")
+    with pytest.raises(SettleTimeout) as exc_info:
+        browser.settle(
+            cursor,
+            ["panel-1"],
+            policy=SettlePolicy(timeout_seconds=0.05, poll_interval_ms=10, stable_polls=2),
+        )
+    timeout = exc_info.value
+    assert timeout.observation.pending_requests
+    assert "panel panel-1" in timeout.reason
+    assert "Authorization" not in timeout.reason
+    assert "body" not in timeout.reason.casefold()
+
+
+def test_settle_rejects_invalid_policy() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    with pytest.raises(BrowserAdapterError, match="invalid settle policy"):
+        browser.settle(cursor, [], policy=SettlePolicy(timeout_seconds=0))
+    with pytest.raises(BrowserAdapterError, match="invalid settle policy"):
+        browser.settle(cursor, [], policy=SettlePolicy(poll_interval_ms=0))
+    with pytest.raises(BrowserAdapterError, match="invalid settle policy"):
+        browser.settle(cursor, [], policy=SettlePolicy(stable_polls=0))
+
+
+def test_settle_uses_wait_for_timeout_not_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = FakeClock()
+    page = _panel_page("panel-1", text="stable", clock=clock)
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    cursor = browser.begin_step()
+    request = page.emit_esql_request("panel-1")
+    page.emit_esql_response(request)
+
+    def fail_sleep(_seconds: float) -> None:
+        raise AssertionError("time.sleep must not be used during settle")
+
+    import observability_migration.targets.kibana.interaction_driver as driver_module
+
+    monkeypatch.setattr(driver_module.time, "sleep", fail_sleep)
+    browser.settle(
+        cursor,
+        ["panel-1"],
+        policy=SettlePolicy(timeout_seconds=1.0, poll_interval_ms=10, stable_polls=2),
+    )
+    assert page.wait_timeout_calls

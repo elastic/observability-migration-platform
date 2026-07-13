@@ -21,6 +21,7 @@ from observability_migration.targets.kibana.interaction_audit import (
     NetworkEvidence,
     PanelEvidence,
     check_network_contract,
+    enrich_esql_response,
     match_noise_allowance,
     parse_esql_request,
     redact_evidence,
@@ -1091,3 +1092,116 @@ def test_redact_evidence_redacts_extended_network_evidence_fields():
     assert redacted["headers"]["cookie"] == "[REDACTED]"
     assert redacted["headers"]["Content-Type"] == "application/json"
     assert network.headers["Authorization"] == "ApiKey secret"
+
+
+def _request_evidence(**overrides: object) -> NetworkEvidence:
+    base = {
+        "endpoint": "/internal/search/esql_async",
+        "method": "POST",
+        "status": 0,
+        "url": "http://localhost:5601/internal/search/esql_async",
+        "query": "FROM metrics-*",
+        "body": {"query": "FROM metrics-*"},
+        "panel_id": "panel-7",
+    }
+    base.update(overrides)
+    return NetworkEvidence(**base)  # type: ignore[arg-type]
+
+
+def test_enrich_esql_response_parses_direct_body():
+    evidence = _request_evidence()
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={
+            "columns": [{"name": "value"}, {"name": "host.name"}],
+            "values": [[1, "a"], [2, "b"], [3, "c"]],
+        },
+    )
+    assert enriched.status == 200
+    assert enriched.response_columns == ("value", "host.name")
+    assert enriched.row_count == 3
+    assert enriched.error == ""
+    assert enriched.body == evidence.body
+
+
+def test_enrich_esql_response_unwraps_kibana_envelopes():
+    evidence = _request_evidence()
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={
+            "rawResponse": {
+                "response": {
+                    "data": {
+                        "columns": [{"name": "cpu"}],
+                        "values": [[1.0], [2.0]],
+                    }
+                }
+            }
+        },
+    )
+    assert enriched.response_columns == ("cpu",)
+    assert enriched.row_count == 2
+
+
+def test_enrich_esql_response_prefers_explicit_error_and_parses_body_error():
+    evidence = _request_evidence()
+    explicit = enrich_esql_response(
+        evidence,
+        status=400,
+        body={"error": {"reason": "syntax error", "message": "ignored when explicit"}},
+        error="explicit failure",
+    )
+    assert explicit.error == "explicit failure"
+
+    parsed = enrich_esql_response(
+        evidence,
+        status=400,
+        body={"error": {"reason": "bad query"}},
+    )
+    assert parsed.error == "bad query"
+
+
+def test_enrich_esql_response_degrades_malformed_body_without_rows():
+    evidence = _request_evidence(body={"query": "FROM metrics-*", "secret": "rows"})
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={"columns": [{"bad": True}, {"name": ""}], "values": "not-a-list"},
+    )
+    assert enriched.response_columns == ()
+    assert enriched.row_count == -1
+    assert "values" not in str(enriched.body)
+    assert enriched.body == evidence.body
+
+
+def test_enrich_esql_response_does_not_mutate_request_evidence():
+    evidence = _request_evidence()
+    original_body = evidence.body
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={"columns": [{"name": "value"}], "values": [[1]]},
+    )
+    assert evidence.status == 0
+    assert evidence.response_columns == ()
+    assert evidence.row_count == -1
+    assert evidence.body == original_body
+    assert enriched is not evidence
+
+
+def test_enrich_esql_response_never_retains_response_values_in_body():
+    evidence = _request_evidence()
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={
+            "columns": [{"name": "value"}],
+            "values": [[999], [888]],
+        },
+    )
+    payload = enriched.to_dict()
+    assert payload["body"] == {"query": "FROM metrics-*"}
+    assert "999" not in str(payload)
+    assert "888" not in str(payload)

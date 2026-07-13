@@ -9,12 +9,21 @@ import so modules remain importable without the optional ``browser`` extra.
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Collection, Mapping
+import time
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol, cast, runtime_checkable
 
+from observability_migration.targets.kibana.interaction_audit import (
+    EvidenceParseError,
+    NetworkEvidence,
+    PanelEvidence,
+    enrich_esql_response,
+    parse_esql_request,
+)
 from observability_migration.targets.kibana.interaction_scenarios import (
     ControlScenario,
     DiscoveredControl,
@@ -41,9 +50,39 @@ class SelectionDidNotStick(BrowserAdapterError):
     """Raised when a single selection attempt did not persist in the UI."""
 
 
+class SettleTimeout(BrowserAdapterError):
+    """Raised when dashboard interaction evidence did not settle in time."""
+
+    def __init__(self, observation: BrowserObservation, reason: str) -> None:
+        self.observation = observation
+        self.reason = reason
+        super().__init__(reason)
+
+
 # ---------------------------------------------------------------------------
 # Observation / state models
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PendingRequest:
+    panel_id: str
+    endpoint: str
+    opaque_id: str
+    age_ms: int
+
+
+@dataclass(frozen=True)
+class SettlePolicy:
+    timeout_seconds: float = 30.0
+    poll_interval_ms: int = 100
+    stable_polls: int = 3
+
+
+@dataclass(frozen=True)
+class CaptureCursor:
+    network_index: int
+    console_index: int
 
 
 @dataclass(frozen=True)
@@ -67,6 +106,380 @@ class BrowserObservation:
     selected_state: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    network: tuple[NetworkEvidence, ...] = ()
+    panels: tuple[PanelEvidence, ...] = ()
+    console_errors: tuple[str, ...] = ()
+    pending_requests: tuple[PendingRequest, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# Capture bounds and helpers
+# ---------------------------------------------------------------------------
+
+_MAX_BOUND_TEXT = 2048
+_MAX_CONSOLE_MESSAGE = 2048
+_LOADING_TEXT_RE = re.compile(r"\b(loading|updating)\b", re.IGNORECASE)
+_LOADING_TEST_SUBJECTS = frozenset(
+    {
+        "euiLoadingChart",
+        "lnsEmbeddablePanelLoadingIndicator",
+        "kbnLoadingMessage",
+        "embPanelLoadingIndicator",
+    }
+)
+
+
+def _bound_text(value: str, *, limit: int = _MAX_BOUND_TEXT) -> str:
+    cleaned = " ".join(str(value or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit]
+
+
+def _validate_settle_policy(policy: SettlePolicy) -> None:
+    if policy.timeout_seconds <= 0 or policy.poll_interval_ms <= 0 or policy.stable_polls <= 0:
+        raise BrowserAdapterError("invalid settle policy")
+
+
+def _request_body(request: Any) -> Mapping[str, object] | None:
+    body = getattr(request, "post_data_json", None)
+    if body is None:
+        raw = getattr(request, "post_data", None)
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+            if isinstance(parsed, Mapping):
+                body = parsed
+    if isinstance(body, Mapping):
+        return dict(body)
+    return None
+
+
+def _request_headers(request: Any) -> dict[str, str]:
+    headers = getattr(request, "headers", None)
+    if isinstance(headers, Mapping):
+        return {str(key): str(value) for key, value in headers.items()}
+    return {}
+
+
+def _panel_container_for_capture(page: PageLike, panel_id: str) -> tuple[LocatorLike | None, str]:
+    identity_selectors = (
+        f'[data-panel-id="{panel_id}"]',
+        f'[data-test-embeddable-id="{panel_id}"]',
+        f'[data-test-subj="dashboardPanel-{panel_id}"]',
+    )
+    for selector in identity_selectors:
+        matches = page.locator(selector)
+        count = matches.count()
+        if count == 1:
+            return matches, ""
+        if count > 1:
+            return None, _bound_text(
+                f"panel {panel_id!r}: ambiguous control ({count} matches for {selector})"
+            )
+
+    embeddable_panels = page.locator(_TEST_SUBJ_EMBEDDABLE_PANEL)
+    matched: list[LocatorLike] = []
+    for index in range(embeddable_panels.count()):
+        candidate = embeddable_panels.nth(index)
+        panel_attr = candidate.get_attribute("data-panel-id")
+        embeddable_attr = candidate.get_attribute("data-test-embeddable-id")
+        if panel_attr == panel_id or embeddable_attr == panel_id:
+            matched.append(candidate)
+    if len(matched) == 1:
+        return matched[0], ""
+    if len(matched) > 1:
+        return None, _bound_text(
+            f"panel {panel_id!r}: ambiguous embeddablePanel matches ({len(matched)})"
+        )
+    return None, ""
+
+
+def _panel_title_from_container(container: LocatorLike, panel_id: str) -> str:
+    headings = container.get_by_role("heading")
+    if headings.count() >= 1:
+        title = headings.nth(0).inner_text().strip()
+        if title:
+            return title
+    labelled = container.get_attribute("aria-label")
+    if labelled and labelled.strip():
+        return labelled.strip()
+    return panel_id
+
+
+def _panel_has_loading_indicator(container: LocatorLike, text: str) -> bool:
+    if _LOADING_TEXT_RE.search(text):
+        return True
+    for test_subj in _LOADING_TEST_SUBJECTS:
+        if container.locator(f'[data-test-subj="{test_subj}"]').count() > 0:
+            return True
+    return False
+
+
+def _capture_panel_evidence(page: PageLike, panel_id: str) -> PanelEvidence:
+    container, ambiguity = _panel_container_for_capture(page, panel_id)
+    if container is None:
+        detail = ambiguity
+        return PanelEvidence(
+            panel_id=panel_id,
+            title=panel_id,
+            status="missing",
+            detail=detail,
+        )
+    text = _bound_text(container.inner_text())
+    title = _panel_title_from_container(container, panel_id)
+    status = "loading" if _panel_has_loading_indicator(container, text) else "stable"
+    return PanelEvidence(
+        panel_id=panel_id,
+        title=title,
+        status=status,
+        detail=text,
+    )
+
+
+def _panel_fingerprint(panels: Sequence[PanelEvidence]) -> tuple[tuple[str, str, str], ...]:
+    return tuple((panel.panel_id, panel.status, panel.detail) for panel in panels)
+
+
+def _network_fingerprint(
+    network: Sequence[NetworkEvidence],
+    pending: Sequence[PendingRequest],
+) -> tuple[tuple[int, str, str], ...]:
+    evidence_part = tuple((item.status, item.panel_id, item.opaque_id) for item in network)
+    pending_part = tuple(
+        (0, pending_item.panel_id, pending_item.opaque_id) for pending_item in pending
+    )
+    return evidence_part + pending_part
+
+
+class _NetworkEventCollector:
+    """Installs page listeners and accumulates bounded interaction evidence."""
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._network: list[NetworkEvidence] = []
+        self._console_errors: list[str] = []
+        self._pending: dict[int, tuple[int, float, str, str, str]] = {}
+        self._page: Any | None = None
+        self._handlers: dict[str, Any] = {}
+        self._listeners_attached = False
+
+    def attach(self, page: Any) -> None:
+        if self._listeners_attached and self._page is page:
+            return
+        self.detach()
+        self._page = page
+        self._handlers = {
+            "request": self._on_request,
+            "response": self._on_response,
+            "requestfailed": self._on_request_failed,
+            "console": self._on_console,
+        }
+        for event_name, handler in self._handlers.items():
+            page.on(event_name, handler)
+        self._listeners_attached = True
+
+    def detach(self) -> None:
+        page = self._page
+        if page is not None and hasattr(page, "off"):
+            for event_name, handler in self._handlers.items():
+                try:
+                    page.off(event_name, handler)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+        self._page = None
+        self._handlers = {}
+        self._listeners_attached = False
+        self._pending.clear()
+
+    def clear(self) -> None:
+        self._network.clear()
+        self._console_errors.clear()
+        self._pending.clear()
+
+    def begin_step(self) -> CaptureCursor:
+        return CaptureCursor(
+            network_index=len(self._network),
+            console_index=len(self._console_errors),
+        )
+
+    def _record_framework_error(self, message: str) -> None:
+        self._console_errors.append(_bound_text(f"[framework] {message}", limit=_MAX_CONSOLE_MESSAGE))
+
+    def _on_request(self, request: Any) -> None:
+        try:
+            method = str(getattr(request, "method", "") or "")
+            url = str(getattr(request, "url", "") or "")
+            headers = _request_headers(request)
+            body = _request_body(request)
+            try:
+                evidence = parse_esql_request(
+                    url=url,
+                    method=method,
+                    headers=headers,
+                    body=body,
+                )
+            except EvidenceParseError as exc:
+                self._record_framework_error(str(exc))
+                return
+            if evidence is None:
+                return
+            index = len(self._network)
+            self._network.append(evidence)
+            self._pending[id(request)] = (
+                index,
+                self._clock(),
+                evidence.panel_id,
+                evidence.endpoint,
+                evidence.opaque_id,
+            )
+        except Exception as exc:
+            self._record_framework_error(f"request listener failed: {exc}")
+
+    def _on_response(self, response: Any) -> None:
+        try:
+            request = getattr(response, "request", None)
+            if request is None:
+                return
+            pending = self._pending.get(id(request))
+            if pending is None:
+                return
+            index, _started, _panel_id, _endpoint, _opaque_id = pending
+            status = int(getattr(response, "status", 0) or 0)
+            body: object = {}
+            parse_error = ""
+            try:
+                body = response.json()
+            except Exception as exc:
+                parse_error = _bound_text(str(exc), limit=_MAX_CONSOLE_MESSAGE)
+            evidence = self._network[index]
+            enriched = enrich_esql_response(
+                evidence,
+                status=status,
+                body=body,
+                error=parse_error,
+            )
+            self._network[index] = enriched
+            del self._pending[id(request)]
+        except Exception as exc:
+            self._record_framework_error(f"response listener failed: {exc}")
+
+    def _on_request_failed(self, request: Any) -> None:
+        try:
+            pending = self._pending.get(id(request))
+            if pending is None:
+                return
+            index, _started, _panel_id, _endpoint, _opaque_id = pending
+            failure = getattr(request, "failure", None)
+            error_text = ""
+            if failure is not None:
+                error_text = _bound_text(getattr(failure, "error_text", "") or str(failure))
+            evidence = enrich_esql_response(
+                self._network[index],
+                status=-1,
+                body={},
+                error=error_text or "request failed",
+            )
+            self._network[index] = evidence
+            del self._pending[id(request)]
+        except Exception as exc:
+            self._record_framework_error(f"requestfailed listener failed: {exc}")
+
+    def _on_console(self, message: Any) -> None:
+        try:
+            message_type = str(getattr(message, "type", "") or "")
+            if message_type.casefold() != "error":
+                return
+            text = _bound_text(str(getattr(message, "text", "") or ""), limit=_MAX_CONSOLE_MESSAGE)
+            if text:
+                self._console_errors.append(text)
+        except Exception as exc:
+            self._record_framework_error(f"console listener failed: {exc}")
+
+    def _pending_requests(self) -> tuple[PendingRequest, ...]:
+        now = self._clock()
+        pending: list[PendingRequest] = []
+        for _request_id, (_index, started, panel_id, endpoint, opaque_id) in self._pending.items():
+            age_ms = max(0, int((now - started) * 1000))
+            pending.append(
+                PendingRequest(
+                    panel_id=panel_id,
+                    endpoint=endpoint,
+                    opaque_id=opaque_id,
+                    age_ms=age_ms,
+                )
+            )
+        pending.sort(key=lambda item: (item.panel_id, item.opaque_id, item.endpoint))
+        return tuple(pending)
+
+    def network_since(self, cursor: CaptureCursor | None) -> tuple[NetworkEvidence, ...]:
+        start = 0 if cursor is None else cursor.network_index
+        return tuple(self._network[start:])
+
+    def console_since(self, cursor: CaptureCursor | None) -> tuple[str, ...]:
+        start = 0 if cursor is None else cursor.console_index
+        return tuple(self._console_errors[start:])
+
+    def _panels_terminal_for_expected(
+        self,
+        *,
+        cursor: CaptureCursor,
+        expected_panels: Collection[str],
+    ) -> dict[str, bool]:
+        network = self.network_since(cursor)
+        pending_panels = {item.panel_id for item in self._pending_requests() if item.panel_id}
+        terminal_by_panel: dict[str, bool] = {}
+        for panel_id in expected_panels:
+            has_terminal = any(
+                item.panel_id == panel_id and item.status != 0 for item in network
+            )
+            terminal_by_panel[panel_id] = has_terminal and panel_id not in pending_panels
+        return terminal_by_panel
+
+    def _all_network_terminal_since(self, cursor: CaptureCursor) -> bool:
+        network = self.network_since(cursor)
+        if not network and not self._pending:
+            return True
+        if self._pending:
+            return False
+        return all(item.status != 0 for item in network)
+
+    def _settle_blockers(
+        self,
+        *,
+        cursor: CaptureCursor,
+        expected_panels: Collection[str],
+        panels: Sequence[PanelEvidence],
+    ) -> list[str]:
+        reasons: list[str] = []
+        if expected_panels:
+            terminal = self._panels_terminal_for_expected(
+                cursor=cursor,
+                expected_panels=expected_panels,
+            )
+            for panel_id in expected_panels:
+                if not terminal.get(panel_id, False):
+                    reasons.append(f"panel {panel_id}: ES|QL request not terminal")
+        elif not self._all_network_terminal_since(cursor):
+            reasons.append("observed ES|QL requests still pending")
+
+        panels_by_id = {panel.panel_id: panel for panel in panels}
+        for panel_id in expected_panels:
+            panel = panels_by_id.get(panel_id)
+            if panel is None:
+                reasons.append(f"panel {panel_id}: snapshot missing")
+            elif panel.status != "stable":
+                reasons.append(f"panel {panel_id}: status {panel.status}")
+        pending = self._pending_requests()
+        if pending:
+            for item in pending:
+                reasons.append(
+                    f"pending request for panel {item.panel_id or 'unknown'} "
+                    f"({item.endpoint})"
+                )
+        return reasons
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +562,21 @@ class BrowserAdapter(Protocol):
 
     def select(self, control: ControlScenario, option: str) -> None: ...
 
-    def capture(self, expected_panels: Collection[str]) -> BrowserObservation: ...
+    def capture(
+        self,
+        expected_panels: Collection[str],
+        cursor: CaptureCursor | None = None,
+    ) -> BrowserObservation: ...
+
+    def begin_step(self) -> CaptureCursor: ...
+
+    def settle(
+        self,
+        cursor: CaptureCursor,
+        expected_panels: Collection[str],
+        *,
+        policy: SettlePolicy | None = None,
+    ) -> BrowserObservation: ...
 
     def read_state(self, control: ControlScenario) -> ControlState: ...
 
@@ -917,13 +1344,22 @@ def _adapter_cache_key(control: ControlScenario) -> tuple[str, str]:
 class PlaywrightKibanaBrowser:
     """Playwright-backed ``BrowserAdapter`` for Kibana dashboard interactions."""
 
-    def __init__(self, page: PageLike | None = None) -> None:
+    def __init__(
+        self,
+        page: PageLike | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._page = page
         self._playwright: Any | None = None
         self._browser: Any | None = None
         self._context: Any | None = None
         self._closed = False
         self._adapters: dict[tuple[str, str], ControlAdapter] = {}
+        self._clock = clock
+        self._collector = _NetworkEventCollector(clock=clock)
+        if page is not None:
+            self._collector.attach(page)
 
     def _clear_adapter_cache(self) -> None:
         self._adapters.clear()
@@ -944,6 +1380,7 @@ class PlaywrightKibanaBrowser:
         )
 
     def _release_session(self) -> None:
+        self._collector.detach()
         if self._context is not None:
             self._context.close()
             self._context = None
@@ -997,6 +1434,7 @@ class PlaywrightKibanaBrowser:
                 PageLike,
                 pages[0] if pages else self._context.new_page(),
             )
+        self._collector.attach(self._page)
 
     def _require_page(self) -> PageLike:
         if self._page is None:
@@ -1020,21 +1458,108 @@ class PlaywrightKibanaBrowser:
     def read_state(self, control: ControlScenario) -> ControlState:
         return self._adapter_for_control(control).read_state()
 
-    def capture(self, expected_panels: Collection[str]) -> BrowserObservation:
-        del expected_panels  # Task 7 adds panel/network settling.
+    def begin_step(self) -> CaptureCursor:
         page = self._require_page()
+        self._collector.attach(page)
+        return self._collector.begin_step()
+
+    def capture(
+        self,
+        expected_panels: Collection[str],
+        cursor: CaptureCursor | None = None,
+    ) -> BrowserObservation:
+        page = self._require_page()
+        self._collector.attach(page)
         body = page.locator("body")
         accessibility_snapshot = ""
         visible_text = ""
         if body.count() == 1:
             accessibility_snapshot = body.aria_snapshot()
             visible_text = body.inner_text()
+        panels = tuple(_capture_panel_evidence(page, panel_id) for panel_id in expected_panels)
         return BrowserObservation(
             url=page.url,
             accessibility_snapshot=accessibility_snapshot,
             visible_text=visible_text,
             selected_state=MappingProxyType({}),
+            network=self._collector.network_since(cursor),
+            panels=panels,
+            console_errors=self._collector.console_since(cursor),
+            pending_requests=self._collector._pending_requests(),
         )
+
+    def settle(
+        self,
+        cursor: CaptureCursor,
+        expected_panels: Collection[str],
+        *,
+        policy: SettlePolicy | None = None,
+    ) -> BrowserObservation:
+        settle_policy = policy or SettlePolicy()
+        _validate_settle_policy(settle_policy)
+        page = self._require_page()
+        self._collector.attach(page)
+        deadline = self._clock() + settle_policy.timeout_seconds
+        stable_count = 0
+        previous_body: str | None = None
+        previous_panel_fp: tuple[tuple[str, str, str], ...] | None = None
+        previous_network_fp: tuple[tuple[int, str, str], ...] | None = None
+
+        while self._clock() < deadline:
+            observation = self.capture(expected_panels, cursor=cursor)
+            if expected_panels:
+                terminal = self._collector._panels_terminal_for_expected(
+                    cursor=cursor,
+                    expected_panels=expected_panels,
+                )
+                requests_ok = all(terminal.get(panel_id, False) for panel_id in expected_panels)
+            else:
+                requests_ok = self._collector._all_network_terminal_since(cursor)
+
+            panels_by_id = {panel.panel_id: panel for panel in observation.panels}
+            panels_ok = all(
+                panels_by_id.get(panel_id) is not None
+                and panels_by_id[panel_id].status == "stable"
+                for panel_id in expected_panels
+            )
+
+            panel_fp = _panel_fingerprint(observation.panels)
+            network_fp = _network_fingerprint(
+                self._collector.network_since(cursor),
+                observation.pending_requests,
+            )
+
+            conditions_met = requests_ok and panels_ok
+            if conditions_met:
+                if (
+                    previous_body is not None
+                    and observation.visible_text != previous_body
+                ) or (previous_panel_fp is not None and panel_fp != previous_panel_fp) or (previous_network_fp is not None and network_fp != previous_network_fp):
+                    stable_count = 0
+                else:
+                    stable_count += 1
+                    if stable_count >= settle_policy.stable_polls:
+                        return observation
+            else:
+                stable_count = 0
+
+            previous_body = observation.visible_text
+            previous_panel_fp = panel_fp
+            previous_network_fp = network_fp
+
+            wait_for_timeout = getattr(page, "wait_for_timeout", None)
+            if callable(wait_for_timeout):
+                wait_for_timeout(settle_policy.poll_interval_ms)
+
+        final = self.capture(expected_panels, cursor=cursor)
+        reasons = self._collector._settle_blockers(
+            cursor=cursor,
+            expected_panels=expected_panels,
+            panels=final.panels,
+        )
+        if not reasons:
+            reasons = ["dashboard evidence did not remain stable"]
+        raise SettleTimeout(final, "; ".join(reasons))
 
     def close(self) -> None:
         if self._closed:

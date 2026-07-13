@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -287,6 +287,102 @@ def parse_esql_request(
 
 def _is_successful_status(status: int) -> bool:
     return 200 <= status <= 299
+
+
+_MAX_SAFE_ERROR_TEXT = 2048
+_ESQL_ENVELOPE_KEYS = ("rawResponse", "response", "data")
+
+
+def _bound_safe_text(value: object, *, limit: int = _MAX_SAFE_ERROR_TEXT) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def _unwrap_esql_response_body(body: object) -> object:
+    current = body
+    seen: set[int] = set()
+    while isinstance(current, Mapping):
+        marker_id = id(current)
+        if marker_id in seen:
+            break
+        seen.add(marker_id)
+        if any(key in current for key in ("columns", "values", "error")):
+            return current
+        unwrapped = False
+        for key in _ESQL_ENVELOPE_KEYS:
+            nested = current.get(key)
+            if isinstance(nested, Mapping):
+                current = nested
+                unwrapped = True
+                break
+        if not unwrapped:
+            return current
+    return current
+
+
+def _response_columns_from_body(body: Mapping[str, object]) -> tuple[str, ...]:
+    raw_columns = body.get("columns")
+    if not isinstance(raw_columns, list):
+        return ()
+    names: list[str] = []
+    for item in raw_columns:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return tuple(names)
+
+
+def _row_count_from_body(body: Mapping[str, object]) -> int:
+    values = body.get("values")
+    if isinstance(values, list):
+        return len(values)
+    return -1
+
+
+def _error_text_from_body(body: object) -> str:
+    if not isinstance(body, Mapping):
+        return ""
+    error = body.get("error")
+    if isinstance(error, Mapping):
+        for key in ("reason", "message"):
+            candidate = error.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return _bound_safe_text(candidate)
+    if isinstance(error, str) and error.strip():
+        return _bound_safe_text(error)
+    return ""
+
+
+def enrich_esql_response(
+    evidence: NetworkEvidence,
+    *,
+    status: int,
+    body: object,
+    error: str = "",
+) -> NetworkEvidence:
+    """Return response-enriched network evidence without mutating the request."""
+    unwrapped = _unwrap_esql_response_body(body)
+    response_columns: tuple[str, ...] = ()
+    row_count = -1
+    resolved_error = _bound_safe_text(error)
+    if isinstance(unwrapped, Mapping):
+        response_columns = _response_columns_from_body(unwrapped)
+        row_count = _row_count_from_body(unwrapped)
+        if not resolved_error:
+            resolved_error = _error_text_from_body(unwrapped)
+    return replace(
+        evidence,
+        status=status,
+        response_columns=response_columns,
+        row_count=row_count,
+        error=resolved_error,
+    )
 
 
 def _query_has_value_token(query: str, name: str) -> bool:
