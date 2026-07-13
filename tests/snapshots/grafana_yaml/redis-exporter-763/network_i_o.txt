@@ -1,0 +1,6 @@
+title: Network I/O
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['input', 'output']

@@ -1,0 +1,9 @@
+title: hpa
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['current', 'max', 'min']
+warning: Collapsed all series of `kube_hpa_status_current_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_hpa_spec_max_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_hpa_spec_min_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.

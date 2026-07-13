@@ -200,6 +200,81 @@ def _iter_leaf_panels(panels):
             yield panel
 
 
+def _pair_yaml_leaves_to_panel_results(leaf_panels, panel_results):
+    """Pair YAML leaf panels to translation results without relying on list order.
+
+    Post-translation layout, section wrapping, and polish can reorder YAML leaves
+    relative to ``yaml_panel_results``. Index-based ``zip`` then writes the wrong
+    query/placeholder into a panel and corrupts ``visual_ir``. Prefer an explicit
+    ``_source_panel_id`` stamp when present; otherwise match by title (with a
+    same-title ordinal for duplicates), then fall back to remaining positional
+    slots.
+    """
+    leaves = list(leaf_panels or [])
+    results = list(panel_results or [])
+    paired: list[tuple[dict, object | None]] = [(leaf, None) for leaf in leaves]
+    used_results: set[int] = set()
+
+    def _claim(leaf_idx: int, result_idx: int) -> None:
+        paired[leaf_idx] = (leaves[leaf_idx], results[result_idx])
+        used_results.add(result_idx)
+
+    # 1) Explicit source-panel id (survives only while still on the in-memory
+    #    YAML dict; DashboardIR export strips underscore keys).
+    by_source_id: dict[str, list[int]] = {}
+    for idx, panel_result in enumerate(results):
+        source_id = str(getattr(panel_result, "source_panel_id", "") or "").strip()
+        if source_id:
+            by_source_id.setdefault(source_id, []).append(idx)
+    for leaf_idx, leaf in enumerate(leaves):
+        source_id = str(leaf.get("_source_panel_id") or "").strip()
+        if not source_id:
+            continue
+        candidates = by_source_id.get(source_id) or []
+        for result_idx in candidates:
+            if result_idx not in used_results:
+                _claim(leaf_idx, result_idx)
+                break
+
+    # 2) Title match, preserving relative order among duplicate titles.
+    by_title: dict[str, list[int]] = {}
+    for idx, panel_result in enumerate(results):
+        if idx in used_results:
+            continue
+        title = str(getattr(panel_result, "title", "") or "").strip()
+        if title:
+            by_title.setdefault(title, []).append(idx)
+    title_cursors: dict[str, int] = {}
+    for leaf_idx, (leaf, matched) in enumerate(paired):
+        if matched is not None:
+            continue
+        title = str(leaf.get("title") or "").strip()
+        if not title:
+            continue
+        candidates = by_title.get(title) or []
+        cursor = title_cursors.get(title, 0)
+        while cursor < len(candidates) and candidates[cursor] in used_results:
+            cursor += 1
+        if cursor < len(candidates):
+            _claim(leaf_idx, candidates[cursor])
+            title_cursors[title] = cursor + 1
+
+    # 3) Positional fallback for anything still unmatched.
+    unused = [idx for idx in range(len(results)) if idx not in used_results]
+    unused_iter = iter(unused)
+    for leaf_idx, (leaf, matched) in enumerate(paired):
+        if matched is not None:
+            continue
+        try:
+            result_idx = next(unused_iter)
+        except StopIteration:
+            paired[leaf_idx] = (leaf, None)
+            continue
+        _claim(leaf_idx, result_idx)
+
+    return paired
+
+
 _ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
 _INTERNAL_ESQL_PARAMS = {"_tstart", "_tend", "_job"}
@@ -301,7 +376,9 @@ def sync_result_queries_to_yaml(result, yaml_path):
     yaml_panel_results = getattr(result, "yaml_panel_results", None)
     panel_results = yaml_panel_results if yaml_panel_results is not None else result.panel_results
     updated = False
-    for yaml_panel, panel_result in zip(leaf_panels, panel_results):
+    for yaml_panel, panel_result in _pair_yaml_leaves_to_panel_results(leaf_panels, panel_results):
+        if panel_result is None:
+            continue
         if str(panel_result.post_validation_action or "").startswith("placeholder_"):
             yaml_panel.pop("esql", None)
             yaml_panel["markdown"] = {
@@ -328,23 +405,30 @@ def sync_result_queries_to_yaml(result, yaml_path):
     if _ensure_controls_for_emitted_params(dashboard, leaf_panels):
         updated = True
     if updated:
-        Path(yaml_path).write_text(
-            yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
-        )
-        if getattr(result, "native_dashboard", None) is not None:
+        if getattr(result, "native_dashboard", None) is not None or getattr(result, "dashboard_ir", None) is not None:
             # Deferred import: dashboards_api.py imports kibana_url_for_space
             # from this module, so a module-level import here would cycle.
-            # Rebuild from the same in-memory `dashboard` dict just written
-            # to disk, so the native IR can never drift from post-validation
-            # fixes (placeholder rewrites, corrected queries/indexes).
+            # `DashboardIR` becomes the primary artifact from this point on:
+            # rebuild it from the same in-memory `dashboard` dict just
+            # mutated (post-validation fixes -- placeholder rewrites,
+            # corrected queries/indexes/controls) and derive both the native
+            # IR and the on-disk YAML *from that IR*, so neither one can
+            # drift from post-validation fixes or from each other.
+            from observability_migration.core.assets.dashboard import DashboardIR
             from observability_migration.targets.kibana.dashboards_api import (
-                native_dashboard_from_yaml,
+                native_dashboard_from_ir,
             )
 
-            native_dashboard, native_counts = native_dashboard_from_yaml(dashboard)
+            dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
+            result.dashboard_ir = dashboard_ir
+            payload = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+            native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
             result.native_dashboard = native_dashboard
             native_counts_dict, native_reasons = native_counts.as_dicts()
             result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
+        Path(yaml_path).write_text(
+            yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+        )
     return updated
 
 

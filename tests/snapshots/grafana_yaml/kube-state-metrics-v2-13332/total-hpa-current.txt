@@ -1,0 +1,7 @@
+title: total-hpa-current
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['kube_hpa_status_current_replicas']
+warning: Dropped variable-driven label filters during migration

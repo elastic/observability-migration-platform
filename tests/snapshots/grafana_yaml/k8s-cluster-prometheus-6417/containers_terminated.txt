@@ -1,0 +1,6 @@
+title: Containers Terminated
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: kube_pod_container_status_terminated
+warning: Dropped variable-driven label filters during migration

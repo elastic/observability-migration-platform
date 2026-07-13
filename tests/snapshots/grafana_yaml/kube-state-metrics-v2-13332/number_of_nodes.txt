@@ -1,0 +1,5 @@
+title: Number Of Nodes
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kube_node_info

@@ -19,9 +19,11 @@ from typing import Any
 
 import yaml
 
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import NativeDashboard
+from observability_migration.core.assets.visual import VisualIR
 from observability_migration.core.reporting.report import _panel_query_index
-from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_yaml
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
@@ -165,8 +167,13 @@ def generate_dashboard_yaml(
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
 ) -> str:
-    """Generate a complete kb-dashboard YAML string for a dashboard."""
-    doc = _build_dashboard_yaml_doc(
+    """Generate a complete kb-dashboard YAML string for a dashboard.
+
+    IR-first Phase 2: the string is a *derived export* of the semantic
+    :class:`DashboardIR` (see :func:`generate_dashboard_artifacts`), not an
+    independent rendering of the source widgets.
+    """
+    _yaml_string, _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         results,
         data_view,
@@ -175,7 +182,7 @@ def generate_dashboard_yaml(
         logs_index=logs_index,
         field_map=field_map,
     )
-    return yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return _yaml_string
 
 
 def generate_dashboard_artifacts(
@@ -187,12 +194,20 @@ def generate_dashboard_artifacts(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
-) -> tuple[str, NativeDashboard, dict[str, Any]]:
-    """Generate both the YAML bridge string and its NativeDashboard IR.
+) -> tuple[str, NativeDashboard, dict[str, Any], DashboardIR]:
+    """Generate YAML, NativeDashboard, and the semantic DashboardIR.
 
-    The :class:`NativeDashboard` is built from the exact same in-memory YAML
-    doc the string is dumped from, so the two artifacts can never drift from
-    each other. Returns ``(yaml_string, native_dashboard, native_stats)``
+    IR-first Phase 2 (mirrors Grafana's ``translate_dashboard``): the
+    per-widget translators still assemble a kb-dashboard-core dict (the
+    expensive, well-tested part of the pipeline), then that dict is
+    converted to a :class:`DashboardIR` *before* the native mapping and
+    the YAML dump. From that point on the dict is no longer the source of
+    truth -- both the typed Dashboards API payload
+    (``native_dashboard_from_ir``) and the on-disk YAML
+    (``DashboardIR.to_yaml_dict``) are derived from the same IR, so they
+    cannot drift from each other.
+
+    Returns ``(yaml_string, native_dashboard, native_stats, dashboard_ir)``
     where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
     ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
     """
@@ -205,11 +220,16 @@ def generate_dashboard_artifacts(
         logs_index=logs_index,
         field_map=field_map,
     )
-    yaml_string = yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    native_dashboard, counts = native_dashboard_from_yaml(doc["dashboards"][0])
+    # IR-first: `DashboardIR` is the primary working artifact from here on.
+    dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
+    dashboard_ir.uid = str(dashboard.id or "")
+    dashboard_ir.title = dashboard.title or dashboard_ir.title
+    exported_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+    yaml_string = yaml.dump(exported_doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    native_dashboard, counts = native_dashboard_from_ir(dashboard_ir)
     counts_dict, reasons = counts.as_dicts()
     stats: dict[str, Any] = {**counts_dict, "reasons": reasons}
-    return yaml_string, native_dashboard, stats
+    return yaml_string, native_dashboard, stats, dashboard_ir
 
 
 def _iter_leaf_panels(panels: list[dict[str, Any]]):
@@ -431,13 +451,33 @@ def _build_yaml_panel(
     if panel and "esql" in panel:
         enrich_panel_display(panel, widget, result)
     result.yaml_panel = panel or {}
-    panel["_dd_y"] = dd_y
-    panel["_dd_x"] = dd_x
-    panel["_dd_w"] = dd_w
-    panel["_dd_h"] = int(layout.get("height", 2) or 2)
-    panel["_dd_type"] = widget.widget_type
-    panel["_dd_display_type"] = widget.display_type
-    panel["_dd_widget_id"] = widget.id
+    # Stamp source id before visual IR so report/lint pairing can key on it.
+    # Underscore keys are stripped by DashboardIR export; visual_ir keeps the
+    # typed presentation for Grafana-parity reporting.
+    if panel is not None:
+        panel["_dd_y"] = dd_y
+        panel["_dd_x"] = dd_x
+        panel["_dd_w"] = dd_w
+        panel["_dd_h"] = int(layout.get("height", 2) or 2)
+        panel["_dd_type"] = widget.widget_type
+        panel["_dd_display_type"] = widget.display_type
+        panel["_dd_widget_id"] = widget.id
+        if widget.id and not panel.get("_source_panel_id"):
+            panel["_source_panel_id"] = str(widget.id)
+    result.source_panel_id = result.source_panel_id or str(widget.id or "")
+    query_ir = result.query_ir if isinstance(result.query_ir, dict) else {}
+    result.visual_ir = VisualIR.from_yaml_panel(
+        panel,
+        source_panel_id=result.source_panel_id,
+        grafana_type=str(widget.widget_type or result.dd_widget_type or ""),
+        kibana_type=str(result.kibana_type or ""),
+        warnings=[str(item) for item in (result.warnings or []) + (result.reasons or [])],
+        metadata={
+            "query_language": str(result.query_language or ""),
+            "output_shape": str(query_ir.get("output_shape", "") or ""),
+            "source_adapter": "datadog",
+        },
+    )
     return panel
 
 
@@ -480,9 +520,25 @@ def _build_esql_panel(
             if time_dim:
                 esql_block["dimension"] = _dimension_config(time_dim, data_type="date")
             other_dims = [d for d in dims if d != time_dim]
-            if other_dims:
+            if len(other_dims) >= 2:
+                # Mirror heatmap multi-tag compositing: Lens XY has one
+                # breakdown field, so CONCAT the categorical dims instead of
+                # silently dropping all but the first.
+                new_query, breakdown_field = _composite_y_column(
+                    esql_block["query"], other_dims, name="series_group"
+                )
+                esql_block["query"] = new_query
+                result.esql_query = new_query
+                esql_block["breakdown"] = _dimension_config(breakdown_field)
+                warning = (
+                    "XY chart grouped by multiple tags "
+                    f"({', '.join(other_dims)}); composited into a single "
+                    "breakdown column"
+                )
+                if warning not in result.warnings:
+                    result.warnings.append(warning)
+            elif other_dims:
                 esql_block["breakdown"] = _dimension_config(other_dims[0])
-                _warn_dropped_xy_breakdowns(other_dims, result)
         if metrics:
             esql_block["metrics"] = [
                 _metric_config(widget, result, m)

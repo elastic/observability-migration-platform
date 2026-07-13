@@ -1,0 +1,6 @@
+title: Log of All Spring Boot Apps
+grafana_type: logs
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: LogQL pipeline stages require manual redesign

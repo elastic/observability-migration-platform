@@ -1,0 +1,5 @@
+title: Under replicated partitions
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kafka_topic_partition_under_replicated_partition

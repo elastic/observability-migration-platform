@@ -4,7 +4,7 @@ widgets: 29
 panels: 23
 controls: 3
 filters: 0
-statuses: {'ok': 9, 'requires_manual': 1, 'skipped': 6, 'warning': 13}
+statuses: {'not_feasible': 1, 'ok': 9, 'skipped': 6, 'warning': 13}
 - title='Datadog note 2451661469305854'; kind=markdown
 - title='Datadog note 6085654256880802'; kind=markdown
 - title='Incoming Success Rate (non-5xx responses)'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['haproxy_service']; primary=; metric=

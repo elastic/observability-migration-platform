@@ -1,0 +1,8 @@
+title: Cache (size)
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['coredns_cache_entries']
+breakdowns: ['type']
+warning: Panel has 2 PromQL targets but only 1 could be migrated
+warning: Approximated grouped stat panel as summary table

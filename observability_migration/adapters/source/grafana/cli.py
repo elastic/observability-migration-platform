@@ -55,6 +55,11 @@ from observability_migration.targets.kibana.compile import (
 from observability_migration.targets.kibana.dashboards_api import (
     upload_warnings_from_reasons,
 )
+from observability_migration.targets.kibana.native_artifacts import (
+    write_ir_artifact,
+    write_native_artifact,
+    write_native_artifact_index,
+)
 from observability_migration.targets.kibana.serverless import (
     delete_dashboards as serverless_delete_dashboards,
 )
@@ -117,7 +122,12 @@ from .runtime_features import (
 )
 from .schema import SchemaResolver
 from .smoke_integration import load_smoke_report, merge_smoke_into_results
-from .transforms import build_redesign_tasks, build_transform_summary, extract_transformations
+from .transforms import (
+    build_redesign_tasks,
+    build_transform_summary,
+    extract_transformations,
+    mark_applied_transformations,
+)
 from .verification import annotate_results_with_verification, save_verification_packets
 
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
@@ -409,12 +419,30 @@ def parse_args(argv: list[str] | None = None):
         help="Upload dashboards to Kibana (typed Dashboards API by default)",
     )
     parser.add_argument(
+        "--compile",
+        dest="compile",
+        action="store_true",
+        default=False,
+        help=(
+            "Compile YAML to Kibana NDJSON via kb-dashboard-cli. Off by default: "
+            "the typed Dashboards API upload maps straight from the YAML/native "
+            "IR and never needs the compiled NDJSON. Implied by --legacy-import."
+        ),
+    )
+    parser.add_argument(
+        "--no-compile",
+        dest="compile",
+        action="store_false",
+        help="Skip dashboard YAML compilation (default; retained for compatibility)",
+    )
+    parser.add_argument(
         "--legacy-import",
         dest="legacy_import",
         action="store_true",
         help=(
             "Force the legacy kb-dashboard-cli saved-objects import instead of the "
-            "default typed Kibana Dashboards API (POST /api/dashboards)."
+            "default typed Kibana Dashboards API (PUT /api/dashboards/{id}). "
+            "Implies --compile."
         ),
     )
     parser.add_argument(
@@ -747,7 +775,10 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
                     if description and note not in panel_result.notes:
                         panel_result.notes.append(note)
 
-            transformation_entries = extract_transformations(panel_json)
+            transformation_entries = mark_applied_transformations(
+                extract_transformations(panel_json),
+                getattr(panel_result, "applied_transform_indices", None),
+            )
             transformation_tasks = build_redesign_tasks(
                 str(getattr(panel_result, "title", "")),
                 str(getattr(result, "dashboard_title", "")),
@@ -1565,12 +1596,27 @@ def _validate_field_profile(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
-def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+def _clear_dashboard_artifacts(
+    yaml_dir: Path,
+    compiled_dir: Path,
+    *,
+    native_dir: Path | None = None,
+    ir_dir: Path | None = None,
+) -> int:
     removed = 0
     if yaml_dir.exists():
         for yaml_file in yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+    for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
+        if artifact_dir is not None and artifact_dir.exists():
+            for artifact_file in artifact_dir.glob(pattern):
+                artifact_file.unlink()
+                removed += 1
+            index_file = artifact_dir / "index.json"
+            if index_file.exists():
+                index_file.unlink()
+                removed += 1
     if compiled_dir.exists():
         for child in compiled_dir.iterdir():
             if child.is_dir():
@@ -1786,6 +1832,7 @@ def _translate_dashboard_resilient(
     esql_index: str,
     rule_pack: Any,
     resolver: Any,
+    output_stem: str | None = None,
 ) -> tuple[MigrationResult, Any]:
     """Translate one dashboard; on unhandled exception return a stub result with translation_error set."""
     try:
@@ -1796,6 +1843,7 @@ def _translate_dashboard_resilient(
             esql_index=esql_index,
             rule_pack=rule_pack,
             resolver=resolver,
+            output_stem=output_stem,
         )
     except Exception as exc:
         title = dashboard.get("title") or dashboard.get("_source_file") or "unknown"
@@ -1809,6 +1857,35 @@ def _translate_dashboard_resilient(
             ),
             None,
         )
+
+
+def _allocate_dashboard_output_stem(
+    *,
+    title: str,
+    dashboard_uid: str | None,
+    used_stems: set[str],
+) -> str:
+    """Allocate a unique dashboard artifact stem for one Grafana run."""
+    base = _dashboard_output_stem(title) or "untitled"
+    if base not in used_stems:
+        used_stems.add(base)
+        return base
+
+    raw_uid = str(dashboard_uid or "").strip()
+    if raw_uid:
+        uid_suffix = _dashboard_output_stem(raw_uid)[:24]
+        uid_candidate = f"{base}_{uid_suffix}"
+        if uid_candidate not in used_stems:
+            used_stems.add(uid_candidate)
+            return uid_candidate
+
+    index = 2
+    while True:
+        candidate = f"{base}_{index}"
+        if candidate not in used_stems:
+            used_stems.add(candidate)
+            return candidate
+        index += 1
 
 
 def main(argv: list[str] | None = None):
@@ -1889,9 +1966,13 @@ def main(argv: list[str] | None = None):
     base_dir = dashboard_output_dir(root_output_dir)
     yaml_dir = base_dir / "yaml"
     compiled_dir = base_dir / "compiled"
+    native_dir = base_dir / "native"
+    ir_dir = base_dir / "ir"
     yaml_dir.mkdir(parents=True, exist_ok=True)
     compiled_dir.mkdir(parents=True, exist_ok=True)
-    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, compiled_dir)
+    removed_stale_artifacts = _clear_dashboard_artifacts(
+        yaml_dir, compiled_dir, native_dir=native_dir, ir_dir=ir_dir,
+    )
     if removed_stale_artifacts:
         print(f"\n  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {base_dir}")
 
@@ -1971,7 +2052,13 @@ def main(argv: list[str] | None = None):
     print("\n[2/7] Translating dashboards to YAML...")
     results = []
     dashboard_outputs = []
+    used_dashboard_stems: set[str] = set()
     for dashboard in dashboards:
+        output_stem = _allocate_dashboard_output_stem(
+            title=str(dashboard.get("title") or ""),
+            dashboard_uid=str(dashboard.get("uid") or ""),
+            used_stems=used_dashboard_stems,
+        )
         result, yaml_path = _translate_dashboard_resilient(
             dashboard,
             yaml_dir,
@@ -1979,6 +2066,7 @@ def main(argv: list[str] | None = None):
             esql_index=args.esql_index or args.data_view,
             rule_pack=rule_pack,
             resolver=resolver,
+            output_stem=output_stem,
         )
         if result.translation_error:
             results.append(result)
@@ -2205,10 +2293,23 @@ def main(argv: list[str] | None = None):
         for line in yaml_lint_output.strip().splitlines()[:20]:
             print(f"    {line}")
 
+    # The typed Dashboards API upload maps straight from the YAML/native IR and
+    # never consumes the compiled NDJSON, so only run kb-dashboard-cli when a
+    # legacy import or an explicit --compile actually needs it (mirrors the
+    # datadog-migrate gate). This keeps the default native path independent of
+    # the external compiler.
+    use_dashboards_api = not getattr(args, "legacy_import", False)
+    compile_requested = getattr(args, "compile", False) or (args.upload and getattr(args, "legacy_import", False))
+
     compile_results = []
     layout_ok = False
     layout_output = ""
-    if yaml_lint_ok:
+    if not compile_requested:
+        print(
+            "\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli: skipped "
+            "(native Dashboards API path; pass --compile or --legacy-import to enable)"
+        )
+    elif yaml_lint_ok:
         print("\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli...")
         compile_results = compile_all(yaml_dir, compiled_dir)
     else:
@@ -2224,8 +2325,10 @@ def main(argv: list[str] | None = None):
         compile_results = _compile_linted_yaml_files(yaml_files, yaml_lint_results, compiled_dir)
 
     compile_map = {Path(name).stem: (ok, output) for name, ok, output in compile_results}
-    for result in results:
-        dashboard_stem = _dashboard_output_stem(result.dashboard_title)
+    for result, yaml_path, _dashboard in dashboard_outputs:
+        if yaml_path is None:
+            continue
+        dashboard_stem = Path(yaml_path).stem
         if not result.translation_error:
             result.compiled_path = str(compiled_dir / dashboard_stem / "compiled_dashboards.ndjson")
         compiled_state = compile_map.get(dashboard_stem)
@@ -2249,8 +2352,36 @@ def main(argv: list[str] | None = None):
             for line in layout_output.strip().splitlines()[:20]:
                 print(f"    {line}")
 
+    print("\n  Writing native Dashboard-as-Code review artifacts...")
+    native_index_entries: list[dict[str, Any]] = []
+    for result, yaml_path, _dashboard in dashboard_outputs:
+        if yaml_path is None or result.dashboard_ir is None or result.native_dashboard is None:
+            continue
+        stem = Path(yaml_path).stem
+        native_path = write_native_artifact(
+            dashboard_ir=result.dashboard_ir,
+            native_dashboard=result.native_dashboard,
+            native_stats=result.native_dashboard_stats,
+            native_dir=native_dir,
+            stem=stem,
+        )
+        ir_path = write_ir_artifact(dashboard_ir=result.dashboard_ir, ir_dir=ir_dir, stem=stem)
+        result.native_artifact_path = str(native_path)
+        result.ir_artifact_path = str(ir_path)
+        native_index_entries.append(
+            {
+                "stem": stem,
+                "title": result.dashboard_title,
+                "dashboard_id": result.native_dashboard.dashboard_id,
+                "native_path": str(native_path.relative_to(base_dir)),
+                "ir_path": str(ir_path.relative_to(base_dir)),
+            }
+        )
+    if native_index_entries:
+        write_native_artifact_index(native_dir, native_index_entries)
+    print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
+
     target_space = detect_space_id_from_kibana_url(args.kibana_url) or "default"
-    use_dashboards_api = not getattr(args, "legacy_import", False)
     if args.upload and args.ensure_data_views:
         _ensure_grafana_data_views(args)
     if args.upload:

@@ -1,0 +1,8 @@
+title: Messages delivered / s
+grafana_type: timeseries
+status: migrated
+chart_type: area
+dimension: time_bucket
+metrics: ['rabbitmq_global_messages_delivered_consume_auto_ack_total']
+breakdown: rabbitmq_node
+mode: stacked

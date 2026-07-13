@@ -1,0 +1,7 @@
+title: Node Pressure
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['node_condition', 'node_condition_B', 'node_condition_C']
+breakdown: node

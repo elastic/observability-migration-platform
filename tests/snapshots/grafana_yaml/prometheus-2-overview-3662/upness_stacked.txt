@@ -1,0 +1,9 @@
+title: Upness (stacked)
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['up']
+mode: stacked
+axis_title: Up
+warning: Dropped variable-driven label filters during migration

@@ -1,6 +1,8 @@
 title: CPU Usage
 grafana_type: stat
 status: migrated_with_warnings
-chart_type: metric
-primary: node_cpu_seconds_total
+chart_type: datatable
+metrics: ['node_cpu_seconds_total']
+breakdowns: ['time_bucket']
 warning: Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific)
+warning: Approximated grouped stat panel as summary table

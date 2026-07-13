@@ -1,0 +1,5 @@
+title: Active controller
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: kafka_controller_kafkacontroller_activecontrollercount_value

@@ -1,0 +1,8 @@
+title: Distribution messages sent to peer node / s
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['erlang_vm_dist_send_cnt']
+breakdown: legend
+warning: XY chart shows a single breakdown; additional grouping dimension(s) ['rabbitmq_cluster'] are in the query but not on the chart, so series differing only by those are visually merged

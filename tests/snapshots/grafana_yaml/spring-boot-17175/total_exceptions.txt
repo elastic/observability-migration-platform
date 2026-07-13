@@ -1,0 +1,7 @@
+title: Total Exceptions
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: http_server_requests_seconds_count
+primary_color: value <=80:#54B399, <=80.00008:#E7664C
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

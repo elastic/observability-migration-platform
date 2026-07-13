@@ -1,0 +1,1 @@
+control: type=options field=kubernetes_io_hostname multiple=False

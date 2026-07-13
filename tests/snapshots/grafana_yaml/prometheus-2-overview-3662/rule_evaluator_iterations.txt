@@ -1,0 +1,8 @@
+title: Rule Evaluator Iterations
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Total', 'Missed', 'Skipped']
+axis_title: iterations
+warning: Dropped variable-driven label filters during migration

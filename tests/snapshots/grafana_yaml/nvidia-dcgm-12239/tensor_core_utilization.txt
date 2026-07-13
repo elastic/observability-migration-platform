@@ -1,0 +1,7 @@
+title: Tensor Core Utilization
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['DCGM_FI_PROF_PIPE_TENSOR_ACTIVE']
+axis_extent: custom [0.0, 1.0]

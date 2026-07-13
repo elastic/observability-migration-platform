@@ -1,0 +1,9 @@
+title: In-sync replicas
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['kafka_server_replicamanager_total_isrshrinkspersec_count']
+breakdown: instance
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Applied negation to match leading minus in original expression

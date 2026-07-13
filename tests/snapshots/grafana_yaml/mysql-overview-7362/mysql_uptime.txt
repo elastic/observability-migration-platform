@@ -1,0 +1,5 @@
+title: MySQL Uptime
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: mysql_global_status_uptime

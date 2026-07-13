@@ -1,0 +1,9 @@
+title: Containers network I/O (1m avg)
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['pod', 'pod_D']
+breakdown: series_group
+warning: Dropped 4 incompatible target(s); showing 2 mergeable targets
+warning: Composited multi-label grouping (k8s.container.name, k8s.pod.name) into a single XY breakdown column

@@ -1,0 +1,6 @@
+title: CPU Cores Requested by Containers
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: kube_pod_container_resource_requests_cpu_cores
+warning: Dropped variable-driven label filters during migration

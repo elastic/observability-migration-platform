@@ -1,0 +1,7 @@
+title: Response Size By Service Workload
+grafana_type: timeseries
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: Dropped variable-driven label filters during migration
+warning: histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)

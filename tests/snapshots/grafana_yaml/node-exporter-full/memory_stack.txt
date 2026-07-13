@@ -4,8 +4,8 @@ status: migrated_with_warnings
 chart_type: area
 dimension: time_bucket
 metrics: ['Apps_Memory_used_by_user_space_applications', 'PageTables_Memory_used_to_map_between_virtual_and_physical_memory_addresses', 'SwapCache_Memory_that_keeps_track_of_pages_that_have_been_fetched_from_swap_but_not_yet_been_modified', 'Slab_Memory_used_by_the_kernel_to_cache_data_structures_for_its_own_use_caches_like_inode_dentry_etc', 'Cache_Parked_file_data_file_content_cache', 'Buffers_Block_device_e_g_harddisk_cache', 'Unused_Free_memory_unassigned', 'Swap_Swap_space_used', 'Hardware_Corrupted_Amount_of_RAM_that_the_kernel_identified_as_corrupted_not_working']
-breakdown: instance
+breakdown: series_group
 mode: stacked
 axis_title: bytes
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -1,0 +1,11 @@
+title: Load
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: series_group
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Dropped variable-driven label filters during migration
+warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+warning: Composited multi-label grouping (service.name, instance) into a single XY breakdown column

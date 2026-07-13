@@ -1,0 +1,9 @@
+title: Successful Config Reload
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['prometheus_config_last_reload_successful']
+axis_title: Success
+axis_extent: custom [0.0, 1.0]
+warning: Dropped variable-driven label filters during migration

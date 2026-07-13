@@ -1,0 +1,8 @@
+title: Active Handlers/Requests Total
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Active_Handler', 'Active_Request']
+breakdown: instance
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

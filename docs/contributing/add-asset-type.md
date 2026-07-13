@@ -58,12 +58,16 @@ of the adapter you are extending.
 
 ### 4. Update the target emitter (if needed)
 
-If the asset produces output in dashboard YAML, update:
-- `observability_migration/targets/kibana/emit/`
+If the asset produces dashboard output, update the IR/YAML bridge and native
+mapping as needed:
+- `observability_migration/core/assets/` (`DashboardIR` / related IRs)
+- `observability_migration/targets/kibana/emit/` (shared panel helpers)
+- `observability_migration/targets/kibana/dashboards_api.py` (native API mapping)
 
 ### 5. Add DashboardIR field
 
-Add the asset list to `DashboardIR` if it's dashboard-scoped.
+Add the asset list to `DashboardIR` if it's dashboard-scoped. YAML and the
+typed Dashboards API payload are both derived from that IR.
 
 ### 6. Test at each layer
 

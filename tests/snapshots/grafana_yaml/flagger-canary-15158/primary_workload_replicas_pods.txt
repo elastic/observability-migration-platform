@@ -1,0 +1,12 @@
+title: Primary: Workload Replicas (PODs)
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Healthy', 'Desired', 'Minimum', 'Maximum', 'Not_Ready']
+warning: Dropped variable-driven label filters during migration
+warning: Collapsed all series of `kube_horizontalpodautoscaler_status_current_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_horizontalpodautoscaler_status_desired_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_horizontalpodautoscaler_spec_min_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_horizontalpodautoscaler_spec_max_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_deployment_status_replicas_unavailable` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.

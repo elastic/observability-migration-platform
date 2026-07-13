@@ -1,0 +1,6 @@
+title: Client Request Duration
+grafana_type: timeseries
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: PromQL 'or' between metrics that cannot be aligned in ES|QL (differing grouping dimensions or source shapes); marked for manual review so no series are silently dropped

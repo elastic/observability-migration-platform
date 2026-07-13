@@ -1,0 +1,6 @@
+title: Sync Activity
+grafana_type: graph
+status: not_feasible
+chart_type: none
+chart_type: markdown
+warning: BY/WITHOUT clause contains Grafana template variable ($grouping); grouping dimension is unknown at migration time and requires manual redesign

@@ -127,6 +127,21 @@ def _split_csv_top_level(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def _strip_backticks(identifier: str) -> str:
+    """Strip ES|QL backtick-quoting from a column identifier.
+
+    Backticks are query-text syntax for escaping a reserved word or an
+    otherwise-invalid identifier (e.g. ``` `limit` ```); they are not part of
+    the actual output column name that Elasticsearch returns or that a Lens
+    accessor references. Compare unquoted so a reserved-word column alias
+    still matches its (unquoted) spec-field reference.
+    """
+    text = identifier.strip()
+    if len(text) >= 2 and text.startswith("`") and text.endswith("`"):
+        return text[1:-1]
+    return text
+
+
 def _final_output_columns(query: str) -> set[str]:
     """Return the column names emitted by the last stage of an ES|QL pipeline.
 
@@ -153,22 +168,30 @@ def _final_output_columns(query: str) -> set[str]:
             for part in _split_csv_top_level(body):
                 alias, _ = split_top_level_assignment(part)
                 if alias:
-                    cols.add(alias)
+                    cols.add(_strip_backticks(alias))
             for part in _split_csv_top_level(by_text):
                 alias, expr = split_top_level_assignment(part)
                 field = alias or (expr or "").strip()
                 if field:
-                    cols.add(field)
+                    cols.add(_strip_backticks(field))
         elif cl.startswith("eval "):
             for part in _split_csv_top_level(cmd[5:].strip()):
                 alias, _ = split_top_level_assignment(part)
                 if alias:
-                    cols.add(alias)
+                    cols.add(_strip_backticks(alias))
         elif cl.startswith("keep "):
-            fields = {f.strip() for f in _split_csv_top_level(cmd[5:].strip()) if f.strip()}
+            fields = {
+                _strip_backticks(f.strip())
+                for f in _split_csv_top_level(cmd[5:].strip())
+                if f.strip()
+            }
             cols = fields
         elif cl.startswith("drop "):
-            fields = {f.strip() for f in _split_csv_top_level(cmd[5:].strip()) if f.strip()}
+            fields = {
+                _strip_backticks(f.strip())
+                for f in _split_csv_top_level(cmd[5:].strip())
+                if f.strip()
+            }
             cols -= fields
     return cols
 
@@ -804,6 +827,44 @@ class TestGrafanaYAMLSnapshotCoverage(unittest.TestCase):
             for path in _SNAPSHOT_DIR.glob("**/*.txt")
         }
         self.assertEqual(actual, expected)
+
+    def test_no_snapshot_content_drift(self):
+        """Surface every stale snapshot in one message, immune to ``-x``.
+
+        The per-dashboard ``TestGrafanaYAMLSnapshots`` methods each stop at
+        their first mismatch, and the suite runs under ``-x`` (fail-fast), so a
+        plain run reports only the first stale dashboard and silently hides the
+        rest. That under-reporting once masked ~70 stale goldens behind an
+        apparent handful. This single check renders every fixture and compares
+        it to the committed golden, then fails once with the complete list so a
+        refresh is never partially applied.
+        """
+        stale: list[str] = []
+        missing: list[str] = []
+        for dashboard_path in _snapshot_dashboard_paths():
+            for snap_path, actual in _dashboard_snapshot_texts(dashboard_path).items():
+                rel = str(snap_path.relative_to(_SNAPSHOT_DIR))
+                if not snap_path.exists():
+                    missing.append(rel)
+                elif snap_path.read_text(encoding="utf-8") != actual:
+                    stale.append(rel)
+
+        problems: list[str] = []
+        if missing:
+            problems.append(
+                f"{len(missing)} missing snapshot(s):\n  " + "\n  ".join(sorted(missing))
+            )
+        if stale:
+            problems.append(
+                f"{len(stale)} stale snapshot(s):\n  " + "\n  ".join(sorted(stale))
+            )
+        if problems:
+            self.fail(
+                f"{len(missing) + len(stale)} Grafana YAML snapshot(s) are out of date. "
+                "Regenerate with:\n"
+                "  UPDATE_SNAPSHOTS=1 python -m pytest tests/test_grafana_yaml_generation.py\n\n"
+                + "\n\n".join(problems)
+            )
 
 
 class TestGrafanaYAMLSnapshots(unittest.TestCase):

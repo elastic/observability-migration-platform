@@ -1,0 +1,5 @@
+title: Allocated Memory
+grafana_type: singlestat
+status: migrated
+chart_type: metric
+primary: envoy_server_memory_allocated

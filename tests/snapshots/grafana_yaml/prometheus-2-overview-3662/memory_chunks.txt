@@ -1,0 +1,6 @@
+title: Memory Chunks
+grafana_type: singlestat
+status: migrated_with_warnings
+chart_type: metric
+primary: prometheus_tsdb_head_chunks
+warning: Dropped variable-driven label filters during migration

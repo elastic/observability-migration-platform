@@ -1,0 +1,10 @@
+title: Sync Failures
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['argocd_app_sync_total']
+breakdown: phase
+mode: stacked
+warning: optional Grafana template-variable grouping dimension ($grouping) could not be resolved at migration time and was omitted; the panel is grouped by its explicit label(s) only. Re-add the breakdown in Kibana if the dashboard needs it.
+warning: Dropped variable-driven label filters during migration

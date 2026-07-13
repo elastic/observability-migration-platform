@@ -61,10 +61,13 @@ from .promql import (
     _is_counter_fallback,
     _is_label_enrichment_metric,
     _iter_pending_join_rhs_fragments,
+    _left_operand_of_same_metric_range_fallback,
+    _mixed_os_or_operands,
     _or_chain_has_vector_matching,
     _parse_fragment,
     _parse_logql_search,
     _resolve_metric_field,
+    _same_metric_range_fallback_warning,
     _summary_mode_from_metadata,
     classify_promql_complexity,
     gauge_default_agg_warning,
@@ -332,6 +335,13 @@ _RANK_TEMPLATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 _GROUPING_TEMPLATE_RE = re.compile(r"\b(?:by|without)\s*\((?P<labels>[^)]*)\)", re.IGNORECASE)
+# A template variable used in function-call position (e.g. ``${metric:value}(...)``)
+# — dynamic function selection (rate/increase/…) that cannot be resolved offline.
+_TEMPLATE_FUNC_VAR_RE = re.compile(r"(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r")\s*\(")
+# A template variable glued onto an identifier (e.g. ``metric_name${suffix}``) —
+# the exact metric/label name is only known after Grafana expands the variable.
+_GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r")")
+_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 
 
 def _template_var_name(match) -> str:
@@ -346,6 +356,63 @@ def _strip_promql_string_literals(expr: str) -> str:
     text = str(expr or "")
     text = re.sub(r'"(?:\\.|[^"])*"', '""', text)
     return re.sub(r"'(?:\\.|[^'])*'", "''", text)
+
+
+def _apply_outside_string_literals(expr: str, transform) -> str:
+    """Apply ``transform`` to the parts of ``expr`` outside string literals.
+
+    String literals are preserved verbatim so a template-variable token that
+    only appears inside a matcher value (e.g. ``job=~"$job"``) is never treated
+    as query structure.
+    """
+    out: list[str] = []
+    last = 0
+    for match in _STRING_LITERAL_RE.finditer(expr):
+        out.append(transform(expr[last:match.start()]))
+        out.append(match.group(0))
+        last = match.end()
+    out.append(transform(expr[last:]))
+    return "".join(out)
+
+
+def _rewrite_grouping_template_vars(expr: str) -> tuple[str, list[str], bool]:
+    """Strip Grafana template-variable tokens from ``by``/``without`` clauses.
+
+    Grafana's optional-grouping variables (``by (exporter $grouping)``) expand
+    to an *extra*, user-selected breakdown whose default/unset state adds no
+    dimension. When a clause still names at least one concrete label, the token
+    is dropped and the query keeps the explicit grouping (a faithful degrade).
+
+    Returns the rewritten expression, the dropped variable names (in order), and
+    whether any clause was left *fully* dynamic (only template variables, no
+    concrete label — which the caller must treat as not-feasible).
+    """
+    dropped: list[str] = []
+    fully_dynamic = False
+
+    def transform(segment: str) -> str:
+        nonlocal fully_dynamic
+
+        def repl(clause):
+            nonlocal fully_dynamic
+            labels = clause.group("labels") or ""
+            if not _GRAFANA_TEMPLATE_VAR_RE.search(labels):
+                return clause.group(0)
+            for var in _GRAFANA_TEMPLATE_VAR_RE.finditer(labels):
+                name = _template_var_name(var)
+                if name not in dropped:
+                    dropped.append(name)
+            cleaned = _GRAFANA_TEMPLATE_VAR_RE.sub("", labels)
+            parts = [part for part in re.split(r"[,\s]+", cleaned) if part]
+            if not parts:
+                fully_dynamic = True
+                return clause.group(0)
+            prefix = clause.group(0)[: clause.group(0).index("(") + 1]
+            return f"{prefix}{', '.join(parts)})"
+
+        return _GROUPING_TEMPLATE_RE.sub(repl, segment)
+
+    return _apply_outside_string_literals(expr, transform), dropped, fully_dynamic
 
 
 @dataclass
@@ -653,19 +720,70 @@ def template_variable_guardrail_rule(context):
         )
         return f"{func} template-variable limit requires manual redesign"
 
-    for grouping_match in _GROUPING_TEMPLATE_RE.finditer(expr):
-        var_match = _GRAFANA_TEMPLATE_VAR_RE.search(grouping_match.group("labels") or "")
-        if not var_match:
-            continue
-        var_name = _template_var_name(var_match)
+    # A template variable used as a function name (``${metric:value}(...)``)
+    # selects the rate/increase/... function dynamically — unknowable offline.
+    func_var = _TEMPLATE_FUNC_VAR_RE.search(expr)
+    if func_var:
+        var_name = _template_var_name(func_var)
         context.feasibility = "not_feasible"
         context.confidence = 0.0
         _append_unique(
             context.warnings,
-            f"BY/WITHOUT clause contains Grafana template variable ({_template_var_display(var_name)}); "
-            "grouping dimension is unknown at migration time and requires manual redesign",
+            f"PromQL function name comes from a Grafana template variable ({_template_var_display(var_name)}); "
+            "dynamic function selection (e.g. rate/increase/sum_over_time) is unknown at migration "
+            "time and requires manual redesign",
         )
-        return "grouping template variable requires manual redesign"
+        return "dynamic function name requires manual redesign"
+
+    # A template variable glued onto an identifier (``otelcol_..._spans${suffix}``)
+    # makes the exact metric/label name dynamic; resolving it to a placeholder
+    # would silently query a non-existent field, so block it honestly.
+    glued_var = _GLUED_TEMPLATE_VAR_RE.search(expr)
+    if glued_var:
+        inner = _GRAFANA_TEMPLATE_VAR_RE.search(glued_var.group(0))
+        var_name = _template_var_name(inner) if inner else "var"
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"PromQL metric or label name is built from a Grafana template variable "
+            f"({_template_var_display(var_name)}); the exact series is unknown at migration "
+            "time and requires manual redesign",
+        )
+        return "dynamic metric/label name requires manual redesign"
+
+    # A ``by``/``without`` clause with a template variable alongside concrete
+    # labels (``by (exporter $grouping)``): drop the optional selector token and
+    # keep the explicit grouping. A clause that is *only* a template variable
+    # has no resolvable dimension and stays not-feasible.
+    if _GROUPING_TEMPLATE_RE.search(expr) and _GRAFANA_TEMPLATE_VAR_RE.search(expr):
+        rewritten, dropped, fully_dynamic = _rewrite_grouping_template_vars(context.promql_expr or "")
+        if fully_dynamic:
+            var_match = _GRAFANA_TEMPLATE_VAR_RE.search(
+                next(
+                    (m.group("labels") for m in _GROUPING_TEMPLATE_RE.finditer(expr)
+                     if _GRAFANA_TEMPLATE_VAR_RE.search(m.group("labels") or "")),
+                    "",
+                )
+            )
+            var_name = _template_var_name(var_match) if var_match else "var"
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            _append_unique(
+                context.warnings,
+                f"BY/WITHOUT clause contains Grafana template variable ({_template_var_display(var_name)}); "
+                "grouping dimension is unknown at migration time and requires manual redesign",
+            )
+            return "grouping template variable requires manual redesign"
+        if dropped:
+            context.promql_expr = rewritten
+            display = ", ".join(_template_var_display(name) for name in dropped)
+            _append_unique(
+                context.warnings,
+                f"optional Grafana template-variable grouping dimension ({display}) could not be "
+                "resolved at migration time and was omitted; the panel is grouped by its explicit "
+                "label(s) only. Re-add the breakdown in Kibana if the dashboard needs it.",
+            )
     return None
 
 
@@ -711,6 +829,33 @@ def _or_left_is_feasible(frag):
     return not left_reasons
 
 
+def _mixed_os_zero_fill_left_is_feasible(frag):
+    """True when ``linux + on(ns) (windows_join or zero_fill)`` should defer to the rewrite.
+
+    The Windows join stamps ``not_feasible_reasons`` onto the outer ``+`` via
+    reason merging. Classifiers must not short-circuit before
+    ``binary_expr_family_rule`` / ``_try_rewrite_mixed_os_zero_fill_plus`` can
+    prefer the feasible Linux left operand. Also covers the community form
+    where the ``OR`` is nested inside ``sum(...) by (namespace)``.
+    """
+    if frag is None or frag.family != "binary_expr":
+        return False
+    if (frag.binary_op or "").lower() not in {"+", "-"}:
+        return False
+    left = frag.extra.get("left_frag")
+    right = frag.extra.get("right_frag")
+    if left is None or right is None:
+        return False
+    if left.extra.get("not_feasible_reasons"):
+        return False
+    return _mixed_os_or_operands(right) is not None
+
+
+def _binary_left_fallback_is_feasible(frag):
+    """Defer classifier not_feasible when a left-preferring rewrite can still run."""
+    return _or_left_is_feasible(frag) or _mixed_os_zero_fill_left_is_feasible(frag)
+
+
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
 def fragment_guardrails_rule(context):
     frag = context.fragment
@@ -719,8 +864,8 @@ def fragment_guardrails_rule(context):
     reasons = list(frag.extra.get("not_feasible_reasons", []) or [])
     if not reasons:
         return None
-    if _or_left_is_feasible(frag):
-        return None  # let binary_expr_family_rule handle the or-fallback
+    if _binary_left_fallback_is_feasible(frag):
+        return None  # let binary_expr_family_rule handle left-preferring rewrites
     context.feasibility = "not_feasible"
     context.confidence = 0.0
     for reason in reasons:
@@ -749,9 +894,12 @@ def family_classifier_rule(context):
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
         if nf_reasons:
-            if _or_left_is_feasible(frag):
+            if _binary_left_fallback_is_feasible(frag):
                 context.metadata["fragment_family"] = frag.family
-                return f"fragment family {frag.family} 'or': right-side reasons deferred to or-fallback"
+                return (
+                    f"fragment family {frag.family}: right-side not_feasible reasons "
+                    "deferred to left-preferring rewrite"
+                )
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             for r in nf_reasons:
@@ -1418,8 +1566,45 @@ def binary_expr_family_rule(context):
         # ``unless`` likewise have no honest single-stage ES|QL equivalent.
         # Flag for manual review instead of silently dropping half the data
         # (issue #167) — never emit the left operand alone.
+        #
+        # Exception: the Grafana same-metric range-window fallback idiom
+        # (``rate(M[$i]) or irate(M[5m])``, including ``topk(rate) or
+        # topk(irate)``). Formula-planable left operands are rewritten inside
+        # ``_build_formula_plan``; families handled by a dedicated translator
+        # (notably ``topk``) re-dispatch the left operand here.
         op_lower = (frag.binary_op or "").lower()
         if op_lower == "or":
+            left = _left_operand_of_same_metric_range_fallback(frag)
+            if left is not None:
+                sub = TranslationContext(
+                    promql_expr=left.raw_expr or context.promql_expr,
+                    data_view=context.data_view,
+                    index=context.index,
+                    rule_pack=context.rule_pack,
+                    resolver=context.resolver,
+                    metadata=dict(context.metadata),
+                )
+                sub.fragment = left
+                sub.metadata["fragment_family"] = left.family
+                QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+                QUERY_POSTPROCESSORS.apply(sub)
+                if sub.esql_query and sub.feasibility != "not_feasible":
+                    context.esql_query = sub.esql_query
+                    context.metric_name = sub.metric_name
+                    context.output_metric_field = sub.output_metric_field
+                    context.output_group_fields = sub.output_group_fields
+                    context.source_type = sub.source_type
+                    context.parser_backend = sub.parser_backend or "fragment"
+                    context.feasibility = sub.feasibility
+                    context.confidence = sub.confidence
+                    for warning in sub.warnings:
+                        _append_unique(context.warnings, warning)
+                    _append_unique(
+                        context.warnings,
+                        _same_metric_range_fallback_warning(frag),
+                    )
+                    context.translation_complete = True
+                    return "translated same-metric range-fallback 'or' via left operand"
             context.feasibility = "not_feasible"
             context.confidence = 0.0
             context.translation_complete = True
@@ -1891,7 +2076,8 @@ def nested_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
-    inner_group = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+    raw_inner_group = list(frag.extra.get("inner_group", []) or [])
+    inner_group = resolver.resolve_labels(raw_inner_group) if resolver else list(raw_inner_group)
     if not inner_group:
         inner_group = resolver.resolve_labels(context.metadata.get("preferred_group_labels", [])) if resolver else list(context.metadata.get("preferred_group_labels", []))
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
@@ -1903,30 +2089,65 @@ def nested_agg_family_rule(context):
     count_presence_filter = f"| WHERE {physical_metric} IS NOT NULL" if inner_agg_name == "count" else ""
     metric_like_panels = {"stat", "singlestat", "gauge", "bargauge"}
 
-    if frag.outer_agg == "count" and inner_agg_name == "count" and len(inner_group) == 1:
-        count_field = inner_group[0]
-        lines = [
-            f"FROM {context.index}",
-            f"| WHERE {rp.from_time_filter}",
-            *_build_where_lines(filters),
-        ]
-        if count_presence_filter:
-            lines.append(count_presence_filter)
-        if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
-            context.output_group_fields = []
-            lines.append(f"| STATS {result_alias} = COUNT_DISTINCT({count_field})")
+    # Nested count(count by (...)) → COUNT_DISTINCT. Prefer the exclusive
+    # inner label (in the inner by() but not the outer) so
+    # ``count by(job, instance)(count by(job, instance, cpu)(...))`` counts
+    # distinct ``cpu``, not ``job``.
+    if frag.outer_agg == "count" and inner_agg_name == "count" and inner_group:
+        outer_raw = {
+            lbl for lbl in (frag.group_labels or []) if not str(lbl).startswith("label_")
+        }
+        exclusive_raw = [lbl for lbl in raw_inner_group if lbl not in outer_raw]
+        if exclusive_raw:
+            count_field = (
+                resolver.resolve_label(exclusive_raw[0]) if resolver else exclusive_raw[0]
+            )
+        elif len(inner_group) == 1:
+            count_field = inner_group[0]
         else:
-            context.output_group_fields = ["time_bucket"]
-            lines.append(f"| STATS {result_alias} = COUNT_DISTINCT({count_field}) BY {rp.from_bucket}")
-            lines.append("| SORT time_bucket ASC")
-        context.esql_query = "\n".join(lines)
-        _append_unique(context.warnings, f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})")
-        context.parser_backend = "fragment"
-        context.source_type = "FROM"
-        context.metric_name = result_alias
-        context.output_metric_field = result_alias
-        context.translation_complete = True
-        return "translated nested count(count()) expression"
+            count_field = None
+        if count_field:
+            outer_group_fields = _frag_group_labels(
+                frag,
+                resolver,
+                context.metadata.get("preferred_group_labels"),
+                preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+            )
+            lines = [
+                f"FROM {context.index}",
+                f"| WHERE {rp.from_time_filter}",
+                *_build_where_lines(filters),
+            ]
+            if count_presence_filter:
+                lines.append(count_presence_filter)
+            if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
+                if outer_group_fields:
+                    context.output_group_fields = list(outer_group_fields)
+                    lines.append(
+                        f"| STATS {result_alias} = COUNT_DISTINCT({count_field}) "
+                        f"BY {', '.join(outer_group_fields)}"
+                    )
+                else:
+                    context.output_group_fields = []
+                    lines.append(f"| STATS {result_alias} = COUNT_DISTINCT({count_field})")
+            else:
+                by_parts = [rp.from_bucket] + list(outer_group_fields)
+                context.output_group_fields = ["time_bucket"] + list(outer_group_fields)
+                lines.append(
+                    f"| STATS {result_alias} = COUNT_DISTINCT({count_field}) BY {', '.join(by_parts)}"
+                )
+                lines.append("| SORT time_bucket ASC")
+            context.esql_query = "\n".join(lines)
+            _append_unique(
+                context.warnings,
+                f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})",
+            )
+            context.parser_backend = "fragment"
+            context.source_type = "FROM"
+            context.metric_name = result_alias
+            context.output_metric_field = result_alias
+            context.translation_complete = True
+            return "translated nested count(count()) expression"
 
     if frag.range_func in AGG_FUNCTION_MAP:
         esql_inner_name = AGG_FUNCTION_MAP[frag.range_func]

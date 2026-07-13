@@ -4,7 +4,7 @@ status: migrated_with_warnings
 chart_type: area
 dimension: time_bucket
 metrics: ['SUnreclaim_Part_of_Slab_that_cannot_be_reclaimed_on_memory_pressure', 'SReclaimable_Part_of_Slab_that_might_be_reclaimed_such_as_caches']
-breakdown: instance
+breakdown: series_group
 mode: stacked
 axis_title: bytes
-warning: XY chart shows a single breakdown; additional grouping dimension(s) ['job'] are in the query but not on the chart, so series differing only by those are visually merged
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

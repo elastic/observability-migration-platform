@@ -1,0 +1,8 @@
+title: Scrape Duration
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['prometheus_target_interval_length_seconds']
+axis_title: Seconds
+warning: Dropped variable-driven label filters during migration

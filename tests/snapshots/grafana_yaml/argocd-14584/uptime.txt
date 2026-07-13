@@ -1,0 +1,7 @@
+title: Uptime
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: metric
+primary: process_start_time_seconds_uptime_seconds
+primary_color: value <=80:#54B399, <=80.00008:#E7664C
+warning: Approximated time() - metric as uptime from metric timestamp

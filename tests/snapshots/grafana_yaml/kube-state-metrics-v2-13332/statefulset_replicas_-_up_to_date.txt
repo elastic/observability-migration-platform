@@ -1,0 +1,6 @@
+title: Statefulset Replicas - Up To Date
+grafana_type: table-old
+status: migrated
+chart_type: datatable
+metrics: ['kube_statefulset_status_replicas_ready']
+breakdowns: ['time_bucket']

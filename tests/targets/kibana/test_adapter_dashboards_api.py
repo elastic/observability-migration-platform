@@ -208,6 +208,42 @@ class TestNativeApiPath(unittest.TestCase):
         self.assertEqual(record["output"], "legacy import ok")
         self.assertEqual(payload["summary"]["fallbacks"], 1)
 
+    def test_conflict_result_does_not_trigger_legacy_fallback(self):
+        # A 409 "conflict" is a cluster-global shareable-id collision from
+        # another space, not a payload defect. The legacy kb-dashboard-cli
+        # import cannot resolve it, so the adapter must report it as a terminal
+        # (non-success) status without invoking the compiler-backed fallback.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = _yaml_dir_with_one_dashboard(tmpdir)
+
+            def fake_api(yaml_paths, kibana_url, *, fallback=None, **kwargs):
+                return [UploadResult(dashboard="Dash", status="conflict", http_status=409, mapped=1)]
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.upload_yaml",
+                return_value=(True, "legacy import ok"),
+            ) as legacy, mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_yaml_files",
+                side_effect=fake_api,
+            ):
+                payload = KibanaTargetAdapter().upload(
+                    yaml_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    space_id="shadow",
+                    use_dashboards_api=True,
+                )
+
+        legacy.assert_not_called()
+        record = payload["records"][0]
+        self.assertEqual(record["status"], "conflict")
+        self.assertFalse(record["fallback_used"])
+        self.assertFalse(record["success"])
+        self.assertEqual(payload["summary"]["fallbacks"], 0)
+
     def test_rejected_dashboard_fallback_splits_multi_dashboard_yaml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_dir = _yaml_dir_with_two_dashboards(tmpdir)

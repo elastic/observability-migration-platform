@@ -1,0 +1,8 @@
+title: Canary: Disk I/O (IOPS)
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['read', 'write']
+breakdown: k8s.cluster.name
+warning: Dropped variable-driven label filters during migration
