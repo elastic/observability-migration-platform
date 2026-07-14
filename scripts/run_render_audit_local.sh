@@ -96,3 +96,4 @@ PY
 done <<< "$dashboard_rows"
 
 [ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }
+echo "For live dashboard control behavior, run: make interaction-audit-local"

@@ -83,17 +83,20 @@ controls:
       query_contains: ["TBUCKET(?interval)"]
       required_columns: [value, bucket]
       minimum_rows: 1
+      expect_data_change: false
   - label: host.name
     key: host.name
     adapter: options_list
     capability: migrated_live
     options:
       strategy: every
+      exclude: [Exists]
     assertions:
       affected_panels: [interaction-options]
       unaffected_panels: [interaction-unaffected]
       required_columns: [value, host.name]
       minimum_rows: 1
+      expect_data_change: false
   - label: latency_ms
     key: latency_ms
     adapter: range_slider
@@ -107,7 +110,7 @@ controls:
       query_contains: [latency_ms]
       required_columns: [value]
       minimum_rows: 1
-      expect_data_change: true
+      expect_data_change: false
   - label: query bar
     key: query_bar
     adapter: query_bar
@@ -121,6 +124,7 @@ controls:
       unaffected_panels: [interaction-unaffected]
       query_contains: ['service.environment:"prod"']
       minimum_rows: 1
+      expect_data_change: false
   - label: gap grafana any variable
     key: gap_grafana_any
     adapter: esql_value

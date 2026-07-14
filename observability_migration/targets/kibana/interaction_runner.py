@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +102,16 @@ _CAPABILITY_PRECEDENCE: tuple[CapabilityCategory, ...] = (
 class PanelContract:
     all_query_panels: tuple[str, ...] = ()
     by_control: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    panel_aliases: Mapping[str, str] = field(default_factory=dict)
+
+    def resolve_panel_ids(self, panel_ids: Sequence[str]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                self.panel_aliases.get(str(panel_id), str(panel_id))
+                for panel_id in panel_ids
+                if str(panel_id)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -238,7 +248,7 @@ def _resolve_affected_panels(
 ) -> tuple[str, ...]:
     affected = control.assertions.affected_panels
     if isinstance(affected, tuple):
-        return affected
+        return panel_contract.resolve_panel_ids(affected)
     if affected == "all_query_panels":
         return panel_contract.all_query_panels
     if affected == "query_dependency":
@@ -296,11 +306,16 @@ def _merge_assertions(
 
     for control in controls:
         assertions = control.assertions
-        query_contains.extend(assertions.query_contains)
-        query_not_contains.extend(assertions.query_not_contains)
+        # Query-bar text is translated into the request's filter DSL by Kibana;
+        # it is not embedded in the ES|QL query string.
+        if control.adapter != "query_bar":
+            query_contains.extend(assertions.query_contains)
+            query_not_contains.extend(assertions.query_not_contains)
         required_columns.extend(assertions.required_columns)
         expected_legend.extend(assertions.expected_legend)
-        unaffected_panels.extend(assertions.unaffected_panels)
+        unaffected_panels.extend(
+            panel_contract.resolve_panel_ids(assertions.unaffected_panels)
+        )
         minimum_rows = max(minimum_rows, assertions.minimum_rows)
         expect_data_change = expect_data_change or assertions.expect_data_change
         allow_incompatible = allow_incompatible and assertions.allow_incompatible_selections
@@ -330,6 +345,18 @@ def _merge_assertions(
             )
         else:
             stable_alias = unique_aliases[0]
+
+    if len(controls) > 1:
+        # A combination may affect disjoint panels with different queries,
+        # params, and output columns. Individual option steps already ratchet
+        # those panel-local contracts; the combination step proves all selected
+        # controls coexist and every unioned affected panel refreshes cleanly.
+        query_contains = []
+        query_not_contains = []
+        required_columns = []
+        expected_value_params = {}
+        expected_identifier_params = {}
+        stable_alias = ""
 
     return _MergedAssertions(
         query_contains=_ordered_unique(query_contains),
@@ -705,10 +732,29 @@ class InteractionRunner:
             premerge_findings,
         )
         findings.extend(premerge_findings)
-        expected_panels = merged.expected_panels
 
         if step.reset_before:
             self._browser.reset(self._config.dashboard_url)
+
+        selection_changes = _selection_changes_from_baseline(
+            step.selections,
+            discovered_by_key,
+        )
+        network_merged = merged
+        if step.kind in {"option", "combination"} and not selection_changes:
+            network_merged = replace(
+                merged,
+                query_contains=(),
+                query_not_contains=(),
+                required_columns=(),
+                stable_alias="",
+                minimum_rows=0,
+                expected_panels=(),
+                expected_value_params={},
+                expected_identifier_params={},
+            )
+        expected_panels = merged.expected_panels
+        settle_expected_panels = expected_panels if selection_changes else ()
 
         baseline_observation = self._browser.capture(expected_panels)
         baseline_fingerprint = _panel_fingerprint(baseline_observation.panels)
@@ -814,7 +860,7 @@ class InteractionRunner:
                 try:
                     observation = self._browser.settle(
                         cursor,
-                        expected_panels,
+                        settle_expected_panels,
                         policy=self._config.settle_policy,
                     )
                 except SettleTimeout as exc:
@@ -858,7 +904,7 @@ class InteractionRunner:
 
         findings.extend(
             self._network_findings(
-                merged=merged,
+                merged=network_merged,
                 network_evidence=network_evidence,
                 noise_allowances=self._scenario.noise_allowances,
             )
@@ -886,10 +932,7 @@ class InteractionRunner:
             )
         )
 
-        if not settle_timed_out and merged.expect_data_change and _selection_changes_from_baseline(
-            step.selections,
-            discovered_by_key,
-        ):
+        if not settle_timed_out and merged.expect_data_change and selection_changes:
             after_fingerprint = _panel_fingerprint(observation.panels)
             if after_fingerprint == baseline_fingerprint:
                 _append_finding(
@@ -1247,12 +1290,18 @@ def load_panel_contract(path: str | Path) -> PanelContract:
 
     all_query_raw = payload.get("all_query_panels", [])
     by_control_raw = payload.get("by_control", {})
+    panel_aliases_raw = payload.get("panel_aliases", {})
     if not isinstance(all_query_raw, list) or not all(
         isinstance(item, str) for item in all_query_raw
     ):
         raise ValueError(f"{contract_path}: all_query_panels must be a list of strings")
     if not isinstance(by_control_raw, dict):
         raise ValueError(f"{contract_path}: by_control must be a mapping")
+    if not isinstance(panel_aliases_raw, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in panel_aliases_raw.items()
+    ):
+        raise ValueError(f"{contract_path}: panel_aliases must map strings to strings")
 
     by_control: dict[str, tuple[str, ...]] = {}
     for key, value in by_control_raw.items():
@@ -1267,4 +1316,5 @@ def load_panel_contract(path: str | Path) -> PanelContract:
     return PanelContract(
         all_query_panels=tuple(all_query_raw),
         by_control=by_control,
+        panel_aliases=dict(panel_aliases_raw),
     )

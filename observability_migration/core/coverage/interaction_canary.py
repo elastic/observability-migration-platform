@@ -56,7 +56,11 @@ _PANEL_QUERIES: dict[str, str] = {
         f"{_BASE} | STATS value=AVG(interaction_value) BY host.name"
     ),
     "interaction-range": (
-        f"{_BASE} | WHERE latency_ms >= 0 | STATS value=AVG(latency_ms)"
+        f"{_BASE} | WHERE latency_ms >= 0 "
+        "AND service.environment IS NOT NULL "
+        "AND service.name IS NOT NULL "
+        "AND host.name IS NOT NULL "
+        "| STATS value=AVG(latency_ms), interaction_seed=AVG(interaction_value)"
     ),
 }
 

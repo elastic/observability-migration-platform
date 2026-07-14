@@ -328,6 +328,8 @@ def _response_columns_from_body(body: Mapping[str, object]) -> tuple[str, ...]:
     raw_columns = body.get("columns")
     if not isinstance(raw_columns, list):
         return ()
+    if not raw_columns and isinstance(body.get("all_columns"), list):
+        raw_columns = body["all_columns"]
     names: list[str] = []
     for item in raw_columns:
         if not isinstance(item, Mapping):
@@ -393,6 +395,16 @@ def _query_has_identifier_token(query: str, name: str) -> bool:
     return any(match == name for match in _IDENTIFIER_PARAM_TOKEN.findall(query))
 
 
+def _query_contains_fragment(query: str, fragment: str) -> bool:
+    value_token = re.fullmatch(r"\?([A-Za-z_][A-Za-z0-9_]*)", fragment)
+    if value_token is not None:
+        return _query_has_value_token(query, value_token.group(1))
+    identifier_token = re.fullmatch(r"\?\?([A-Za-z_][A-Za-z0-9_]*)", fragment)
+    if identifier_token is not None:
+        return _query_has_identifier_token(query, identifier_token.group(1))
+    return fragment in query
+
+
 def _append_finding(
     findings: list[InteractionFinding],
     seen: set[tuple[str, str]],
@@ -420,7 +432,7 @@ def _contract_violations_for_evidence(
 ) -> list[InteractionFinding]:
     violations: list[InteractionFinding] = []
     for fragment in query_contains:
-        if fragment not in item.query:
+        if not _query_contains_fragment(item.query, fragment):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
@@ -428,7 +440,7 @@ def _contract_violations_for_evidence(
                 )
             )
     for fragment in query_not_contains:
-        if fragment in item.query:
+        if _query_contains_fragment(item.query, fragment):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,

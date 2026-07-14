@@ -379,7 +379,29 @@ def build_execution_plan(
 ) -> tuple[InteractionStep, ...]:
     """Build an immutable, browser-independent interaction execution plan."""
     discovered_by_key = _index_discovered_controls(discovered_controls)
-    steps: list[InteractionStep] = []
+    # Run combinations that require an initial multi-value selection before
+    # independent option sweeps. Kibana's ES|QL control can preserve an uploaded
+    # multi-value default but currently collapses to one value after a user
+    # selection, so that baseline cannot be reconstructed later in the session.
+    baseline_combinations = [
+        combination
+        for combination in scenario.combinations
+        if any("," in value for value in combination.selections.values())
+    ]
+    deferred_combinations = [
+        combination
+        for combination in scenario.combinations
+        if combination not in baseline_combinations
+    ]
+    steps: list[InteractionStep] = [
+        InteractionStep(
+            id=_combination_step_id(combination.id),
+            kind="combination",
+            selections=MappingProxyType(dict(combination.selections)),
+            reset_before=True,
+        )
+        for combination in baseline_combinations
+    ]
 
     for control in scenario.controls:
         discovered = discovered_by_key.get(control.key)
@@ -423,15 +445,15 @@ def build_execution_plan(
                 )
             )
 
-    for combination in scenario.combinations:
-        steps.append(
-            InteractionStep(
-                id=_combination_step_id(combination.id),
-                kind="combination",
-                selections=MappingProxyType(dict(combination.selections)),
-                reset_before=True,
-            )
+    steps.extend(
+        InteractionStep(
+            id=_combination_step_id(combination.id),
+            kind="combination",
+            selections=MappingProxyType(dict(combination.selections)),
+            reset_before=True,
         )
+        for combination in deferred_combinations
+    )
 
     _validate_unique_step_ids(steps)
     return tuple(steps)

@@ -85,7 +85,15 @@ class FakeLocator:
     def count(self) -> int:
         return len(self._elements)
 
+    def is_visible(self) -> bool:
+        return len(self._elements) == 1 and self._elements[0].mounted
+
+    def wait_for(self, **kwargs: Any) -> None:
+        self._page.locator_wait_calls.append(dict(kwargs))
+
     def nth(self, index: int) -> FakeLocator:
+        if index >= len(self._elements):
+            return FakeLocator(self._page, [])
         return FakeLocator(self._page, [self._elements[index]])
 
     def click(self, **kwargs: Any) -> None:
@@ -154,6 +162,7 @@ class FakeLocator:
             "aria-valuemin": element.aria_valuemin,
             "aria-valuemax": element.aria_valuemax,
             "aria-label": element.aria_label,
+            "data-test-subj": element.test_subj,
         }
         return mapping.get(name, "")
 
@@ -205,6 +214,7 @@ class FakePage:
         self.goto_calls: list[tuple[str, str | None]] = []
         self.option_clicks: dict[str, int] = {}
         self.field_suggestion_clicks: dict[str, int] = {}
+        self.locator_wait_calls: list[dict[str, Any]] = []
         self._elements: list[FakeElement] = []
         self._body = FakeElement(role="document", text=body_text, selector="body")
         self._elements.append(self._body)
@@ -371,7 +381,7 @@ class FakePage:
         self.add(listbox)
 
     def _click(self, element: FakeElement) -> None:
-        if element.role == "combobox":
+        if element.role in {"combobox", "button"} and element.linked_listbox is not None:
             self._mount_listbox_for(element)
             return
         if element.selector == "body":
@@ -403,7 +413,9 @@ class FakePage:
                     for part in combobox.data_selected_options.split(",")
                     if part.strip()
                 ]
-                if element.text not in selected:
+                if element.text in selected:
+                    selected.remove(element.text)
+                else:
                     selected.append(element.text)
                 combobox.data_selected_options = ",".join(selected)
                 for child in combobox.children:
@@ -494,10 +506,10 @@ class FakePage:
 
     def _combobox_for_option(self, option: FakeElement) -> FakeElement | None:
         for element in self._elements:
-            if element.role == "combobox" and option in element.children:
+            if element.role in {"combobox", "button"} and option in element.children:
                 return element
             if (
-                element.role == "combobox"
+                element.role in {"combobox", "button"}
                 and element.linked_listbox is not None
                 and option in element.linked_listbox.children
             ):
@@ -764,6 +776,42 @@ def test_esql_control_adapter_uses_accessible_name_and_reads_all_options() -> No
     assert discovered.options == ("exporter", "transport", "receiver")
 
 
+def test_esql_control_adapter_supports_kibana_95_button_controls() -> None:
+    page = FakePage()
+    button = FakeElement(
+        role="button",
+        name="environment",
+        text="prod\n1",
+        data_selected_options="prod",
+    )
+    page.add(button)
+    listbox = _attach_listbox(
+        page,
+        button,
+        options=["prod", "staging"],
+        selected=["prod"],
+    )
+    for option in listbox.children:
+        option.text = f"{option.text}\n. Checked option."
+
+    adapter = EsqlControlAdapter(page)
+    discovered = adapter.discover(
+        _control("environment", "environment", "esql_value")
+    )
+    assert discovered.options == ("prod", "staging")
+    assert discovered.selected == ("prod",)
+
+    adapter.select(
+        _control("environment", "environment", "esql_value"),
+        "staging",
+    )
+    assert sum(
+        count
+        for option, count in page.option_clicks.items()
+        if option.startswith("staging")
+    ) == 1
+
+
 def test_esql_discover_reads_selected_values() -> None:
     page = _esql_page(
         combobox_name="namespace",
@@ -780,6 +828,7 @@ def test_esql_missing_control_raises() -> None:
     page = FakePage()
     with pytest.raises(ControlNotFound, match="control not found"):
         EsqlControlAdapter(page).discover(_control("missing", "missing", "esql_value"))
+    assert len(page.locator_wait_calls) >= 2
 
 
 def test_esql_ambiguous_control_raises() -> None:
@@ -865,16 +914,41 @@ def test_esql_missing_option_with_special_characters_raises() -> None:
         )
 
 
-def test_esql_verifies_operated_control_after_popover_unmounts() -> None:
+def test_esql_verifies_operated_control_with_mounted_popover() -> None:
     page = _esql_page(
         combobox_name="namespace",
         options=["ns_1", "ns_2"],
         selected=["ns_1"],
     )
     EsqlControlAdapter(page).select(_control("namespace", "namespace", "esql_value"), "ns_2")
-    assert page.locator('[data-test-subj="comboBoxOptionsList"]').count() == 0
     combobox = page.get_by_role("combobox", name="namespace", exact=True)
     assert combobox.get_attribute("data-selected-options") == "ns_2"
+
+
+def test_esql_multiselect_accepts_comma_delimited_combination() -> None:
+    page = FakePage()
+    combobox = FakeElement(
+        role="combobox",
+        name="services",
+        aria_label="services",
+        data_selected_options="api,worker",
+        aria_multiselectable="true",
+    )
+    page.add(combobox)
+    listbox = _attach_listbox(
+        page,
+        combobox,
+        options=["api", "frontend", "worker"],
+        selected=["api", "worker"],
+    )
+    listbox.aria_multiselectable = "true"
+
+    EsqlControlAdapter(page).select(
+        _control("services", "services", "esql_value"),
+        "api,worker",
+    )
+
+    assert combobox.data_selected_options == "api,worker"
 
 
 def _multi_esql_page() -> FakePage:
@@ -927,6 +1001,54 @@ def test_scoped_options_container_raises_when_multiple_listboxes() -> None:
     page.add(FakeElement(role="listbox", name="second"))
     with pytest.raises(ControlNotFound, match="listbox: ambiguous"):
         _scoped_options_container(page)
+
+
+def test_scoped_options_container_ignores_hidden_playwright_listboxes() -> None:
+    class HiddenRolePage(FakePage):
+        def get_by_role(
+            self,
+            role: str,
+            *,
+            name: str | None = None,
+            exact: bool = False,
+        ) -> FakeLocator:
+            if role == "listbox":
+                return FakeLocator(
+                    self,
+                    [
+                        element
+                        for element in self._elements
+                        if element.role == role
+                        and self._name_matches(element.name, name, exact=exact)
+                    ],
+                )
+            return super().get_by_role(role, name=name, exact=exact)
+
+    page = HiddenRolePage()
+    page.add(FakeElement(role="listbox", name="hidden", text="hidden", mounted=False))
+    page.add(FakeElement(role="listbox", name="visible", text="visible"))
+
+    assert _scoped_options_container(page).inner_text() == "visible"
+
+
+def test_scoped_options_container_uses_control_specific_accessible_name() -> None:
+    page = FakePage()
+    page.add(
+        FakeElement(
+            role="listbox",
+            name="Available options for environment",
+            text="prod",
+        )
+    )
+    page.add(
+        FakeElement(
+            role="listbox",
+            name="Available options for services",
+            text="api",
+        )
+    )
+
+    assert _scoped_options_container(page, label="services").inner_text() == "api"
 
 
 def test_scoped_options_container_raises_when_multiple_popovers() -> None:
@@ -1078,6 +1200,37 @@ def test_range_slider_parses_fills_and_verifies_values() -> None:
     state = adapter.read_state()
     assert state.low_value == "20"
     assert state.high_value == "80"
+
+
+def test_range_slider_supports_kibana_95_number_inputs() -> None:
+    page = FakePage()
+    lower = page.add(
+        FakeElement(
+            role="spinbutton",
+            test_subj="rangeSlider__lowerBoundFieldNumber",
+            input_value="20",
+        )
+    )
+    upper = page.add(
+        FakeElement(
+            role="spinbutton",
+            test_subj="rangeSlider__upperBoundFieldNumber",
+            input_value="80",
+        )
+    )
+
+    adapter = RangeSliderAdapter(page)
+    adapter.select(
+        _control("latency_ms", "latency_ms", "range_slider"),
+        "40..60",
+    )
+
+    assert adapter.read_state().low_value == "40"
+    assert adapter.read_state().high_value == "60"
+    assert lower.fill_calls == 1
+    assert upper.fill_calls == 1
+    assert lower.evaluate_sets == 0
+    assert upper.evaluate_sets == 0
 
 
 def test_range_slider_malformed_selection_raises() -> None:
@@ -1390,6 +1543,7 @@ def test_browser_open_reset_capture_use_domcontentloaded_only() -> None:
     observation = browser.capture(["panel-a"])
     assert page.goto_calls == [
         ("https://kibana.example/app/dashboards#/view/1", "domcontentloaded"),
+        ("about:blank", "domcontentloaded"),
         ("https://kibana.example/app/dashboards#/view/1?reset=1", "domcontentloaded"),
     ]
     assert observation.url == "https://kibana.example/app/dashboards#/view/1?reset=1"
@@ -1590,6 +1744,97 @@ def test_malformed_esql_request_is_contained_in_console_errors() -> None:
     assert observation.network == ()
 
 
+def test_kibana_95_nested_esql_request_envelope_is_normalized() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    request = FakeNetworkRequest(
+        method="POST",
+        url="http://localhost:5601/internal/search/esql_async",
+        headers=_esql_headers("panel-1"),
+        post_data_json={
+            "params": {
+                "query": "FROM metrics-* | WHERE environment == ?environment",
+                "params": [{"environment": "prod"}],
+                "dropNullColumns": True,
+                "filter": {"bool": {"filter": []}},
+            },
+            "stream": True,
+        },
+    )
+
+    page.emit_request(request)
+    page.emit_esql_response(request)
+    observation = browser.capture(["panel-1"])
+
+    assert len(observation.network) == 1
+    assert observation.network[0].query.endswith("?environment")
+    assert observation.network[0].params == {"environment": "prod"}
+    assert observation.console_errors == ()
+
+
+def test_esql_control_option_requests_without_panel_context_are_ignored() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    request = FakeNetworkRequest(
+        method="POST",
+        url="http://localhost:5601/internal/search/esql_async",
+        headers={"x-kbn-context": "%7B%22type%22%3A%22application%22%7D"},
+        post_data_json={
+            "params": {
+                "query": "FROM metrics-* | LIMIT 10",
+                "params": [],
+            }
+        },
+    )
+
+    page.emit_request(request)
+    observation = browser.capture([])
+
+    assert observation.network == ()
+    assert observation.console_errors == ()
+
+
+def test_non_esql_request_body_is_not_parsed() -> None:
+    class NonJsonRequest:
+        method = "POST"
+        url = "http://localhost:5601/internal/telemetry"
+        headers: dict[str, str] = {}
+
+        @property
+        def post_data_json(self) -> object:
+            raise ValueError("POST data is not JSON")
+
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+
+    page.emit_request(NonJsonRequest())  # type: ignore[arg-type]
+
+    assert browser.capture([]).console_errors == ()
+
+
+def test_generic_resource_console_errors_are_left_to_network_evidence() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+
+    page.emit_console(
+        FakeConsoleMessage(
+            type="error",
+            text="Failed to load resource: the server responded with a status of 404 (Not Found)",
+        )
+    )
+    page.emit_console(
+        FakeConsoleMessage(
+            type="error",
+            text=(
+                "Executing inline script violates the following Content Security "
+                "Policy directive 'script-src self'. The action has been blocked."
+            ),
+        )
+    )
+
+    assert browser.capture([]).console_errors == ()
+
+
 def test_requestfailed_becomes_terminal_error_evidence() -> None:
     clock = FakeClock()
     page = InstrumentedFakePage(clock=clock)
@@ -1624,6 +1869,15 @@ def test_listeners_installed_once_and_detached_on_close() -> None:
     assert page.listener_counts.get("request", 0) == 1
     browser.close()
     assert all(count == 0 for count in page.listener_counts.values())
+
+
+def test_open_dashboard_waits_for_control_frames() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+
+    browser.open_dashboard("https://kibana.example/dashboard")
+
+    assert page.locator_wait_calls == [{"state": "attached", "timeout": 60_000}]
 
 
 def test_begin_step_slices_network_and_console_since_cursor() -> None:

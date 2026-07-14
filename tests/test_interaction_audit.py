@@ -801,6 +801,24 @@ def test_check_network_contract_enforces_value_param_binding_and_token():
     assert any("bound as identifier token ??namespace" in finding.detail for finding in missing_token)
 
 
+def test_query_not_contains_value_token_does_not_match_identifier_token():
+    evidence = _successful_evidence(
+        query="FROM metrics-* | STATS value=AVG(x) BY grouping=??grouping",
+        params={"grouping": "host.name"},
+        param_kinds={"grouping": "identifier"},
+        response_columns=("value", "grouping"),
+    )
+
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[evidence],
+        query_not_contains=["?grouping"],
+    )
+
+    assert findings == []
+
+
 def test_check_network_contract_enforces_identifier_param_binding_and_token():
     findings = check_network_contract(
         expected_panel_ids=["panel-7"],
@@ -1143,6 +1161,22 @@ def test_enrich_esql_response_unwraps_kibana_envelopes():
     )
     assert enriched.response_columns == ("cpu",)
     assert enriched.row_count == 2
+
+
+def test_enrich_esql_response_uses_all_columns_when_drop_null_omits_columns():
+    evidence = _request_evidence()
+    enriched = enrich_esql_response(
+        evidence,
+        status=200,
+        body={
+            "all_columns": [{"name": "value"}],
+            "columns": [],
+            "values": [[]],
+        },
+    )
+
+    assert enriched.response_columns == ("value",)
+    assert enriched.row_count == 1
 
 
 def test_enrich_esql_response_prefers_explicit_error_and_parses_body_error():

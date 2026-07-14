@@ -424,6 +424,12 @@ def test_affected_panel_resolution_modes(tmp_path: Path) -> None:
     )
     browser = FakeBrowser(
         controls={"fixed": ("x",), "instance": ("i_1",), "namespace": ("ns_1",), "missing": ("x",)},
+        selected={
+            "fixed": ("baseline",),
+            "instance": ("baseline",),
+            "namespace": ("baseline",),
+            "missing": ("baseline",),
+        },
         network_by_step=[
             (_esql_network("panel-z"),),
             (_esql_network("panel-a"), _esql_network("panel-b")),
@@ -484,6 +490,127 @@ def test_gap_and_missing_plan_step_statuses(tmp_path: Path) -> None:
     assert gap.status is InteractionStatus.WARN
     assert missing.status is InteractionStatus.FAIL
     assert missing_option.status is InteractionStatus.FAIL
+
+
+def test_query_bar_filter_text_is_not_required_in_esql_query_text(
+    tmp_path: Path,
+) -> None:
+    control = ControlScenario(
+        label="query bar",
+        key="query_bar",
+        adapter="query_bar",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(
+            strategy="declared",
+            include=('service.environment:"prod"',),
+        ),
+        assertions=Assertions(
+            affected_panels=("panel-a",),
+            query_contains=('service.environment:"prod"',),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+        expected_gap="native Kibana capability",
+    )
+    browser = FakeBrowser(
+        controls={"query_bar": ()},
+        network_by_step=[
+            (
+                _esql_network(
+                    "panel-a",
+                    query="FROM metrics-* | STATS value=COUNT(*)",
+                ),
+            )
+        ],
+    )
+
+    report = _run(
+        browser,
+        _scenario(controls=(control,)),
+        tmp_path,
+        PanelContract(all_query_panels=("panel-a",)),
+    )
+
+    assert report.results[0].status is InteractionStatus.PASS
+
+
+def test_combination_applies_each_query_contract_to_its_own_panel(
+    tmp_path: Path,
+) -> None:
+    function = ControlScenario(
+        label="aggregate",
+        key="aggregate",
+        adapter="esql_function",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(strategy="declared", include=("MAX",)),
+        assertions=Assertions(
+            selection=("aggregate",),
+            affected_panels=("function-panel",),
+            query_contains=("??aggregate(",),
+            required_columns=("value",),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+        expected_gap="native Kibana capability",
+    )
+    interval = ControlScenario(
+        label="interval",
+        key="interval",
+        adapter="esql_interval",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(strategy="declared", include=("5 minutes",)),
+        assertions=Assertions(
+            selection=("interval",),
+            affected_panels=("interval-panel",),
+            query_contains=("TBUCKET(?interval)",),
+            required_columns=("value", "bucket"),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+        expected_gap="native Kibana capability",
+    )
+    browser = FakeBrowser(
+        controls={
+            "aggregate": ("AVG", "MAX"),
+            "interval": ("1 minute", "5 minutes"),
+        },
+        network_by_step=[
+            (_esql_network("function-panel", query="STATS value=??aggregate(x)"),),
+            (_esql_network("interval-panel", query="STATS BY TBUCKET(?interval)"),),
+            (
+                _identifier_network(
+                    "function-panel",
+                    query="STATS value=??aggregate(x)",
+                    param_name="aggregate",
+                    identifier="MAX",
+                ),
+                _esql_network(
+                    "interval-panel",
+                    query="STATS value=AVG(x) BY bucket=TBUCKET(?interval)",
+                    params={"interval": "5 minutes"},
+                    columns=("value", "bucket"),
+                ),
+            ),
+        ],
+    )
+    scenario = _scenario(
+        controls=(function, interval),
+        combinations=(
+            CombinationScenario(
+                id="function-and-interval",
+                selections=MappingProxyType(
+                    {"aggregate": "MAX", "interval": "5 minutes"}
+                ),
+            ),
+        ),
+    )
+
+    report = _run(browser, scenario, tmp_path)
+    combination = next(
+        result for result in report.results if result.name == "function-and-interval"
+    )
+
+    assert combination.status is InteractionStatus.PASS
 
 
 @pytest.mark.parametrize(

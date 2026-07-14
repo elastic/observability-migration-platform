@@ -223,13 +223,47 @@ def test_interaction_canary_contract_seeds_varying_numeric_latency(tmp_path):
         if "latency_ms" in doc
     ]
     assert values
-    assert min(values) >= 20.0
-    assert max(values) <= 80.0
+    assert min(values) == 20.0
+    assert max(values) == 80.0
     assert len(set(values)) > 1
     inside = [value for value in values if 40.0 <= value <= 60.0]
     outside = [value for value in values if value < 40.0 or value > 60.0]
     assert inside
     assert outside
+
+
+def test_interaction_canary_seed_docs_cooccur_with_global_control_fields(tmp_path):
+    write_interaction_canary_artifact(tmp_path)
+    contract = build_telemetry_contract(tmp_path)
+    value_docs = [
+        doc
+        for _, doc in generate_documents(contract)
+        if "interaction_value" in doc
+    ]
+
+    assert value_docs
+    missing_by_doc = [
+        sorted(
+            {
+                "service.environment",
+                "service.name",
+                "host.name",
+                "latency_ms",
+            }
+            - set(doc)
+        )
+        for doc in value_docs
+    ]
+    assert all(
+        {
+            "service.environment",
+            "service.name",
+            "host.name",
+            "latency_ms",
+        }
+        <= set(doc)
+        for doc in value_docs
+    ), sorted({tuple(missing) for missing in missing_by_doc})
 
 
 def test_interaction_failure_canaries_cover_expected_classes():
@@ -484,7 +518,7 @@ def test_synthetic_manifest_range_control_contract():
     assert latency.adapter == "range_slider"
     assert latency.options.include == (RANGE_INTERACTION_SELECTION,)
     assert latency.assertions.query_contains == ("latency_ms",)
-    assert latency.assertions.expect_data_change is True
+    assert latency.assertions.expect_data_change is False
     assert "interaction-range" in latency.assertions.affected_panels
     assert _PANEL_QUERIES["interaction-range"].count("latency_ms") >= 2
 
@@ -498,6 +532,24 @@ def test_synthetic_manifest_range_control_contract():
         {"latency_ms": RANGE_INTERACTION_SELECTION},
         discovered,
     )
+
+
+def test_synthetic_query_bar_allows_redundant_default_filter():
+    scenario = load_scenario(SYNTHETIC_MANIFEST)
+    query_bar = next(
+        control for control in scenario.controls if control.key == "query_bar"
+    )
+
+    assert query_bar.assertions.expect_data_change is False
+
+
+def test_synthetic_non_textual_charts_use_network_evidence_for_changes():
+    scenario = load_scenario(SYNTHETIC_MANIFEST)
+    by_key = {control.key: control for control in scenario.controls}
+
+    assert by_key["interval"].assertions.expect_data_change is False
+    assert by_key["host.name"].assertions.expect_data_change is False
+    assert by_key["host.name"].options.exclude == ("Exists",)
 
 
 def test_synthetic_combination_options_list_selections_match_seeded_values(tmp_path):

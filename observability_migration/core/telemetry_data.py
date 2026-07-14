@@ -504,11 +504,22 @@ def _metric_families(
     if orphan_dims and families_by_sig:
         carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
 
+    # Numeric fields used by global range controls must be present on every
+    # metric-family document the control can filter. Keeping such a field in
+    # only its own query-derived family makes dashboard-wide filtering erase
+    # otherwise valid panel data even though both fields were seeded.
+    control_metrics = {
+        field_name
+        for field_name in (stream.get("control_fields") or [])
+        if field_name in metric_fields
+    }
+
     families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
     for sig, names in families_by_sig.items():
-        family_metrics = {name: metric_fields[name] for name in names}
+        family_names = set(names) | control_metrics
+        family_metrics = {name: metric_fields[name] for name in family_names}
         scope_dims = sig | orphan_dims if sig == carrier_sig else sig
-        scoped = _scoped_stream(stream, scope_dims, set(names))
+        scoped = _scoped_stream(stream, scope_dims, family_names)
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
     return families
@@ -1012,7 +1023,8 @@ def _gauge_value(
         low = float(min(seed_range[0], seed_range[1]))
         high = float(max(seed_range[0], seed_range[1]))
         span = max(high - low, 1.0)
-        value = low + span * (0.25 + 0.5 * _diurnal(hour)) + combo_idx * (span / 12.0)
+        anchors = (0.0, 1.0, 0.5, 0.25, 0.75)
+        value = low + span * anchors[combo_idx % len(anchors)]
         value = min(high, max(low, value))
         if ceiling is not None:
             value = min(value, ceiling)

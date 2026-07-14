@@ -721,6 +721,38 @@ def test_every_option_runs_from_a_fresh_baseline() -> None:
     assert combo.id == "namespace-and-instance"
 
 
+def test_multi_value_combination_runs_before_option_sweeps() -> None:
+    scenario = _scenario(
+        (_control("services"), _control("grouping")),
+        (
+            _combination(
+                "multi-and-field",
+                {"services": "api,worker", "grouping": "host.name"},
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [
+            DiscoveredControl(
+                "services",
+                "services",
+                ("api", "worker"),
+                ("api", "worker"),
+            ),
+            DiscoveredControl(
+                "grouping",
+                "grouping",
+                ("service.name", "host.name"),
+                ("service.name",),
+            ),
+        ],
+    )
+
+    assert plan[0].kind == "combination"
+    assert plan[0].id == "multi-and-field"
+
+
 def test_ordinary_option_ids_remain_key_equals_option() -> None:
     scenario = _scenario((_control("namespace"),))
     plan = build_execution_plan(

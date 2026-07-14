@@ -23,6 +23,7 @@ from observability_migration.targets.kibana.interaction_audit import (
     EvidenceParseError,
     NetworkEvidence,
     PanelEvidence,
+    _is_esql_endpoint,
     enrich_esql_response,
     parse_esql_request,
 )
@@ -186,7 +187,11 @@ def _request_body(request: Any) -> Mapping[str, object] | None:
             if isinstance(parsed, Mapping):
                 body = parsed
     if isinstance(body, Mapping):
-        return dict(body)
+        normalized = dict(body)
+        nested = normalized.get("params")
+        if isinstance(nested, Mapping) and "query" in nested:
+            return dict(nested)
+        return normalized
     return None
 
 
@@ -358,6 +363,8 @@ class _NetworkEventCollector:
         try:
             method = str(getattr(request, "method", "") or "")
             url = str(getattr(request, "url", "") or "")
+            if method.casefold() != "post" or not _is_esql_endpoint(url):
+                return
             headers = _request_headers(request)
             body = _request_body(request)
             try:
@@ -371,6 +378,11 @@ class _NetworkEventCollector:
                 self._record_framework_error(str(exc))
                 return
             if evidence is None:
+                return
+            if not evidence.panel_id:
+                # Dashboard-control option queries use the same ES|QL endpoint
+                # but have application context rather than a dashboard child.
+                # They are not panel refresh evidence.
                 return
             index = len(self._network)
             self._network.append(evidence)
@@ -439,6 +451,14 @@ class _NetworkEventCollector:
             if message_type.casefold() != "error":
                 return
             text = _bound_text(str(getattr(message, "text", "") or ""), limit=_MAX_CONSOLE_MESSAGE)
+            if text.startswith(
+                "Failed to load resource: the server responded with a status of"
+            ):
+                return
+            if text.startswith(
+                "Executing inline script violates the following Content Security Policy"
+            ):
+                return
             if text:
                 self._console_errors.append(text)
         except Exception as exc:
@@ -574,6 +594,10 @@ class PageLike(Protocol):
 class LocatorLike(Protocol):
     def count(self) -> int: ...
 
+    def is_visible(self) -> bool: ...
+
+    def wait_for(self, **kwargs: Any) -> None: ...
+
     def click(self, **kwargs: Any) -> None: ...
 
     def fill(self, value: str, **kwargs: Any) -> None: ...
@@ -675,6 +699,7 @@ _TEST_SUBJ_CONTEXT_MENU = '[data-test-subj="euiContextMenuPanel"]'
 _TEST_SUBJ_COMBOBOX_POPOVER = '[data-test-subj="comboBoxOptionsList"]'
 _TEST_SUBJ_INCOMPATIBLE_WARNING = '[data-test-subj="esqlControlsIncompatibleSelectionsWarning"]'
 _TEST_SUBJ_EMBEDDABLE_PANEL = '[data-test-subj="embeddablePanel"]'
+_TEST_SUBJ_CONTROL_FRAME = '[data-test-subj="control-frame"]'
 
 _ROLE_COMBOBOX = "combobox"
 _ROLE_LISTBOX = "listbox"
@@ -730,12 +755,33 @@ def _require_exactly_one(locator: LocatorLike, *, description: str) -> LocatorLi
 
 def _combobox_by_label(page: PageLike, label: str) -> LocatorLike:
     by_role = page.get_by_role(_ROLE_COMBOBOX, name=label, exact=True)
+    if by_role.count() == 0:
+        wait_for = getattr(by_role, "wait_for", None)
+        if callable(wait_for):
+            try:
+                wait_for(state="visible", timeout=60_000)
+            except Exception:
+                pass
     count = by_role.count()
     if count == 1:
         return by_role
     if count > 1:
         raise ControlNotFound(
             f"combobox {label!r}: ambiguous control ({count} matches)"
+        )
+    by_button = page.get_by_role(_ROLE_BUTTON, name=label, exact=True)
+    if by_button.count() == 0:
+        wait_for = getattr(by_button, "wait_for", None)
+        if callable(wait_for):
+            try:
+                wait_for(state="visible", timeout=60_000)
+            except Exception:
+                pass
+    if by_button.count() == 1:
+        return by_button
+    if by_button.count() > 1:
+        raise ControlNotFound(
+            f"control button {label!r}: ambiguous control ({by_button.count()} matches)"
         )
     by_test_subj = page.locator(f'[data-test-subj="{label}"]')
     return _require_exactly_one(by_test_subj, description=f"combobox {label!r}")
@@ -752,40 +798,93 @@ def _searchbox(page: PageLike) -> LocatorLike:
     return _require_exactly_one(by_role, description="query bar")
 
 
-def _scoped_options_container(page: PageLike) -> LocatorLike:
+def _scoped_options_container(
+    page: PageLike,
+    *,
+    label: str = "",
+) -> LocatorLike:
+    if label:
+        named = page.get_by_role(
+            _ROLE_LISTBOX,
+            name=f"Available options for {label}",
+            exact=True,
+        )
+        visible_named = [
+            named.nth(index)
+            for index in range(named.count())
+            if named.nth(index).is_visible()
+        ]
+        if visible_named:
+            # Kibana 9.5 can leave prior EUI listboxes mounted after a control
+            # closes. The newest matching listbox belongs to the latest trigger.
+            return visible_named[-1]
+
     popover = page.locator(_TEST_SUBJ_COMBOBOX_POPOVER)
-    popover_count = popover.count()
+    visible_popovers = [
+        popover.nth(index)
+        for index in range(popover.count())
+        if popover.nth(index).is_visible()
+    ]
+    popover_count = len(visible_popovers)
     if popover_count > 1:
         raise ControlNotFound(
             f"options popover: ambiguous control ({popover_count} matches)"
         )
     if popover_count == 1:
-        listbox = popover.get_by_role(_ROLE_LISTBOX)
+        visible_popover = visible_popovers[0]
+        listbox = visible_popover.get_by_role(_ROLE_LISTBOX)
         if listbox.count() == 1:
             return listbox
-        return popover
+        return visible_popover
     listboxes = page.get_by_role(_ROLE_LISTBOX)
-    listbox_count = listboxes.count()
+    visible_listboxes = [
+        listboxes.nth(index)
+        for index in range(listboxes.count())
+        if listboxes.nth(index).is_visible()
+    ]
+    listbox_count = len(visible_listboxes)
     if listbox_count == 0:
         raise ControlNotFound("options listbox: control not found")
     if listbox_count > 1:
         raise ControlNotFound(
             f"options listbox: ambiguous control ({listbox_count} matches)"
         )
-    return listboxes
+    return visible_listboxes[0]
 
 
-def _read_option_texts(page: PageLike) -> tuple[str, ...]:
-    container = _scoped_options_container(page)
+def _read_option_texts(page: PageLike, *, label: str = "") -> tuple[str, ...]:
+    container = _scoped_options_container(page, label=label)
     options = container.get_by_role(_ROLE_OPTION)
     if options.count() == 0:
         texts = container.all_text_contents()
-        return tuple(text.strip() for text in texts if text.strip())
+        return tuple(
+            cleaned
+            for text in texts
+            if (cleaned := _clean_option_text(text))
+        )
     return tuple(
-        text.strip()
+        cleaned
         for text in options.all_inner_texts()
-        if text.strip()
+        if (cleaned := _clean_option_text(text))
     )
+
+
+def _clean_option_text(text: str) -> str:
+    for line in str(text or "").splitlines():
+        cleaned = line.strip()
+        if cleaned and not cleaned.startswith("."):
+            return cleaned
+    return ""
+
+
+def _open_options_container(
+    page: PageLike,
+    combobox: LocatorLike,
+    *,
+    label: str,
+) -> LocatorLike:
+    combobox.click()
+    return _scoped_options_container(page, label=label)
 
 
 def _combobox_is_multiselect(combobox: LocatorLike) -> bool:
@@ -802,12 +901,24 @@ def _combobox_selected_option_texts(combobox: LocatorLike) -> tuple[str, ...]:
                 part.strip() for part in data_selected.split(",") if part.strip()
             )
         return (data_selected.strip(),)
-    input_value = combobox.input_value().strip()
+    try:
+        input_value = combobox.input_value().strip()
+    except Exception:
+        input_value = ""
     if input_value:
         return (input_value,)
     visible = combobox.inner_text().strip()
     if visible:
-        return (visible,)
+        values = [
+            line.strip()
+            for line in visible.splitlines()
+            if line.strip() and not line.strip().isdigit()
+        ]
+        if not values:
+            return ()
+        if len(values) == 1 and "," in values[0]:
+            return tuple(part.strip() for part in values[0].split(",") if part.strip())
+        return tuple(values)
     return ()
 
 
@@ -817,7 +928,10 @@ def _read_selected_option_texts(
     combobox: LocatorLike,
 ) -> tuple[str, ...]:
     try:
-        container = _scoped_options_container(page)
+        container = _scoped_options_container(
+            page,
+            label=combobox.get_attribute("aria-label") or "",
+        )
     except ControlNotFound:
         return _combobox_selected_option_texts(combobox)
 
@@ -826,23 +940,45 @@ def _read_selected_option_texts(
         selected: list[str] = []
         for index in range(options.count()):
             option = options.nth(index)
-            if option.get_attribute("aria-selected") == "true":
-                selected.append(option.inner_text().strip())
+            if (
+                option.get_attribute("aria-selected") == "true"
+                or option.get_attribute("aria-checked") == "true"
+            ):
+                cleaned = _clean_option_text(option.inner_text())
+                if cleaned:
+                    selected.append(cleaned)
         if selected:
             return tuple(selected)
     return _combobox_selected_option_texts(combobox)
 
 
-def _option_locator(page: PageLike, option_text: str) -> LocatorLike:
-    scoped = _scoped_options_container(page)
+def _option_locator(
+    page: PageLike,
+    option_text: str,
+    *,
+    label: str = "",
+) -> LocatorLike:
+    scoped = _scoped_options_container(page, label=label)
     option = scoped.get_by_role(_ROLE_OPTION, name=option_text, exact=True)
+    if option.count() == 1:
+        return option
+    options = scoped.get_by_role(_ROLE_OPTION)
+    matches = [
+        options.nth(index)
+        for index in range(options.count())
+        if _clean_option_text(options.nth(index).inner_text()) == option_text
+    ]
+    if len(matches) == 1:
+        return matches[0]
     return _require_exactly_one(option, description=f"option {option_text!r}")
 
 
-def _close_open_popover(page: PageLike) -> None:
-    popover = page.locator(_TEST_SUBJ_COMBOBOX_POPOVER)
-    if popover.count() == 1:
-        page.locator("body").click()
+def _close_open_popover(
+    page: PageLike,
+    *,
+    trigger: LocatorLike | None = None,
+) -> None:
+    del page, trigger
 
 
 def _read_incompatible_warning(page: PageLike) -> str:
@@ -859,14 +995,32 @@ def _read_incompatible_warning(page: PageLike) -> str:
 
 def _selected_count(page: PageLike, *, combobox: LocatorLike) -> int:
     selected = _read_selected_option_texts(page, combobox=combobox)
-    if selected:
-        return len(selected)
     warning = _read_incompatible_warning(page)
     if warning:
         match = _INCOMPATIBLE_SELECTIONS_RE.search(warning)
         if match:
-            return int(match.group(1))
-    return 0
+            return max(len(selected), int(match.group(1)))
+    return len(selected)
+
+
+def _wait_for_expected_selected(
+    page: PageLike,
+    combobox: LocatorLike,
+    expected: Collection[str],
+    *,
+    timeout_ms: int = 3_000,
+) -> set[str]:
+    deadline = time.monotonic() + timeout_ms / 1000
+    expected_set = set(expected)
+    selected: set[str] = set()
+    while time.monotonic() < deadline:
+        selected = set(
+            _read_selected_option_texts(page, combobox=combobox)
+        )
+        if expected_set <= selected:
+            return selected
+        page.wait_for_timeout(100)
+    return selected
 
 
 def _split_field_value(selection: str) -> tuple[str, str]:
@@ -1040,6 +1194,13 @@ def _verify_filter_pill(page: PageLike, field: str, value: str) -> None:
 
 
 def _set_range_handle_value(handle: LocatorLike, value: str) -> None:
+    test_subj = handle.get_attribute("data-test-subj") or ""
+    if test_subj in {
+        "rangeSlider__lowerBoundFieldNumber",
+        "rangeSlider__upperBoundFieldNumber",
+    }:
+        handle.fill(value)
+        return
     try:
         handle.evaluate(
             """(element, nextValue) => {
@@ -1078,9 +1239,17 @@ class EsqlControlAdapter:
     def discover(self, control: ControlScenario) -> DiscoveredControl:
         combobox = _combobox_by_label(self._page, control.label)
         self._active_combobox = combobox
-        combobox.click()
-        options = _read_option_texts(self._page)
-        selected = _read_selected_option_texts(self._page, combobox=combobox)
+        _open_options_container(
+            self._page,
+            combobox,
+            label=control.label,
+        )
+        options = _read_option_texts(self._page, label=control.label)
+        selected = _read_selected_option_texts(
+            self._page,
+            combobox=combobox,
+        )
+        _close_open_popover(self._page, trigger=combobox)
         return DiscoveredControl(
             key=control.key,
             label=control.label,
@@ -1091,18 +1260,61 @@ class EsqlControlAdapter:
     def select(self, control: ControlScenario, option: str) -> None:
         combobox = _combobox_by_label(self._page, control.label)
         self._active_combobox = combobox
-        combobox.click()
-        available = set(_read_option_texts(self._page))
-        if option not in available:
-            raise OptionNotFound(
-                f"option {option!r} not found for control {control.label!r}"
-            )
-        _option_locator(self._page, option).click()
-        _close_open_popover(self._page)
-        selected = _read_selected_option_texts(self._page, combobox=combobox)
-        if option not in selected:
+        container = _open_options_container(
+            self._page,
+            combobox,
+            label=control.label,
+        )
+        multiselect = (
+            container.get_attribute("aria-multiselectable") == "true"
+            or _combobox_is_multiselect(combobox)
+        )
+        expected = (
+            tuple(part.strip() for part in option.split(",") if part.strip())
+            if multiselect and "," in option
+            else (option,)
+        )
+        available = set(_read_option_texts(self._page, label=control.label))
+        for part in expected:
+            if part not in available:
+                raise OptionNotFound(
+                    f"option {part!r} not found for control {control.label!r}"
+                )
+        selected_before = set(
+            _read_selected_option_texts(self._page, combobox=combobox)
+        )
+        if multiselect:
+            expected_set = set(expected)
+            if len(expected) == 1 and selected_before != expected_set:
+                _option_locator(
+                    self._page,
+                    expected[0],
+                    label=control.label,
+                ).click()
+            elif len(expected) > 1 and selected_before != expected_set:
+                for part in expected:
+                    if part not in selected_before:
+                        _option_locator(
+                            self._page,
+                            part,
+                            label=control.label,
+                        ).click()
+        else:
+            _option_locator(
+                self._page,
+                option,
+                label=control.label,
+            ).click()
+        selected = _wait_for_expected_selected(
+            self._page,
+            combobox,
+            expected,
+        )
+        _close_open_popover(self._page, trigger=combobox)
+        missing = [part for part in expected if part not in selected]
+        if missing:
             raise SelectionDidNotStick(
-                f"option {option!r} did not stick for control {control.label!r}"
+                f"option(s) {missing!r} did not stick for control {control.label!r}"
             )
 
 
@@ -1123,9 +1335,14 @@ class OptionsListAdapter:
     def discover(self, control: ControlScenario) -> DiscoveredControl:
         combobox = _combobox_by_label(self._page, control.label)
         self._active_combobox = combobox
-        combobox.click()
-        options = _read_option_texts(self._page)
+        _open_options_container(
+            self._page,
+            combobox,
+            label=control.label,
+        )
+        options = _read_option_texts(self._page, label=control.label)
         selected = _read_selected_option_texts(self._page, combobox=combobox)
+        _close_open_popover(self._page, trigger=combobox)
         return DiscoveredControl(
             key=control.key,
             label=control.label,
@@ -1144,24 +1361,59 @@ class OptionsListAdapter:
     def select(self, control: ControlScenario, option: str) -> None:
         combobox = _combobox_by_label(self._page, control.label)
         self._active_combobox = combobox
-        multiselect = self._is_multiselect(combobox)
+        container = _open_options_container(
+            self._page,
+            combobox,
+            label=control.label,
+        )
+        multiselect = (
+            container.get_attribute("aria-multiselectable") == "true"
+            or self._is_multiselect(combobox)
+        )
         expected = self._expand_options(option, multiselect=multiselect)
-
-        combobox.click()
-        available = set(_read_option_texts(self._page))
+        available = set(_read_option_texts(self._page, label=control.label))
         for part in expected:
             if part not in available:
                 raise OptionNotFound(
                     f"option {part!r} not found for control {control.label!r}"
                 )
-            _option_locator(self._page, part).click()
+        selected_before = set(
+            _read_selected_option_texts(self._page, combobox=combobox)
+        )
+        if multiselect:
+            for part in sorted(selected_before - set(expected)):
+                _option_locator(
+                    self._page,
+                    part,
+                    label=control.label,
+                ).click()
+            for part in expected:
+                if part not in selected_before:
+                    _option_locator(
+                        self._page,
+                        part,
+                        label=control.label,
+                    ).click()
+        else:
+            _option_locator(
+                self._page,
+                option,
+                label=control.label,
+            ).click()
 
+        selected_in_popover = _wait_for_expected_selected(
+            self._page,
+            combobox,
+            expected,
+        )
         apply = self._page.locator(_TEST_SUBJ_OPTIONS_LIST_APPLY)
         if apply.count() == 1:
             apply.click()
 
-        _close_open_popover(self._page)
-        selected = set(_read_selected_option_texts(self._page, combobox=combobox))
+        _close_open_popover(self._page, trigger=combobox)
+        selected = selected_in_popover | set(
+            _read_selected_option_texts(self._page, combobox=combobox)
+        )
         missing = [part for part in expected if part not in selected]
         if missing:
             raise SelectionDidNotStick(
@@ -1190,21 +1442,36 @@ class RangeSliderAdapter:
         by_label = self._page.locator(f'[aria-label="{label}"]')
         return _require_exactly_one(by_label, description=f"range slider {label!r}")
 
-    def discover(self, control: ControlScenario) -> DiscoveredControl:
-        group = self._control_group(control.label)
+    def _handles(self, label: str) -> tuple[LocatorLike, LocatorLike]:
+        try:
+            group = self._control_group(label)
+        except ControlNotFound:
+            lower = self._page.locator(
+                '[data-test-subj="rangeSlider__lowerBoundFieldNumber"]'
+            )
+            upper = self._page.locator(
+                '[data-test-subj="rangeSlider__upperBoundFieldNumber"]'
+            )
+            if lower.count() == 1 and upper.count() == 1:
+                return lower, upper
+            raise
         sliders = group.get_by_role(_ROLE_SLIDER)
-        count = sliders.count()
+        if sliders.count() != 2:
+            raise ControlNotFound(
+                f"range slider {label!r} requires exactly two handles, "
+                f"found {sliders.count()}"
+            )
+        return sliders.nth(0), sliders.nth(1)
+
+    def discover(self, control: ControlScenario) -> DiscoveredControl:
+        low_handle, high_handle = self._handles(control.label)
         options: list[str] = []
-        if count >= 1:
-            low_bound = sliders.nth(0).get_attribute("aria-valuemin") or ""
-            high_bound = sliders.nth(count - 1).get_attribute("aria-valuemax") or ""
-            if low_bound and high_bound:
-                mid = str((float(low_bound) + float(high_bound)) / 2)
-                options.extend([low_bound, mid, high_bound])
-        current = tuple(
-            sliders.nth(index).input_value()
-            for index in range(count)
-        )
+        low_bound = low_handle.get_attribute("aria-valuemin") or ""
+        high_bound = high_handle.get_attribute("aria-valuemax") or ""
+        if low_bound and high_bound:
+            mid = str((float(low_bound) + float(high_bound)) / 2)
+            options.extend([low_bound, mid, high_bound])
+        current = (low_handle.input_value(), high_handle.input_value())
         return DiscoveredControl(
             key=control.key,
             label=control.label,
@@ -1214,17 +1481,11 @@ class RangeSliderAdapter:
 
     def select(self, control: ControlScenario, option: str) -> None:
         low, high = _parse_range_selection(option)
-        group = self._control_group(control.label)
-        sliders = group.get_by_role(_ROLE_SLIDER)
-        if sliders.count() != 2:
-            raise ControlNotFound(
-                f"range slider {control.label!r} requires exactly two handles, "
-                f"found {sliders.count()}"
-            )
-        _set_range_handle_value(sliders.nth(0), low)
-        _set_range_handle_value(sliders.nth(1), high)
-        actual_low = sliders.nth(0).input_value()
-        actual_high = sliders.nth(1).input_value()
+        low_handle, high_handle = self._handles(control.label)
+        _set_range_handle_value(low_handle, low)
+        _set_range_handle_value(high_handle, high)
+        actual_low = low_handle.input_value()
+        actual_high = high_handle.input_value()
         self._last_low = actual_low
         self._last_high = actual_high
         if actual_low != low or actual_high != high:
@@ -1512,11 +1773,25 @@ class PlaywrightKibanaBrowser:
 
     def open_dashboard(self, url: str) -> None:
         self._clear_adapter_cache()
-        self._require_page().goto(url, wait_until="domcontentloaded")
+        page = self._require_page()
+        page.goto(url, wait_until="domcontentloaded")
+        page.locator(_TEST_SUBJ_CONTROL_FRAME).nth(0).wait_for(
+            state="attached",
+            timeout=60_000,
+        )
 
     def reset(self, url: str) -> None:
         self._clear_adapter_cache()
-        self._require_page().goto(url, wait_until="domcontentloaded")
+        page = self._require_page()
+        # Navigating to the same hash route does not reload Kibana and can
+        # preserve open popovers and prior control state. Leave the SPA first
+        # so every interaction starts from the dashboard's persisted baseline.
+        page.goto("about:blank", wait_until="domcontentloaded")
+        page.goto(url, wait_until="domcontentloaded")
+        page.locator(_TEST_SUBJ_CONTROL_FRAME).nth(0).wait_for(
+            state="attached",
+            timeout=60_000,
+        )
 
     def discover(self, control: ControlScenario) -> DiscoveredControl:
         return self._adapter_for_control(control).discover(control)
