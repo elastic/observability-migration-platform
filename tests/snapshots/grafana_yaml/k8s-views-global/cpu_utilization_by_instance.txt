@@ -5,4 +5,5 @@ chart_type: line
 dimension: time_bucket
 metrics: ['node_cpu_seconds_total_avg']
 axis_title: CPU %
+warning: Source PromQL used rate() on node_cpu_seconds_total but the target currently types this field as gauge; kept RATE because rate() is counter-only and contract-faithful ingest types this field as a counter. Fix the ingest mapping to mark this field as a counter, or pin metric_kinds node_cpu_seconds_total: gauge in the rule pack if the gauge typing is intentional.
 warning: Panel has 2 PromQL targets but only 1 could be migrated (dropped targets are Windows-specific)

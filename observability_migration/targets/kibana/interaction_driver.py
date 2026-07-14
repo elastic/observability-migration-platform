@@ -786,7 +786,7 @@ def _combobox_by_label(page: PageLike, label: str) -> LocatorLike:
         wait_for = getattr(by_role, "wait_for", None)
         if callable(wait_for):
             try:
-                wait_for(state="visible", timeout=60_000)
+                wait_for(state="visible", timeout=5_000)
             except Exception:
                 pass
     count = by_role.count()
@@ -801,7 +801,7 @@ def _combobox_by_label(page: PageLike, label: str) -> LocatorLike:
         wait_for = getattr(by_button, "wait_for", None)
         if callable(wait_for):
             try:
-                wait_for(state="visible", timeout=60_000)
+                wait_for(state="visible", timeout=5_000)
             except Exception:
                 pass
     if by_button.count() == 1:

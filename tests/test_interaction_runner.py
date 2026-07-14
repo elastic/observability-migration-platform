@@ -99,6 +99,7 @@ class FakeBrowser:
     settle_count: int = 0
     clear_count: int = 0
     select_calls: list[tuple[str, str]] = field(default_factory=list)
+    discover_calls: list[str] = field(default_factory=list)
     settle_expected_panels: list[tuple[str, ...]] = field(default_factory=list)
     opened_url: str = ""
     _step_index: int = 0
@@ -114,6 +115,7 @@ class FakeBrowser:
         self._phase = "baseline"
 
     def discover(self, control: ControlScenario) -> DiscoveredControl:
+        self.discover_calls.append(control.key)
         error = self.discover_errors.get(control.key)
         if error is not None:
             raise error
@@ -520,11 +522,37 @@ def test_gap_and_missing_plan_step_statuses(tmp_path: Path) -> None:
     assert gap.status is InteractionStatus.WARN
     assert missing.status is InteractionStatus.FAIL
     assert missing_option.status is InteractionStatus.FAIL
+    # Declared migration_gap/source_only controls must not hit the browser
+    # discover path (avoids multi-minute locator waits for catalog-only gaps).
+    assert "function" not in browser.discover_calls
+    assert "ghost" in browser.discover_calls
+    assert "empty" in browser.discover_calls
 
 
-def test_query_bar_filter_text_is_not_required_in_esql_query_text(
-    tmp_path: Path,
-) -> None:
+def test_source_only_controls_skip_browser_discovery(tmp_path: Path) -> None:
+    source_only = ControlScenario(
+        label="source only",
+        key="source_only",
+        adapter="esql_value",
+        capability=CapabilityCategory.SOURCE_ONLY,
+        options=OptionPolicy(strategy="declared", include=("catalog-only",)),
+        assertions=Assertions(),
+        expected_gap="source-only catalog entry",
+    )
+    live = ControlScenario(
+        label="live",
+        key="live",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("a",)),
+        assertions=Assertions(affected_panels=("panel-a",)),
+    )
+    browser = FakeBrowser(controls={"live": ("a",)})
+    report = _run(browser, _scenario(controls=(source_only, live)), tmp_path)
+    assert "source_only" not in browser.discover_calls
+    assert "live" in browser.discover_calls
+    gap = next(r for r in report.results if r.name == "source_only:coverage_gap")
+    assert gap.status is InteractionStatus.WARN
     control = ControlScenario(
         label="query bar",
         key="query_bar",
@@ -1619,7 +1647,9 @@ def test_decorative_control_captures_all_query_panels_without_unexpected_request
     assert not any(
         f.failure_class is FailureClass.UNEXPECTED_PANEL_REQUEST for f in result.findings
     )
-    assert browser.settle_expected_panels[-1] == panel_ids
+    # Decorative controls declare no affected panels; settle waits for network
+    # quiescence (empty expected set) rather than requiring every panel to query.
+    assert browser.settle_expected_panels[-1] == ()
 
 
 def test_selection_json_records_post_read_state(tmp_path: Path) -> None:

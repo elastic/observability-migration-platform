@@ -683,6 +683,17 @@ class InteractionRunner:
         discovered_controls: list[DiscoveredControl] = []
         discovery_errors: dict[str, str] = {}
         for control in self._scenario.controls:
+            # Declared gaps are catalogued in the manifest and must not burn the
+            # 60s locator wait looking for controls that are intentionally absent.
+            if control.capability in {
+                CapabilityCategory.MIGRATION_GAP,
+                CapabilityCategory.SOURCE_ONLY,
+            }:
+                discovery_errors[control.key] = (
+                    control.expected_gap
+                    or f"declared {control.capability.value} control is not discoverable"
+                )
+                continue
             try:
                 discovered_controls.append(self._browser.discover(control))
             except ControlNotFound as exc:
@@ -1089,9 +1100,12 @@ class InteractionRunner:
             )
             if cursor is not None and not hard_before_settle:
                 try:
+                    # Settle only on affected panels. Including unaffected panels
+                    # makes Kibana's "skip refresh when filter is irrelevant"
+                    # optimization look like a settle timeout (no ES|QL terminal).
                     observation = self._browser.settle(
                         cursor,
-                        capture_panels,
+                        merged.expected_panels,
                         policy=self._config.settle_policy,
                     )
                 except SettleTimeout as exc:
