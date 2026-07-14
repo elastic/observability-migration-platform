@@ -36,6 +36,8 @@ For the concrete implementation follow-up in this repo, see
 | Native Dashboard-as-Code review artifacts | `observability_migration/targets/kibana/native_artifacts.py` | Persists the exact typed API payload (`native/*.native.json`) and semantic IR (`ir/*.ir.json`) for review before upload |
 | Serverless API helpers | `observability_migration/targets/kibana/serverless.py` | Serverless-safe dashboard listing, data view CRUD, deletion workaround |
 | Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit |
+| Render audit | `observability_migration/targets/kibana/render_audit*.py` | Default-state panel render truth in real Kibana |
+| Interaction audit | `observability_migration/targets/kibana/interaction_*.py` | Playwright control selection + affected-query evidence (9.5+) |
 | Unified compile / upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate compile`, `obs-migrate upload`, `obs-migrate cluster` |
 | Grafana query validation | `observability_migration/adapters/source/grafana/esql_validate.py` | Source-aware runtime validation against Elasticsearch |
 | Grafana smoke wrapper | `observability_migration/adapters/source/grafana/validate_uploaded_dashboards.py` | Backward-compatible CLI surface for the shared smoke runtime |

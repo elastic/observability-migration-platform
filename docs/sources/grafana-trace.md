@@ -173,6 +173,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -262,6 +263,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -352,6 +354,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to bar panel
@@ -438,6 +441,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -524,6 +528,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -609,6 +614,7 @@ time() - node_boot_time_seconds
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -689,6 +695,7 @@ FROM metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
@@ -781,6 +788,7 @@ ALERTS{alertstate="firing"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -863,6 +871,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -1021,6 +1030,7 @@ sum(
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -1107,6 +1117,7 @@ http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1200,6 +1211,7 @@ http_requests_total{instance="$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1428,6 +1440,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1519,6 +1532,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1610,6 +1624,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1701,6 +1716,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1792,6 +1808,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1883,6 +1900,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -1974,6 +1992,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -2065,6 +2084,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -2156,6 +2176,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -2247,6 +2268,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -2365,6 +2387,7 @@ count(up == 1)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -2449,6 +2472,7 @@ scrape_duration_seconds
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -2525,6 +2549,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -2667,6 +2692,7 @@ up
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -2791,6 +2817,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
@@ -2884,6 +2911,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
@@ -2985,6 +3013,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -3070,6 +3099,7 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3175,6 +3205,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -3258,6 +3289,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → approximated grouped stat as datatable
 
 **Translated (datatable):**
@@ -3346,6 +3378,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → approximated grouped stat as datatable
 
 **Translated (datatable):**
@@ -3439,6 +3472,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -3525,6 +3559,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3614,6 +3649,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3705,6 +3741,7 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3792,6 +3829,7 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3882,6 +3920,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -3969,6 +4008,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -4061,6 +4101,7 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -4188,6 +4229,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -4277,6 +4319,7 @@ avg(queue_depth)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
@@ -4367,6 +4410,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -4454,6 +4498,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -4589,6 +4634,7 @@ sum(kube_pod_info) by (pod)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → approximated grouped stat as datatable
 
 **Translated (datatable):**
@@ -4679,6 +4725,7 @@ avg(slo_burn_rate)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -4756,6 +4803,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5001,6 +5049,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
@@ -5096,6 +5145,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5187,6 +5237,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5277,6 +5328,7 @@ FROM metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5367,6 +5419,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5457,6 +5510,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
@@ -5554,6 +5608,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -5635,6 +5690,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -5729,6 +5785,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -5821,6 +5878,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -5911,6 +5969,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -5993,6 +6052,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -6094,6 +6154,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -6186,6 +6247,7 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -6275,6 +6337,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -6427,6 +6490,7 @@ time() - process_start_time_seconds{instance="$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -6515,6 +6579,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -6602,6 +6667,7 @@ prometheus_build_info{instance="$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -6681,6 +6747,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -6759,6 +6826,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -6836,6 +6904,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -6926,6 +6995,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7019,6 +7089,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7115,6 +7186,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7207,6 +7279,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7297,6 +7370,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7387,6 +7461,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7475,6 +7550,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7570,6 +7646,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7664,6 +7741,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -7787,6 +7865,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -7877,6 +7956,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -7956,6 +8036,7 @@ TS metrics-prometheus-*
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel` → mapped to metric panel
 
 **Translated (metric):**
@@ -8045,6 +8126,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8132,6 +8214,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8224,6 +8307,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8312,6 +8396,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8402,6 +8487,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -8483,6 +8569,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -8574,6 +8661,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8663,6 +8751,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to area panel
@@ -8758,6 +8847,7 @@ redis_connected_clients{instance="$instance"}
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel` → mapped to line panel
@@ -8865,4 +8955,4 @@ Every panel marked `not_feasible` in the trace run (4 total):
 
 ---
 
-*Last generated: 2026-07-13 10:29 UTC*
+*Last generated: 2026-07-14 18:45 UTC*

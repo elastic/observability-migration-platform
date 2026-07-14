@@ -13,8 +13,9 @@ each answers a different question, and **real Kibana is the ultimate authority**
 has its own bugs).
 
 ```
- Tier 4  LIVE        live_validate · dashboards_api · render audit · compare/
- (authority)         corpus_gate · benchmark_gate          (nightly + on-demand)
+ Tier 4  LIVE        live_validate · dashboards_api · render audit · interaction
+ (authority)         audit · compare/corpus_gate · benchmark_gate
+                     (nightly + on-demand)
  ─────────────────────────────────────────────────────────────────────────────
  Tier 3  OFFLINE     fidelity ratchet · Kibana-schema gate · invariant linter
  (every PR)          · mutation self-test
@@ -45,6 +46,7 @@ CI mapping (`.github/workflows/`):
 | `tests.yml` | every PR | ruff, mypy, pytest (3.11–3.13, `--cov-fail-under=75`), e2e, packaging smoke |
 | `nightly-live-gates.yml` | nightly + manual, secret-gated | `live_validate` + `dashboards_api` against the real cluster |
 | `render-audit-local.yml` | nightly + manual | render audit against a local no-SSO Kibana |
+| `dashboard-interaction-audit.yml` | nightly + manual (not PR) | control interactivity vs local no-SSO Kibana 9.5+ |
 
 ---
 
@@ -121,6 +123,7 @@ for both on Serverless). Full command examples are in `command-contract.md`.
 | ES\|QL oracle | `verifier.live_validate` | Elasticsearch accepts the emitted ES\|QL (`real_bug` vs `data_gap`) |
 | Typed UI contract | `verifier.dashboards_api` | Kibana's native Dashboards API accepts the mapped panels. The oracle maps all 11 ES\|QL visualization families the API exposes (`xy`, metric, gauge, heatmap, tag cloud, region map, data table, pie, mosaic, treemap, waffle), plus markdown. |
 | Render audit | `observability_migration.targets.kibana.render_audit_driver` | panels actually render in Kibana (see below) |
+| Interaction audit | `targets/kibana/interaction_{audit,scenarios,driver,runner}.py` | control selection drives affected panel queries (see below) |
 | Numeric parity | `obs-migrate compare` + `verifier.corpus_gate` | native PROMQL and translated ES\|QL are numerically close |
 | Trend guard | `verifier.benchmark_gate` | success metrics + denominators don't drop vs a compatible baseline |
 
@@ -128,7 +131,9 @@ for both on Serverless). Full command examples are in `command-contract.md`.
 
 The render audit is the only gate that proves a panel actually *renders* — it
 catches Lens accessor / "Provided column name or index is invalid" / empty-state
-failures that ES\|QL execution and the schema gate cannot see.
+failures that ES\|QL execution and the schema gate cannot see. It does **not**
+prove that dashboard controls change the right queries; that is the interaction
+audit below.
 
 - **Verdict logic** (`targets/kibana/render_audit.py`, fully unit-tested): from a
   browser DOM snapshot + console errors + failed requests it produces a
@@ -142,11 +147,10 @@ failures that ES\|QL execution and the schema gate cannot see.
     **warn** (verify data/time window or a broken query).
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
-- **Interaction helpers:** `extract_controls` → `build_interaction_plan` →
-  `audit_control_interactions` compare snapshots before and after a control
-  change. They are unit-tested; the headless local CLI currently covers
-  identifier-control choices with separate default-state canary variants rather
-  than browser click automation.
+- **Default-state control coverage:** `extract_controls` → `build_interaction_plan`
+  → `audit_control_interactions` still compare snapshots for identifier-control
+  defaults via separate canary variants in the render-audit CLI. Live click
+  automation lives in the interaction audit.
 - **Self-test:** `tests/test_render_audit_selftest.py` — a clean canary must pass
   and corrupting each panel must make the gate bite (proves it's not vacuous). It
   also pins the late-bound grouping case (issue #282): because a `by ($grouping)`
@@ -179,6 +183,65 @@ can't pass. Two options:
    bash scripts/run_render_audit_local.sh
    docker compose -f parity-rig/docker-compose.render-audit.yml down -v
    ```
+
+### Interaction audit (control-truth gate)
+
+The interaction audit proves that selecting a dashboard control changes the
+**affected** panel queries (and leaves unaffected panels alone). It is Playwright-
+driven, requires Elastic Stack **9.5+**, and stays nightly/manual until the suite
+has a stability history.
+
+- **Static render audit vs interaction audit:** render audit answers "does each
+  panel paint without a Lens error at default state?"; interaction audit answers
+  "does this control selection rewrite the right ES\|QL and refresh the right
+  panels?"
+- **Adapters / capabilities** (scenario manifests under
+  `parity-rig/interaction-scenarios/`): `esql_value`, multi-value, `esql_interval`,
+  `esql_function`, `esql_field`, options-list, and range. Each control declares a
+  capability:
+  - `migrated_live` — expected to work end-to-end after migration.
+  - `kibana_only` — Kibana supports it; the migrator does not emit it yet
+    (synthetic canary coverage).
+  - `source_only` — present in the Grafana source but not a live Kibana control.
+  - `migration_gap` — known unsupported translation; must **warn**, never silently
+    pass.
+- **Coverage policy:** exercise every discoverable option independently; only run
+  high-risk combinations that the scenario declares (for example K8s
+  `cluster + job`).
+- **Two-pass local flow** (`scripts/run_interaction_audit_local.sh`): optional
+  bootstrap migrate → live-schema migrate + native upload → seed telemetry from
+  the final YAML contract → YAML/schema lint (+ optional live ES\|QL) → resolve
+  runtime panel contract → Playwright scenario. The script never starts Docker;
+  the caller owns stack lifecycle (same compose file as the render audit).
+- **Evidence:** request/panel correlation on ES\|QL traffic, deterministic settle
+  (in-flight requests + loading markers), JSON report + optional Playwright
+  traces/screenshots under `ARTIFACT_ROOT/<scenario>/<run-id>/`.
+- **Results:** `pass` (clean), `warn` (expected gap / data-readiness /
+  `migration_gap` / decorative control), `fail` (product or framework bug). Exit
+  code is `1` only on `fail`, else `0`. Within a dashboard every interaction is
+  collected; a failed earlier scenario (for example Redis) stops the shell loop
+  so later dashboards are not reported as validated.
+- **Local commands** (see `command-contract.md` for full knobs):
+  ```bash
+  make setup-browser
+  make test-interactions
+  STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+  STACK_VERSION=9.5.0-SNAPSHOT make interaction-audit-local
+  SCENARIOS=redis-11835 bash scripts/run_interaction_audit_local.sh
+  ```
+  Local defaults use a thinner seed; set `FULL=1` for the denser nightly seed.
+  `SKIP_MIGRATE=1 KEEP_WORK=1 WORK_DIR=...` reuses a prior final/ tree for
+  browser-only iteration. If ports 9200/5601 are busy, use
+  `parity-rig/docker-compose.render-audit.alt-ports.yml` with
+  `ES_URL=http://localhost:9220 KIBANA_URL=http://localhost:5620`.
+- **Serverless:** same persistent Chrome profile pattern as the render audit;
+  hand off SSO login once, then point Playwright / the driver at that profile.
+  Unattended CI uses the local no-SSO stack only.
+- **CI policy:** `.github/workflows/dashboard-interaction-audit.yml` is
+  schedule + `workflow_dispatch` only (no `pull_request`). Promote to a required
+  PR gate only after **14 consecutive green nightly runs**, no unresolved
+  framework flake, and median runtime within the 60-minute workflow budget.
+  Artifacts retain for 14 days.
 
 ---
 
@@ -282,8 +345,11 @@ It also surfaces real Kibana render errors (e.g. `verification_exception`,
 | Panel matrices | `tests/test_panel_matrix.py`, `tests/test_datadog_panel_matrix.py` |
 | Canary | `tests/test_canary.py` |
 | Render audit (verdict + driver + self-test) | `tests/test_render_audit*.py` |
+| Interaction audit (offline + scenarios) | `tests/test_interaction_*.py`, `tests/test_*_interaction_scenario.py` |
 | e2e gates (ratchet, schema, semantic, pipelines) | `tests/e2e/` |
 | Verifier gate code | `parity-rig/verifier/` |
 | Committed baselines / corpus | `parity-rig/benchmark/` |
+| Interaction scenario manifests | `parity-rig/interaction-scenarios/` |
 | Coverage / canary engine | `observability_migration/core/coverage/` |
 | Render-audit engine | `observability_migration/targets/kibana/render_audit*.py` |
+| Interaction-audit engine | `observability_migration/targets/kibana/interaction_*.py` |

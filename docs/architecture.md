@@ -283,6 +283,11 @@ The shared target runtime is centered on `targets/kibana/`:
 - `dashboards_api.py` maps `DashboardIR` / YAML to the typed Dashboards API and is the default upload path
 - `native_artifacts.py` persists reviewed `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` artifacts for two-step review/upload workflows
 - `smoke.py` inspects uploaded saved objects, runs ES|QL runtime checks, and supports browser audits/screenshots
+- `render_audit.py` / `render_audit_driver.py` prove panels actually render in Kibana at default state
+- `interaction_audit.py`, `interaction_scenarios.py`, `interaction_driver.py`, and
+  `interaction_runner.py` prove control selection drives the right panel queries
+  (Playwright; local orchestration in `interaction_audit_local.py` +
+  `scripts/run_interaction_audit_local.sh`)
 
 Some runtime-validation behavior still lives in Grafana modules because it is
 currently source-query aware:
