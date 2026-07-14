@@ -1334,7 +1334,7 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
         try:
             app_cli._run_grafana_migration(args)
-            self.assertIn("--compile", sys.argv)
+            self.assertEqual(sys.argv.count("--compile"), 1)
         finally:
             sys.argv = original_argv
 

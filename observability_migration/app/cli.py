@@ -907,8 +907,6 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.append("--compile")
     if args.validate:
         legacy_argv.append("--validate")
-    if getattr(args, "compile", False):
-        legacy_argv.append("--compile")
     if args.upload:
         legacy_argv.append("--upload")
     if getattr(args, "legacy_import", False):
