@@ -32,6 +32,7 @@ from observability_migration.targets.kibana.interaction_driver import (
     OptionNotFound,
     SelectionDidNotStick,
     SettleTimeout,
+    is_benign_incompatible_warning,
 )
 from observability_migration.targets.kibana.interaction_runner import (
     InteractionRunner,
@@ -1048,6 +1049,25 @@ def test_incompatible_warning_allowed_vs_failure(tmp_path: Path) -> None:
     )
     failing_report = _run(failing, _scenario(), tmp_path / "fail")
     assert any(f.failure_class is FailureClass.INTERACTION_REGRESSION for f in failing_report.results[0].findings)
+
+
+def test_benign_incompatible_selections_zero_do_not_fail(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        incompatible_warnings={"namespace": "Incompatible selections (0)"},
+        network_by_step=[(_esql_network("panel-a"),)],
+    )
+    report = _run(browser, _scenario(), tmp_path)
+    assert report.results[0].status is InteractionStatus.PASS
+    assert not any(
+        f.failure_class is FailureClass.INTERACTION_REGRESSION for f in report.results[0].findings
+    )
+
+
+def test_is_benign_incompatible_warning() -> None:
+    assert is_benign_incompatible_warning("Incompatible selections (0)")
+    assert not is_benign_incompatible_warning("Incompatible selections (2)")
+    assert not is_benign_incompatible_warning("")
 
 
 def test_exact_network_allowance_only(tmp_path: Path) -> None:

@@ -1,0 +1,93 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+version: 1
+id: redis-11835
+title: Redis Dashboard for Prometheus Redis Exporter
+source:
+  kind: grafana
+  path: infra/grafana/dashboards/redis-11835.json
+  control_schema: infra/grafana/dashboards/control_schemas/redis-11835.json
+dashboard:
+  title: Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)
+  time_from: now-3h
+  time_to: now
+controls:
+  - label: Namespace
+    key: namespace
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [namespace]
+      affected_panels: []
+      query_contains: ["namespace"]
+      allow_incompatible_selections: true
+      expect_data_change: false
+  - label: Pod Name
+    key: pod_name
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [pod_name]
+      affected_panels: []
+      query_contains: ["pod"]
+      allow_incompatible_selections: true
+      expect_data_change: false
+  - label: instance
+    key: instance
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [instance]
+      affected_panels: all_query_panels
+      query_contains: ["?instance", "service.instance.id", "RLIKE"]
+      minimum_rows: 1
+      expect_data_change: true
+  - label: Prometheus
+    key: DS_PROMETHEUS
+    adapter: esql_value
+    capability: source_only
+    expected_gap: Grafana datasource variables are not translated to target datasource switching
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: []
+      expect_data_change: false
+  - label: gap chained controls
+    key: gap_chained_controls
+    adapter: esql_value
+    capability: migration_gap
+    expected_gap: Chained Grafana variable scoping for pod_name and instance depends on namespace selection
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: []
+      allow_incompatible_selections: true
+      expect_data_change: false
+combinations:
+  - id: namespace-and-pod_name
+    selections:
+      namespace: default
+      pod_name: pod_1
+  - id: namespace-and-instance
+    selections:
+      namespace: monitoring
+      instance: checkout
+  - id: all-three
+    selections:
+      namespace: production
+      pod_name: pod_2
+      instance: frontend
+noise_allowances:
+  - endpoint: /internal/security/user_profile
+    method: GET
+    status: 404
+    rationale: Security is disabled in the local test stack.

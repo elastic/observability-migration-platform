@@ -33,6 +33,7 @@ from observability_migration.targets.kibana.interaction_driver import (
     SettleTimeout,
     TimeRangeAdapter,
     _adapter_for,
+    _read_option_texts,
     _scoped_options_container,
     _searchbox,
     _visible_action_menu,
@@ -1095,6 +1096,21 @@ def test_scoped_options_container_raises_when_no_popover_or_listbox() -> None:
     page = FakePage()
     with pytest.raises(ControlNotFound, match="listbox: control not found"):
         _scoped_options_container(page)
+
+
+def test_scoped_options_container_uses_dialog_when_listbox_missing() -> None:
+    page = FakePage()
+    page.add(
+        FakeElement(
+            role="dialog",
+            name="Namespace",
+            text="No options found",
+            mounted=True,
+        )
+    )
+    container = _scoped_options_container(page, label="Namespace")
+    assert container.inner_text() == "No options found"
+    assert _read_option_texts(page, label="Namespace") == ()
 
 
 def test_scoped_options_container_raises_when_multiple_listboxes() -> None:

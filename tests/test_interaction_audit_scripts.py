@@ -35,6 +35,7 @@ def test_local_runner_seeds_before_schema_aware_final_migration():
     assert "--upload" in script
     assert "--ensure-data-views" in script
     assert "--panel-contract" in script
+    assert "--control-schema" in script
 
 
 def test_local_runner_defaults_and_stack_ownership_are_explicit():

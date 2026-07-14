@@ -117,6 +117,8 @@ def _is_literal_dimension_value(value: str) -> bool:
     """
     if not value:
         return False
+    if value in {".*", ".+"}:
+        return False
     return _NON_LITERAL_VALUE_RE.match(value) is None
 
 _SKIP_FIELDS = {
@@ -773,6 +775,19 @@ _CLASSIC_OPTIONS_CONTROL_TYPES = frozenset(
 )
 _CLASSIC_RANGE_CONTROL_TYPES = frozenset({"range", "range_slider", "range_slider_control"})
 _ESQL_NON_FIELD_VARIABLE_TYPES = frozenset({"functions", "time_literal"})
+_ESQL_CONTROL_BY_FIELD_RE = re.compile(rf"BY\s+({_IDENT_RE})", re.IGNORECASE)
+
+
+def _extract_esql_values_bound_field(query: str) -> str:
+    if not query:
+        return ""
+    match = _ESQL_CONTROL_BY_FIELD_RE.search(query)
+    if not match:
+        return ""
+    field_name = _normalize_field(match.group(1))
+    if not field_name or _should_skip_field(field_name):
+        return ""
+    return field_name
 
 
 def _control_bound_field(control: Mapping[str, Any]) -> str:
@@ -784,7 +799,10 @@ def _control_bound_field(control: Mapping[str, Any]) -> str:
     resolved = str(control.get("_resolved_field_name") or "").strip()
     if resolved:
         return _normalize_field(resolved)
-    return _normalize_field(str(control.get("field_name") or control.get("field") or ""))
+    direct = _normalize_field(str(control.get("field_name") or control.get("field") or ""))
+    if direct:
+        return direct
+    return _extract_esql_values_bound_field(str(control.get("query") or ""))
 
 
 def _control_choice_values(control: Mapping[str, Any]) -> list[str]:
@@ -1107,8 +1125,9 @@ def _extract_metrics(query: str) -> dict[str, str]:
     # the field in this query; explicit label evidence later flips genuine
     # dimensions back via ``_apply_dimension_evidence``.
     derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
+    by_fields = set(_extract_group_fields(query))
     for field_name in _extract_is_not_null_fields(query):
-        if field_name not in derived_aliases:
+        if field_name not in derived_aliases and field_name not in by_fields:
             metrics.setdefault(field_name, "gauge")
 
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
@@ -1330,7 +1349,7 @@ def _extract_group_fields(query: str) -> list[str]:
             if not _should_skip_field(label):
                 _append_unique(fields, label)
         return fields
-    by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\|$|$)", re.IGNORECASE | re.DOTALL)
+    by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\s\|\s|$)", re.IGNORECASE | re.DOTALL)
     for match in by_pattern.finditer(query):
         for part in _split_top_level(match.group(1)):
             field_name = part.split("=", 1)[-1].strip() if "=" in part else part.strip()
@@ -1924,14 +1943,13 @@ def _iter_dashboard_filter_queries(node: dict[str, Any], source: str):
                         )
                 continue
             field_name = control.get("field")
-            if not field_name:
-                bound = _control_bound_field(control)
-                if bound:
-                    index = control.get("data_view") or control.get("data_view_id") or default_index
-                    yield f"CONTROL index={index} field={bound}", source
-                continue
-            index = control.get("data_view") or control.get("data_view_id") or default_index
-            yield f"CONTROL index={index} field={field_name}", source
+            bound = _control_bound_field(control) if not field_name else str(field_name)
+            if bound:
+                index = control.get("data_view") or control.get("data_view_id") or default_index
+                yield f"CONTROL index={index} field={bound}", source
+            query_text = str(control.get("query") or "").strip()
+            if query_text:
+                yield query_text, source
         for field_name, values in _collect_control_value_requirements(controls).items():
             for value in values:
                 yield (

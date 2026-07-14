@@ -1290,3 +1290,31 @@ def test_dot_and_dotdot_combination_ids_are_sanitized_in_plan() -> None:
     ]
     assert "." not in combo_ids
     assert ".." not in combo_ids
+
+
+REDIS_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "parity-rig"
+    / "interaction-scenarios"
+    / "redis-11835.yaml"
+)
+
+
+def test_redis_scenario_manifest_is_registered_and_strict() -> None:
+    scenario = load_scenario(REDIS_MANIFEST)
+    assert scenario.id == "redis-11835"
+    assert scenario.source_path == "infra/grafana/dashboards/redis-11835.json"
+    assert {control.key for control in scenario.controls} == {
+        "namespace",
+        "pod_name",
+        "instance",
+        "DS_PROMETHEUS",
+        "gap_chained_controls",
+    }
+    instance = next(control for control in scenario.controls if control.key == "instance")
+    assert instance.assertions.affected_panels == "all_query_panels"
+    assert {combination.id for combination in scenario.combinations} == {
+        "namespace-and-pod_name",
+        "namespace-and-instance",
+        "all-three",
+    }

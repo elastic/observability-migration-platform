@@ -723,11 +723,25 @@ _ROLE_BUTTON = "button"
 _ROLE_GROUP = "group"
 _ROLE_MENU = "menu"
 _ROLE_TEXTBOX = "textbox"
+_ROLE_DIALOG = "dialog"
 
 _INCOMPATIBLE_SELECTIONS_RE = re.compile(
     r"Incompatible selections\s*\((\d+)\)",
     re.IGNORECASE,
 )
+
+
+def is_benign_incompatible_warning(warning: str) -> bool:
+    """Return True when Kibana's incompatible-selection banner is informational.
+
+    ``Incompatible selections (0)`` means zero panels are incompatible with the
+    current control value — common for migrated controls that exist in the UI
+    but do not bind to any panel query parameter yet.
+    """
+    if not warning:
+        return False
+    match = _INCOMPATIBLE_SELECTIONS_RE.search(str(warning))
+    return match is not None and int(match.group(1)) == 0
 _RANGE_SELECTION_RE = re.compile(r"^\s*(.+?)\s*\.\.\s*(.+?)\s*$")
 
 _ESQL_ADAPTERS = frozenset(
@@ -856,6 +870,19 @@ def _scoped_options_container(
         if listboxes.nth(index).is_visible()
     ]
     listbox_count = len(visible_listboxes)
+    if listbox_count == 0 and label:
+        dialog = page.get_by_role(_ROLE_DIALOG, name=label, exact=True)
+        visible_dialogs = [
+            dialog.nth(index)
+            for index in range(dialog.count())
+            if dialog.nth(index).is_visible()
+        ]
+        if len(visible_dialogs) == 1:
+            return visible_dialogs[0]
+        if len(visible_dialogs) > 1:
+            raise ControlNotFound(
+                f"options dialog {label!r}: ambiguous control ({len(visible_dialogs)} matches)"
+            )
     if listbox_count == 0:
         raise ControlNotFound("options listbox: control not found")
     if listbox_count > 1:
@@ -882,10 +909,34 @@ def _read_option_texts(page: PageLike, *, label: str = "") -> tuple[str, ...]:
     )
 
 
+_EMPTY_OPTION_UI_MESSAGES = frozenset(
+    {
+        "no options found",
+        "0 options",
+        "no options available",
+        "show only selected options",
+        "incompatible selections (0)",
+    }
+)
+
+_DIALOG_OPTION_NOISE_PREFIXES = (
+    "you are in a dialog",
+    "filter suggestions for",
+    "incompatible selections",
+)
+
+
 def _clean_option_text(text: str) -> str:
     for line in str(text or "").splitlines():
         cleaned = line.strip()
         if cleaned and not cleaned.startswith("."):
+            lowered = cleaned.lower()
+            if lowered in _EMPTY_OPTION_UI_MESSAGES:
+                return ""
+            if any(lowered.startswith(prefix) for prefix in _DIALOG_OPTION_NOISE_PREFIXES):
+                return ""
+            if len(cleaned) > 80:
+                return ""
             return cleaned
     return ""
 
@@ -897,6 +948,27 @@ def _open_options_container(
     label: str,
 ) -> LocatorLike:
     combobox.click()
+    if label:
+        named = page.get_by_role(
+            _ROLE_LISTBOX,
+            name=f"Available options for {label}",
+            exact=True,
+        )
+        if named.count() == 0:
+            wait_for = getattr(named, "wait_for", None)
+            if callable(wait_for):
+                try:
+                    wait_for(state="visible", timeout=30_000)
+                except Exception:
+                    pass
+        if named.count() == 0:
+            dialog = page.get_by_role(_ROLE_DIALOG, name=label, exact=True)
+            wait_for = getattr(dialog, "wait_for", None)
+            if callable(wait_for):
+                try:
+                    wait_for(state="visible", timeout=30_000)
+                except Exception:
+                    pass
     return _scoped_options_container(page, label=label)
 
 

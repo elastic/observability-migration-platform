@@ -36,6 +36,7 @@ from observability_migration.targets.kibana.interaction_driver import (
     SelectionDidNotStick,
     SettlePolicy,
     SettleTimeout,
+    is_benign_incompatible_warning,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (
     ControlScenario,
@@ -660,7 +661,8 @@ class InteractionRunner:
         for control in self._scenario.controls:
             try:
                 discovered_controls.append(self._browser.discover(control))
-            except ControlNotFound:
+            except ControlNotFound as exc:
+                discovery_errors[control.key] = str(exc)
                 continue
             except BrowserAdapterError as exc:
                 discovery_errors[control.key] = str(exc)
@@ -911,6 +913,9 @@ class InteractionRunner:
             if (
                 baseline_state.incompatible_warning
                 and not merged.allow_incompatible_selections
+                and not is_benign_incompatible_warning(
+                    baseline_state.incompatible_warning
+                )
             ):
                 _append_finding(
                     findings,
@@ -1040,7 +1045,11 @@ class InteractionRunner:
                         record["selected_count"] = state.selected_count
                         record["incompatible_warning"] = state.incompatible_warning
                         break
-                if state.incompatible_warning and not merged.allow_incompatible_selections:
+                if (
+                    state.incompatible_warning
+                    and not merged.allow_incompatible_selections
+                    and not is_benign_incompatible_warning(state.incompatible_warning)
+                ):
                     _append_finding(
                         findings,
                         FailureClass.INTERACTION_REGRESSION,

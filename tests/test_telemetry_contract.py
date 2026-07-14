@@ -1522,6 +1522,86 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("deployment.environment", stream["control_fields"])
         self.assertEqual(stream["required_values"]["deployment.environment"], ["production"])
 
+    def test_esql_control_value_queries_seed_presence_scoping_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "controls": [
+                                    {
+                                        "type": "esql",
+                                        "label": "Namespace",
+                                        "variable_name": "namespace",
+                                        "variable_type": "values",
+                                        "query": (
+                                            "FROM metrics-* | WHERE redis_up IS NOT NULL "
+                                            "AND namespace IS NOT NULL | STATS count = COUNT(*) "
+                                            "BY namespace | SORT namespace ASC | KEEP namespace "
+                                            "| LIMIT 1000"
+                                        ),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["redis_up"]["role"], "metric")
+        self.assertEqual(fields["namespace"]["role"], "dimension")
+
+    def test_single_line_esql_control_query_parses_by_before_inline_pipes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "controls": [
+                                    {
+                                        "type": "esql",
+                                        "label": "Namespace",
+                                        "variable_name": "namespace",
+                                        "variable_type": "values",
+                                        "query": (
+                                            "FROM metrics-* | WHERE redis_up IS NOT NULL "
+                                            "AND namespace IS NOT NULL | STATS count = COUNT(*) "
+                                            "BY namespace | SORT namespace ASC | KEEP namespace "
+                                            "| LIMIT 1000"
+                                        ),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertEqual(stream["fields"]["namespace"]["role"], "dimension")
+        self.assertEqual(stream["fields"]["redis_up"]["role"], "metric")
+        requirement = next(
+            req
+            for req in stream["requirements"]
+            if req.get("metrics") and "redis_up" in req["metrics"]
+        )
+        self.assertIn("namespace", requirement["dimensions"])
+
     def test_dashboard_control_fields_are_available_on_all_streams(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

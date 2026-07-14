@@ -52,6 +52,7 @@ class ScenarioSpec:
     manifest_path: Path
     source_kind: str
     source_path: Path = Path()
+    control_schema_path: Path = Path()
 
     def resolve(self, project_root: Path | None = None) -> ScenarioSpec:
         root = project_root or _REPO_ROOT
@@ -60,6 +61,11 @@ class ScenarioSpec:
             manifest_path=(root / self.manifest_path).resolve(),
             source_kind=self.source_kind,
             source_path=(root / self.source_path).resolve() if self.source_path else Path(),
+            control_schema_path=(
+                (root / self.control_schema_path).resolve()
+                if self.control_schema_path
+                else Path()
+            ),
         )
 
 
@@ -74,6 +80,9 @@ SCENARIO_REGISTRY: dict[str, ScenarioSpec] = {
         manifest_path=Path("parity-rig/interaction-scenarios/redis-11835.yaml"),
         source_kind="grafana",
         source_path=Path("infra/grafana/dashboards/redis-11835.json"),
+        control_schema_path=Path(
+            "infra/grafana/dashboards/control_schemas/redis-11835.json"
+        ),
     ),
     "k8s-views-global": ScenarioSpec(
         scenario_id="k8s-views-global",

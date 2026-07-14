@@ -47,15 +47,21 @@ echo "Work directory: $WORK"
 run_grafana_scenario() {
   local scenario_id="$1"
   local source_relative="$2"
+  local control_schema_relative="${3:-}"
   local scenario_root="$WORK/scenarios/$scenario_id"
   local input_dir="$scenario_root/input"
   local bootstrap_root="$WORK/bootstrap/$scenario_id"
   local final_root="$WORK/final/$scenario_id"
   local bootstrap_artifacts="$bootstrap_root/dashboards"
   local final_artifacts="$final_root/dashboards"
+  local control_schema_args=()
 
   mkdir -p "$input_dir"
   cp "$PROJECT_ROOT/$source_relative" "$input_dir/"
+
+  if [[ -n "$control_schema_relative" && -f "$PROJECT_ROOT/$control_schema_relative" ]]; then
+    control_schema_args=(--control-schema "$PROJECT_ROOT/$control_schema_relative")
+  fi
 
   echo "-- $scenario_id: bootstrap migrate (isolated source, no upload) --"
   "$PY" -m observability_migration.adapters.source.grafana.cli \
@@ -79,6 +85,7 @@ run_grafana_scenario() {
     --assets dashboards \
     --es-url "$ES_URL" \
     --es-api-key "$ES_API_KEY" \
+    "${control_schema_args[@]}" \
     --validate \
     --kibana-url "$KIBANA_URL" \
     --kibana-api-key "$KIBANA_API_KEY" \
@@ -170,7 +177,7 @@ for raw_scenario_id in "${selected_scenarios[@]}"; do
       run_synthetic_scenario "$scenario_id"
       ;;
     redis-11835)
-      run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/redis-11835.json"
+      run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/redis-11835.json" "infra/grafana/dashboards/control_schemas/redis-11835.json"
       ;;
     k8s-views-global)
       run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/k8s-views-global.json"
