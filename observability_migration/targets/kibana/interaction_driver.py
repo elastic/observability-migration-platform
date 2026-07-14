@@ -669,6 +669,8 @@ class BrowserAdapter(Protocol):
 
     def read_state(self, control: ControlScenario) -> ControlState: ...
 
+    def read_selected(self, control: ControlScenario) -> tuple[str, ...]: ...
+
     def clear_evidence(self) -> None: ...
 
     def screenshot(self, path: str | Path) -> bool: ...
@@ -1801,6 +1803,20 @@ class PlaywrightKibanaBrowser:
 
     def read_state(self, control: ControlScenario) -> ControlState:
         return self._adapter_for_control(control).read_state()
+
+    def read_selected(self, control: ControlScenario) -> tuple[str, ...]:
+        page = self._require_page()
+        if control.adapter in _ESQL_ADAPTERS or control.adapter == "options_list":
+            combobox = _combobox_by_label(page, control.label)
+            return _combobox_selected_option_texts(combobox)
+        if control.adapter == "range_slider":
+            adapter = RangeSliderAdapter(page)
+            low_handle, high_handle = adapter._handles(control.label)
+            return (f"{low_handle.input_value()}..{high_handle.input_value()}",)
+        if control.adapter == "query_bar":
+            value = _searchbox(page).input_value().strip()
+            return (value,) if value else ()
+        return ()
 
     def begin_step(self) -> CaptureCursor:
         page = self._require_page()

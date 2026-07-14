@@ -136,6 +136,7 @@ class _MergedAssertions:
     unaffected_panels: tuple[str, ...]
     expected_value_params: dict[str, object]
     expected_identifier_params: dict[str, str]
+    require_param_tokens: bool
 
 
 def _bound_io_error(message: str) -> str:
@@ -354,8 +355,6 @@ def _merge_assertions(
         query_contains = []
         query_not_contains = []
         required_columns = []
-        expected_value_params = {}
-        expected_identifier_params = {}
         stable_alias = ""
 
     return _MergedAssertions(
@@ -371,6 +370,7 @@ def _merge_assertions(
         unaffected_panels=_ordered_unique(unaffected_panels),
         expected_value_params=expected_value_params,
         expected_identifier_params=expected_identifier_params,
+        require_param_tokens=len(controls) <= 1,
     )
 
 
@@ -554,6 +554,22 @@ def _selection_changes_from_baseline(
     return False
 
 
+def _selection_matches_baseline(
+    control: ControlScenario,
+    selected_value: str,
+    baseline_selected: Sequence[str],
+) -> bool:
+    selected = tuple(str(value) for value in baseline_selected if str(value))
+    if control.adapter in {"esql_value", "options_list"} and "," in selected_value:
+        expected = {
+            part.strip()
+            for part in selected_value.split(",")
+            if part.strip()
+        }
+        return expected == set(selected)
+    return selected_value in selected
+
+
 def _clear_evidence_best_effort(browser: BrowserAdapter) -> InteractionFinding | None:
     try:
         browser.clear_evidence()
@@ -732,32 +748,109 @@ class InteractionRunner:
             premerge_findings,
         )
         findings.extend(premerge_findings)
-
+        expected_panels = merged.expected_panels
+        baseline_cursor = self._browser.begin_step()
         if step.reset_before:
             self._browser.reset(self._config.dashboard_url)
 
-        selection_changes = _selection_changes_from_baseline(
-            step.selections,
-            discovered_by_key,
-        )
-        network_merged = merged
-        if step.kind in {"option", "combination"} and not selection_changes:
-            network_merged = replace(
-                merged,
-                query_contains=(),
-                query_not_contains=(),
-                required_columns=(),
-                stable_alias="",
-                minimum_rows=0,
-                expected_panels=(),
-                expected_value_params={},
-                expected_identifier_params={},
+        baseline_timed_out = False
+        baseline_failed = False
+        try:
+            baseline_observation = self._browser.settle(
+                baseline_cursor,
+                expected_panels,
+                policy=self._config.settle_policy,
             )
-        expected_panels = merged.expected_panels
-        settle_expected_panels = expected_panels if selection_changes else ()
+        except SettleTimeout as exc:
+            baseline_timed_out = True
+            baseline_failed = True
+            baseline_observation = exc.observation
+            _append_finding(
+                findings,
+                FailureClass.SETTLE_TIMEOUT,
+                f"reset baseline did not settle: {exc.reason}",
+            )
+        except BrowserAdapterError as exc:
+            baseline_failed = True
+            baseline_observation = self._browser.capture(
+                expected_panels,
+                cursor=baseline_cursor,
+            )
+            _append_finding(
+                findings,
+                FailureClass.FRAMEWORK_ERROR,
+                f"reset baseline failed: {exc}",
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            baseline_failed = True
+            baseline_observation = self._browser.capture(
+                expected_panels,
+                cursor=baseline_cursor,
+            )
+            _append_finding(
+                findings,
+                FailureClass.FRAMEWORK_ERROR,
+                f"reset baseline failed: {exc}",
+            )
 
-        baseline_observation = self._browser.capture(expected_panels)
         baseline_fingerprint = _panel_fingerprint(baseline_observation.panels)
+        baseline_selected: dict[str, tuple[str, ...]] = {}
+        selection_records: list[dict[str, object]] = []
+        changed_controls: list[ControlScenario] = []
+        for control in controls:
+            selected_value = step.selections.get(control.key, "")
+            if not selected_value:
+                continue
+            fallback = discovered_by_key.get(control.key)
+            try:
+                selected = tuple(self._browser.read_selected(control))
+            except (AttributeError, BrowserAdapterError):
+                selected = tuple(fallback.selected) if fallback is not None else ()
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                selected = tuple(fallback.selected) if fallback is not None else ()
+                _append_finding(
+                    findings,
+                    FailureClass.FRAMEWORK_ERROR,
+                    f"read reset selection failed for {control.key!r}: {exc}",
+                )
+            baseline_selected[control.key] = selected
+            try:
+                baseline_state = self._browser.read_state(control)
+            except Exception:
+                baseline_state = ControlState()
+            is_noop = _selection_matches_baseline(
+                control,
+                selected_value,
+                selected,
+            )
+            if not is_noop:
+                changed_controls.append(control)
+            selection_records.append(
+                {
+                    "control_key": control.key,
+                    "selected_value": selected_value,
+                    "baseline_selected": list(selected),
+                    "mode": "baseline_noop" if is_noop else "action",
+                    "selected_count": max(
+                        len(selected),
+                        baseline_state.selected_count,
+                    ),
+                    "incompatible_warning": baseline_state.incompatible_warning,
+                }
+            )
+            if (
+                baseline_state.incompatible_warning
+                and not merged.allow_incompatible_selections
+            ):
+                _append_finding(
+                    findings,
+                    FailureClass.INTERACTION_REGRESSION,
+                    (
+                        f"control {control.key!r}: incompatible selection warning "
+                        f"{baseline_state.incompatible_warning!r}"
+                    ),
+                )
+        selection_changes = bool(changed_controls)
 
         step_dir = self._step_dir(step)
         before_path = step_dir / "before.png"
@@ -769,17 +862,54 @@ class InteractionRunner:
                 "before.png screenshot missing or empty",
             )
 
-        cursor: CaptureCursor | None = None
-        selection_records: list[dict[str, object]] = []
-        settle_timed_out = False
+        cursor: CaptureCursor | None = baseline_cursor
+        settle_timed_out = baseline_timed_out
         observation = baseline_observation
+        network_evidence = list(baseline_observation.network)
+        console_errors = list(baseline_observation.console_errors)
+        network_merged = replace(merged, unaffected_panels=())
 
-        if step.kind in {"option", "combination"}:
+        if not baseline_failed and selection_changes:
+            baseline_health = replace(
+                merged,
+                query_contains=(),
+                query_not_contains=(),
+                required_columns=(),
+                stable_alias="",
+                minimum_rows=0,
+                unaffected_panels=(),
+                expected_value_params={},
+                expected_identifier_params={},
+            )
+            findings.extend(
+                self._network_findings(
+                    merged=baseline_health,
+                    network_evidence=network_evidence,
+                    noise_allowances=self._scenario.noise_allowances,
+                )
+            )
+            findings.extend(
+                self._render_findings(
+                    panels=list(baseline_observation.panels),
+                    minimum_rows=merged.minimum_rows,
+                )
+            )
+            for message in _ordered_unique(console_errors):
+                _append_finding(findings, FailureClass.CONSOLE_ERROR, message)
+
+        clear_baseline_finding = _clear_evidence_best_effort(self._browser)
+        if clear_baseline_finding is not None:
+            findings.append(clear_baseline_finding)
+            baseline_failed = True
+
+        if (
+            step.kind in {"option", "combination"}
+            and selection_changes
+            and not baseline_failed
+        ):
             cursor = self._browser.begin_step()
-            for control in controls:
+            for control in changed_controls:
                 selected_value = step.selections.get(control.key, "")
-                if not selected_value:
-                    continue
                 try:
                     self._browser.select(control, selected_value)
                 except ControlNotFound as exc:
@@ -835,14 +965,11 @@ class InteractionRunner:
                     )
                     state = ControlState()
 
-                selection_records.append(
-                    {
-                        "control_key": control.key,
-                        "selected_value": selected_value,
-                        "selected_count": state.selected_count,
-                        "incompatible_warning": state.incompatible_warning,
-                    }
-                )
+                for record in selection_records:
+                    if record["control_key"] == control.key:
+                        record["selected_count"] = state.selected_count
+                        record["incompatible_warning"] = state.incompatible_warning
+                        break
                 if state.incompatible_warning and not merged.allow_incompatible_selections:
                     _append_finding(
                         findings,
@@ -860,7 +987,7 @@ class InteractionRunner:
                 try:
                     observation = self._browser.settle(
                         cursor,
-                        settle_expected_panels,
+                        expected_panels,
                         policy=self._config.settle_policy,
                     )
                 except SettleTimeout as exc:
@@ -884,6 +1011,18 @@ class InteractionRunner:
                         str(exc),
                     )
 
+            if cursor is not None:
+                scoped_observation = self._browser.capture(
+                    expected_panels,
+                    cursor=cursor,
+                )
+                observation = (
+                    scoped_observation if not settle_timed_out else observation
+                )
+                network_evidence = list(observation.network)
+                console_errors = list(observation.console_errors)
+                network_merged = merged
+
         after_path = step_dir / "after.png"
         artifact_flags["after_screenshot"] = self._browser.screenshot(after_path)
         if not artifact_flags["after_screenshot"]:
@@ -893,24 +1032,16 @@ class InteractionRunner:
                 "after.png screenshot missing or empty",
             )
 
-        if cursor is not None:
-            scoped_observation = self._browser.capture(expected_panels, cursor=cursor)
-            observation = scoped_observation if not settle_timed_out else observation
-            network_evidence = list(observation.network)
-            console_errors = list(observation.console_errors)
-        else:
-            network_evidence = list(observation.network)
-            console_errors = list(observation.console_errors)
-
-        findings.extend(
-            self._network_findings(
-                merged=network_merged,
-                network_evidence=network_evidence,
-                noise_allowances=self._scenario.noise_allowances,
+        if not baseline_failed:
+            findings.extend(
+                self._network_findings(
+                    merged=network_merged,
+                    network_evidence=network_evidence,
+                    noise_allowances=self._scenario.noise_allowances,
+                )
             )
-        )
 
-        if not settle_timed_out:
+        if not settle_timed_out and not baseline_failed:
             findings.extend(
                 self._render_findings(
                     panels=list(observation.panels),
@@ -925,14 +1056,20 @@ class InteractionRunner:
                 message,
             )
 
-        findings.extend(
-            self._legend_findings(
-                expected_legend=merged.expected_legend,
-                panels=list(observation.panels),
+        if not baseline_failed:
+            findings.extend(
+                self._legend_findings(
+                    expected_legend=merged.expected_legend,
+                    panels=list(observation.panels),
+                )
             )
-        )
 
-        if not settle_timed_out and merged.expect_data_change and selection_changes:
+        if (
+            not settle_timed_out
+            and not baseline_failed
+            and merged.expect_data_change
+            and selection_changes
+        ):
             after_fingerprint = _panel_fingerprint(observation.panels)
             if after_fingerprint == baseline_fingerprint:
                 _append_finding(
@@ -1132,6 +1269,7 @@ class InteractionRunner:
                 required_columns=merged.required_columns,
                 stable_alias=merged.stable_alias,
                 minimum_rows=merged.minimum_rows,
+                require_param_tokens=merged.require_param_tokens,
             )
         )
         return findings

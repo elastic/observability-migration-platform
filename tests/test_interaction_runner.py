@@ -80,13 +80,17 @@ class FakeBrowser:
     visible_text: str = ""
     network_by_step: list[tuple[NetworkEvidence, ...]] = field(default_factory=list)
     console_by_step: list[tuple[str, ...]] = field(default_factory=list)
+    baseline_network_by_step: list[tuple[NetworkEvidence, ...]] | None = None
+    baseline_console_by_step: list[tuple[str, ...]] | None = None
     pending_after_step: bool = False
     screenshot_ok: bool = True
     settle_timeout: bool = False
+    baseline_settle_timeout: bool = False
     select_errors: dict[tuple[str, str], Exception] = field(default_factory=dict)
     discover_errors: dict[str, Exception] = field(default_factory=dict)
     clear_errors: list[Exception] = field(default_factory=list)
     incompatible_warnings: dict[str, str] = field(default_factory=dict)
+    selected_after_reset: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     reset_count: int = 0
     begin_count: int = 0
@@ -95,7 +99,8 @@ class FakeBrowser:
     select_calls: list[tuple[str, str]] = field(default_factory=list)
     settle_expected_panels: list[tuple[str, ...]] = field(default_factory=list)
     opened_url: str = ""
-    _capture_index: int = 0
+    _step_index: int = 0
+    _phase: str = "idle"
 
     def open_dashboard(self, url: str) -> None:
         self.opened_url = url
@@ -103,6 +108,8 @@ class FakeBrowser:
     def reset(self, url: str) -> None:
         self.reset_count += 1
         self.opened_url = url
+        self.selected.update(self.selected_after_reset)
+        self._phase = "baseline"
 
     def discover(self, control: ControlScenario) -> DiscoveredControl:
         error = self.discover_errors.get(control.key)
@@ -114,6 +121,7 @@ class FakeBrowser:
         selected = self.selected.get(control.key, ())
         if not selected and options:
             selected = (options[0],)
+            self.selected[control.key] = selected
         return DiscoveredControl(
             key=control.key,
             label=control.label,
@@ -135,6 +143,9 @@ class FakeBrowser:
             incompatible_warning=self.incompatible_warnings.get(control.key, ""),
         )
 
+    def read_selected(self, control: ControlScenario) -> tuple[str, ...]:
+        return self.selected.get(control.key, ())
+
     def capture(
         self,
         expected_panels: Sequence[str],
@@ -152,10 +163,17 @@ class FakeBrowser:
         )
         network: tuple[NetworkEvidence, ...] = ()
         console: tuple[str, ...] = ()
-        if self._capture_index < len(self.network_by_step):
-            network = self.network_by_step[self._capture_index]
-        if self._capture_index < len(self.console_by_step):
-            console = self.console_by_step[self._capture_index]
+        networks = self.network_by_step
+        consoles = self.console_by_step
+        if self._phase == "baseline":
+            if self.baseline_network_by_step is not None:
+                networks = self.baseline_network_by_step
+            if self.baseline_console_by_step is not None:
+                consoles = self.baseline_console_by_step
+        if self._step_index < len(networks):
+            network = networks[self._step_index]
+        if self._step_index < len(consoles):
+            console = consoles[self._step_index]
         return BrowserObservation(
             url=self.opened_url,
             accessibility_snapshot=self.accessibility_snapshot,
@@ -179,6 +197,9 @@ class FakeBrowser:
         del cursor, policy
         self.settle_count += 1
         self.settle_expected_panels.append(tuple(expected_panels))
+        if self._phase == "baseline" and self.baseline_settle_timeout:
+            observation = self.capture(expected_panels)
+            raise SettleTimeout(observation, "reset baseline did not settle")
         if self.settle_timeout:
             observation = self.capture(expected_panels)
             raise SettleTimeout(observation, "dashboard evidence did not settle")
@@ -199,7 +220,11 @@ class FakeBrowser:
             raise self.clear_errors.pop(0)
         if self.pending_after_step:
             raise BrowserAdapterError("cannot clear evidence while requests are pending")
-        self._capture_index += 1
+        if self._phase == "baseline":
+            self._phase = "action"
+            return
+        self._step_index += 1
+        self._phase = "idle"
 
     def close(self) -> None:
         return
@@ -370,10 +395,10 @@ def test_happy_option_pass_calls_browser_contract_once(tmp_path: Path) -> None:
     report = _run(browser, single_option, tmp_path)
 
     assert browser.reset_count == 1
-    assert browser.begin_count == 1
-    assert browser.settle_count == 1
+    assert browser.begin_count == 2
+    assert browser.settle_count == 2
     assert browser.select_calls == [("namespace", "ns_1")]
-    assert browser.settle_expected_panels == [("panel-a",)]
+    assert browser.settle_expected_panels == [("panel-a",), ("panel-a",)]
     assert report.status == "pass"
     assert report.results[0].status is InteractionStatus.PASS
 
@@ -390,7 +415,7 @@ def test_every_option_resets_independently_and_preserves_plan_order(tmp_path: Pa
     report = _run(browser, _scenario(), tmp_path)
 
     assert browser.reset_count == 2
-    assert browser.select_calls == [("namespace", "ns_1"), ("namespace", "ns_2")]
+    assert browser.select_calls == [("namespace", "ns_2")]
     assert [result.name for result in report.results] == ["namespace=ns_1", "namespace=ns_2"]
 
 
@@ -410,7 +435,7 @@ def test_combination_selects_in_manifest_order_once(tmp_path: Path) -> None:
         ),
     )
     _run(browser, scenario, tmp_path)
-    assert browser.select_calls[-2:] == [("namespace", "ns_1"), ("instance", "i_2")]
+    assert browser.select_calls == [("instance", "i_2")]
 
 
 def test_affected_panel_resolution_modes(tmp_path: Path) -> None:
@@ -451,7 +476,7 @@ def test_affected_panel_resolution_modes(tmp_path: Path) -> None:
     missing_result = next(result for result in report.results if result.name == "missing=x")
     assert any(f.failure_class is FailureClass.FRAMEWORK_ERROR for f in missing_result.findings)
     assert browser.settle_expected_panels[0] == ("panel-z",)
-    assert set(browser.settle_expected_panels[1]) == {"panel-a", "panel-b"}
+    assert set(browser.settle_expected_panels[2]) == {"panel-a", "panel-b"}
 
 
 def test_gap_and_missing_plan_step_statuses(tmp_path: Path) -> None:
@@ -578,16 +603,15 @@ def test_combination_applies_each_query_contract_to_its_own_panel(
             (_esql_network("function-panel", query="STATS value=??aggregate(x)"),),
             (_esql_network("interval-panel", query="STATS BY TBUCKET(?interval)"),),
             (
-                _identifier_network(
+                _esql_network(
                     "function-panel",
                     query="STATS value=??aggregate(x)",
-                    param_name="aggregate",
-                    identifier="MAX",
+                    params={"aggregate": "MAX", "interval": "5 minutes"},
                 ),
                 _esql_network(
                     "interval-panel",
                     query="STATS value=AVG(x) BY bucket=TBUCKET(?interval)",
-                    params={"interval": "5 minutes"},
+                    params={"aggregate": "MAX", "interval": "5 minutes"},
                     columns=("value", "bucket"),
                 ),
             ),
@@ -629,6 +653,7 @@ def test_adapter_exception_mapping(
 ) -> None:
     browser = FakeBrowser(
         controls={"namespace": ("ns_1",)},
+        selected={"namespace": ("baseline",)},
         select_errors={("namespace", "ns_1"): error},
     )
     report = _run(browser, _scenario(), tmp_path)
@@ -691,6 +716,198 @@ def test_expected_data_change_skips_default_reselection(tmp_path: Path) -> None:
     assert report.results[0].status is InteractionStatus.PASS
 
 
+def test_default_option_passes_from_reset_baseline_without_click(
+    tmp_path: Path,
+) -> None:
+    baseline_request = _esql_network(
+        "panel-a",
+        params={"namespace": "ns_1"},
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        selected={"namespace": ("ns_2",)},
+        selected_after_reset={"namespace": ("ns_1",)},
+        baseline_network_by_step=[(baseline_request,)],
+        network_by_step=[()],
+    )
+    control = _namespace_control(
+        affected_panels=("panel-a",),
+        expect_data_change=True,
+    )
+    control = ControlScenario(
+        **{
+            **control.__dict__,
+            "options": OptionPolicy(strategy="declared", include=("ns_1",)),
+        }
+    )
+
+    report = _run(browser, _scenario(controls=(control,)), tmp_path)
+
+    assert report.results[0].status is InteractionStatus.PASS
+    assert browser.select_calls == []
+    payload = json.loads(
+        (_step_dir(tmp_path, "namespace=ns_1") / "selection.json").read_text()
+    )
+    assert payload["selections"] == [
+        {
+            "control_key": "namespace",
+            "selected_value": "ns_1",
+            "baseline_selected": ["ns_1"],
+            "mode": "baseline_noop",
+            "selected_count": 1,
+            "incompatible_warning": "",
+        }
+    ]
+
+
+def test_nondefault_action_cannot_pass_from_reset_request_alone(
+    tmp_path: Path,
+) -> None:
+    reset_request_with_future_value = _esql_network(
+        "panel-a",
+        params={"namespace": "ns_2"},
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        selected_after_reset={"namespace": ("ns_1",)},
+        baseline_network_by_step=[(reset_request_with_future_value,)],
+        network_by_step=[()],
+    )
+    control = _namespace_control(
+        affected_panels=("panel-a",),
+        expect_data_change=False,
+    )
+    control = ControlScenario(
+        **{
+            **control.__dict__,
+            "options": OptionPolicy(strategy="declared", include=("ns_2",)),
+        }
+    )
+
+    report = _run(browser, _scenario(controls=(control,)), tmp_path)
+    result = report.results[0]
+
+    assert browser.select_calls == [("namespace", "ns_2")]
+    assert any(
+        finding.failure_class is FailureClass.EXPECTED_REQUEST_MISSING
+        for finding in result.findings
+    )
+
+
+def test_mixed_combination_skips_baseline_and_selects_changed_once(
+    tmp_path: Path,
+) -> None:
+    namespace = ControlScenario(
+        label="namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("ns_1",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels=("panel-a",),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+    )
+    instance = ControlScenario(
+        label="instance",
+        key="instance",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("i_1",)),
+        assertions=Assertions(
+            selection=("instance",),
+            affected_panels=("panel-b",),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+    )
+    browser = FakeBrowser(
+        controls={
+            "namespace": ("ns_1",),
+            "instance": ("i_1", "i_2"),
+        },
+        selected_after_reset={
+            "namespace": ("ns_1",),
+            "instance": ("i_1",),
+        },
+        baseline_network_by_step=[
+            (_esql_network("panel-a", params={"namespace": "ns_1"}),),
+            (_esql_network("panel-b", params={"instance": "i_1"}),),
+            (
+                _esql_network(
+                    "panel-a",
+                    params={"namespace": "ns_1", "instance": "i_1"},
+                ),
+                _esql_network(
+                    "panel-b",
+                    params={"namespace": "ns_1", "instance": "i_1"},
+                ),
+            ),
+        ],
+        network_by_step=[
+            (),
+            (),
+            (
+                _esql_network(
+                    "panel-a",
+                    params={"namespace": "ns_1", "instance": "i_2"},
+                ),
+                _esql_network(
+                    "panel-b",
+                    params={"namespace": "ns_1", "instance": "i_2"},
+                ),
+            ),
+        ],
+    )
+    scenario = _scenario(
+        controls=(namespace, instance),
+        combinations=(
+            CombinationScenario(
+                id="mixed",
+                selections=MappingProxyType(
+                    {"namespace": "ns_1", "instance": "i_2"}
+                ),
+            ),
+        ),
+    )
+
+    report = _run(browser, scenario, tmp_path)
+    mixed = next(result for result in report.results if result.name == "mixed")
+
+    assert mixed.status is InteractionStatus.PASS
+    assert browser.select_calls == [("instance", "i_2")]
+
+
+def test_reset_baseline_timeout_does_not_attempt_action(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1", "ns_2")},
+        selected_after_reset={"namespace": ("ns_1",)},
+        baseline_settle_timeout=True,
+    )
+    control = _namespace_control(
+        affected_panels=("panel-a",),
+        expect_data_change=False,
+    )
+    control = ControlScenario(
+        **{
+            **control.__dict__,
+            "options": OptionPolicy(strategy="declared", include=("ns_2",)),
+        }
+    )
+
+    report = _run(browser, _scenario(controls=(control,)), tmp_path)
+    result = report.results[0]
+
+    assert browser.select_calls == []
+    assert any(
+        finding.failure_class is FailureClass.SETTLE_TIMEOUT
+        and "reset baseline" in finding.detail
+        for finding in result.findings
+    )
+
+
 def test_expected_data_change_requires_difference_for_non_default(tmp_path: Path) -> None:
     browser = FakeBrowser(
         controls={"namespace": ("ns_1", "ns_2")},
@@ -717,7 +934,10 @@ def test_incompatible_warning_allowed_vs_failure(tmp_path: Path) -> None:
         _scenario(controls=(_namespace_control(allow_incompatible_selections=True),)),
         tmp_path,
     )
-    assert allowed_report.results[0].status is InteractionStatus.PASS
+    assert allowed_report.results[0].status is InteractionStatus.PASS, [
+        (finding.failure_class, finding.detail)
+        for finding in allowed_report.results[0].findings
+    ]
 
     failing = FakeBrowser(
         controls={"namespace": ("ns_1",)},
@@ -796,7 +1016,7 @@ def test_clear_evidence_after_artifact_write_and_pending_rejection(tmp_path: Pat
         pending_after_step=True,
     )
     report = _run(browser, _scenario(), tmp_path)
-    assert browser.clear_count == 1
+    assert browser.clear_count == 2
     assert any("clear_evidence failed" in f.detail for f in report.results[0].findings)
 
 
@@ -1156,6 +1376,7 @@ def test_unaffected_panel_success_triggers_unexpected_panel_request(tmp_path: Pa
     )
     browser = FakeBrowser(
         controls={"namespace": ("ns_1",)},
+        selected={"namespace": ("ns_0",)},
         network_by_step=[
             (
                 _esql_network("panel-a", params={"namespace": "ns_1"}),
@@ -1191,6 +1412,8 @@ def test_selection_json_records_post_read_state(tmp_path: Path) -> None:
         {
             "control_key": "namespace",
             "selected_value": "ns_1",
+            "baseline_selected": ["ns_1"],
+            "mode": "baseline_noop",
             "selected_count": 1,
             "incompatible_warning": "Incompatible selections (2)",
         }

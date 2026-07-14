@@ -429,6 +429,7 @@ def _contract_violations_for_evidence(
     required_columns: Sequence[str],
     stable_alias: str,
     minimum_rows: int,
+    require_param_tokens: bool,
 ) -> list[InteractionFinding]:
     violations: list[InteractionFinding] = []
     for fragment in query_contains:
@@ -451,21 +452,23 @@ def _contract_violations_for_evidence(
     for name, expected_value in value_params.items():
         actual_value = item.params.get(name)
         actual_kind = item.param_kinds.get(name)
-        if actual_kind != "value" or actual_value != expected_value:
+        if actual_value != expected_value or (
+            require_param_tokens and actual_kind != "value"
+        ):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
                     f"panel {panel_label}: param {name} expected value {expected_value!r}",
                 )
             )
-        if not _query_has_value_token(item.query, name):
+        if require_param_tokens and not _query_has_value_token(item.query, name):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
                     f"panel {panel_label}: query missing value token ?{name}",
                 )
             )
-        if _query_has_identifier_token(item.query, name):
+        if require_param_tokens and _query_has_identifier_token(item.query, name):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
@@ -476,21 +479,23 @@ def _contract_violations_for_evidence(
     for name, expected_identifier in identifier_params.items():
         actual_value = item.params.get(name)
         actual_kind = item.param_kinds.get(name)
-        if actual_kind != "identifier" or actual_value != expected_identifier:
+        if actual_value != expected_identifier or (
+            require_param_tokens and actual_kind != "identifier"
+        ):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
                     f"panel {panel_label}: param {name} expected identifier {expected_identifier!r}",
                 )
             )
-        if not _query_has_identifier_token(item.query, name):
+        if require_param_tokens and not _query_has_identifier_token(item.query, name):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
                     f"panel {panel_label}: query missing identifier token ??{name}",
                 )
             )
-        if _query_has_value_token(item.query, name):
+        if require_param_tokens and _query_has_value_token(item.query, name):
             violations.append(
                 InteractionFinding(
                     FailureClass.QUERY_CONTRACT_ERROR,
@@ -538,6 +543,7 @@ def check_network_contract(
     required_columns: Sequence[str] = (),
     stable_alias: str = "",
     minimum_rows: int = 0,
+    require_param_tokens: bool = True,
 ) -> list[InteractionFinding]:
     findings: list[InteractionFinding] = []
     seen: set[tuple[str, str]] = set()
@@ -613,6 +619,7 @@ def check_network_contract(
                 required_columns=required_columns,
                 stable_alias=stable_alias,
                 minimum_rows=minimum_rows,
+                require_param_tokens=require_param_tokens,
             ):
                 matched = True
                 break
@@ -632,6 +639,7 @@ def check_network_contract(
             required_columns=required_columns,
             stable_alias=stable_alias,
             minimum_rows=minimum_rows,
+            require_param_tokens=require_param_tokens,
         ):
             _append_finding(findings, seen, violation.failure_class, violation.detail)
 
