@@ -138,6 +138,9 @@ class RunConfig:
     artifact_root: Path
     run_id: str
     settle_policy: SettlePolicy = field(default_factory=SettlePolicy)
+    # always: before+after every step (legacy). on-fail: after.png only when the
+    # step fails. never: skip screenshots entirely.
+    screenshot_mode: str = "on-fail"
 
 
 @dataclass(frozen=True)
@@ -949,14 +952,15 @@ class InteractionRunner:
         selection_changes = bool(changed_controls)
 
         step_dir = self._step_dir(step)
-        before_path = step_dir / "before.png"
-        artifact_flags["before_screenshot"] = self._browser.screenshot(before_path)
-        if not artifact_flags["before_screenshot"]:
-            _append_finding(
-                findings,
-                FailureClass.UNEXPECTED_EMPTY,
-                "before.png screenshot missing or empty",
-            )
+        if self._config.screenshot_mode == "always":
+            before_path = step_dir / "before.png"
+            artifact_flags["before_screenshot"] = self._browser.screenshot(before_path)
+            if not artifact_flags["before_screenshot"]:
+                _append_finding(
+                    findings,
+                    FailureClass.UNEXPECTED_EMPTY,
+                    "before.png screenshot missing or empty",
+                )
 
         cursor: CaptureCursor | None = baseline_cursor
         settle_timed_out = baseline_timed_out
@@ -1123,14 +1127,15 @@ class InteractionRunner:
                 console_errors = list(observation.console_errors)
                 network_merged = merged
 
-        after_path = step_dir / "after.png"
-        artifact_flags["after_screenshot"] = self._browser.screenshot(after_path)
-        if not artifact_flags["after_screenshot"]:
-            _append_finding(
-                findings,
-                FailureClass.UNEXPECTED_EMPTY,
-                "after.png screenshot missing or empty",
-            )
+        if self._config.screenshot_mode == "always":
+            after_path = step_dir / "after.png"
+            artifact_flags["after_screenshot"] = self._browser.screenshot(after_path)
+            if not artifact_flags["after_screenshot"]:
+                _append_finding(
+                    findings,
+                    FailureClass.UNEXPECTED_EMPTY,
+                    "after.png screenshot missing or empty",
+                )
 
         if not baseline_failed:
             findings.extend(
@@ -1187,6 +1192,12 @@ class InteractionRunner:
             network=network_evidence,
             panels=list(observation.panels),
         )
+        if (
+            self._config.screenshot_mode == "on-fail"
+            and preliminary.status is InteractionStatus.FAIL
+        ):
+            after_path = step_dir / "after.png"
+            artifact_flags["after_screenshot"] = self._browser.screenshot(after_path)
         artifact_error = self._write_step_artifacts(
             step,
             result=preliminary,

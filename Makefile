@@ -63,5 +63,6 @@ test-interactions: sync ## Run offline interaction-audit unit tests
 	  tests/test_redis_interaction_scenario.py \
 	  tests/test_k8s_views_global_interaction_scenario.py
 
-interaction-audit-local: setup-browser ## Run live interaction scenarios on local Kibana
+interaction-audit-local: ## Run live interaction scenarios on local Kibana
+	@# Browser install is auto-skipped when Chromium is already available.
 	bash scripts/run_interaction_audit_local.sh

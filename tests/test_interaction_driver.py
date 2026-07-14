@@ -259,6 +259,10 @@ class FakePage:
         self.goto_calls.append((url, wait_until))
         self.url = url
 
+    def reload(self, *, wait_until: str | None = None) -> None:
+        self.reload_calls = getattr(self, "reload_calls", 0) + 1
+        self.goto_calls.append((f"reload:{self.url}", wait_until))
+
     def screenshot(self, *, path: str, full_page: bool = True) -> bytes:
         del full_page
         self._last_screenshot_path = path

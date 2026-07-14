@@ -210,6 +210,8 @@ class FakeBrowser:
 
     def screenshot(self, path: str | Path) -> bool:
         target = Path(path)
+        self.screenshot_paths = getattr(self, "screenshot_paths", [])
+        self.screenshot_paths.append(str(target))
         if not self.screenshot_ok:
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -328,6 +330,7 @@ def _run(
             dashboard_url="http://localhost:5601/app/dashboards#/view/test",
             artifact_root=tmp_path,
             run_id="run-1",
+            screenshot_mode="always",
         ),
     ).run()
 
@@ -1220,6 +1223,56 @@ def test_clear_evidence_failure_preserves_result_payload(tmp_path: Path) -> None
     )
 
 
+def test_screenshot_mode_on_fail_skips_pass_screenshots(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        network_by_step=[(_esql_network("panel-a"),)],
+    )
+    report = InteractionRunner(
+        browser,
+        _scenario(),
+        _panel_contract(),
+        RunConfig(
+            dashboard_url="http://localhost:5601/app/dashboards#/view/test",
+            artifact_root=tmp_path,
+            run_id="run-1",
+            screenshot_mode="on-fail",
+        ),
+    ).run()
+    assert any(result.status is InteractionStatus.PASS for result in report.results)
+    assert getattr(browser, "screenshot_paths", []) == []
+    result_path = _step_dir(tmp_path, "namespace=ns_1") / "result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["artifact_flags"]["before_screenshot"] is False
+    assert payload["artifact_flags"]["after_screenshot"] is False
+    assert not (_step_dir(tmp_path, "namespace=ns_1") / "before.png").exists()
+    assert not (_step_dir(tmp_path, "namespace=ns_1") / "after.png").exists()
+
+
+def test_screenshot_mode_on_fail_captures_failed_step(tmp_path: Path) -> None:
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        network_by_step=[()],
+    )
+    report = InteractionRunner(
+        browser,
+        _scenario(),
+        _panel_contract(),
+        RunConfig(
+            dashboard_url="http://localhost:5601/app/dashboards#/view/test",
+            artifact_root=tmp_path,
+            run_id="run-1",
+            screenshot_mode="on-fail",
+        ),
+    ).run()
+    assert any(result.status is InteractionStatus.FAIL for result in report.results)
+    paths = getattr(browser, "screenshot_paths", [])
+    assert len(paths) == 1
+    assert paths[0].endswith("after.png")
+    assert (_step_dir(tmp_path, "namespace=ns_1") / "after.png").exists()
+    assert not (_step_dir(tmp_path, "namespace=ns_1") / "before.png").exists()
+
+
 def test_settle_timeout_skips_data_change_regression(tmp_path: Path) -> None:
     browser = FakeBrowser(
         controls={"namespace": ("ns_1", "ns_2")},
@@ -1948,6 +2001,7 @@ def test_runner_rejects_unsafe_artifact_paths(
                 dashboard_url="http://localhost:5601/app/dashboards#/view/test",
                 artifact_root=tmp_path,
                 run_id=run_id,
+                screenshot_mode="always",
             ),
         )
 
@@ -1965,6 +2019,7 @@ def test_runner_step_directories_stay_under_run_root(tmp_path: Path) -> None:
             dashboard_url="http://localhost:5601/app/dashboards#/view/test",
             artifact_root=tmp_path,
             run_id="run-1",
+            screenshot_mode="always",
         ),
     )
     report = runner.run()

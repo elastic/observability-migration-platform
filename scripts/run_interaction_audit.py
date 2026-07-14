@@ -68,20 +68,26 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
-        default=30.0,
+        default=20.0,
         help="Settle timeout in seconds",
     )
     parser.add_argument(
         "--poll-interval-ms",
         type=int,
-        default=100,
+        default=75,
         help="Settle poll interval in milliseconds",
     )
     parser.add_argument(
         "--stable-polls",
         type=int,
-        default=3,
+        default=2,
         help="Required stable polls before settle completes",
+    )
+    parser.add_argument(
+        "--screenshots",
+        choices=("always", "on-fail", "never"),
+        default="on-fail",
+        help="Screenshot policy: always, on-fail (default), or never",
     )
     return parser
 
@@ -114,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             poll_interval_ms=args.poll_interval_ms,
             stable_polls=args.stable_polls,
         ),
+        screenshot_mode=args.screenshots,
     )
 
     try:

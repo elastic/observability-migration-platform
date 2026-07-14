@@ -1890,9 +1890,10 @@ class PlaywrightKibanaBrowser:
     def reset(self, url: str) -> None:
         self._clear_adapter_cache()
         page = self._require_page()
-        # Navigating to the same hash route does not reload Kibana and can
-        # preserve open popovers and prior control state. Leave the SPA first,
-        # then clear origin storage before reopening so control defaults win.
+        # Leave the SPA, open the dashboard, clear origin storage, then open
+        # again so control defaults win. Prefer a second goto over page.reload()
+        # — reload was observed to stall Kibana dashboard bootstrapping for
+        # multi-panel dashboards (minutes per step vs seconds).
         page.goto("about:blank", wait_until="domcontentloaded")
         page.goto(url, wait_until="domcontentloaded")
         try:
