@@ -169,12 +169,20 @@ def test_panel_contract_maps_stable_panel_ids_without_rewriting_manifest(tmp_pat
         all_query_panels=(runtime_ids["stable-metric"],),
         by_control={"environment": (runtime_ids["stable-metric"],)},
         panel_aliases=runtime_ids,
+        panel_titles={
+            runtime_ids["stable-metric"]: "Metric",
+            runtime_ids["stable-reference"]: "Reference",
+        },
     )
     path = tmp_path / "panel-contract.json"
 
     local.write_panel_contract(path, contract)
     loaded = load_panel_contract(path)
 
+    assert loaded.remap_panel_ids(
+        (runtime_ids["stable-metric"],),
+        {"Metric": "fresh-runtime-id"},
+    ) == ("fresh-runtime-id",)
     assert loaded.resolve_panel_ids(("stable-metric", "stable-reference")) == (
         runtime_ids["stable-metric"],
         runtime_ids["stable-reference"],

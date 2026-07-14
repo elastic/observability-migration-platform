@@ -418,6 +418,18 @@ def _append_finding(
     findings.append(InteractionFinding(failure_class, detail))
 
 
+def _normalize_value_param(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item) for item in value)
+    if value is None:
+        return ()
+    return (str(value),)
+
+
+def _value_param_matches(expected: object, actual: object) -> bool:
+    return _normalize_value_param(expected) == _normalize_value_param(actual)
+
+
 def _contract_violations_for_evidence(
     item: NetworkEvidence,
     panel_label: str,
@@ -452,7 +464,7 @@ def _contract_violations_for_evidence(
     for name, expected_value in value_params.items():
         actual_value = item.params.get(name)
         actual_kind = item.param_kinds.get(name)
-        if actual_value != expected_value or (
+        if not _value_param_matches(expected_value, actual_value) or (
             require_param_tokens and actual_kind != "value"
         ):
             violations.append(

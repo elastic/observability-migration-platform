@@ -9,7 +9,7 @@ import importlib.util
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -37,6 +37,7 @@ from observability_migration.targets.kibana.interaction_runner import (
     InteractionRunner,
     PanelContract,
     RunConfig,
+    _expected_params_for_control,
     load_panel_contract,
     validate_run_artifact_paths,
 )
@@ -398,7 +399,7 @@ def test_happy_option_pass_calls_browser_contract_once(tmp_path: Path) -> None:
     assert browser.begin_count == 2
     assert browser.settle_count == 2
     assert browser.select_calls == [("namespace", "ns_1")]
-    assert browser.settle_expected_panels == [("panel-a",), ("panel-a",)]
+    assert browser.settle_expected_panels == [(), ("panel-a",)]
     assert report.status == "pass"
     assert report.results[0].status is InteractionStatus.PASS
 
@@ -475,8 +476,8 @@ def test_affected_panel_resolution_modes(tmp_path: Path) -> None:
     report = _run(browser, scenario, tmp_path, contract)
     missing_result = next(result for result in report.results if result.name == "missing=x")
     assert any(f.failure_class is FailureClass.FRAMEWORK_ERROR for f in missing_result.findings)
-    assert browser.settle_expected_panels[0] == ("panel-z",)
-    assert set(browser.settle_expected_panels[2]) == {"panel-a", "panel-b"}
+    assert browser.settle_expected_panels[1] == ("panel-z",)
+    assert set(browser.settle_expected_panels[3]) == {"panel-a", "panel-b"}
 
 
 def test_gap_and_missing_plan_step_statuses(tmp_path: Path) -> None:
@@ -557,6 +558,63 @@ def test_query_bar_filter_text_is_not_required_in_esql_query_text(
     )
 
     assert report.results[0].status is InteractionStatus.PASS
+
+
+def test_multiple_value_control_builds_sequence_wire_expectation() -> None:
+    control = ControlScenario(
+        label="services",
+        key="services",
+        adapter="esql_value",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(strategy="declared", include=("api,worker",)),
+        assertions=Assertions(selection=("services",)),
+        multiple=True,
+        expected_gap="native capability",
+    )
+
+    value_params, identifier_params = _expected_params_for_control(
+        control,
+        "api,worker",
+    )
+
+    assert value_params == {"services": ["api", "worker"]}
+    assert identifier_params == {}
+
+
+def test_multiple_value_control_single_selection_uses_sequence_wire() -> None:
+    control = ControlScenario(
+        label="services",
+        key="services",
+        adapter="esql_value",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(strategy="declared", include=("worker",)),
+        assertions=Assertions(selection=("services",)),
+        multiple=True,
+    )
+
+    value_params, _ = _expected_params_for_control(control, "worker")
+
+    assert value_params == {"services": ["worker"]}
+
+
+def test_selection_matches_baseline_requires_exact_multiselect_set() -> None:
+    from observability_migration.targets.kibana.interaction_runner import (
+        _selection_matches_baseline,
+    )
+
+    control = ControlScenario(
+        label="services",
+        key="services",
+        adapter="esql_value",
+        capability=CapabilityCategory.KIBANA_ONLY,
+        options=OptionPolicy(strategy="every"),
+        assertions=Assertions(),
+        multiple=True,
+    )
+
+    assert _selection_matches_baseline(control, "api", ("api", "worker")) is False
+    assert _selection_matches_baseline(control, "api,worker", ("api", "worker")) is True
+    assert _selection_matches_baseline(control, "worker", ("worker",)) is True
 
 
 def test_combination_applies_each_query_contract_to_its_own_panel(
@@ -757,6 +815,50 @@ def test_default_option_passes_from_reset_baseline_without_click(
             "selected_count": 1,
             "incompatible_warning": "",
         }
+    ]
+
+
+def test_reset_baseline_remaps_generated_panel_ids_by_title(
+    tmp_path: Path,
+) -> None:
+    baseline_request = replace(
+        _esql_network("fresh-panel", params={"namespace": "ns_1"}),
+        panel_title="Namespace panel",
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("ns_1",)},
+        baseline_network_by_step=[(baseline_request,)],
+        network_by_step=[()],
+    )
+    control = ControlScenario(
+        label="namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("ns_1",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels=("stable-panel",),
+            minimum_rows=1,
+            expect_data_change=False,
+        ),
+    )
+    contract = PanelContract(
+        all_query_panels=("stale-panel",),
+        panel_aliases={"stable-panel": "stale-panel"},
+        panel_titles={"stale-panel": "Namespace panel"},
+    )
+
+    report = _run(
+        browser,
+        _scenario(controls=(control,)),
+        tmp_path,
+        contract,
+    )
+
+    assert report.results[0].status is InteractionStatus.PASS
+    assert [panel.panel_id for panel in report.results[0].panels] == [
+        "fresh-panel"
     ]
 
 

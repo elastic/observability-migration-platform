@@ -121,6 +121,30 @@ def test_optional_control_schema_defaults_to_empty(tmp_path: Path) -> None:
     assert scenario.control_schema_path == ""
 
 
+def test_control_multiple_defaults_false_and_parses_true(tmp_path: Path) -> None:
+    assert load_scenario(MINIMAL).controls[0].multiple is False
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0].update({"multiple": True}),
+    )
+
+    assert load_scenario(path).controls[0].multiple is True
+
+
+@pytest.mark.parametrize("value", ["true", 1, [], None])
+def test_control_multiple_requires_boolean(tmp_path: Path, value: object) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0].update({"multiple": value}),
+    )
+
+    with pytest.raises(
+        ManifestError,
+        match=r"controls\[0\]\.multiple must be a boolean",
+    ):
+        load_scenario(path)
+
+
 @pytest.mark.parametrize(
     "control_schema",
     ["", "   "],

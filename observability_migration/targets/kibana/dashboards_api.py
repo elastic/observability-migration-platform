@@ -1207,8 +1207,8 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
             "available_options": options,
             "selected_options": [str(option) for option in defaults],
         }
-    if control.get("multiple") is False:
-        esql_config["single_select"] = True
+    if "multiple" in control:
+        esql_config["single_select"] = not bool(control.get("multiple"))
     return {"type": "esql_control", "config": esql_config}
 
 

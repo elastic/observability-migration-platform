@@ -37,6 +37,7 @@ _CONTROL_KEYS = frozenset(
         "key",
         "adapter",
         "capability",
+        "multiple",
         "options",
         "assertions",
         "expected_gap",
@@ -139,6 +140,7 @@ class ControlScenario:
     capability: CapabilityCategory
     options: OptionPolicy
     assertions: Assertions
+    multiple: bool = False
     expected_gap: str = ""
 
 
@@ -669,6 +671,11 @@ def _parse_controls(value: Any, manifest_path: Path) -> tuple[ControlScenario, .
         assertions = _parse_assertions(
             control.get("assertions"), manifest_path, field_prefix
         )
+        multiple = _require_bool(
+            control.get("multiple", False),
+            manifest_path,
+            f"{field_prefix}.multiple",
+        )
 
         expected_gap = ""
         if "expected_gap" in control:
@@ -688,6 +695,7 @@ def _parse_controls(value: Any, manifest_path: Path) -> tuple[ControlScenario, .
                 capability=capability,
                 options=options,
                 assertions=assertions,
+                multiple=multiple,
                 expected_gap=expected_gap,
             )
         )

@@ -30,6 +30,7 @@ controls:
     key: services
     adapter: esql_value
     capability: kibana_only
+    multiple: true
     expected_gap: Grafana multi-value ES|QL controls are not emitted by obs-migrate yet
     options:
       strategy: every

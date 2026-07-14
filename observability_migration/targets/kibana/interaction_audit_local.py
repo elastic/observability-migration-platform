@@ -358,6 +358,7 @@ def write_panel_contract(path: Path, contract: PanelContract) -> None:
         "all_query_panels": list(contract.all_query_panels),
         "by_control": {key: list(panels) for key, panels in contract.by_control.items()},
         "panel_aliases": dict(contract.panel_aliases),
+        "panel_titles": dict(contract.panel_titles),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -644,6 +645,11 @@ def prepare_runtime_artifacts(
         all_query_panels=derived_contract.all_query_panels,
         by_control=derived_contract.by_control,
         panel_aliases=stable_to_runtime,
+        panel_titles={
+            stable_to_runtime[stable_id]: title
+            for stable_id, title in stable_panels
+            if stable_id in stable_to_runtime
+        },
     )
     panel_contract_path = output_dir / "panel-contract.json"
     write_panel_contract(panel_contract_path, panel_contract)

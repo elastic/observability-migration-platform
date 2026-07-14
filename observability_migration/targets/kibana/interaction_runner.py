@@ -103,11 +103,28 @@ class PanelContract:
     all_query_panels: tuple[str, ...] = ()
     by_control: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     panel_aliases: Mapping[str, str] = field(default_factory=dict)
+    panel_titles: Mapping[str, str] = field(default_factory=dict)
 
     def resolve_panel_ids(self, panel_ids: Sequence[str]) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
                 self.panel_aliases.get(str(panel_id), str(panel_id))
+                for panel_id in panel_ids
+                if str(panel_id)
+            )
+        )
+
+    def remap_panel_ids(
+        self,
+        panel_ids: Sequence[str],
+        runtime_by_title: Mapping[str, str],
+    ) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                runtime_by_title.get(
+                    self.panel_titles.get(str(panel_id), ""),
+                    str(panel_id),
+                )
                 for panel_id in panel_ids
                 if str(panel_id)
             )
@@ -278,8 +295,9 @@ def _expected_params_for_control(
     identifier_params: dict[str, str] = {}
     param_names = control.assertions.selection or (control.key,)
     if control.adapter in _ESQL_VALUE_ADAPTERS:
+        expected_value = _kibana_wire_value_param(control, selected_value)
         for name in param_names:
-            value_params[name] = selected_value
+            value_params[name] = expected_value
     elif control.adapter in _ESQL_IDENTIFIER_ADAPTERS:
         for name in param_names:
             identifier_params[name] = selected_value
@@ -537,13 +555,52 @@ def _result_payload(
     }
 
 
+def _expected_selection_set(
+    control: ControlScenario,
+    selected_value: str,
+) -> frozenset[str]:
+    if control.multiple or (
+        control.adapter in {"esql_value", "options_list"} and "," in selected_value
+    ):
+        return frozenset(
+            part.strip()
+            for part in selected_value.split(",")
+            if part.strip()
+        )
+    if selected_value:
+        return frozenset({selected_value})
+    return frozenset()
+
+
+def _kibana_wire_value_param(
+    control: ControlScenario,
+    selected_value: str,
+) -> object:
+    """Return the value shape Kibana sends for an ES|QL control selection."""
+    if control.multiple:
+        return [
+            part.strip()
+            for part in selected_value.split(",")
+            if part.strip()
+        ]
+    return selected_value
+
+
 def _selection_changes_from_baseline(
     selections: Mapping[str, str],
     discovered_by_key: Mapping[str, DiscoveredControl],
+    *,
+    controls_by_key: Mapping[str, ControlScenario] | None = None,
 ) -> bool:
     for key, value in selections.items():
         discovered = discovered_by_key.get(key)
         if discovered is None:
+            continue
+        control = (controls_by_key or {}).get(key)
+        if control is not None:
+            expected = _expected_selection_set(control, value)
+            if expected != frozenset(discovered.selected):
+                return True
             continue
         if not discovered.selected:
             if value:
@@ -559,15 +616,8 @@ def _selection_matches_baseline(
     selected_value: str,
     baseline_selected: Sequence[str],
 ) -> bool:
-    selected = tuple(str(value) for value in baseline_selected if str(value))
-    if control.adapter in {"esql_value", "options_list"} and "," in selected_value:
-        expected = {
-            part.strip()
-            for part in selected_value.split(",")
-            if part.strip()
-        }
-        return expected == set(selected)
-    return selected_value in selected
+    selected = frozenset(str(value) for value in baseline_selected if str(value))
+    return _expected_selection_set(control, selected_value) == selected
 
 
 def _clear_evidence_best_effort(browser: BrowserAdapter) -> InteractionFinding | None:
@@ -748,7 +798,6 @@ class InteractionRunner:
             premerge_findings,
         )
         findings.extend(premerge_findings)
-        expected_panels = merged.expected_panels
         baseline_cursor = self._browser.begin_step()
         if step.reset_before:
             self._browser.reset(self._config.dashboard_url)
@@ -758,7 +807,7 @@ class InteractionRunner:
         try:
             baseline_observation = self._browser.settle(
                 baseline_cursor,
-                expected_panels,
+                (),
                 policy=self._config.settle_policy,
             )
         except SettleTimeout as exc:
@@ -773,7 +822,7 @@ class InteractionRunner:
         except BrowserAdapterError as exc:
             baseline_failed = True
             baseline_observation = self._browser.capture(
-                expected_panels,
+                (),
                 cursor=baseline_cursor,
             )
             _append_finding(
@@ -784,7 +833,7 @@ class InteractionRunner:
         except Exception as exc:  # pragma: no cover - defensive boundary
             baseline_failed = True
             baseline_observation = self._browser.capture(
-                expected_panels,
+                (),
                 cursor=baseline_cursor,
             )
             _append_finding(
@@ -793,6 +842,27 @@ class InteractionRunner:
                 f"reset baseline failed: {exc}",
             )
 
+        runtime_by_title = {
+            item.panel_title: item.panel_id
+            for item in baseline_observation.network
+            if item.panel_title and item.panel_id
+        }
+        merged = replace(
+            merged,
+            expected_panels=self._panel_contract.remap_panel_ids(
+                merged.expected_panels,
+                runtime_by_title,
+            ),
+            unaffected_panels=self._panel_contract.remap_panel_ids(
+                merged.unaffected_panels,
+                runtime_by_title,
+            ),
+        )
+        expected_panels = merged.expected_panels
+        baseline_observation = self._browser.capture(
+            expected_panels,
+            cursor=baseline_cursor,
+        )
         baseline_fingerprint = _panel_fingerprint(baseline_observation.panels)
         baseline_selected: dict[str, tuple[str, ...]] = {}
         selection_records: list[dict[str, object]] = []
@@ -1429,6 +1499,7 @@ def load_panel_contract(path: str | Path) -> PanelContract:
     all_query_raw = payload.get("all_query_panels", [])
     by_control_raw = payload.get("by_control", {})
     panel_aliases_raw = payload.get("panel_aliases", {})
+    panel_titles_raw = payload.get("panel_titles", {})
     if not isinstance(all_query_raw, list) or not all(
         isinstance(item, str) for item in all_query_raw
     ):
@@ -1440,6 +1511,11 @@ def load_panel_contract(path: str | Path) -> PanelContract:
         for key, value in panel_aliases_raw.items()
     ):
         raise ValueError(f"{contract_path}: panel_aliases must map strings to strings")
+    if not isinstance(panel_titles_raw, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in panel_titles_raw.items()
+    ):
+        raise ValueError(f"{contract_path}: panel_titles must map strings to strings")
 
     by_control: dict[str, tuple[str, ...]] = {}
     for key, value in by_control_raw.items():
@@ -1455,4 +1531,5 @@ def load_panel_contract(path: str | Path) -> PanelContract:
         all_query_panels=tuple(all_query_raw),
         by_control=by_control,
         panel_aliases=dict(panel_aliases_raw),
+        panel_titles=dict(panel_titles_raw),
     )

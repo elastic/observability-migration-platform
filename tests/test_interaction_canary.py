@@ -129,7 +129,7 @@ def test_interaction_canary_native_services_preserves_multi_selection():
     assert services.config["control_type"] == "VALUES_FROM_QUERY"
     assert services.config["variable_type"] == "values"
     assert services.config["selected_options"] == ["api", "worker"]
-    assert services.config.get("single_select") is not True
+    assert services.config["single_select"] is False
 
 
 def test_interaction_canary_native_classic_controls_map_fields():
@@ -400,6 +400,8 @@ def test_synthetic_controls_manifest_strict_loads():
 
 def test_synthetic_controls_manifest_declares_capabilities_and_gaps():
     scenario = load_scenario(SYNTHETIC_MANIFEST)
+    services = next(control for control in scenario.controls if control.key == "services")
+    assert services.multiple is True
     keys = {control.key for control in scenario.controls}
     assert {
         "environment",

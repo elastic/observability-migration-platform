@@ -200,6 +200,17 @@ class FakeLocator:
         return self._elements[0].fill_calls
 
 
+class FakeKeyboard:
+    def __init__(self, page: FakePage) -> None:
+        self._page = page
+
+    def press(self, key: str) -> None:
+        for element in self._page._elements:
+            if element.role == "combobox" and element.open:
+                self._page._press(element, key)
+                return
+
+
 class FakePage:
     def __init__(
         self,
@@ -219,6 +230,7 @@ class FakePage:
         self._body = FakeElement(role="document", text=body_text, selector="body")
         self._elements.append(self._body)
         self._listeners: dict[str, list[Any]] = {}
+        self.keyboard = FakeKeyboard(self)
 
     def on(self, event: str, handler: Any) -> None:
         self._listeners.setdefault(event, []).append(handler)
@@ -418,9 +430,17 @@ class FakePage:
                 else:
                     selected.append(element.text)
                 combobox.data_selected_options = ",".join(selected)
-                for child in combobox.children:
+                listbox = combobox.linked_listbox
+                option_nodes = (
+                    listbox.children
+                    if listbox is not None
+                    else combobox.children
+                )
+                for child in option_nodes:
                     if child.role == "option":
-                        child.aria_selected = "true" if child.text in selected else "false"
+                        child.aria_selected = (
+                            "true" if child.text in selected else "false"
+                        )
             else:
                 combobox.data_selected_options = element.text
                 for child in combobox.children:
@@ -503,6 +523,17 @@ class FakePage:
     def _press(self, element: FakeElement, key: str) -> None:
         if key == "Enter":
             element.input_value = element.input_value
+            return
+        if key == "Escape" and element.role == "combobox":
+            listbox = element.linked_listbox
+            if listbox is not None:
+                selected = [
+                    child.name
+                    for child in listbox.children
+                    if child.aria_selected == "true"
+                ]
+                element.data_selected_options = ",".join(selected)
+            element.open = False
 
     def _combobox_for_option(self, option: FakeElement) -> FakeElement | None:
         for element in self._elements:
@@ -551,8 +582,11 @@ class FakeNetworkResponse:
     status: int
     body: object = None
     json_error: str = ""
+    on_json: Any = None
 
     def json(self) -> object:
+        if self.on_json is not None:
+            self.on_json()
         if self.json_error:
             raise ValueError(self.json_error)
         return self.body if self.body is not None else {}
@@ -724,6 +758,7 @@ def _control(
     adapter: str,
     *,
     capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE,
+    multiple: bool = False,
 ) -> ControlScenario:
     return ControlScenario(
         label=label,
@@ -732,6 +767,7 @@ def _control(
         capability=capability,
         options=OptionPolicy(strategy="every"),
         assertions=Assertions(),
+        multiple=multiple,
     )
 
 
@@ -925,30 +961,96 @@ def test_esql_verifies_operated_control_with_mounted_popover() -> None:
     assert combobox.get_attribute("data-selected-options") == "ns_2"
 
 
-def test_esql_multiselect_accepts_comma_delimited_combination() -> None:
+def _esql_multiselect_page(
+    *,
+    selected: list[str],
+    sticky: bool = True,
+) -> tuple[FakePage, FakeElement]:
     page = FakePage()
     combobox = FakeElement(
         role="combobox",
         name="services",
         aria_label="services",
-        data_selected_options="api,worker",
+        data_selected_options=",".join(selected),
         aria_multiselectable="true",
+        sticky=sticky,
     )
     page.add(combobox)
     listbox = _attach_listbox(
         page,
         combobox,
         options=["api", "frontend", "worker"],
-        selected=["api", "worker"],
+        selected=selected,
     )
     listbox.aria_multiselectable = "true"
+    return page, combobox
 
+
+def test_esql_multiselect_adds_only_missing_option() -> None:
+    page, combobox = _esql_multiselect_page(selected=["api"])
     EsqlControlAdapter(page).select(
-        _control("services", "services", "esql_value"),
+        _control("services", "services", "esql_value", multiple=True),
         "api,worker",
     )
 
     assert combobox.data_selected_options == "api,worker"
+    assert page.option_clicks == {"worker": 1}
+
+
+def test_esql_multiselect_deselects_extra_then_selects_missing() -> None:
+    page, combobox = _esql_multiselect_page(selected=["api"])
+
+    EsqlControlAdapter(page).select(
+        _control("services", "services", "esql_value", multiple=True),
+        "worker",
+    )
+
+    assert combobox.data_selected_options == "worker"
+    assert page.option_clicks == {"api": 1, "worker": 1}
+
+
+def test_esql_multiselect_removes_only_extra_selected_option() -> None:
+    page, combobox = _esql_multiselect_page(selected=["api", "worker"])
+
+    EsqlControlAdapter(page).select(
+        _control("services", "services", "esql_value", multiple=True),
+        "api",
+    )
+
+    assert combobox.data_selected_options == "api"
+    assert page.option_clicks == {"worker": 1}
+
+
+def test_esql_multiselect_sticky_failure_clicks_diff_once() -> None:
+    page, _combobox = _esql_multiselect_page(
+        selected=["api"],
+        sticky=False,
+    )
+
+    with pytest.raises(SelectionDidNotStick):
+        EsqlControlAdapter(page).select(
+            _control("services", "services", "esql_value", multiple=True),
+            "worker",
+        )
+
+    assert page.option_clicks == {"api": 1, "worker": 1}
+
+
+def test_esql_single_select_preserves_literal_comma() -> None:
+    page = _esql_page(
+        combobox_name="label",
+        options=["a,b", "plain"],
+        selected=["plain"],
+    )
+
+    EsqlControlAdapter(page).select(
+        _control("label", "label", "esql_value"),
+        "a,b",
+    )
+
+    combobox = page.get_by_role("combobox", name="label", exact=True)
+    assert combobox.get_attribute("data-selected-options") == "a,b"
+    assert page.option_clicks == {"a,b": 1}
 
 
 def _multi_esql_page() -> FakePage:
@@ -1847,6 +1949,68 @@ def test_requestfailed_becomes_terminal_error_evidence() -> None:
     assert observation.network[0].status == -1
     assert "ERR_FAILED" in observation.network[0].error
     assert observation.pending_requests == ()
+
+
+def test_reentrant_response_and_requestfailed_claim_terminal_once() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    request = page.emit_esql_request("panel-1")
+    request.failure = FakeRequestFailure(error_text="late failure")
+    response = FakeNetworkResponse(
+        request=request,
+        status=200,
+        body={
+            "columns": [{"name": "value"}],
+            "values": [[1]],
+        },
+        on_json=lambda: page.emit_request_failed(request),
+    )
+
+    page.emit_response(response)
+    page.emit_response(response)
+    observation = browser.capture(["panel-1"])
+
+    assert len(observation.network) == 1
+    assert observation.network[0].status == 200
+    assert observation.pending_requests == ()
+    assert not any(
+        "listener failed" in message for message in observation.console_errors
+    )
+
+
+def test_clear_evidence_fails_closed_during_claimed_response() -> None:
+    page = InstrumentedFakePage()
+    browser = PlaywrightKibanaBrowser(page)
+    request = page.emit_esql_request("panel-1")
+    clear_errors: list[str] = []
+
+    def clear_during_json() -> None:
+        try:
+            browser.clear_evidence()
+        except BrowserAdapterError as exc:
+            clear_errors.append(str(exc))
+
+    page.emit_response(
+        FakeNetworkResponse(
+            request=request,
+            status=200,
+            body={
+                "columns": [{"name": "value"}],
+                "values": [[1]],
+            },
+            on_json=clear_during_json,
+        )
+    )
+
+    observation = browser.capture(["panel-1"])
+    assert clear_errors == [
+        "cannot clear evidence while terminal callbacks are active"
+    ]
+    assert len(observation.network) == 1
+    assert observation.network[0].status == 200
+
+    browser.clear_evidence()
+    assert browser.capture([]).network == ()
 
 
 def test_only_error_console_messages_are_recorded_and_bounded() -> None:

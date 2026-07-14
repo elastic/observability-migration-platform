@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
@@ -799,6 +799,44 @@ def test_check_network_contract_enforces_value_param_binding_and_token():
     )
     assert any("missing value token ?namespace" in finding.detail for finding in missing_token)
     assert any("bound as identifier token ??namespace" in finding.detail for finding in missing_token)
+
+
+def test_check_network_contract_enforces_multi_value_sequence() -> None:
+    matching = _successful_evidence(
+        query="FROM metrics-* | WHERE MV_CONTAINS(?services, service.name)",
+        params={"services": ["api", "worker"]},
+        param_kinds={"services": "value"},
+    )
+    findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[matching],
+        expected_value_params={"services": ["api", "worker"]},
+    )
+    assert findings == []
+
+    scalar = replace(
+        matching,
+        params={"services": "api"},
+    )
+    scalar_findings = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[scalar],
+        expected_value_params={"services": ["api", "worker"]},
+    )
+    assert any(
+        "expected value ['api', 'worker']" in finding.detail
+        for finding in scalar_findings
+    )
+
+    normalized_scalar = check_network_contract(
+        expected_panel_ids=["panel-7"],
+        unaffected_panel_ids=[],
+        evidence=[replace(matching, params={"services": "api"})],
+        expected_value_params={"services": ["api"]},
+    )
+    assert normalized_scalar == []
 
 
 def test_query_not_contains_value_token_does_not_match_identifier_token():

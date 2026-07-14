@@ -300,6 +300,7 @@ class _NetworkEventCollector:
         self._network: list[NetworkEvidence] = []
         self._console_errors: list[str] = []
         self._pending: dict[int, tuple[int, float, str, str, str]] = {}
+        self._active_terminal_callbacks: set[int] = set()
         self._page: Any | None = None
         self._handlers: dict[str, Any] = {}
         self._listeners_attached = False
@@ -346,6 +347,10 @@ class _NetworkEventCollector:
         self._pending.clear()
 
     def clear(self) -> None:
+        if self._active_terminal_callbacks:
+            raise BrowserAdapterError(
+                "cannot clear evidence while terminal callbacks are active"
+            )
         self._network.clear()
         self._console_errors.clear()
         self._pending.clear()
@@ -401,32 +406,39 @@ class _NetworkEventCollector:
             request = getattr(response, "request", None)
             if request is None:
                 return
-            pending = self._pending.get(id(request))
+            request_id = id(request)
+            pending = self._pending.pop(request_id, None)
             if pending is None:
                 return
-            index, _started, _panel_id, _endpoint, _opaque_id = pending
-            status = int(getattr(response, "status", 0) or 0)
-            body: object = {}
-            parse_error = ""
+            self._active_terminal_callbacks.add(request_id)
             try:
-                body = response.json()
-            except Exception as exc:
-                parse_error = _bound_text(str(exc), limit=_MAX_CONSOLE_MESSAGE)
-            evidence = self._network[index]
-            enriched = enrich_esql_response(
-                evidence,
-                status=status,
-                body=body,
-                error=parse_error,
-            )
-            self._network[index] = enriched
-            del self._pending[id(request)]
+                index, _started, _panel_id, _endpoint, _opaque_id = pending
+                status = int(getattr(response, "status", 0) or 0)
+                body: object = {}
+                parse_error = ""
+                try:
+                    body = response.json()
+                except Exception as exc:
+                    parse_error = _bound_text(
+                        str(exc),
+                        limit=_MAX_CONSOLE_MESSAGE,
+                    )
+                evidence = self._network[index]
+                enriched = enrich_esql_response(
+                    evidence,
+                    status=status,
+                    body=body,
+                    error=parse_error,
+                )
+                self._network[index] = enriched
+            finally:
+                self._active_terminal_callbacks.discard(request_id)
         except Exception as exc:
             self._record_framework_error(f"response listener failed: {exc}")
 
     def _on_request_failed(self, request: Any) -> None:
         try:
-            pending = self._pending.get(id(request))
+            pending = self._pending.pop(id(request), None)
             if pending is None:
                 return
             index, _started, _panel_id, _endpoint, _opaque_id = pending
@@ -441,7 +453,6 @@ class _NetworkEventCollector:
                 error=error_text or "request failed",
             )
             self._network[index] = evidence
-            del self._pending[id(request)]
         except Exception as exc:
             self._record_framework_error(f"requestfailed listener failed: {exc}")
 
@@ -980,7 +991,18 @@ def _close_open_popover(
     *,
     trigger: LocatorLike | None = None,
 ) -> None:
-    del page, trigger
+    keyboard = getattr(page, "keyboard", None)
+    if keyboard is not None:
+        try:
+            keyboard.press("Escape")
+            return
+        except (AttributeError, BrowserAdapterError, TypeError):
+            pass
+    if trigger is not None:
+        try:
+            trigger.press("Escape")
+        except (AttributeError, BrowserAdapterError, TypeError):
+            pass
 
 
 def _read_incompatible_warning(page: PageLike) -> str:
@@ -1011,6 +1033,7 @@ def _wait_for_expected_selected(
     expected: Collection[str],
     *,
     timeout_ms: int = 3_000,
+    exact: bool = False,
 ) -> set[str]:
     deadline = time.monotonic() + timeout_ms / 1000
     expected_set = set(expected)
@@ -1019,7 +1042,8 @@ def _wait_for_expected_selected(
         selected = set(
             _read_selected_option_texts(page, combobox=combobox)
         )
-        if expected_set <= selected:
+        matches = selected == expected_set if exact else expected_set <= selected
+        if matches:
             return selected
         page.wait_for_timeout(100)
     return selected
@@ -1267,40 +1291,48 @@ class EsqlControlAdapter:
             combobox,
             label=control.label,
         )
-        multiselect = (
-            container.get_attribute("aria-multiselectable") == "true"
-            or _combobox_is_multiselect(combobox)
-        )
+        del container
         expected = (
             tuple(part.strip() for part in option.split(",") if part.strip())
-            if multiselect and "," in option
+            if control.multiple
             else (option,)
         )
-        available = set(_read_option_texts(self._page, label=control.label))
+        available_order = _read_option_texts(
+            self._page,
+            label=control.label,
+        )
+        available = set(available_order)
         for part in expected:
             if part not in available:
                 raise OptionNotFound(
                     f"option {part!r} not found for control {control.label!r}"
                 )
-        selected_before = set(
-            _read_selected_option_texts(self._page, combobox=combobox)
-        )
-        if multiselect:
+        if control.multiple:
             expected_set = set(expected)
-            if len(expected) == 1 and selected_before != expected_set:
+            selected_before = set(
+                _read_selected_option_texts(
+                    self._page,
+                    combobox=combobox,
+                )
+            )
+            missing = expected_set - selected_before
+            extras = selected_before - expected_set
+            for target in available_order:
+                if target not in missing:
+                    continue
                 _option_locator(
                     self._page,
-                    expected[0],
+                    target,
                     label=control.label,
                 ).click()
-            elif len(expected) > 1 and selected_before != expected_set:
-                for part in expected:
-                    if part not in selected_before:
-                        _option_locator(
-                            self._page,
-                            part,
-                            label=control.label,
-                        ).click()
+            for target in available_order:
+                if target not in extras:
+                    continue
+                _option_locator(
+                    self._page,
+                    target,
+                    label=control.label,
+                ).click()
         else:
             _option_locator(
                 self._page,
@@ -1311,6 +1343,7 @@ class EsqlControlAdapter:
             self._page,
             combobox,
             expected,
+            exact=control.multiple,
         )
         _close_open_popover(self._page, trigger=combobox)
         missing = [part for part in expected if part not in selected]
