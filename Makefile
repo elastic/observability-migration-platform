@@ -61,8 +61,10 @@ test-interactions: sync ## Run offline interaction-audit unit tests
 	  tests/test_interaction_runner.py \
 	  tests/test_interaction_canary.py \
 	  tests/test_redis_interaction_scenario.py \
-	  tests/test_k8s_views_global_interaction_scenario.py
+	  tests/test_k8s_views_global_interaction_scenario.py \
+	  tests/test_interaction_audit_scripts.py
 
 interaction-audit-local: ## Run live interaction scenarios on local Kibana
 	@# Browser install is auto-skipped when Chromium is already available.
+	@# Nightly CI sets FULL=1; locally prefer thinner seeds unless FULL=1.
 	bash scripts/run_interaction_audit_local.sh

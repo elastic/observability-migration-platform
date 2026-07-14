@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from observability_migration.targets.kibana import (
     interaction_audit_local as local,
@@ -19,18 +20,41 @@ from observability_migration.targets.kibana.interaction_runner import (
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_RUNNER = ROOT / "scripts" / "run_interaction_audit_local.sh"
 RENDER_RUNNER = ROOT / "scripts" / "run_render_audit_local.sh"
+WORKFLOW = ROOT / ".github" / "workflows" / "dashboard-interaction-audit.yml"
+
+
+def test_interaction_workflow_is_nightly_and_manual_not_pull_request():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow[True]
+    assert "schedule" in triggers
+    assert "workflow_dispatch" in triggers
+    assert "pull_request" not in triggers
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "retention-days: 14" in text
+    assert "playwright install --with-deps chromium" in text
+    assert "run_interaction_audit_local.sh" in text
+    assert "docker-compose.render-audit.yml" in text
+    assert "synthetic-controls" in text
+    assert "redis-11835" in text
+    assert "k8s-views-global" in text
 
 
 def test_local_runner_seeds_before_schema_aware_final_migration():
     script = LOCAL_RUNNER.read_text(encoding="utf-8")
 
+    # Bootstrap migrate is optional (BOOTSTRAP_MIGRATE=0 by default); when
+    # enabled it must still precede the live-schema final migrate.
     bootstrap = script.index('--output-dir "$bootstrap_root"')
     final = script.index('--output-dir "$final_root"')
     first_seed = script.index("setup_telemetry_data.py")
-    live_validate = script.index("validate-final")
+    # Prefer the CLI invocation over the earlier comment that mentions it.
+    live_validate = script.index('validate-final \\\n')
     browser = script.index("scripts/run_interaction_audit.py")
 
-    assert bootstrap < final < first_seed < live_validate < browser
+    assert bootstrap < final
+    assert final < first_seed < live_validate < browser
+    assert 'BOOTSTRAP_MIGRATE="${BOOTSTRAP_MIGRATE:-0}"' in script
     assert "--upload" in script
     assert "--ensure-data-views" in script
     assert "--panel-contract" in script

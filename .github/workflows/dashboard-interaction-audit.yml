@@ -1,0 +1,82 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+# Nightly/manual dashboard interaction audit against a LOCAL no-SSO Kibana.
+#
+# Proves control selection drives affected panel queries (and leaves
+# unaffected panels alone) for the synthetic canary, Redis 11835, and
+# Kubernetes Views Global scenarios. Keep this off pull_request until the
+# suite has a stability history (see docs/testing.md promotion criteria).
+
+name: Dashboard interaction audit
+
+on:
+  schedule:
+    - cron: "15 7 * * *"  # after render-audit-local (30 6) and live-gates (0 6)
+  workflow_dispatch:
+    inputs:
+      stack_version:
+        description: "Elastic Stack version for the local ES+Kibana"
+        default: "9.5.0-SNAPSHOT"
+      scenarios:
+        description: "Comma-separated scenario ids (order matters: synthetic, then Redis, then K8s)"
+        default: "synthetic-controls,redis-11835,k8s-views-global"
+
+permissions:
+  contents: read
+
+jobs:
+  interaction-audit:
+    name: Interaction audit (local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      STACK_VERSION: ${{ github.event.inputs.stack_version || '9.5.0-SNAPSHOT' }}
+      SCENARIOS: ${{ github.event.inputs.scenarios || 'synthetic-controls,redis-11835,k8s-views-global' }}
+      ARTIFACT_ROOT: ${{ github.workspace }}/interaction-audit-artifacts
+      # Denser seed + full live ES|QL for nightly evidence collection.
+      FULL: "1"
+      # CI always needs a fresh Chromium matching the locked Playwright.
+      INSTALL_BROWSER: "1"
+      SCREENSHOTS: "on-fail"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync locked environment
+        run: UV_PROJECT_ENVIRONMENT=.venv uv sync --locked --python 3.12 --all-extras
+
+      - name: Install Playwright Chromium
+        run: .venv/bin/python -m playwright install --with-deps chromium
+
+      - name: Start local ES + Kibana (security disabled)
+        run: |
+          docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+          echo "stack healthy"
+
+      # Scenarios run in SCENARIOS order. set -e stops the job after a failed
+      # dashboard (e.g. Redis) so later ones (K8s) are not reported as validated.
+      # Within a dashboard the Python runner still collects every interaction.
+      - name: Run dashboard interaction audit
+        run: bash scripts/run_interaction_audit_local.sh
+
+      - name: Upload interaction audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interaction-audit-artifacts
+          path: interaction-audit-artifacts/**
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down local stack
+        if: always()
+        run: docker compose -f parity-rig/docker-compose.render-audit.yml down -v
