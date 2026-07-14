@@ -1891,9 +1891,17 @@ class PlaywrightKibanaBrowser:
         self._clear_adapter_cache()
         page = self._require_page()
         # Navigating to the same hash route does not reload Kibana and can
-        # preserve open popovers and prior control state. Leave the SPA first
-        # so every interaction starts from the dashboard's persisted baseline.
+        # preserve open popovers and prior control state. Leave the SPA first,
+        # then clear origin storage before reopening so control defaults win.
         page.goto("about:blank", wait_until="domcontentloaded")
+        page.goto(url, wait_until="domcontentloaded")
+        try:
+            page.evaluate(
+                "() => { try { localStorage.clear(); } catch (e) {} "
+                "try { sessionStorage.clear(); } catch (e) {} }"
+            )
+        except Exception:
+            pass
         page.goto(url, wait_until="domcontentloaded")
         page.locator(_TEST_SUBJ_CONTROL_FRAME).nth(0).wait_for(
             state="attached",

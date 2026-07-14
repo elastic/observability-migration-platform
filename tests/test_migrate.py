@@ -1586,12 +1586,43 @@ class TranslatorRegressionTests(unittest.TestCase):
         OTEL-candidate fallback behavior so the offline migration path is
         unchanged."""
         # No seed_field_caps() call → _field_cache stays None.
-        # resolve_label() will call _discover_fields() which sets it to {} when
-        # there is no es_url. Either way, empty cache means we should fall
-        # through to PROM_TO_OTEL_CANDIDATES.
+        # resolve_label() will call _discover_fields() which leaves an empty
+        # cache when there is no es_url. Either way, empty cache means we should
+        # fall through to PROM_TO_OTEL_CANDIDATES.
         self.assertEqual(self.resolver.resolve_label("instance"), "service.instance.id")
         self.assertEqual(self.resolver.resolve_label("namespace"), "k8s.namespace.name")
         self.assertEqual(self.resolver.resolve_label("node"), "k8s.node.name")
+
+    def test_merge_control_schema_survives_offline_discover(self):
+        """Curated control-schema fields must remain source-faithful offline.
+
+        Offline scenario manifests merge a control schema before the first
+        resolve_label() call. Discovery must not wipe that cache when es_url is
+        empty, or Grafana variables fall back to OTel aliases and diverge from
+        the seeded Prometheus labels used by interaction audits.
+        """
+        self.resolver.merge_control_schema(
+            {
+                "field_cache": {
+                    "cluster": {
+                        "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                    },
+                    "job": {
+                        "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                    },
+                },
+                "cooccurrence_cache": [
+                    {"metric": "kube_node_info", "field": "cluster", "cooccurs": True},
+                    {"metric": "node_cpu_seconds_total", "field": "job", "cooccurs": True},
+                ],
+            }
+        )
+        self.assertEqual(self.resolver.resolve_label("cluster"), "cluster")
+        self.assertEqual(self.resolver.resolve_label("job"), "job")
+        self.assertEqual(
+            self.resolver.resolve_label("cluster", metric_field="kube_node_info"),
+            "cluster",
+        )
 
     def test_resolve_label_user_override_still_wins(self):
         """A user-provided label_rewrites entry trumps everything else."""

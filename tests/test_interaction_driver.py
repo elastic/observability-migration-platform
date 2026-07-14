@@ -225,6 +225,7 @@ class FakePage:
         self.body_text = body_text
         self.a11y_snapshot = a11y_snapshot
         self.goto_calls: list[tuple[str, str | None]] = []
+        self.evaluate_calls: list[str] = []
         self.option_clicks: dict[str, int] = {}
         self.field_suggestion_clicks: dict[str, int] = {}
         self.locator_wait_calls: list[dict[str, Any]] = []
@@ -248,6 +249,11 @@ class FakePage:
     def add(self, element: FakeElement) -> FakeElement:
         self._elements.append(element)
         return element
+
+    def evaluate(self, expression: str, arg: Any = None) -> Any:
+        del arg
+        self.evaluate_calls.append(expression)
+        return None
 
     def goto(self, url: str, *, wait_until: str | None = None) -> None:
         self.goto_calls.append((url, wait_until))
@@ -1705,6 +1711,11 @@ def test_browser_open_reset_capture_use_domcontentloaded_only() -> None:
         ("https://kibana.example/app/dashboards#/view/1", "domcontentloaded"),
         ("about:blank", "domcontentloaded"),
         ("https://kibana.example/app/dashboards#/view/1?reset=1", "domcontentloaded"),
+        ("https://kibana.example/app/dashboards#/view/1?reset=1", "domcontentloaded"),
+    ]
+    assert page.evaluate_calls == [
+        "() => { try { localStorage.clear(); } catch (e) {} "
+        "try { sessionStorage.clear(); } catch (e) {} }"
     ]
     assert observation.url == "https://kibana.example/app/dashboards#/view/1?reset=1"
     assert observation.visible_text == "dashboard body"

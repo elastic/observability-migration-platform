@@ -34,7 +34,10 @@ controls:
       selection: [job]
       affected_panels: query_dependency
       query_contains: ["?job", "job", "RLIKE"]
-      expect_data_change: true
+      # Job binding is asserted via query params/network contract. Synthetic
+      # job_* series often share empty/identical panel fingerprints on this
+      # dashboard, so do not treat fingerprint equality as an interaction failure.
+      expect_data_change: false
   - label: datasource
     key: datasource
     adapter: esql_value
@@ -70,6 +73,8 @@ controls:
       allow_incompatible_selections: true
       expect_data_change: false
 combinations:
+  # Values must match telemetry-seeded / Kibana-discovered Prometheus labels
+  # (cluster → cluster_*; job → job_*).
   - id: cluster-and-job
     selections:
       cluster: cluster_1

@@ -1,14 +1,14 @@
 {
   "index_pattern": "metrics-*",
   "field_cache": {
-    "k8s.cluster.name": {
+    "cluster": {
       "keyword": {
         "type": "keyword",
         "aggregatable": true,
         "searchable": true
       }
     },
-    "service.name": {
+    "job": {
       "keyword": {
         "type": "keyword",
         "aggregatable": true,
@@ -33,17 +33,17 @@
   "cooccurrence_cache": [
     {
       "metric": "node_cpu_seconds_total",
-      "field": "k8s.cluster.name",
+      "field": "cluster",
       "cooccurs": true
     },
     {
       "metric": "node_cpu_seconds_total",
-      "field": "service.name",
+      "field": "job",
       "cooccurs": true
     },
     {
       "metric": "kube_node_info",
-      "field": "k8s.cluster.name",
+      "field": "cluster",
       "cooccurs": true
     }
   ]

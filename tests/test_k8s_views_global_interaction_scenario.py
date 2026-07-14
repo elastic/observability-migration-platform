@@ -361,16 +361,16 @@ def test_k8s_execution_plan_covers_every_option_and_gaps(k8s_artifacts: Path) ->
     discovered = {
         "cluster": sorted(
             {
-                doc.get("k8s.cluster.name")
+                doc.get("cluster")
                 for doc in documents
-                if doc.get("k8s.cluster.name")
+                if doc.get("cluster")
             }
         ),
         "job": sorted(
             {
-                doc.get("service.name")
+                doc.get("job")
                 for doc in documents
-                if doc.get("service.name")
+                if doc.get("job")
             }
         ),
     }
@@ -388,14 +388,22 @@ def test_k8s_execution_plan_covers_every_option_and_gaps(k8s_artifacts: Path) ->
         "resolution",
         "gap_chained_controls",
     }
-    assert {step.id for step in plan if step.kind == "combination"} == {
+    combo_steps = [step for step in plan if step.kind == "combination"]
+    assert {step.id for step in combo_steps} == {
         "cluster-and-job",
         "cluster-and-second-job",
         "third-cluster-and-job",
     }
+    for step in combo_steps:
+        assert step.selections["cluster"] in discovered["cluster"]
+        assert step.selections["job"] in discovered["job"]
     assert stream["control_fields"]
-    assert {"cluster", "k8s.cluster.name"} & set(stream["control_fields"])
-    assert {"job", "service.name"} & set(stream["control_fields"])
+    assert "cluster" in set(stream["control_fields"])
+    assert "job" in set(stream["control_fields"])
+    assert discovered["cluster"]
+    assert discovered["job"]
+    assert {"cluster_1", "cluster_2", "cluster_3"} <= set(discovered["cluster"])
+    assert {"job_1", "job_2", "job_3"} <= set(discovered["job"])
 
 
 def test_k8s_stable_panel_identities_are_deterministic(k8s_artifacts: Path) -> None:
@@ -419,8 +427,10 @@ def test_k8s_gap_and_source_only_capabilities() -> None:
     assert by_key["resolution"].capability is CapabilityCategory.SOURCE_ONLY
     assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["cluster"].assertions.affected_panels == "all_query_panels"
+    assert by_key["cluster"].assertions.expect_data_change is True
     assert by_key["job"].assertions.affected_panels == "query_dependency"
     assert by_key["job"].assertions.unaffected_panels == ()
+    assert by_key["job"].assertions.expect_data_change is False
     assert by_key["gap_chained_controls"].assertions.allow_incompatible_selections is True
 
 
@@ -439,8 +449,10 @@ def test_k8s_native_control_value_queries(k8s_artifacts: Path) -> None:
         for panel in artifact["payload"]["pinned_panels"]
         if panel.get("type") == "esql_control"
     }
-    assert "k8s.cluster.name" in controls["cluster"] or "cluster" in controls["cluster"]
-    assert "service.name" in controls["job"] or " BY job" in controls["job"]
+    assert "BY cluster" in controls["cluster"] or "BY `cluster`" in controls["cluster"]
+    assert "k8s.cluster.name" not in controls["cluster"]
+    assert "BY job" in controls["job"] or "BY `job`" in controls["job"]
+    assert "service.name" not in controls["job"]
 
 
 def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:

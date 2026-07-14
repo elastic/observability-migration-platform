@@ -120,11 +120,15 @@ class SchemaResolver:
         if self._discovery_attempted:
             return
         self._discovery_attempted = True
-        self._field_cache = {}
         if not self._es_url:
-            self._discovery_status = "offline"
+            # Preserve fields already supplied by merge_control_schema().
+            if self._field_cache is None:
+                self._field_cache = {}
+            if not self._field_cache:
+                self._discovery_status = "offline"
             self._discovery_error = ""
             return
+        self._field_cache = {}
         try:
             resp = requests.get(
                 f"{self._es_url}/{self._index_pattern}/_field_caps",
@@ -799,6 +803,10 @@ class SchemaResolver:
         if self._field_cache:
             self._discovery_status = "ok"
             self._discovery_error = ""
+            # Offline merges happen before the first resolve_label() call. Mark
+            # discovery as attempted so _discover_fields() does not wipe the
+            # curated field_cache when es_url is empty.
+            self._discovery_attempted = True
             self._build_discovered_mappings()
             self._schema_profile_cache_id = None
 
