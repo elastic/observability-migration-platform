@@ -2672,6 +2672,27 @@ class KeywordMultifieldTests(unittest.TestCase):
         fields = combined["streams"]["metrics-*"]["fields"]
         self.assertTrue(fields["deployment.environment"].get("keyword_multifield"))
 
+    def test_contract_extracts_interaction_canary_control_semantics(self):
+        from observability_migration.core.coverage.interaction_canary import (
+            write_interaction_canary_artifact,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            write_interaction_canary_artifact(tmpdir)
+            contract = build_telemetry_contract(tmpdir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertIn("service.name", stream["control_fields"])
+        self.assertIn("service.environment", stream["control_fields"])
+        self.assertIn("host.name", stream["control_fields"])
+        self.assertIn("latency_ms", stream["control_fields"])
+        self.assertGreaterEqual(
+            set(stream["required_values"]["service.name"]),
+            {"api", "worker", "frontend"},
+        )
+        self.assertNotIn("aggregate", stream["fields"])
+        self.assertNotIn("interval", stream["fields"])
+
 
 if __name__ == "__main__":
     unittest.main()
