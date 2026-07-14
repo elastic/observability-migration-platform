@@ -107,6 +107,7 @@ controls:
       query_contains: [latency_ms]
       required_columns: [value]
       minimum_rows: 1
+      expect_data_change: true
   - label: query bar
     key: query_bar
     adapter: query_bar

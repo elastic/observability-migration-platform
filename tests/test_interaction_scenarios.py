@@ -638,6 +638,7 @@ def test_loaded_collections_are_immutable() -> None:
 def _control(
     key: str,
     *,
+    adapter: str = "esql_value",
     capability: CapabilityCategory = CapabilityCategory.MIGRATED_LIVE,
     options: OptionPolicy | None = None,
     label: str | None = None,
@@ -645,7 +646,7 @@ def _control(
     return ControlScenario(
         label=label or key,
         key=key,
-        adapter="esql_value",
+        adapter=adapter,
         capability=capability,
         options=options or OptionPolicy(strategy="every"),
         assertions=Assertions(),
@@ -803,6 +804,73 @@ def test_no_runnable_declared_options_yields_missing_option() -> None:
     assert step.id == "region:missing_option"
     assert dict(step.selections) == {}
     assert step.missing_declared_options == ("us-east", "eu-west")
+
+
+def test_declared_query_bar_schedules_arbitrary_query_without_discovery() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "query_bar",
+                adapter="query_bar",
+                capability=CapabilityCategory.KIBANA_ONLY,
+                options=OptionPolicy(
+                    strategy="declared",
+                    include=('service.environment:"prod"',),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(scenario, [])
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "option"
+    assert dict(step.selections) == {"query_bar": 'service.environment:"prod"'}
+
+
+def test_declared_range_slider_schedules_manifest_bounds_despite_discovery() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "latency_ms",
+                adapter="range_slider",
+                options=OptionPolicy(
+                    strategy="declared",
+                    include=("20..80",),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("latency_ms", "latency_ms", ("0", "50", "100"), ("10", "90"))],
+    )
+    assert len(plan) == 1
+    step = plan[0]
+    assert step.kind == "option"
+    assert dict(step.selections) == {"latency_ms": "20..80"}
+    assert step.missing_declared_options == ()
+
+
+def test_declared_esql_missing_option_still_reports_missing_option() -> None:
+    scenario = _scenario(
+        (
+            _control(
+                "region",
+                adapter="esql_value",
+                options=OptionPolicy(
+                    strategy="declared",
+                    include=("us-east", "missing-region"),
+                ),
+            ),
+        ),
+    )
+    plan = build_execution_plan(
+        scenario,
+        [DiscoveredControl("region", "region", ("ap-south",))],
+    )
+    assert len(plan) == 1
+    assert plan[0].kind == "missing_option"
+    assert plan[0].missing_declared_options == ("us-east", "missing-region")
 
 
 @pytest.mark.parametrize(

@@ -196,6 +196,49 @@ def build_telemetry_contract(
     artifact_path = Path(artifact_dir)
     streams: dict[str, dict[str, Any]] = {}
     for query, source in _iter_artifact_queries(artifact_path):
+        if query.startswith("RANGE "):
+            index = _query_index(query)
+            if not index:
+                continue
+            stream = streams.setdefault(
+                index,
+                {
+                    "fields": {},
+                    "control_fields": [],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                    "requires_native_promql": False,
+                    "minimum_lookback": "",
+                    "query_sources": [],
+                    "requirements": [],
+                },
+            )
+            _append_unique(stream["query_sources"], source)
+            field_match = re.search(r"\bfield=([^\s]+)", query)
+            min_match = re.search(r"\bmin=([^\s]+)", query)
+            max_match = re.search(r"\bmax=([^\s]+)", query)
+            if not (field_match and min_match and max_match):
+                continue
+            field_name = _normalize_field(field_match.group(1))
+            try:
+                low = float(min_match.group(1))
+                high = float(max_match.group(1))
+            except ValueError:
+                continue
+            if low > high:
+                low, high = high, low
+            _merge_field(
+                stream["fields"],
+                field_name,
+                role="metric",
+                type_family="numeric",
+                metric_kind="gauge",
+                source=source,
+            )
+            info = stream["fields"][field_name]
+            info["seed_range"] = [low, high]
+            continue
         index = _query_index(query)
         if not index:
             continue
@@ -275,6 +318,7 @@ def build_telemetry_contract(
 
     _propagate_control_fields(streams)
     _apply_dimension_evidence(streams)
+    _apply_seed_range_metric_precedence(streams)
     _apply_metric_kind_overrides(streams, metric_kind_overrides)
 
     for stream in streams.values():
@@ -460,6 +504,7 @@ def build_combined_telemetry_contract(
 
     _propagate_control_fields(combined["streams"])
     _apply_dimension_evidence(combined["streams"])
+    _apply_seed_range_metric_precedence(combined["streams"])
     _apply_metric_kind_overrides(combined["streams"], metric_kind_overrides)
     for stream in combined["streams"].values():
         stream["fields"] = dict(sorted(stream["fields"].items()))
@@ -603,6 +648,22 @@ def _propagate_control_fields(streams: dict[str, dict[str, Any]]) -> None:
                 metric_kind="",
                 source="dashboard_control",
             )
+
+
+def _apply_seed_range_metric_precedence(streams: dict[str, dict[str, Any]]) -> None:
+    """Keep range-slider seed targets as numeric metrics even when also controls.
+
+    Range handles bind to a numeric field that may also appear in dashboard
+    ``control_fields``. Dimension evidence must not demote those fields to
+    keyword columns when the contract carries an explicit ``seed_range``.
+    """
+    for stream in streams.values():
+        for info in (stream.get("fields") or {}).values():
+            if not info.get("seed_range"):
+                continue
+            info["role"] = "metric"
+            info["type_family"] = "numeric"
+            info.setdefault("metric_kind", "gauge")
 
 
 def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
@@ -898,6 +959,9 @@ def _iter_yaml_queries(
 def _query_index(query: str) -> str:
     first_line = next((line.strip() for line in query.splitlines() if line.strip()), "")
     if first_line.startswith("CONTROL ") or first_line.startswith("FILTER "):
+        match = re.search(r"\bindex=(\S+)", first_line)
+        return match.group(1) if match else "metrics-*"
+    if first_line.startswith("RANGE "):
         match = re.search(r"\bindex=(\S+)", first_line)
         return match.group(1) if match else "metrics-*"
     if first_line.startswith("LENS "):
@@ -1807,6 +1871,20 @@ def _iter_dashboard_filter_queries(node: dict[str, Any], source: str):
                     continue
                 index = control.get("data_view") or control.get("data_view_id") or default_index
                 yield f"CONTROL index={index} field={field_name}", source
+                if control_type in _CLASSIC_RANGE_CONTROL_TYPES:
+                    numeric_values: list[float] = []
+                    for raw in _control_choice_values(control):
+                        try:
+                            numeric_values.append(float(raw))
+                        except ValueError:
+                            continue
+                    if len(numeric_values) >= 2:
+                        low = min(numeric_values)
+                        high = max(numeric_values)
+                        yield (
+                            f"RANGE index={index} field={field_name} min={low} max={high}",
+                            source,
+                        )
                 continue
             field_name = control.get("field")
             if not field_name:

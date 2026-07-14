@@ -75,6 +75,18 @@ _SUPPORTED_ADAPTERS = frozenset(
         "panel_filter",
     }
 )
+# Adapters whose manifest values are user-entered actions, not browser-enumerated
+# dropdown options. Declared ``include`` values must run even when discovery is
+# empty or reports different options (global query bar, range handles, etc.).
+_ACTION_ADAPTERS = frozenset(
+    {
+        "query_bar",
+        "filter_pill",
+        "panel_filter",
+        "time_range",
+        "range_slider",
+    }
+)
 _SUPPORTED_STRATEGIES = frozenset({"every", "declared"})
 _AFFECTED_PANELS_STRINGS = frozenset({"query_dependency", "all_query_panels"})
 _KIBANA_UUID_RE = re.compile(
@@ -261,11 +273,17 @@ def _missing_declared_options(
 def _runnable_options(
     policy: OptionPolicy,
     discovered_options: tuple[str, ...],
+    *,
+    adapter: str = "",
 ) -> tuple[str, ...]:
-    discovered_set = set(discovered_options)
     exclude_set = set(policy.exclude)
 
     if policy.strategy == "declared":
+        if adapter in _ACTION_ADAPTERS:
+            return tuple(
+                option for option in policy.include if option not in exclude_set
+            )
+        discovered_set = set(discovered_options)
         return tuple(
             option
             for option in policy.include
@@ -273,6 +291,46 @@ def _runnable_options(
         )
 
     return tuple(option for option in discovered_options if option not in exclude_set)
+
+
+def _missing_options_metadata(
+    control: ControlScenario,
+    discovered_options: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    skipped = _skipped_options(discovered_options, control.options.exclude)
+    if control.adapter in _ACTION_ADAPTERS:
+        return skipped, ()
+    missing = _missing_declared_options(
+        control.options.include,
+        set(discovered_options),
+    )
+    return skipped, missing
+
+
+def _append_declared_action_steps(
+    control: ControlScenario,
+    steps: list[InteractionStep],
+    *,
+    skipped_options: tuple[str, ...] = (),
+    missing_declared_options: tuple[str, ...] = (),
+) -> bool:
+    runnable = _runnable_options(
+        control.options,
+        (),
+        adapter=control.adapter,
+    )
+    if not runnable:
+        return False
+    for option in runnable:
+        steps.append(
+            _make_option_step(
+                control,
+                option,
+                skipped_options=skipped_options,
+                missing_declared_options=missing_declared_options,
+            )
+        )
+    return True
 
 
 def _make_option_step(
@@ -331,16 +389,18 @@ def build_execution_plan(
                 CapabilityCategory.SOURCE_ONLY,
             }:
                 steps.append(_make_gap_step(control, "coverage_gap"))
+            elif _append_declared_action_steps(control, steps):
+                continue
             else:
                 steps.append(_make_gap_step(control, "missing_control"))
             continue
 
-        skipped = _skipped_options(discovered.options, control.options.exclude)
-        missing = _missing_declared_options(
-            control.options.include,
-            set(discovered.options),
+        skipped, missing = _missing_options_metadata(control, discovered.options)
+        runnable = _runnable_options(
+            control.options,
+            discovered.options,
+            adapter=control.adapter,
         )
-        runnable = _runnable_options(control.options, discovered.options)
 
         if not runnable:
             steps.append(

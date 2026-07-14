@@ -519,7 +519,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=[],
             ),
-            expected_failure_classes=(FailureClass.FRAMEWORK_ERROR,),
+            expected_failure_classes=(FailureClass.CONTROL_NOT_FOUND,),
             description="Manifest declares a control that is absent from the dashboard.",
         ),
     )
