@@ -720,6 +720,31 @@ def test_control_static_values():
     assert pinned["config"]["selected_options"] == []
 
 
+def test_control_fields_choices_map_to_static_values():
+    # Issue #282: a late-bound grouping control (``??var``) carries its field
+    # options under ``choices`` and must map to a STATIC_VALUES fields control.
+    control = {
+        "type": "esql",
+        "label": "Group by",
+        "variable_name": "grouping",
+        "variable_type": "fields",
+        "choices": ["exporter", "transport"],
+        "default": "exporter",
+    }
+    pinned = api.map_yaml_control(control)
+    assert pinned == {
+        "type": "esql_control",
+        "config": {
+            "control_type": "STATIC_VALUES",
+            "title": "Group by",
+            "variable_name": "grouping",
+            "variable_type": "fields",
+            "available_options": ["exporter", "transport"],
+            "selected_options": ["exporter"],
+        },
+    }
+
+
 def test_control_without_variable_name_dropped():
     assert api.map_yaml_control({"query": "FROM m"}) is None
 

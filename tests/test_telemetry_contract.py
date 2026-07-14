@@ -229,6 +229,63 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("http_requests_total", metrics["fields"])
         self.assertTrue(metrics["requires_native_promql"])
 
+    def test_contract_seeds_each_late_bound_field_control_choice(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "late-bound.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [{
+                            "title": "Late-bound grouping",
+                            "controls": [{
+                                "type": "esql",
+                                "variable_name": "grouping",
+                                "variable_type": "fields",
+                                "choices": ["exporter", "transport", "receiver"],
+                                "default": "transport",
+                            }],
+                            "panels": [{
+                                "title": "Spans by grouping",
+                                "esql": {
+                                    "query": (
+                                        "TS metrics-*\n"
+                                        "| STATS value = SUM(metric) BY "
+                                        "time_bucket = TBUCKET(5 minute), "
+                                        "grouping = ??grouping"
+                                    )
+                                },
+                            }],
+                        }]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        for field_name in ("exporter", "transport", "receiver"):
+            self.assertIn(field_name, stream["control_fields"])
+            self.assertEqual(stream["fields"][field_name]["role"], "dimension")
+        self.assertNotIn("??grouping", stream["fields"])
+        metric_requirements = [
+            requirement
+            for requirement in stream["requirements"]
+            if "metric" in requirement.get("metrics", [])
+        ]
+        cooccurring_groups = {
+            field_name
+            for requirement in metric_requirements
+            for field_name in requirement.get("group_fields", [])
+        }
+        self.assertEqual(
+            cooccurring_groups,
+            {"exporter", "transport", "receiver"},
+        )
+
     def test_contract_extracts_required_values_from_kql_function_filters(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

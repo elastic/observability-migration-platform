@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -705,22 +706,87 @@ def _iter_packet_source_promql_queries(packet: dict[str, Any], source: str):
         yield f"PROMQL index={target_index} step=1m value=({cleaned})", source
 
 
-def _iter_yaml_queries(node: Any, source: str):
+_ESQL_IDENTIFIER_PARAM_RE = re.compile(r"\?\?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _field_control_choices(controls: Any) -> dict[str, list[str]]:
+    choices_by_name: dict[str, list[str]] = {}
+    if not isinstance(controls, list):
+        return choices_by_name
+    for control in controls:
+        if (
+            not isinstance(control, dict)
+            or control.get("type") != "esql"
+            or control.get("variable_type") != "fields"
+        ):
+            continue
+        name = str(control.get("variable_name") or "").strip()
+        raw_choices = (
+            control.get("choices")
+            or control.get("available_options")
+            or control.get("options")
+            or []
+        )
+        choices = [
+            str(choice).strip()
+            for choice in raw_choices
+            if str(choice or "").strip()
+        ]
+        if name and choices:
+            choices_by_name[name] = choices
+    return choices_by_name
+
+
+def _expand_identifier_control_queries(
+    query: str,
+    choices_by_name: Mapping[str, Sequence[str]],
+):
+    names = [
+        name
+        for name in dict.fromkeys(_ESQL_IDENTIFIER_PARAM_RE.findall(query or ""))
+        if choices_by_name.get(name)
+    ]
+    if not names:
+        yield query
+        return
+    for selected in product(*(choices_by_name[name] for name in names)):
+        rendered = query
+        for name, field_name in zip(names, selected):
+            rendered = re.sub(
+                rf"\?\?{re.escape(name)}\b",
+                lambda _match, value=field_name: value,
+                rendered,
+            )
+        yield rendered
+
+
+def _iter_yaml_queries(
+    node: Any,
+    source: str,
+    identifier_choices: Mapping[str, Sequence[str]] | None = None,
+):
     if isinstance(node, dict):
+        scoped_choices = dict(identifier_choices or {})
+        scoped_choices.update(_field_control_choices(node.get("controls")))
         yield from _iter_dashboard_filter_queries(node, source)
         esql = node.get("esql")
         if isinstance(esql, dict) and isinstance(esql.get("query"), str):
-            yield esql["query"], source
+            for query in _expand_identifier_control_queries(
+                esql["query"],
+                scoped_choices,
+            ):
+                yield query, source
         elif isinstance(esql, str):
-            yield esql, source
+            for query in _expand_identifier_control_queries(esql, scoped_choices):
+                yield query, source
         lens_query = _lens_to_contract_query(node.get("lens"))
         if lens_query:
             yield lens_query, source
         for value in node.values():
-            yield from _iter_yaml_queries(value, source)
+            yield from _iter_yaml_queries(value, source, scoped_choices)
     elif isinstance(node, list):
         for item in node:
-            yield from _iter_yaml_queries(item, source)
+            yield from _iter_yaml_queries(item, source, identifier_choices)
 
 
 def _query_index(query: str) -> str:
@@ -1075,6 +1141,11 @@ def _extract_group_fields(query: str) -> list[str]:
     for match in by_pattern.finditer(query):
         for part in _split_top_level(match.group(1)):
             field_name = part.split("=", 1)[-1].strip() if "=" in part else part.strip()
+            if field_name.startswith("??"):
+                # Identifier controls are placeholders, not physical fields.
+                # Their concrete field choices are collected from dashboard
+                # controls by ``_iter_dashboard_filter_queries``.
+                continue
             if "(" in field_name:
                 continue
             normalized = _normalize_field(field_name)
@@ -1599,6 +1670,19 @@ def _iter_dashboard_filter_queries(node: dict[str, Any], source: str):
     if isinstance(controls, list):
         for control in controls:
             if not isinstance(control, dict):
+                continue
+            if control.get("variable_type") == "fields":
+                choices = (
+                    control.get("choices")
+                    or control.get("available_options")
+                    or control.get("options")
+                    or []
+                )
+                index = control.get("data_view") or default_index
+                for choice in choices:
+                    field_name = str(choice or "").strip()
+                    if field_name:
+                        yield f"CONTROL index={index} field={field_name}", source
                 continue
             field_name = control.get("field")
             if not field_name:

@@ -427,6 +427,30 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
         self.assertIn("exact dashboard control param", result.skipped_reason)
         self.assertEqual(calls, [])
 
+    def test_compare_panel_skips_identifier_control_params_without_defaults(self):
+        calls = []
+
+        def request(method, path, body=None, content_type="application/json"):
+            calls.append(body.get("query", "") if isinstance(body, dict) else "")
+            return {"columns": [], "values": []}
+
+        result = po.compare_panel(
+            request,
+            source_query="sum(rate(metric[5m])) by ($grouping)",
+            translated_query=(
+                "TS metrics-* | STATS value = SUM(RATE(metric, 5m)) "
+                "BY grouping = ??grouping"
+            ),
+            index="metrics-*",
+            step=300,
+            start_iso="2026-01-01T00:00:00Z",
+            end_iso="2026-01-01T00:30:00Z",
+        )
+
+        self.assertIn("identifier dashboard control param", result.skipped_reason)
+        self.assertIn("??grouping", result.skipped_reason)
+        self.assertEqual(calls, [])
+
     def test_compare_panel_skips_negated_rlike_control_params_without_defaults(self):
         calls = []
 

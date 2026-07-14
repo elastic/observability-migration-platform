@@ -366,6 +366,465 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
 
+    def _enable_late_bound_grouping(self, choices=("exporter", "transport"), default="exporter"):
+        """Turn on late-bound grouping (issue #282) for the shared rule pack.
+
+        Mirrors ``translate_dashboard``: the target must bind ES|QL parameters
+        and the grouping variable must resolve to a set of selectable fields.
+        """
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        self.rule_pack._late_bound_group_var_choices = {
+            "grouping": {
+                "choices": list(choices),
+                "default": default,
+                "label": "Grouping",
+            }
+        }
+
+    def test_grouping_template_variable_becomes_esql_field_control_when_capability_on(self):
+        # Issue #282: a *pure* late-bound ``by ($grouping)`` should migrate to an
+        # ES|QL identifier control (``STATS ... BY ??grouping``) instead of
+        # failing.
+        self._enable_late_bound_grouping()
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("??grouping", result.esql_query)
+        # The identifier control is aliased to a STABLE output column
+        # (``grouping = ??grouping``). The bare token would name the aggregated
+        # column after the substituted field (``exporter``/``transport``/...),
+        # which the fixed Lens breakdown accessor could never match — the panel
+        # would fail to render ("invalid column"). Issue #282.
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        # The raw token only ever appears aliased, never as a bare BY column that
+        # would take the substituted field's name at view time.
+        self.assertEqual(result.esql_query.count("??grouping"), 1)
+        self.assertNotIn("BY ??grouping", result.esql_query)
+        self.assertEqual(result.metadata.get("late_bound_group_controls"), ["grouping"])
+        self.assertEqual(
+            result.metadata.get("esql_identifier_param_defaults"),
+            {"grouping": "exporter"},
+        )
+        self.assertNotIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_with_concrete_label_degrades_gracefully(self):
+        # Issue #282 collision fix: a template variable *alongside* a concrete
+        # label (``by (exporter, $grouping)``) is NOT deferred to a shared field
+        # control — one Lens breakdown accessor cannot safely follow a field
+        # control whose selectable choices may collide with the concrete grouping
+        # column (the source of the "Provided column name or index is invalid"
+        # render error). Instead the concrete grouping is kept and the optional
+        # selector token is dropped with a warning, so the panel still renders.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by (exporter, $grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        stats_line = next(line for line in result.esql_query.splitlines() if "STATS" in line)
+        self.assertIn("exporter", stats_line)
+        self.assertTrue(
+            any("optional Grafana template-variable grouping dimension" in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_not_feasible_without_capability(self):
+        # No ES|QL param binding capability -> keep the pre-#282 behaviour even
+        # when a choices map is present.
+        self.rule_pack._late_bound_group_var_choices = {
+            "grouping": {"choices": ["exporter"], "default": "exporter", "label": "Grouping"}
+        }
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_not_feasible_without_resolvable_choices(self):
+        # Capability on but the variable resolves to no selectable field -> the
+        # control would be empty, so degrade gracefully to not_feasible.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_falls_back_when_query_shape_cannot_carry_control(self):
+        # A *pure* ``by ($grouping)`` on a binary-expression shape is eligible for
+        # deferral, but that shape never routes grouping through the ES|QL
+        # identifier seam. The late_bound_group_control validator must then revert
+        # to not_feasible rather than drop the grouping silently (issue #282).
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "max(otelcol_exporter_queue_size) by ($grouping) "
+            "/ min(otelcol_exporter_queue_size) by ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_dashboard_late_bound_grouping_emits_esql_field_control(self):
+        # Issue #282 end-to-end: a Grafana ``by ($grouping)`` panel plus its
+        # grouping variable becomes an ES|QL field control (``??grouping``) with
+        # the variable's option list as choices and its current value as default.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+        from observability_migration.targets.kibana import lint as _lint
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        dashboard = {
+            "title": "OTel Collector Spans",
+            "uid": "otel-spans",
+            "templating": {"list": [{
+                "name": "grouping",
+                "type": "custom",
+                "label": "Group by",
+                "query": "exporter,transport,receiver",
+                "current": {"text": "transport", "value": "transport"},
+                "options": [
+                    {"text": "exporter", "value": "exporter"},
+                    {"text": "transport", "value": "transport", "selected": True},
+                    {"text": "receiver", "value": "receiver"},
+                ],
+            }]},
+            "panels": [{
+                "id": 1,
+                "title": "Spans",
+                "type": "timeseries",
+                "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                "targets": [{
+                    "refId": "A",
+                    "expr": "sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)",
+                }],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result, path = migrate.translate_dashboard(
+                dashboard,
+                tmp,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(path).read_text())
+            # The fields control binds the ??grouping identifier, so the
+            # unbound-parameter lint gate must stay clean (issue #131 gate).
+            self.assertEqual(_lint._unbound_param_findings(path), [])
+
+        dash = doc["dashboards"][0]
+        field_controls = [c for c in (dash.get("controls") or []) if c.get("variable_type") == "fields"]
+        self.assertEqual(len(field_controls), 1)
+        control = field_controls[0]
+        self.assertEqual(control["type"], "esql")
+        self.assertEqual(control["variable_name"], "grouping")
+        self.assertEqual(control["choices"], ["exporter", "transport", "receiver"])
+        self.assertEqual(control["default"], "transport")
+
+        panel = dash["panels"][0]
+        self.assertIn("??grouping", panel["esql"]["query"])
+        # The breakdown accessor must reference the STABLE aliased column
+        # (``grouping``), matching the ``grouping = ??grouping`` STATS output.
+        # Pointing the accessor at the raw ``??grouping`` token leaves Lens
+        # unable to resolve the column, so the panel renders "invalid column"
+        # even though the ES|QL runs (issue #282, caught by the render audit).
+        self.assertIn("grouping = ??grouping", panel["esql"]["query"])
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "grouping")
+        self.assertNotIn("?", panel["esql"]["breakdown"]["field"])
+        self.assertEqual(result.not_feasible, 0)
+
+    def test_dashboard_rejects_variable_used_as_value_and_field_across_panels(self):
+        # One Kibana control cannot bind the same Grafana variable as a values
+        # parameter in one panel and an identifier parameter in another. Preserve
+        # the existing values-panel behavior and degrade only the new late-bound
+        # grouping panel rather than replacing its values control with a fields
+        # control that leaves ``?grouping`` unbound.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+        from observability_migration.targets.kibana import lint as _lint
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        dashboard = {
+            "title": "Dual grouping semantics",
+            "uid": "dual-grouping",
+            "templating": {"list": [{
+                "name": "grouping",
+                "type": "custom",
+                "label": "Group by",
+                "query": "exporter,transport,receiver",
+                "current": {"text": "transport", "value": "transport"},
+                "options": [
+                    {"text": "exporter", "value": "exporter"},
+                    {"text": "transport", "value": "transport", "selected": True},
+                    {"text": "receiver", "value": "receiver"},
+                ],
+            }]},
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Dynamic grouping",
+                    "type": "timeseries",
+                    "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans[5m])) "
+                            "by ($grouping)"
+                        ),
+                    }],
+                },
+                {
+                    "id": 2,
+                    "title": "Value filter",
+                    "type": "timeseries",
+                    "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans"
+                            '{exporter=~"$grouping"}[5m])) by (exporter)'
+                        ),
+                    }],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result, path = migrate.translate_dashboard(
+                dashboard,
+                tmp,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(path).read_text())
+            self.assertEqual(_lint._unbound_param_findings(path), [])
+
+        dash = doc["dashboards"][0]
+        panels_by_title = {panel["title"]: panel for panel in dash["panels"]}
+        self.assertIn("markdown", panels_by_title["Dynamic grouping"])
+        self.assertNotIn("esql", panels_by_title["Dynamic grouping"])
+        self.assertIn("?grouping", panels_by_title["Value filter"]["esql"]["query"])
+        self.assertNotIn(
+            "??grouping",
+            " ".join(
+                panel.get("esql", {}).get("query", "")
+                for panel in dash["panels"]
+            ),
+        )
+        controls = dash.get("controls") or []
+        self.assertEqual(
+            [(control["variable_name"], control["variable_type"]) for control in controls],
+            [("grouping", "values")],
+        )
+        self.assertEqual(result.not_feasible, 1)
+        dynamic_result = next(
+            panel_result
+            for panel_result in result.panel_results
+            if panel_result.title == "Dynamic grouping"
+        )
+        self.assertEqual(dynamic_result.status, "not_feasible")
+        self.assertNotIn(
+            "esql_identifier_param_defaults",
+            dynamic_result.query_ir.get("metadata", {}),
+        )
+        self.assertTrue(
+            any("both value and field" in reason for reason in dynamic_result.reasons),
+            dynamic_result.reasons,
+        )
+
+    def test_value_param_scanner_excludes_field_controls(self):
+        query = (
+            "TS metrics-* | WHERE service.name RLIKE ?service "
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        self.assertEqual(panels._query_param_names(query), {"service"})
+
+    def test_grouping_multiple_template_vars_in_one_clause_not_feasible(self):
+        # Issue #282: only a single late-bound grouping dimension can migrate to
+        # an ES|QL field control (a Lens XY chart renders one breakdown). A clause
+        # naming several variables (``by ($dim1, $dim2)``) is not deferred and,
+        # being fully dynamic, degrades to not_feasible.
+        self._enable_late_bound_grouping()
+        self.rule_pack._late_bound_group_var_choices = {
+            "dim1": {"choices": ["exporter"], "default": "exporter", "label": "Dim1"},
+            "dim2": {"choices": ["transport"], "default": "transport", "label": "Dim2"},
+        }
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by ($dim1, $dim2)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??dim1", result.esql_query or "")
+        self.assertNotIn("??dim2", result.esql_query or "")
+        self.assertNotIn("label_dim", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($dim1); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_without_template_variable_stays_not_feasible(self):
+        # Issue #282: ES|QL ``STATS ... BY`` is positive grouping, so a PromQL
+        # ``without ($var)`` (aggregate *away* a viewer-chosen dimension) has no
+        # faithful field-control form and stays not_feasible.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) without ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_variable_name_colliding_with_concrete_label_degrades_gracefully(self):
+        # Issue #282 collision fix: when the grouping variable is named after a
+        # concrete label present in the SAME clause (``by (exporter, $exporter)``)
+        # the concrete label makes this a non-pure clause, so it is not deferred.
+        # The concrete grouping is kept and the redundant selector token dropped
+        # with a warning, rather than emitting a colliding field control.
+        self._enable_late_bound_grouping()
+        self.rule_pack._late_bound_group_var_choices = {
+            "exporter": {"choices": ["exporter", "transport"], "default": "exporter", "label": "Exp"},
+        }
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by (exporter, $exporter)"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn("??exporter", result.esql_query or "")
+        stats_line = next(line for line in result.esql_query.splitlines() if "STATS" in line)
+        self.assertIn("exporter", stats_line)
+
+    def test_grouping_template_variable_in_preagg_comparison_filter_is_feasible(self):
+        # Issue #282: a single-level aggregation over a comparison filter
+        # (``sum(metric > 0) by ($grouping)``) routes grouping through the same
+        # seam as the main agg path, so the late-bound dimension aliases cleanly.
+        self._enable_late_bound_grouping()
+        result = self.translate("sum(node_memory_bytes > 0) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        self.assertEqual(result.esql_query.count("??grouping"), 1)
+        self.assertEqual(result.output_group_fields, ["time_bucket", "grouping"])
+
+    def test_grouping_template_variable_in_two_stage_comparison_count_is_not_feasible(self):
+        # The two-stage count first collapses matching samples per series, then
+        # counts those series. This emitter cannot safely carry the late-bound
+        # field through both stages, so the validator rejects the query rather
+        # than ship a literal ``grouping`` column and a nonfunctional field
+        # control (issue #282).
+        self._enable_late_bound_grouping()
+        result = self.translate("count(up == 0) by ($grouping)", panel_type="stat")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_in_two_stage_counter_count_is_not_feasible(self):
+        # Counting counter series also uses a two-stage collapse. Until that
+        # emitter can preserve a late-bound dimension faithfully, the validator
+        # is the safety net that keeps the panel out of migrated output.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "count(http_requests_total) by ($grouping)",
+            panel_type="stat",
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_variable_reused_as_value_and_field_param_is_not_feasible(self):
+        # One Kibana control cannot bind the same name as both a value parameter
+        # (``?grouping`` in the matcher) and an identifier parameter
+        # (``??grouping`` in STATS). Shipping this shape makes the field choice
+        # double as a regex value and usually empties the panel.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            'sum(rate(otelcol_receiver_accepted_spans{exporter=~"$grouping"}[5m])) '
+            "by ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertTrue(
+            any("both value and field" in warning for warning in result.warnings),
+            result.warnings,
+        )
+
+    def test_topk_grouping_template_variable_keeps_stable_alias(self):
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertEqual(result.esql_query.count("grouping = ??grouping"), 1)
+        self.assertIn("BY grouping", result.esql_query)
+        self.assertEqual(result.output_group_fields, ["grouping"])
+
+    def test_double_bracket_grouping_template_variable_keeps_stable_alias(self):
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by ([[grouping]])"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        self.assertEqual(result.output_group_fields, ["time_bucket", "grouping"])
+
     def test_parse_failure_does_not_emit_generic_metric_name_warning(self):
         result = self.translate("sum(rate([label___range_ss]))")
 
@@ -5763,6 +6222,35 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIsNotNone(tend)
         self.assertRegex(tend, r"^\d{4}-\d{2}-\d{2}T")
 
+    def test_run_esql_query_binds_late_bound_identifier_default(self):
+        captured = {}
+
+        def fake_post(url, json, params, headers, timeout, **kwargs):
+            captured["params"] = json.get("params")
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"values": [], "columns": []},
+                headers={"content-type": "application/json"},
+            )
+
+        query = (
+            "TS metrics-*\n"
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        with mock.patch.object(esql_validate.requests, "post", side_effect=fake_post):
+            probe = esql_validate._run_esql_query(
+                query,
+                "http://localhost:9200",
+                identifier_params={"grouping": "exporter"},
+            )
+
+        self.assertTrue(probe["ok"])
+        self.assertEqual(captured["params"], [{"grouping": "exporter"}])
+
+    def test_identifier_control_marks_validation_rows_param_dependent(self):
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        self.assertTrue(esql_validate._has_dashboard_params(query))
+
     def test_sync_result_queries_to_yaml_pairs_by_title_when_leaf_order_diverges(self):
         """Regression: section/layout reorder must not zip validation fixes onto
         the wrong panel (docker-4271 visual_ir / YAML bleed)."""
@@ -6064,6 +6552,89 @@ class TranslatorRegressionTests(unittest.TestCase):
         operation = next(c for c in controls if c.get("variable_name") == "operation")
         self.assertEqual(operation["default"], ".*")
         self.assertIn("WHERE operation IS NOT NULL", operation["query"])
+
+    def test_sync_result_queries_does_not_create_values_control_for_field_param(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Grouped", "timeseries", "line", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [{
+                    "title": "Grouped",
+                    "esql": {
+                        "type": "line",
+                        "query": "TS metrics-*\n| STATS value = SUM(metric)",
+                    },
+                }],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        controls = rewritten["dashboards"][0].get("controls", [])
+        self.assertFalse(
+            any(
+                control.get("variable_name") == "grouping"
+                and control.get("variable_type") == "values"
+                for control in controls
+            ),
+            controls,
+        )
+
+    def test_sync_result_queries_replaces_stale_field_control_for_value_param(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Filtered", "timeseries", "line", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| WHERE exporter RLIKE ?grouping\n"
+            "| STATS value = SUM(metric)"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "controls": [{
+                    "type": "esql",
+                    "label": "Group by",
+                    "variable_name": "grouping",
+                    "variable_type": "fields",
+                    "choices": ["exporter", "transport"],
+                    "default": "exporter",
+                }],
+                "panels": [{
+                    "title": "Filtered",
+                    "esql": {
+                        "type": "line",
+                        "query": "TS metrics-*\n| STATS value = SUM(metric)",
+                    },
+                }],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        controls = [
+            control
+            for control in rewritten["dashboards"][0].get("controls", [])
+            if control.get("variable_name") == "grouping"
+        ]
+        self.assertEqual(len(controls), 1, controls)
+        self.assertEqual(controls[0]["variable_type"], "values")
 
     def test_sync_result_queries_to_yaml_updates_metric_field_after_query_alias_change(self):
         result = migrate.MigrationResult("Dashboard", "uid")
@@ -7932,6 +8503,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual([item[2]["query"] for item in outputs], ["FROM one", "FROM two"])
         self.assertEqual(validate.call_count, 2)
 
+    def test_run_validation_jobs_passes_identifier_defaults_from_query_ir(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        panel = SimpleNamespace(
+            esql_query="TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping",
+            title="Grouped",
+            source_panel_id="1",
+            query_ir={
+                "metadata": {
+                    "esql_identifier_param_defaults": {"grouping": "exporter"},
+                }
+            },
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            return_value={
+                "status": "pass",
+                "query": panel.esql_query,
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ) as validate:
+            _run_validation_jobs(
+                [(result, panel)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=1,
+            )
+
+        self.assertEqual(
+            validate.call_args.kwargs["identifier_params"],
+            {"grouping": "exporter"},
+        )
+
     def test_run_validation_jobs_prewarms_resolver_caches_before_parallel_work(self):
         from observability_migration.adapters.source.grafana.cli import (
             _run_validation_jobs,
@@ -7995,6 +8606,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(len(outputs), 2)
         self.assertEqual([item[2]["query"] for item in outputs], ["FROM shared", "FROM shared"])
         self.assertEqual(validate.call_count, 1)
+
+    def test_run_validation_jobs_keeps_distinct_identifier_defaults(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        exporter = SimpleNamespace(
+            esql_query=query,
+            title="Exporter",
+            source_panel_id="1",
+            query_ir={"metadata": {"esql_identifier_param_defaults": {"grouping": "exporter"}}},
+        )
+        receiver = SimpleNamespace(
+            esql_query=query,
+            title="Receiver",
+            source_panel_id="2",
+            query_ir={"metadata": {"esql_identifier_param_defaults": {"grouping": "receiver"}}},
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            side_effect=lambda q, *_args, **_kwargs: {
+                "status": "pass",
+                "query": q,
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ) as validate:
+            _run_validation_jobs(
+                [(result, exporter), (result, receiver)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=2,
+            )
+
+        self.assertEqual(validate.call_count, 2)
 
     def test_resolve_native_promql_uses_detection_when_auto(self):
         from observability_migration.adapters.source.grafana.cli import (

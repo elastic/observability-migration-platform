@@ -233,6 +233,46 @@ To emit a validated starter rule-pack template:
 | Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 
+### Grouping Template Variables (Late-Bound `by ($var)`)
+
+Grafana dashboards often expose the grouping dimension as a template variable
+(`sum(rate(metric[5m])) by ($grouping)`), so the viewer picks the breakdown at
+view time. This is a *late-bound* grouping dimension: the exact field is unknown
+at migration time.
+
+- **Pure `by ($var)` → interactive ES|QL field control.** When the target binds
+  ES|QL named parameters (`esql_named_param_binding`, probed from `--es-url`) and
+  the variable resolves to a set of selectable target fields, the dimension is
+  migrated to a Kibana ES|QL identifier/field control (`variable_type: fields`).
+  The query emits `STATS ... BY grouping = ??grouping`: the `??grouping`
+  identifier binds to the viewer's selection, while the aggregated column keeps
+  the **stable alias** `grouping` so the Lens breakdown accessor always resolves
+  the same column. The control's `choices` come from the variable's option list
+  and its current value becomes the default.
+- **Concrete label alongside the variable → graceful degrade (collision fix).**
+  `by (exporter, $grouping)` is **not** turned into a shared field control. One
+  Lens XY breakdown accessor cannot safely follow a field control whose choices
+  may collide with the concrete grouping column (`exporter`), which produced a
+  "Provided column name or index is invalid" render error. Instead the explicit
+  `exporter` grouping is kept and the optional `$grouping` selector is dropped
+  with a warning, so the panel still renders. Re-add the extra breakdown in
+  Kibana if needed.
+- **Not feasible (degrade gracefully).** `without ($var)` (ES|QL grouping is
+  positive), multiple variables in one clause (a single XY breakdown cannot host
+  several field controls), an unresolvable/empty choice set, no
+  `esql_named_param_binding` capability, and query shapes that cannot carry the
+  identifier (e.g. two-stage counts, binary expressions) all stay
+  `not_feasible`. A validator reverts to `not_feasible` if a deferred `??var`
+  never reached the emitted query, so a grouping dimension is never silently
+  dropped. If another panel uses the same variable as a value parameter
+  (`?var`), the late-bound grouping panel also stays `not_feasible`: one
+  dashboard control cannot bind the same name as both a value and an identifier,
+  so the existing value-bound panel/control is preserved instead.
+
+This is exercised by the late-bound grouping render-audit canary
+(`build_late_bound_grouping_canary`) so the interactive control and the
+collision degrade are both proven to render in Kibana (see `docs/testing.md`).
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are

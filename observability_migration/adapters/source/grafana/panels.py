@@ -5303,6 +5303,129 @@ def _build_esql_param_control(
     return control
 
 
+def _grouping_candidate_label_names(variable):
+    """Collect the label names a grouping template variable can select.
+
+    Grafana ``by ($grouping)`` selectors are ``custom`` variables (a fixed
+    comma-separated list of dimension names) or ``query`` variables whose
+    fetched ``options`` are dimension names. The current selection is always
+    included so the migrated control has a concrete default. Nested template
+    references and the "All" sentinel are skipped (issue #282).
+    """
+    names: list[str] = []
+
+    def _add(value):
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                _add(item)
+            return
+        text = str(value or "").strip()
+        if not text or text == "$__all" or text.lower() == "all":
+            return
+        if re.search(r"\$|\[\[", text):
+            return
+        if text not in names:
+            names.append(text)
+
+    for option in variable.get("options") or []:
+        if isinstance(option, dict):
+            _add(option.get("value"))
+    if variable.get("type") == "custom":
+        for part in _split_top_level_csv(_variable_query_text(variable)):
+            _add(part.strip())
+    current = variable.get("current")
+    if isinstance(current, dict):
+        _add(current.get("value"))
+    return names
+
+
+def _resolve_group_choice_field(raw_name, resolver, rule_pack, metric_field=None):
+    """Resolve one grouping-variable option to an aggregatable target field."""
+    name = str(raw_name or "").strip()
+    if not name:
+        return None
+    if resolver:
+        field_name = resolver.resolve_control_field(name, metric_field=metric_field or None)
+        if not field_name:
+            return None
+        if resolver.field_exists(field_name) is False:
+            return None
+        if resolver.field_exists(field_name) is True and not resolver.is_aggregatable_field(field_name):
+            return None
+        return field_name
+    return (rule_pack or RulePackConfig()).control_field_overrides.get(name, name)
+
+
+def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
+    """Map grouping template variables to ES|QL field-control specs (issue #282).
+
+    Only built when the target binds ES|QL parameters; the translation guardrail
+    consults this map to decide whether a ``by ($var)`` grouping can be deferred
+    to a Kibana ES|QL identifier control (``STATS ... BY ??var``) instead of
+    failing. A variable with no resolvable field options is omitted so the
+    grouping degrades gracefully to not_feasible.
+    """
+    if not binds_esql_named_params(rule_pack):
+        return {}
+    choices_map: dict[str, dict] = {}
+    for variable in variables or []:
+        if not isinstance(variable, dict) or variable.get("type") not in ("query", "custom"):
+            continue
+        name = variable.get("name")
+        if not name:
+            continue
+        raw_names = _grouping_candidate_label_names(variable)
+        if not raw_names:
+            continue
+        query_text = _variable_query_text(variable)
+        metric_field = _resolve_control_scope_metric(
+            _extract_variable_source_metric(query_text), resolver, rule_pack
+        )
+        choices: list[str] = []
+        for raw in raw_names:
+            field_name = _resolve_group_choice_field(raw, resolver, rule_pack, metric_field)
+            if field_name and field_name not in choices:
+                choices.append(field_name)
+        if not choices:
+            continue
+        current = variable.get("current")
+        default_raw = current.get("value") if isinstance(current, dict) else None
+        if isinstance(default_raw, (list, tuple)):
+            default_raw = default_raw[0] if len(default_raw) == 1 else None
+        default = None
+        if default_raw not in (None, "", "$__all"):
+            default = _resolve_group_choice_field(default_raw, resolver, rule_pack, metric_field)
+        if default not in choices:
+            default = choices[0]
+        choices_map[name] = {
+            "choices": choices,
+            "default": default,
+            "label": variable.get("label") or name,
+        }
+    return choices_map
+
+
+def _build_esql_field_control(variable_name, spec):
+    """Build a Kibana ES|QL identifier/field control (``??var``) (issue #282).
+
+    The Grafana grouping variable becomes a ``variable_type: fields`` ES|QL
+    control whose ``choices`` are the resolved candidate dimensions; ``??var``
+    in ``STATS ... BY ??var`` binds to the field the viewer picks, reproducing
+    the source dashboard's late-bound grouping dropdown.
+    """
+    control = {
+        "type": "esql",
+        "label": spec.get("label") or variable_name,
+        "variable_name": variable_name,
+        "variable_type": "fields",
+        "choices": list(spec.get("choices") or []),
+    }
+    default = spec.get("default")
+    if default:
+        control["default"] = default
+    return control
+
+
 MIN_DATATABLE_HEIGHT = 5
 
 
@@ -5582,7 +5705,7 @@ def _strip_internal_control_metadata(controls):
 # An ES|QL named parameter token (``?var``), excluding engine-internal params
 # such as ``?_tstart`` / ``?_tend`` / ``?_job`` which are materialized at
 # query time and never bound by a dashboard control.
-_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 # Quoted string literals, stripped before scanning so a ``?`` inside a value
 # (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
@@ -5594,6 +5717,54 @@ def _query_param_names(query):
         return set()
     unquoted = _ESQL_QUOTED_RE.sub('""', query)
     return {match.group("name") for match in _ESQL_PARAM_RE.finditer(unquoted)}
+
+
+_ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+
+
+def _collect_emitted_field_control_vars(panels):
+    """Return every ES|QL identifier/field control (``??var``) used by panels.
+
+    Late-bound grouping (issue #282) emits ``STATS ... BY ??var``; each one
+    needs a ``variable_type: fields`` binding control or the panel fails to
+    load. Mirrors :func:`_collect_emitted_param_names` for the ``??`` form.
+    """
+    names: set[str] = set()
+    for panel in panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_cfg = panel.get("esql")
+        query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
+        if not isinstance(query, str):
+            continue
+        unquoted = _ESQL_QUOTED_RE.sub('""', query)
+        names |= {match.group("name") for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)}
+    return names
+
+
+def _apply_late_bound_group_controls(controls, field_vars, rule_pack):
+    """Emit a field control for each ``??var`` grouping identifier (issue #282).
+
+    Runs before :func:`_ensure_param_controls` so the ``fields`` control binds
+    the identifier instead of the generic ``values`` control that the ``?var``
+    completeness pass would otherwise synthesise. Any pre-existing control bound
+    to the same variable is replaced so the identifier binds a fields control.
+    """
+    if not field_vars:
+        return controls
+    choices_map = getattr(rule_pack, "_late_bound_group_var_choices", None) or {}
+    result = list(controls)
+    for name in sorted(field_vars):
+        spec = choices_map.get(name)
+        if not isinstance(spec, dict) or not spec.get("choices"):
+            continue
+        result = [
+            control
+            for control in result
+            if not (isinstance(control, dict) and control.get("variable_name") == name)
+        ]
+        result.append(_build_esql_field_control(name, spec))
+    return result
 
 
 def _collect_emitted_param_names(panels):
@@ -5612,6 +5783,71 @@ def _collect_emitted_param_names(panels):
         query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
         names |= _query_param_names(query)
     return names
+
+
+def _degrade_conflicting_late_bound_group_panels(panels, panel_results):
+    """Replace ``??var`` panels when another dashboard panel emits ``?var``.
+
+    Kibana controls bind a variable as either a value or an identifier, not
+    both. The per-query validator catches dual use inside one query; this
+    dashboard-level pass catches the same conflict across separate panels.
+    Preserve the established values-control behavior and degrade only the new
+    late-bound grouping panel instead of shipping a field control that leaves
+    the value panel unbound.
+    """
+    value_vars = _collect_emitted_param_names(panels)
+    field_vars = _collect_emitted_field_control_vars(panels)
+    conflicts = value_vars & field_vars
+    if not conflicts:
+        return
+
+    for panel, panel_result in zip(panels, panel_results):
+        if not isinstance(panel, dict):
+            continue
+        esql_config = panel.get("esql")
+        query = esql_config.get("query") if isinstance(esql_config, dict) else None
+        if not isinstance(query, str):
+            continue
+        unquoted = _ESQL_QUOTED_RE.sub('""', query)
+        panel_conflicts = sorted(
+            {
+                match.group("name")
+                for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)
+            }
+            & conflicts
+        )
+        if not panel_conflicts:
+            continue
+
+        names = ", ".join(panel_conflicts)
+        reason = (
+            f"ES|QL parameter {names} is used as both value and field control "
+            "across dashboard panels; one dashboard control cannot preserve both semantics"
+        )
+        panel.pop("esql", None)
+        content = ["**Migration Required**", "", f"Reasons: {reason}"]
+        if panel_result.promql_expr:
+            content.extend(["", "Original PromQL:", "```", panel_result.promql_expr, "```"])
+        panel["markdown"] = {"content": "\n".join(content)}
+
+        panel_result.status = "not_feasible"
+        panel_result.kibana_type = "markdown"
+        panel_result.confidence = 0.0
+        panel_result.esql_query = ""
+        _append_unique(panel_result.reasons, reason)
+        query_ir_metadata = (
+            panel_result.query_ir.get("metadata")
+            if isinstance(panel_result.query_ir, dict)
+            and isinstance(panel_result.query_ir.get("metadata"), dict)
+            else {}
+        )
+        for metadata_key in (
+            "esql_identifier_param_defaults",
+            "late_bound_group_vars",
+            "late_bound_group_controls",
+        ):
+            query_ir_metadata.pop(metadata_key, None)
+        _sync_visual_ir(panel_result, panel)
 
 
 def _ensure_param_controls(
@@ -7045,6 +7281,15 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
     # explicitly into the native path. Set before any panel translation runs.
     setattr(rule_pack, "_regex_default_param_names", _collect_regex_default_param_names(variables))
+    # Issue #282: map grouping template variables (``by ($var)``) to ES|QL
+    # field-control specs up front so the translation guardrail can defer the
+    # dimension to a ``??var`` identifier control instead of failing. Gated on
+    # the target binding ES|QL parameters inside the builder.
+    setattr(
+        rule_pack,
+        "_late_bound_group_var_choices",
+        _build_late_bound_group_var_choices(variables, resolver, rule_pack),
+    )
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)
@@ -7152,7 +7397,12 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # Parameters (``?var``) actually emitted by panel queries drive control
     # completeness: every one needs a binding control, and any variable that
     # became a control should no longer be reported as a dropped filter.
+    _degrade_conflicting_late_bound_group_panels(
+        flat_panels,
+        result.yaml_panel_results,
+    )
     emitted_params = _collect_emitted_param_names(flat_panels)
+    emitted_field_vars = _collect_emitted_field_control_vars(flat_panels)
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -7164,6 +7414,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         repeat_variable_names=repeat_variable_names,
         include_variable_names=True,
     )
+    # Issue #282: bind each emitted ``??var`` grouping identifier to a fields
+    # control before the ``?var`` completeness pass so it is not shadowed by a
+    # generic values control.
+    controls = _apply_late_bound_group_controls(controls, emitted_field_vars, rule_pack)
     controls = _ensure_param_controls(
         controls,
         emitted_params,

@@ -118,6 +118,7 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
             dashboard_title="Dash",
             dashboard_uid="uid-1",
             uploaded=True,
+            kibana_saved_object_id="kibana-1",
             panel_results=[
                 PanelResult(
                     title="CPU",
@@ -125,6 +126,13 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
                     kibana_type="xy",
                     status="migrated",
                     confidence=1.0,
+                    query_ir={
+                        "metadata": {
+                            "esql_identifier_param_defaults": {
+                                "grouping": "transport",
+                            }
+                        }
+                    },
                 )
             ],
         )
@@ -195,6 +203,13 @@ class GrafanaCliSmokeParityTests(unittest.TestCase):
         self.assertTrue(smoke_kwargs["browser_audit"])
         self.assertTrue(smoke_kwargs["capture_screenshots"])
         self.assertEqual(smoke_kwargs["chrome_binary"], "/usr/bin/chrome")
+        self.assertEqual(
+            smoke_kwargs["identifier_params_by_dashboard"],
+            {
+                "kibana-1": {"grouping": "transport"},
+                "Dash": {"grouping": "transport"},
+            },
+        )
         mock_merge.assert_called_once_with([result], smoke_payload)
 
 

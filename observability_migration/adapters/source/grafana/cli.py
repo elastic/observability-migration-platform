@@ -665,6 +665,30 @@ def _smoke_uploaded_dashboards(
 
     smoke_output = Path(args.smoke_output) if args.smoke_output else output_dir / "uploaded_dashboard_smoke_report.json"
     dashboard_titles = [result.dashboard_title for result in uploaded_results if result.dashboard_title]
+    identifier_params_by_dashboard: dict[str, dict[str, str]] = {}
+    for result in uploaded_results:
+        defaults: dict[str, str] = {}
+        for panel_result in result.panel_results:
+            query_ir = panel_result.query_ir if isinstance(panel_result.query_ir, dict) else {}
+            metadata = query_ir.get("metadata") if isinstance(query_ir.get("metadata"), dict) else {}
+            raw_defaults = metadata.get("esql_identifier_param_defaults")
+            if not isinstance(raw_defaults, dict):
+                continue
+            defaults.update(
+                {
+                    str(name): str(value)
+                    for name, value in raw_defaults.items()
+                    if name and value not in (None, "")
+                }
+            )
+        if not defaults:
+            continue
+        for dashboard_key in (
+            result.kibana_saved_object_id,
+            result.dashboard_title,
+        ):
+            if dashboard_key:
+                identifier_params_by_dashboard[dashboard_key] = dict(defaults)
 
     print(f"\n  Smoke validating uploaded dashboards ({len(uploaded_results)})...")
     try:
@@ -685,6 +709,7 @@ def _smoke_uploaded_dashboards(
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
             verify=_resolve_tls_from_args(args),
+            identifier_params_by_dashboard=identifier_params_by_dashboard,
         )
     except Exception as exc:
         message = str(exc)
@@ -1505,15 +1530,33 @@ def _run_validation_jobs(
     if hasattr(resolver, "_discover_concrete_indexes"):
         resolver._discover_concrete_indexes()
 
+    def identifier_defaults(panel_result: Any) -> dict[str, str]:
+        query_ir = getattr(panel_result, "query_ir", None)
+        if not isinstance(query_ir, dict):
+            return {}
+        metadata = query_ir.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        defaults = metadata.get("esql_identifier_param_defaults")
+        if not isinstance(defaults, dict):
+            return {}
+        return {
+            str(name): str(value)
+            for name, value in defaults.items()
+            if name and value not in (None, "")
+        }
+
     unique_jobs: list[tuple[Any, Any]] = []
-    unique_index_by_query: dict[str, int] = {}
+    unique_index_by_signature: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
     job_to_unique_index: list[int] = []
     for job in validation_jobs:
         query = str(getattr(job[1], "esql_query", "") or "")
-        if query not in unique_index_by_query:
-            unique_index_by_query[query] = len(unique_jobs)
+        defaults = identifier_defaults(job[1])
+        signature = (query, tuple(sorted(defaults.items())))
+        if signature not in unique_index_by_signature:
+            unique_index_by_signature[signature] = len(unique_jobs)
             unique_jobs.append(job)
-        job_to_unique_index.append(unique_index_by_query[query])
+        job_to_unique_index.append(unique_index_by_signature[signature])
 
     worker_count = max(1, min(int(workers or 1), len(unique_jobs)))
 
@@ -1526,6 +1569,7 @@ def _run_validation_jobs(
             es_api_key=es_api_key,
             narrow_limit=narrow_limit,
             result_limit=1,
+            identifier_params=identifier_defaults(panel_result),
             verify=verify,
         )
 

@@ -275,7 +275,8 @@ def _pair_yaml_leaves_to_panel_results(leaf_panels, panel_results):
     return paired
 
 
-_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
 _INTERNAL_ESQL_PARAMS = {"_tstart", "_tend", "_job"}
 
@@ -288,6 +289,16 @@ def _query_param_names(query):
         match.group("name")
         for match in _ESQL_PARAM_RE.finditer(unquoted)
         if match.group("name") not in _INTERNAL_ESQL_PARAMS
+    }
+
+
+def _query_field_control_names(query):
+    if not isinstance(query, str):
+        return set()
+    unquoted = _ESQL_QUOTED_RE.sub('""', query)
+    return {
+        match.group("name")
+        for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)
     }
 
 
@@ -330,27 +341,48 @@ def _values_control_query(field_name, data_view):
 
 def _ensure_controls_for_emitted_params(dashboard, leaf_panels):
     emitted: set[str] = set()
+    emitted_fields: set[str] = set()
     for panel in leaf_panels:
         if not isinstance(panel, dict):
             continue
         esql_config = panel.get("esql")
         query = esql_config.get("query") if isinstance(esql_config, dict) else None
         emitted |= _query_param_names(query)
+        emitted_fields |= _query_field_control_names(query)
 
     controls = dashboard.setdefault("controls", [])
-    bound = {
+    value_bound = {
         control.get("variable_name")
         for control in controls
         if isinstance(control, dict)
         and control.get("type") == "esql"
         and control.get("variable_name")
+        and control.get("variable_type") != "fields"
     }
-    missing = sorted(name for name in emitted if name not in bound)
+    # A fields control cannot bind ``?name``. Do not auto-create a duplicate
+    # values control when the dashboard also still emits ``??name``; the lint
+    # gate reports that unsatisfiable dual-semantics shape. When the field
+    # control is stale, replace it with the required values control.
+    missing = sorted(
+        name
+        for name in emitted
+        if name not in value_bound and name not in emitted_fields
+    )
     if not missing:
         return False
 
     data_view = _infer_control_data_view(dashboard, leaf_panels)
     for name in missing:
+        controls[:] = [
+            control
+            for control in controls
+            if not (
+                isinstance(control, dict)
+                and control.get("type") == "esql"
+                and control.get("variable_name") == name
+                and control.get("variable_type") == "fields"
+            )
+        ]
         controls.append(
             {
                 "type": "esql",

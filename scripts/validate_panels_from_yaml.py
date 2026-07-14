@@ -89,7 +89,8 @@ WORKERS_LARGE =  3   # TS, PROMQL
 # single ``=`` (PromQL equality) without also consuming the ``==`` case.
 _PARAM_FIELD_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_.]*)\s*"
-    r"(?:==|!=|>=|<=|>|<|=~|!~|RLIKE|LIKE|IN|=(?!=))\s*\(?\s*\?(\w+)",
+    r"(?:==|!=|>=|<=|>|<|=~|!~|RLIKE|LIKE|IN|=(?!=))\s*\(?\s*"
+    r"(?<!\?)\?(?!\?)(\w+)",
     re.IGNORECASE,
 )
 
@@ -150,20 +151,28 @@ def _sample_field_value(field: str) -> str | None:
     return value
 
 
-def _build_params(query: str) -> list | None:
-    names = set(re.findall(r"\?(\w+)", query))
-    if not names:
+def _build_params(
+    query: str,
+    identifier_params: dict[str, str] | None = None,
+) -> list | None:
+    names = set(re.findall(r"(?<!\?)\?(?!\?)(\w+)", query))
+    identifier_names = set(re.findall(r"\?\?(\w+)", query))
+    if not names and not identifier_names:
         return None
     field_map = _param_field_map(query)
     params: list[dict] = []
-    for name in names:
+    for name in sorted(names):
         if name in _DEFAULT_PARAMS:
             params.append({name: _DEFAULT_PARAMS[name]})
             continue
         field = field_map.get(name)
         sampled = _sample_field_value(field) if field else None
         params.append({name: sampled if sampled is not None else ""})
-    return params
+    defaults = identifier_params or {}
+    for name in sorted(identifier_names):
+        if name not in names and name in defaults:
+            params.append({name: defaults[name]})
+    return params or None
 
 
 _DASHBOARD_TIME_FILTER = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
@@ -240,7 +249,7 @@ def _timeout_for(query: str) -> int:
     return 60
 
 
-def es_esql(query: str) -> dict:
+def es_esql(query: str, identifier_params: dict[str, str] | None = None) -> dict:
     """Execute query; return {ok, columns, row_count} or {ok:False, error, reason, raw}."""
     # Mirror Kibana's dashboard time picker: bound TS/FROM scans to the test
     # window so we don't false-positive on circuit breakers or sweep all of
@@ -249,7 +258,7 @@ def es_esql(query: str) -> dict:
     timeout = _timeout_for(query)
     url = f"{ES_ENDPOINT}/_query"
     body: dict = {"query": query, "columnar": True}
-    params = _build_params(query)
+    params = _build_params(query, identifier_params=identifier_params)
     if params:
         body["params"] = params
     req = Request(url, data=json.dumps(body).encode(), headers=HEADERS, method="POST")
@@ -632,10 +641,48 @@ def _counter_fields(fields: set[str]) -> set[str]:
     return counters
 
 
-def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -> None:
+def _field_control_defaults(controls: object) -> dict[str, str]:
+    defaults: dict[str, str] = {}
+    if not isinstance(controls, list):
+        return defaults
+    for control in controls:
+        if (
+            not isinstance(control, dict)
+            or control.get("type") != "esql"
+            or control.get("variable_type") != "fields"
+        ):
+            continue
+        name = str(control.get("variable_name") or "").strip()
+        choices = (
+            control.get("choices")
+            or control.get("available_options")
+            or control.get("options")
+            or []
+        )
+        default = control.get("default")
+        if default in (None, "") and isinstance(choices, list) and choices:
+            default = choices[0]
+        if name and default not in (None, ""):
+            defaults[name] = str(default)
+    return defaults
+
+
+def _walk_panels(
+    panels: list,
+    entries: list,
+    slug: str,
+    dashboard_title: str,
+    identifier_params: dict[str, str] | None = None,
+) -> None:
     for p in panels:
         if "section" in p:
-            _walk_panels(p["section"].get("panels", []), entries, slug, dashboard_title)
+            _walk_panels(
+                p["section"].get("panels", []),
+                entries,
+                slug,
+                dashboard_title,
+                identifier_params,
+            )
             continue
 
         base = {"slug": slug, "dashboard": dashboard_title, "panel": p.get("title", "?")}
@@ -650,6 +697,7 @@ def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -
                 "expected_cols": _expected_columns(esql),
                 "chart_type": p.get("type", ""),
                 "_esql_raw": esql,
+                "identifier_params": dict(identifier_params or {}),
             })
         elif "lens" in p:
             # Defer ES|QL reconstruction until after a batch counter-field probe
@@ -661,6 +709,7 @@ def _walk_panels(panels: list, entries: list, slug: str, dashboard_title: str) -
                 "expected_cols": [],
                 "is_lens": True,
                 "_lens_raw": p["lens"],
+                "identifier_params": dict(identifier_params or {}),
             })
         # markdown → no entry (nothing to validate)
 
@@ -675,7 +724,13 @@ def collect_panels() -> list[dict]:
             continue
         for dash in doc.get("dashboards", []):
             title = dash.get("name") or dash.get("title") or yf.split("/")[-1]
-            _walk_panels(dash.get("panels", []), all_panels, slug, title)
+            _walk_panels(
+                dash.get("panels", []),
+                all_panels,
+                slug,
+                title,
+                _field_control_defaults(dash.get("controls")),
+            )
 
     _reconstruct_lens_panels(all_panels)
     return all_panels
@@ -776,8 +831,13 @@ def main() -> int:
         if issues:
             static_issues_all.append({**p, "static_issues": issues})
 
-    # Deduplicate: build a set of unique query strings
-    unique_queries = list({p["query"] for p in esql_panels})
+    # Deduplicate by query plus identifier defaults: the same ``??grouping``
+    # query can legitimately select a different field in another dashboard.
+    def _query_signature(panel: dict) -> tuple[str, tuple[tuple[str, str], ...]]:
+        defaults = panel.get("identifier_params") or {}
+        return panel["query"], tuple(sorted(defaults.items()))
+
+    unique_queries = list({_query_signature(p) for p in esql_panels})
     total_panels = len(esql_panels)
     reused = total_panels - len(unique_queries)
 
@@ -791,26 +851,39 @@ def main() -> int:
     print()
 
     # --- Run queries in parallel (tiered by memory cost) -------------------
-    query_results: dict[str, dict] = {}
+    query_results: dict[tuple[str, tuple[tuple[str, str], ...]], dict] = {}
     done = 0
 
-    def _is_small(q: str) -> bool:
+    def _is_small(spec: tuple[str, tuple[tuple[str, str], ...]]) -> bool:
+        q = spec[0]
         first = q.split()[0].upper() if q else "FROM"
         return first in ("FROM", "ROW")
 
-    small_queries = [q for q in unique_queries if _is_small(q)]
-    large_queries = [q for q in unique_queries if not _is_small(q)]
+    small_queries = [spec for spec in unique_queries if _is_small(spec)]
+    large_queries = [spec for spec in unique_queries if not _is_small(spec)]
 
-    def _run_batch(queries: list[str], workers: int, label: str) -> None:
+    def _run_batch(
+        queries: list[tuple[str, tuple[tuple[str, str], ...]]],
+        workers: int,
+        label: str,
+    ) -> None:
         nonlocal done
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_map = {pool.submit(es_esql, q): q for q in queries}
+            future_map = {
+                pool.submit(es_esql, query, dict(defaults)): (query, defaults)
+                for query, defaults in queries
+            }
             for future in as_completed(future_map):
-                q = future_map[future]
+                spec = future_map[future]
                 try:
-                    query_results[q] = future.result()
+                    query_results[spec] = future.result()
                 except Exception as exc:
-                    query_results[q] = {"ok": False, "error": str(exc), "reason": "", "raw": ""}
+                    query_results[spec] = {
+                        "ok": False,
+                        "error": str(exc),
+                        "reason": "",
+                        "raw": "",
+                    }
                 done += 1
                 if done % 25 == 0 or done == len(unique_queries):
                     print(f"  [{done}/{len(unique_queries)}] done ({label}) …", flush=True)
@@ -827,7 +900,10 @@ def main() -> int:
     static_warn: list[dict] = []
 
     for p in esql_panels:
-        result = query_results.get(p["query"], {"ok": False, "error": "missing result"})
+        result = query_results.get(
+            _query_signature(p),
+            {"ok": False, "error": "missing result"},
+        )
         label  = f"[{p['slug']}] {p['dashboard']} / {p['panel']}"
 
         # Static structural issues (reported regardless of ES outcome).

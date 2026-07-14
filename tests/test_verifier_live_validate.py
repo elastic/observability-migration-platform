@@ -173,6 +173,28 @@ class TestValidateQuery:
         assert params.get("_t_start") and params["_t_start"] != ".*"
         assert params.get("_t_end") and params["_t_end"] != ".*"
 
+    def test_default_runner_binds_identifier_control_default(self, monkeypatch) -> None:
+        from verifier import collectors
+
+        captured: dict = {}
+
+        def fake_run(es, key, q, params=None, timeout=0):
+            captured["params"] = params
+            return 200, {"columns": [], "values": []}
+
+        monkeypatch.setattr(collectors, "run_cluster_query", fake_run)
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+
+        result = live_validate.validate_query(
+            "es",
+            "k",
+            query,
+            identifier_params={"grouping": "exporter"},
+        )
+
+        assert result.classification == "ok"
+        assert captured["params"] == [{"grouping": "exporter"}]
+
 
 class TestDriverAndExtraction:
     def test_validate_queries_dedups(self) -> None:
@@ -226,6 +248,34 @@ class TestDriverAndExtraction:
         }
         items = live_validate.queries_from_report(report)
         assert items == [("D", "P", "EMITTED QUERY")]
+
+    def test_query_specs_from_report_include_identifier_defaults(self) -> None:
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        report = {
+            "dashboards": [{
+                "title": "D",
+                "panels": [{
+                    "title": "P",
+                    "visual_ir": {
+                        "presentation": {
+                            "kind": "esql",
+                            "config": {"query": query},
+                        }
+                    },
+                    "query_ir": {
+                        "metadata": {
+                            "esql_identifier_param_defaults": {
+                                "grouping": "exporter",
+                            }
+                        }
+                    },
+                }],
+            }]
+        }
+
+        assert live_validate.query_specs_from_report(report) == [
+            ("D", "P", query, {"grouping": "exporter"})
+        ]
 
     def test_queries_from_report_falls_back_to_bare_esql(self) -> None:
         report = {"dashboards": [{"title": "D", "panels": [{"title": "P", "esql": "BARE"}]}]}
