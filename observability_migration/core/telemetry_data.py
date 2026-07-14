@@ -1223,6 +1223,9 @@ def _flush_into_summary(
         operation = item.get("create") or item.get("index") or {}
         error = operation.get("error") if isinstance(operation, dict) else None
         if error:
+            if isinstance(error, dict) and error.get("type") == "version_conflict_engine_exception":
+                ok += 1
+                continue
             errors += 1
             if len(summary.error_samples) < 3:
                 if isinstance(error, dict):

@@ -89,6 +89,9 @@ SCENARIO_REGISTRY: dict[str, ScenarioSpec] = {
         manifest_path=Path("parity-rig/interaction-scenarios/k8s-views-global.yaml"),
         source_kind="grafana",
         source_path=Path("infra/grafana/dashboards/k8s-views-global.json"),
+        control_schema_path=Path(
+            "infra/grafana/dashboards/control_schemas/k8s-views-global.json"
+        ),
     ),
 }
 
@@ -533,6 +536,28 @@ def map_stable_panel_ids(
     return mapped
 
 
+def _collect_stable_panels_from_ir(
+    panels: Sequence[Any],
+) -> list[tuple[str, str]]:
+    """Collect leaf panel identities from a dashboard IR tree."""
+    collected: list[tuple[str, str]] = []
+    for panel in panels:
+        if not isinstance(panel, Mapping):
+            continue
+        children = panel.get("children")
+        if isinstance(children, list) and children:
+            collected.extend(_collect_stable_panels_from_ir(children))
+            continue
+        kind = str(panel.get("kind") or "panel").strip().lower()
+        if kind != "panel":
+            continue
+        stable_id = str(panel.get("panel_id") or "").strip()
+        title = str(panel.get("title") or "").strip()
+        if stable_id and title:
+            collected.append((stable_id, title))
+    return collected
+
+
 def load_stable_panels_from_ir(
     migration_out: Path,
     *,
@@ -546,19 +571,8 @@ def load_stable_panels_from_ir(
         dashboard_ir = artifact.get("dashboard_ir")
         if not isinstance(dashboard_ir, Mapping):
             continue
-        stable_panels = [
-            (
-                str(panel.get("panel_id") or "").strip(),
-                str(panel.get("title") or "").strip(),
-            )
-            for panel in dashboard_ir.get("panels") or []
-            if isinstance(panel, Mapping)
-        ]
-        cleaned = tuple(
-            (stable_id, title)
-            for stable_id, title in stable_panels
-            if stable_id and title
-        )
+        stable_panels = _collect_stable_panels_from_ir(dashboard_ir.get("panels") or [])
+        cleaned = tuple(dict.fromkeys(stable_panels))
         if cleaned:
             return cleaned
     raise FileNotFoundError(

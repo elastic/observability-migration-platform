@@ -1366,3 +1366,37 @@ def test_redis_scenario_manifest_is_registered_and_strict() -> None:
         "namespace-and-instance",
         "all-three",
     }
+
+
+K8S_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "parity-rig"
+    / "interaction-scenarios"
+    / "k8s-views-global.yaml"
+)
+
+
+def test_k8s_scenario_manifest_is_registered_and_strict() -> None:
+    scenario = load_scenario(K8S_MANIFEST)
+    assert scenario.id == "k8s-views-global"
+    assert scenario.source_path == "infra/grafana/dashboards/k8s-views-global.json"
+    assert scenario.control_schema_path == (
+        "infra/grafana/dashboards/control_schemas/k8s-views-global.json"
+    )
+    assert {control.key for control in scenario.controls} == {
+        "cluster",
+        "job",
+        "datasource",
+        "resolution",
+        "gap_chained_controls",
+    }
+    cluster = next(control for control in scenario.controls if control.key == "cluster")
+    job = next(control for control in scenario.controls if control.key == "job")
+    assert cluster.assertions.affected_panels == "all_query_panels"
+    assert job.assertions.affected_panels == "query_dependency"
+    assert job.assertions.unaffected_panels == ()
+    assert {combination.id for combination in scenario.combinations} == {
+        "cluster-and-job",
+        "cluster-and-second-job",
+        "third-cluster-and-job",
+    }

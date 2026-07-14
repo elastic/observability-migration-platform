@@ -25,13 +25,12 @@ def test_local_runner_seeds_before_schema_aware_final_migration():
     script = LOCAL_RUNNER.read_text(encoding="utf-8")
 
     bootstrap = script.index('--output-dir "$bootstrap_root"')
-    first_seed = script.index("setup_telemetry_data.py")
     final = script.index('--output-dir "$final_root"')
-    second_seed = script.index("setup_telemetry_data.py", first_seed + 1)
+    first_seed = script.index("setup_telemetry_data.py")
     live_validate = script.index("validate-final")
     browser = script.index("scripts/run_interaction_audit.py")
 
-    assert bootstrap < first_seed < final < second_seed < live_validate < browser
+    assert bootstrap < final < first_seed < live_validate < browser
     assert "--upload" in script
     assert "--ensure-data-views" in script
     assert "--panel-contract" in script

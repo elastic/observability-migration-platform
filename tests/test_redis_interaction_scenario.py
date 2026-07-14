@@ -86,7 +86,9 @@ def _migrate_redis(tmp_path: Path) -> Path:
         "--control-schema",
         str(REDIS_CONTROL_SCHEMA),
     ]
-    es_url = os.environ.get("ES_URL", "http://localhost:9200")
+    es_url = os.environ.get("REDIS_INTERACTION_ES_URL")
+    if es_url is None:
+        es_url = "" if os.environ.get("REDIS_INTERACTION_OFFLINE", "1") == "1" else os.environ.get("ES_URL", "http://localhost:9200")
     if es_url:
         cmd.extend(["--es-url", es_url])
     completed = subprocess.run(

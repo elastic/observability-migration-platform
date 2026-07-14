@@ -1,0 +1,50 @@
+{
+  "index_pattern": "metrics-*",
+  "field_cache": {
+    "k8s.cluster.name": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "service.name": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "node_cpu_seconds_total": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "kube_node_info": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    }
+  },
+  "cooccurrence_cache": [
+    {
+      "metric": "node_cpu_seconds_total",
+      "field": "k8s.cluster.name",
+      "cooccurs": true
+    },
+    {
+      "metric": "node_cpu_seconds_total",
+      "field": "service.name",
+      "cooccurs": true
+    },
+    {
+      "metric": "kube_node_info",
+      "field": "k8s.cluster.name",
+      "cooccurs": true
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+version: 1
+id: k8s-views-global
+title: Kubernetes / Views / Global interaction controls
+source:
+  kind: grafana
+  path: infra/grafana/dashboards/k8s-views-global.json
+  control_schema: infra/grafana/dashboards/control_schemas/k8s-views-global.json
+dashboard:
+  title: Kubernetes / Views / Global
+  time_from: now-3h
+  time_to: now
+controls:
+  - label: cluster
+    key: cluster
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [cluster]
+      affected_panels: all_query_panels
+      query_contains: ["?cluster", "cluster", "RLIKE"]
+      expect_data_change: true
+  - label: job
+    key: job
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [job]
+      affected_panels: query_dependency
+      query_contains: ["?job", "job", "RLIKE"]
+      expect_data_change: true
+  - label: datasource
+    key: datasource
+    adapter: esql_value
+    capability: source_only
+    expected_gap: Grafana datasource variables are not translated to target datasource switching
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: []
+      expect_data_change: false
+  - label: resolution
+    key: resolution
+    adapter: esql_value
+    capability: source_only
+    expected_gap: Grafana custom resolution/interval variables are not translated to ES|QL controls
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: []
+      expect_data_change: false
+  - label: gap chained controls
+    key: gap_chained_controls
+    adapter: esql_value
+    capability: migration_gap
+    expected_gap: Chained Grafana variable scoping for job depends on cluster selection
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: []
+      allow_incompatible_selections: true
+      expect_data_change: false
+combinations:
+  - id: cluster-and-job
+    selections:
+      cluster: cluster_1
+      job: job_1
+  - id: cluster-and-second-job
+    selections:
+      cluster: cluster_2
+      job: job_2
+  - id: third-cluster-and-job
+    selections:
+      cluster: cluster_3
+      job: job_3
+noise_allowances:
+  - endpoint: /internal/security/user_profile
+    method: GET
+    status: 404
+    rationale: Security is disabled in the local test stack.

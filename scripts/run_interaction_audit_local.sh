@@ -70,13 +70,6 @@ run_grafana_scenario() {
     --output-dir "$bootstrap_root" \
     --assets dashboards
 
-  echo "-- $scenario_id: bootstrap telemetry seed --"
-  "$PY" scripts/setup_telemetry_data.py "$bootstrap_artifacts" \
-    --es-endpoint "$ES_URL" \
-    --api-key "$ES_API_KEY" \
-    --data-hours 3 \
-    --interval-sec 60
-
   echo "-- $scenario_id: live-schema migrate and native upload --"
   "$PY" -m observability_migration.adapters.source.grafana.cli \
     --source files \
@@ -180,7 +173,7 @@ for raw_scenario_id in "${selected_scenarios[@]}"; do
       run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/redis-11835.json" "infra/grafana/dashboards/control_schemas/redis-11835.json"
       ;;
     k8s-views-global)
-      run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/k8s-views-global.json"
+      run_grafana_scenario "$scenario_id" "infra/grafana/dashboards/k8s-views-global.json" "infra/grafana/dashboards/control_schemas/k8s-views-global.json"
       ;;
     *)
       echo "Unknown scenario: $scenario_id" >&2
