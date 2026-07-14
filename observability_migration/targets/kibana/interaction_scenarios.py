@@ -121,7 +121,7 @@ class OptionPolicy:
 class Assertions:
     selection: tuple[str, ...] = ()
     affected_panels: str | tuple[str, ...] = "query_dependency"
-    unaffected_panels: tuple[str, ...] = ()
+    unaffected_panels: str | tuple[str, ...] = ()
     query_contains: tuple[str, ...] = ()
     query_not_contains: tuple[str, ...] = ()
     required_columns: tuple[str, ...] = ()
@@ -755,6 +755,23 @@ def _parse_affected_panels(
     return _stable_panel_list(value, manifest_path, field)
 
 
+def _parse_unaffected_panels(
+    value: Any,
+    manifest_path: Path,
+    field: str,
+) -> str | tuple[str, ...]:
+    if value in ((), [], None):
+        return ()
+    if isinstance(value, str):
+        if value != "all_query_panels":
+            raise ManifestError(
+                f"{manifest_path}: {field} must be all_query_panels or a list of stable panel identifiers"
+            )
+        return value
+
+    return _stable_panel_list(value, manifest_path, field)
+
+
 def _parse_assertions(
     value: Any,
     manifest_path: Path,
@@ -773,8 +790,8 @@ def _parse_assertions(
         manifest_path,
         f"{field_prefix}.assertions.affected_panels",
     )
-    unaffected_panels = _stable_panel_list(
-        assertions.get("unaffected_panels", []),
+    unaffected_panels = _parse_unaffected_panels(
+        assertions.get("unaffected_panels", ()),
         manifest_path,
         f"{field_prefix}.assertions.unaffected_panels",
     )

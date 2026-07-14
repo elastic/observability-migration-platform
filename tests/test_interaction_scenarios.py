@@ -560,6 +560,46 @@ def test_unaffected_panels_rejects_kibana_uuid(tmp_path: Path) -> None:
         load_scenario(path)
 
 
+@pytest.mark.parametrize(
+    "unaffected_panels",
+    [
+        "all_query_panels",
+        ["Uptime", "Clients"],
+    ],
+)
+def test_unaffected_panels_accepted_forms(tmp_path: Path, unaffected_panels) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0]["assertions"].update(
+            {"unaffected_panels": unaffected_panels}
+        ),
+        name="unaffected-panels.yaml",
+    )
+
+    scenario = load_scenario(path)
+    parsed = scenario.controls[0].assertions.unaffected_panels
+    if isinstance(unaffected_panels, list):
+        assert parsed == tuple(unaffected_panels)
+    else:
+        assert parsed == unaffected_panels
+
+
+def test_unaffected_panels_invalid_string_rejects(tmp_path: Path) -> None:
+    path = _mutated_manifest(
+        tmp_path,
+        lambda doc: doc["controls"][0]["assertions"].update(
+            {"unaffected_panels": "query_dependency"}
+        ),
+        name="bad-unaffected-panels.yaml",
+    )
+
+    with pytest.raises(
+        ManifestError,
+        match=r"controls\[0\]\.assertions.unaffected_panels must be all_query_panels",
+    ):
+        load_scenario(path)
+
+
 def test_negative_minimum_rows_rejects(tmp_path: Path) -> None:
     path = _mutated_manifest(
         tmp_path,
@@ -1313,6 +1353,14 @@ def test_redis_scenario_manifest_is_registered_and_strict() -> None:
     }
     instance = next(control for control in scenario.controls if control.key == "instance")
     assert instance.assertions.affected_panels == "all_query_panels"
+    namespace = next(control for control in scenario.controls if control.key == "namespace")
+    pod_name = next(control for control in scenario.controls if control.key == "pod_name")
+    assert namespace.assertions.unaffected_panels == "all_query_panels"
+    assert namespace.assertions.affected_panels == ()
+    assert namespace.assertions.query_contains == ()
+    assert namespace.assertions.allow_incompatible_selections is False
+    assert pod_name.assertions.unaffected_panels == "all_query_panels"
+    assert pod_name.assertions.allow_incompatible_selections is False
     assert {combination.id for combination in scenario.combinations} == {
         "namespace-and-pod_name",
         "namespace-and-instance",

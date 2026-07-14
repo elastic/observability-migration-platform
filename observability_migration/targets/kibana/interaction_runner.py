@@ -155,6 +155,7 @@ class _MergedAssertions:
     expected_value_params: dict[str, object]
     expected_identifier_params: dict[str, str]
     require_param_tokens: bool
+    decorative_control_keys: tuple[str, ...] = ()
 
 
 def _bound_io_error(message: str) -> str:
@@ -260,6 +261,18 @@ def _append_finding(
     findings.append(InteractionFinding(failure_class, detail))
 
 
+def _resolve_unaffected_panels(
+    control: ControlScenario,
+    panel_contract: PanelContract,
+) -> tuple[str, ...]:
+    unaffected = control.assertions.unaffected_panels
+    if isinstance(unaffected, tuple):
+        return panel_contract.resolve_panel_ids(unaffected)
+    if unaffected == "all_query_panels":
+        return panel_contract.all_query_panels
+    return ()
+
+
 def _resolve_affected_panels(
     control: ControlScenario,
     panel_contract: PanelContract,
@@ -267,6 +280,8 @@ def _resolve_affected_panels(
 ) -> tuple[str, ...]:
     affected = control.assertions.affected_panels
     if isinstance(affected, tuple):
+        if not affected:
+            return ()
         return panel_contract.resolve_panel_ids(affected)
     if affected == "all_query_panels":
         return panel_contract.all_query_panels
@@ -323,6 +338,7 @@ def _merge_assertions(
     minimum_rows = 0
     expect_data_change = False
     allow_incompatible = True
+    decorative_control_keys: list[str] = []
 
     for control in controls:
         assertions = control.assertions
@@ -333,17 +349,17 @@ def _merge_assertions(
             query_not_contains.extend(assertions.query_not_contains)
         required_columns.extend(assertions.required_columns)
         expected_legend.extend(assertions.expected_legend)
-        unaffected_panels.extend(
-            panel_contract.resolve_panel_ids(assertions.unaffected_panels)
-        )
+        resolved_unaffected = _resolve_unaffected_panels(control, panel_contract)
+        unaffected_panels.extend(resolved_unaffected)
         minimum_rows = max(minimum_rows, assertions.minimum_rows)
         expect_data_change = expect_data_change or assertions.expect_data_change
         allow_incompatible = allow_incompatible and assertions.allow_incompatible_selections
         if assertions.stable_alias:
             stable_aliases.append(assertions.stable_alias)
-        expected_panels.extend(
-            _resolve_affected_panels(control, panel_contract, findings)
-        )
+        resolved_affected = _resolve_affected_panels(control, panel_contract, findings)
+        expected_panels.extend(resolved_affected)
+        if not resolved_affected and resolved_unaffected:
+            decorative_control_keys.append(control.key)
         selected_value = selections.get(control.key, "")
         if selected_value:
             value_params, identifier_params = _expected_params_for_control(
@@ -390,7 +406,12 @@ def _merge_assertions(
         expected_value_params=expected_value_params,
         expected_identifier_params=expected_identifier_params,
         require_param_tokens=len(controls) <= 1,
+        decorative_control_keys=_ordered_unique(decorative_control_keys),
     )
+
+
+def _capture_panel_ids(merged: _MergedAssertions) -> tuple[str, ...]:
+    return _ordered_unique((*merged.expected_panels, *merged.unaffected_panels))
 
 
 def _controls_for_step(
@@ -860,9 +881,9 @@ class InteractionRunner:
                 runtime_by_title,
             ),
         )
-        expected_panels = merged.expected_panels
+        capture_panels = _capture_panel_ids(merged)
         baseline_observation = self._browser.capture(
-            expected_panels,
+            capture_panels,
             cursor=baseline_cursor,
         )
         baseline_fingerprint = _panel_fingerprint(baseline_observation.panels)
@@ -1066,7 +1087,7 @@ class InteractionRunner:
                 try:
                     observation = self._browser.settle(
                         cursor,
-                        expected_panels,
+                        capture_panels,
                         policy=self._config.settle_policy,
                     )
                 except SettleTimeout as exc:
@@ -1092,7 +1113,7 @@ class InteractionRunner:
 
             if cursor is not None:
                 scoped_observation = self._browser.capture(
-                    expected_panels,
+                    capture_panels,
                     cursor=cursor,
                 )
                 observation = (
@@ -1349,6 +1370,7 @@ class InteractionRunner:
                 stable_alias=merged.stable_alias,
                 minimum_rows=merged.minimum_rows,
                 require_param_tokens=merged.require_param_tokens,
+                decorative_control_keys=merged.decorative_control_keys,
             )
         )
         return findings

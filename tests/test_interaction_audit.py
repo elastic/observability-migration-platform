@@ -736,6 +736,39 @@ def test_check_network_contract_reports_unexpected_unaffected_panel_request():
     assert "panel panel-9" in findings[0].detail
 
 
+def test_check_network_contract_allows_unaffected_refresh_for_decorative_controls():
+    findings = check_network_contract(
+        expected_panel_ids=[],
+        unaffected_panel_ids=["panel-9"],
+        evidence=[
+            _successful_evidence(
+                panel_id="panel-9",
+                query="TS metrics-* | WHERE service.instance.id RLIKE ?instance",
+                params={"instance": "backend"},
+            )
+        ],
+        decorative_control_keys=["namespace"],
+    )
+    assert findings == []
+
+
+def test_check_network_contract_flags_decorative_binding_on_unaffected_panel():
+    findings = check_network_contract(
+        expected_panel_ids=[],
+        unaffected_panel_ids=["panel-9"],
+        evidence=[
+            _successful_evidence(
+                panel_id="panel-9",
+                query="TS metrics-* | WHERE namespace == ?namespace",
+                params={"namespace": "default"},
+            )
+        ],
+        decorative_control_keys=["namespace"],
+    )
+    assert len(findings) == 1
+    assert findings[0].failure_class == FailureClass.UNEXPECTED_PANEL_REQUEST
+
+
 def test_check_network_contract_reports_server_and_query_errors():
     findings = check_network_contract(
         expected_panel_ids=["panel-7"],

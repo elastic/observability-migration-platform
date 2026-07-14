@@ -1518,6 +1518,57 @@ def test_unaffected_panel_success_triggers_unexpected_panel_request(tmp_path: Pa
     )
 
 
+def test_decorative_control_captures_all_query_panels_without_unexpected_requests(
+    tmp_path: Path,
+) -> None:
+    panel_ids = tuple(f"panel-{index}" for index in range(12))
+    decorative_control = ControlScenario(
+        label="Namespace",
+        key="namespace",
+        adapter="esql_value",
+        capability=CapabilityCategory.MIGRATED_LIVE,
+        options=OptionPolicy(strategy="declared", include=("default",)),
+        assertions=Assertions(
+            selection=("namespace",),
+            affected_panels=(),
+            unaffected_panels="all_query_panels",
+            expect_data_change=False,
+        ),
+    )
+    instance_only_network = tuple(
+        _esql_network(
+            panel_id,
+            query="TS metrics-* | WHERE service.instance.id RLIKE ?instance",
+            params={"instance": "backend"},
+        )
+        for panel_id in panel_ids
+    )
+    browser = FakeBrowser(
+        controls={"namespace": ("default", "monitoring")},
+        selected={"namespace": (".*",)},
+        selected_after_reset={"namespace": (".*",)},
+        network_by_step=[instance_only_network, instance_only_network],
+        baseline_network_by_step=[instance_only_network],
+    )
+    contract = PanelContract(
+        all_query_panels=panel_ids,
+        by_control={"instance": panel_ids},
+    )
+    report = _run(
+        browser,
+        _scenario(controls=(decorative_control,)),
+        tmp_path,
+        contract,
+    )
+    result = report.results[0]
+    assert result.status is InteractionStatus.PASS
+    assert len(result.panels) == 12
+    assert not any(
+        f.failure_class is FailureClass.UNEXPECTED_PANEL_REQUEST for f in result.findings
+    )
+    assert browser.settle_expected_panels[-1] == panel_ids
+
+
 def test_selection_json_records_post_read_state(tmp_path: Path) -> None:
     browser = FakeBrowser(
         controls={"namespace": ("ns_1",)},

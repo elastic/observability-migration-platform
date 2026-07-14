@@ -543,6 +543,12 @@ def _contract_violations_for_evidence(
     return violations
 
 
+def _query_binds_control_key(query: str, control_key: str) -> bool:
+    return _query_has_value_token(query, control_key) or _query_has_identifier_token(
+        query, control_key
+    )
+
+
 def check_network_contract(
     *,
     expected_panel_ids: Collection[str],
@@ -556,6 +562,7 @@ def check_network_contract(
     stable_alias: str = "",
     minimum_rows: int = 0,
     require_param_tokens: bool = True,
+    decorative_control_keys: Sequence[str] = (),
 ) -> list[InteractionFinding]:
     findings: list[InteractionFinding] = []
     seen: set[tuple[str, str]] = set()
@@ -564,6 +571,7 @@ def check_network_contract(
     value_params = dict(expected_value_params or {})
     identifier_params = dict(expected_identifier_params or {})
 
+    decorative_keys = tuple(decorative_control_keys)
     successful_by_panel: dict[str, list[NetworkEvidence]] = {panel_id: [] for panel_id in expected}
     for item in evidence:
         if _is_successful_status(item.status):
@@ -575,12 +583,16 @@ def check_network_contract(
                     "ES|QL response could not be correlated to a panel",
                 )
             if item.panel_id in unaffected:
-                _append_finding(
-                    findings,
-                    seen,
-                    FailureClass.UNEXPECTED_PANEL_REQUEST,
-                    f"panel {item.panel_id}: unexpected successful ES|QL request",
+                binds_decorative = decorative_keys and any(
+                    _query_binds_control_key(item.query, key) for key in decorative_keys
                 )
+                if not decorative_keys or binds_decorative:
+                    _append_finding(
+                        findings,
+                        seen,
+                        FailureClass.UNEXPECTED_PANEL_REQUEST,
+                        f"panel {item.panel_id}: unexpected successful ES|QL request",
+                    )
             if item.panel_id in expected:
                 successful_by_panel.setdefault(item.panel_id, []).append(item)
             continue

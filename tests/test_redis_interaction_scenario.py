@@ -303,8 +303,49 @@ def test_redis_gap_and_source_only_capabilities() -> None:
     assert by_key["DS_PROMETHEUS"].capability is CapabilityCategory.SOURCE_ONLY
     assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["instance"].assertions.affected_panels == "all_query_panels"
-    assert by_key["namespace"].assertions.allow_incompatible_selections is True
-    assert by_key["pod_name"].assertions.allow_incompatible_selections is True
+    assert by_key["namespace"].assertions.unaffected_panels == "all_query_panels"
+    assert by_key["namespace"].assertions.affected_panels == ()
+    assert by_key["namespace"].assertions.query_contains == ()
+    assert by_key["namespace"].assertions.allow_incompatible_selections is False
+    assert by_key["pod_name"].assertions.unaffected_panels == "all_query_panels"
+    assert by_key["pod_name"].assertions.allow_incompatible_selections is False
+
+
+def test_redis_decorative_controls_do_not_bind_panel_queries(redis_artifacts: Path) -> None:
+    queries = _native_queries(redis_artifacts)
+    assert len(queries) == 12
+    for _title, query in queries:
+        assert "?namespace" not in query
+        assert "?pod_name" not in query
+        assert "instance" in _VALUE_PARAM_TOKEN.findall(query)
+
+
+def test_redis_namespace_manifest_merges_twelve_unaffected_capture_panels(
+    redis_artifacts: Path,
+) -> None:
+    from observability_migration.targets.kibana.interaction_runner import (
+        PanelContract,
+        _merge_assertions,
+    )
+
+    scenario = load_scenario(REDIS_MANIFEST)
+    namespace = next(control for control in scenario.controls if control.key == "namespace")
+    stable_panels = load_stable_panels_from_ir(
+        redis_artifacts,
+        dashboard_title="Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)",
+    )
+    contract = PanelContract(
+        all_query_panels=tuple(panel_id for panel_id, _title in stable_panels),
+        by_control={"instance": tuple(panel_id for panel_id, _title in stable_panels)},
+    )
+    findings: list = []
+    merged = _merge_assertions((namespace,), {"namespace": "default"}, contract, findings)
+    assert findings == []
+    assert merged.expected_panels == ()
+    assert merged.unaffected_panels == contract.all_query_panels
+    assert merged.decorative_control_keys == ("namespace",)
+    assert merged.query_contains == ()
+    assert merged.allow_incompatible_selections is False
 
 
 def test_redis_native_control_value_queries(redis_artifacts: Path) -> None:

@@ -22,8 +22,7 @@ controls:
     assertions:
       selection: [namespace]
       affected_panels: []
-      query_contains: ["namespace"]
-      allow_incompatible_selections: true
+      unaffected_panels: all_query_panels
       expect_data_change: false
   - label: Pod Name
     key: pod_name
@@ -34,8 +33,7 @@ controls:
     assertions:
       selection: [pod_name]
       affected_panels: []
-      query_contains: ["pod"]
-      allow_incompatible_selections: true
+      unaffected_panels: all_query_panels
       expect_data_change: false
   - label: instance
     key: instance

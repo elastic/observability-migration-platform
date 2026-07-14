@@ -33,6 +33,7 @@ from observability_migration.targets.kibana.interaction_driver import (
     SettleTimeout,
     TimeRangeAdapter,
     _adapter_for,
+    _clean_option_text,
     _read_option_texts,
     _scoped_options_container,
     _searchbox,
@@ -811,6 +812,47 @@ def test_esql_control_adapter_uses_accessible_name_and_reads_all_options() -> No
         _control("Group by", "grouping", "esql_field")
     )
     assert discovered.options == ("exporter", "transport", "receiver")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("default", "default"),
+        ("pod_1", "pod_1"),
+        ("production\nChecked option.", "production"),
+        ("You are in a dialog. To dismiss…", ""),
+        ("you are in a dialog", ""),
+        ("Filter suggestions for namespace", ""),
+        ("Incompatible selections (0)", ""),
+        ("Incompatible selections (2)", ""),
+        ("No options found", ""),
+        ("0 options", ""),
+        ("Show only selected options", ""),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_clean_option_text_filters_dialog_and_empty_ui_messages(
+    raw: str, expected: str
+) -> None:
+    assert _clean_option_text(raw) == expected
+
+
+def test_read_option_texts_excludes_dialog_chrome_but_keeps_values() -> None:
+    page = FakePage()
+    listbox = FakeElement(
+        role="listbox",
+        name="Available options for Namespace",
+        children=[
+            FakeElement(role="option", text="You are in a dialog. Press Escape."),
+            FakeElement(role="option", text="Filter suggestions for namespace"),
+            FakeElement(role="option", text="Incompatible selections (0)"),
+            FakeElement(role="option", text="default"),
+            FakeElement(role="option", text="monitoring"),
+        ],
+    )
+    page.add(listbox)
+    assert _read_option_texts(page, label="Namespace") == ("default", "monitoring")
 
 
 def test_esql_control_adapter_supports_kibana_95_button_controls() -> None:
