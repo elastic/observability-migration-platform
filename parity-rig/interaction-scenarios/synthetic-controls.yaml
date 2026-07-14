@@ -100,7 +100,7 @@ controls:
     capability: migrated_live
     options:
       strategy: declared
-      include: ["20..80"]
+      include: ["40..60"]
     assertions:
       affected_panels: [interaction-range]
       unaffected_panels: [interaction-unaffected]
@@ -210,8 +210,8 @@ combinations:
       interval: 5 minutes
   - id: options-range-and-query
     selections:
-      host.name: host_2
-      latency_ms: 20..80
+      host.name: host-2
+      latency_ms: 40..60
       query_bar: 'service.environment:"prod"'
 noise_allowances:
   - endpoint: /internal/security/user_profile

@@ -11,6 +11,7 @@ import yaml
 
 from observability_migration.core.telemetry_contract import (
     _extract_group_fields,
+    _substitute_non_field_esql_params,
     build_combined_telemetry_contract,
     build_schema_change_report,
     build_telemetry_contract,
@@ -2674,6 +2675,7 @@ class KeywordMultifieldTests(unittest.TestCase):
 
     def test_contract_extracts_interaction_canary_control_semantics(self):
         from observability_migration.core.coverage.interaction_canary import (
+            SYNTHETIC_HOST_NAMES,
             write_interaction_canary_artifact,
         )
 
@@ -2692,6 +2694,30 @@ class KeywordMultifieldTests(unittest.TestCase):
         )
         self.assertNotIn("aggregate", stream["fields"])
         self.assertNotIn("interval", stream["fields"])
+        self.assertIn("interaction_value", stream["fields"])
+        self.assertIn("latency_ms", stream["fields"])
+        self.assertGreaterEqual(
+            set(stream["required_values"]["host.name"]),
+            set(SYNTHETIC_HOST_NAMES),
+        )
+
+    def test_substitute_non_field_esql_params_uses_control_defaults(self):
+        query = (
+            "FROM metrics-* | STATS value=??aggregate(interaction_value) "
+            "BY bucket=TBUCKET(?interval)"
+        )
+        rendered = _substitute_non_field_esql_params(
+            query,
+            {"aggregate": "AVG", "interval": "5 minutes"},
+        )
+        self.assertEqual(
+            rendered,
+            "FROM metrics-* | STATS value=AVG(interaction_value) "
+            "BY bucket=TBUCKET(5 minutes)",
+        )
+        self.assertNotIn("??aggregate", rendered)
+        self.assertNotIn("?interval", rendered)
+        self.assertNotIn("value= (interaction_value)", rendered)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ from observability_migration.core.coverage.interaction_canary import (
     _PANEL_QUERIES,
     INTERACTION_CANARY_TITLE,
     INTERACTION_CANARY_UID,
+    RANGE_INTERACTION_SELECTION,
+    RANGE_SLIDER_DEFAULT_BOUNDS,
+    SYNTHETIC_HOST_NAMES,
     build_interaction_canary,
     build_interaction_failure_canaries,
     write_interaction_canary_artifact,
@@ -28,6 +31,9 @@ from observability_migration.targets.kibana.interaction_audit import (
     FailureClass,
     NetworkEvidence,
     check_network_contract,
+)
+from observability_migration.targets.kibana.interaction_runner import (
+    _selection_changes_from_baseline,
 )
 from observability_migration.targets.kibana.interaction_scenarios import (
     Assertions,
@@ -127,13 +133,19 @@ def test_interaction_canary_native_services_preserves_multi_selection():
 
 
 def test_interaction_canary_native_classic_controls_map_fields():
-    native, _ = api.native_dashboard_from_ir(build_interaction_canary())
+    dashboard = build_interaction_canary()
+    host = next(control for control in dashboard.controls if control.control_id == "host.name")
+    assert list(host.available_options) == list(SYNTHETIC_HOST_NAMES)
+    assert list(host.selected_options) == [SYNTHETIC_HOST_NAMES[0]]
+
+    native, _ = api.native_dashboard_from_ir(dashboard)
     options = next(c for c in native.controls if c.type == "options_list_control")
     range_control = next(c for c in native.controls if c.type == "range_slider_control")
     assert options.config["field_name"] == "host.name"
     assert options.config["data_view_id"] == "metrics-*"
+    assert options.config["selected_options"] == [SYNTHETIC_HOST_NAMES[0]]
     assert range_control.config["field_name"] == "latency_ms"
-    assert range_control.config["value"] == ["20", "80"]
+    assert range_control.config["value"] == list(RANGE_SLIDER_DEFAULT_BOUNDS)
 
 
 def test_interaction_canary_queries_retain_param_semantics():
@@ -191,6 +203,7 @@ def test_interaction_canary_contract_seeds_all_control_fields_and_values(tmp_pat
     } <= set(stream["control_fields"])
     assert set(stream["required_values"]["service.name"]) >= {"api", "worker", "frontend"}
     assert set(stream["required_values"]["service.environment"]) >= {"prod"}
+    assert set(stream["required_values"]["host.name"]) >= set(SYNTHETIC_HOST_NAMES)
     assert "aggregate" not in stream["fields"]
     assert "interval" not in stream["fields"]
 
@@ -213,6 +226,10 @@ def test_interaction_canary_contract_seeds_varying_numeric_latency(tmp_path):
     assert min(values) >= 20.0
     assert max(values) <= 80.0
     assert len(set(values)) > 1
+    inside = [value for value in values if 40.0 <= value <= 60.0]
+    outside = [value for value in values if value < 40.0 or value > 60.0]
+    assert inside
+    assert outside
 
 
 def test_interaction_failure_canaries_cover_expected_classes():
@@ -221,12 +238,15 @@ def test_interaction_failure_canaries_cover_expected_classes():
     assert {canary.canary_id for canary in canaries} == _EXPECTED_FAILURE_IDS
 
     by_id = {canary.canary_id: canary for canary in canaries}
-    assert FailureClass.RENDER_ERROR in by_id["invalid-output-accessor"].expected_failure_classes
-    assert FailureClass.QUERY_CONTRACT_ERROR in by_id["value-instead-of-identifier"].expected_failure_classes
-    assert FailureClass.FIELD_GAP in by_id["missing-target-field"].expected_failure_classes
-    assert FailureClass.DATA_GAP in by_id["missing-required-values"].expected_failure_classes
-    assert FailureClass.UNEXPECTED_EMPTY in by_id["unexpected-empty"].expected_failure_classes
-    assert FailureClass.CONTROL_NOT_FOUND in by_id["manifest-control-absent"].expected_failure_classes
+    assert by_id["invalid-output-accessor"].expected_failure_classes == ("render_error",)
+    assert FailureClass.RENDER_ERROR.value in by_id["invalid-output-accessor"].expected_failure_classes
+    assert FailureClass.QUERY_CONTRACT_ERROR.value in by_id["value-instead-of-identifier"].expected_failure_classes
+    assert FailureClass.FIELD_GAP.value in by_id["missing-target-field"].expected_failure_classes
+    assert FailureClass.DATA_GAP.value in by_id["missing-required-values"].expected_failure_classes
+    assert FailureClass.UNEXPECTED_EMPTY.value in by_id["unexpected-empty"].expected_failure_classes
+    assert FailureClass.CONTROL_NOT_FOUND.value in by_id["manifest-control-absent"].expected_failure_classes
+    for canary in canaries:
+        assert len(canary.expected_failure_classes) == 1
 
 
 def _failure_by_id(canary_id: str):
@@ -238,7 +258,7 @@ def test_failure_canary_invalid_accessor_classifies_render_error():
     text = "Provided column name or index is invalid: missing_value_column"
     result = classify_panel("invalid accessor", text, expects_data=True)
     assert result.error_class == "render_error"
-    assert FailureClass.RENDER_ERROR in canary.expected_failure_classes
+    assert FailureClass.RENDER_ERROR.value in canary.expected_failure_classes
     assert result.error_class != "field_gap"
 
 
@@ -267,7 +287,7 @@ def test_failure_canary_value_binding_classifies_query_contract_error():
     assert any(
         finding.failure_class is FailureClass.QUERY_CONTRACT_ERROR for finding in findings
     )
-    assert FailureClass.QUERY_CONTRACT_ERROR in canary.expected_failure_classes
+    assert FailureClass.QUERY_CONTRACT_ERROR.value in canary.expected_failure_classes
 
 
 def test_failure_canary_missing_field_classifies_field_gap():
@@ -281,7 +301,7 @@ def test_failure_canary_missing_field_classifies_field_gap():
         expects_data=True,
     )
     assert result.error_class == "field_gap"
-    assert FailureClass.FIELD_GAP in canary.expected_failure_classes
+    assert FailureClass.FIELD_GAP.value in canary.expected_failure_classes
 
 
 def test_failure_canary_missing_values_classifies_data_gap():
@@ -294,7 +314,7 @@ def test_failure_canary_missing_values_classifies_data_gap():
         expects_data=True,
     )
     assert result.error_class == "data_gap"
-    assert FailureClass.DATA_GAP in canary.expected_failure_classes
+    assert FailureClass.DATA_GAP.value in canary.expected_failure_classes
 
 
 def test_failure_canary_zero_rows_classifies_unexpected_empty():
@@ -307,7 +327,7 @@ def test_failure_canary_zero_rows_classifies_unexpected_empty():
         expects_data=True,
     )
     assert result.error_class == "unexpected_empty"
-    assert FailureClass.UNEXPECTED_EMPTY in canary.expected_failure_classes
+    assert FailureClass.UNEXPECTED_EMPTY.value in canary.expected_failure_classes
 
 
 def test_failure_canary_absent_control_classifies_control_not_found(tmp_path: Path):
@@ -325,7 +345,7 @@ def test_failure_canary_absent_control_classifies_control_not_found(tmp_path: Pa
     result = next(item for item in report.results if item.name == "ghost:missing_control")
     classes = {finding.failure_class for finding in result.findings}
     assert FailureClass.CONTROL_NOT_FOUND in classes
-    assert FailureClass.CONTROL_NOT_FOUND in canary.expected_failure_classes
+    assert FailureClass.CONTROL_NOT_FOUND.value in canary.expected_failure_classes
     assert FailureClass.RENDER_ERROR not in classes
 
 
@@ -445,7 +465,10 @@ def test_synthetic_manifest_execution_plan_covers_gaps_actions_and_combinations(
     range_steps = [
         step for step in plan if step.control_key == "latency_ms" and step.kind == "option"
     ]
-    assert any(dict(step.selections) == {"latency_ms": "20..80"} for step in range_steps)
+    assert any(
+        dict(step.selections) == {"latency_ms": RANGE_INTERACTION_SELECTION}
+        for step in range_steps
+    )
 
     combination_ids = {step.id for step in plan if step.kind == "combination"}
     assert {
@@ -459,7 +482,36 @@ def test_synthetic_manifest_range_control_contract():
     scenario = load_scenario(SYNTHETIC_MANIFEST)
     latency = next(control for control in scenario.controls if control.key == "latency_ms")
     assert latency.adapter == "range_slider"
+    assert latency.options.include == (RANGE_INTERACTION_SELECTION,)
     assert latency.assertions.query_contains == ("latency_ms",)
     assert latency.assertions.expect_data_change is True
     assert "interaction-range" in latency.assertions.affected_panels
     assert _PANEL_QUERIES["interaction-range"].count("latency_ms") >= 2
+
+    dashboard = build_interaction_canary()
+    discovered = {item.key: item for item in _discovered_from_canary(dashboard)}
+    range_control = next(
+        control for control in dashboard.controls if control.control_id == "latency_ms"
+    )
+    assert tuple(range_control.selected_options) == RANGE_SLIDER_DEFAULT_BOUNDS
+    assert _selection_changes_from_baseline(
+        {"latency_ms": RANGE_INTERACTION_SELECTION},
+        discovered,
+    )
+
+
+def test_synthetic_combination_options_list_selections_match_seeded_values(tmp_path):
+    write_interaction_canary_artifact(tmp_path)
+    contract = build_telemetry_contract(tmp_path)
+    seeded_hosts = set(contract["streams"]["metrics-*"]["required_values"]["host.name"])
+    assert seeded_hosts >= set(SYNTHETIC_HOST_NAMES)
+
+    scenario = load_scenario(SYNTHETIC_MANIFEST)
+    for combination in scenario.combinations:
+        for key, value in combination.selections.items():
+            control = next(item for item in scenario.controls if item.key == key)
+            if control.adapter != "options_list":
+                continue
+            assert value in seeded_hosts, (
+                f"{combination.id} selects {key}={value!r} but seeded values are {sorted(seeded_hosts)}"
+            )

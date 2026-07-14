@@ -22,13 +22,17 @@ from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.panel import PanelIR
 from observability_migration.core.assets.status import AssetStatus
 from observability_migration.core.assets.visual import VisualIR, VisualLayout, VisualPresentation
-from observability_migration.targets.kibana.interaction_audit import FailureClass
 
 INTERACTION_CANARY_UID = "obs-migrate-interaction-canary"
 INTERACTION_CANARY_TITLE = "obs-migrate interaction canary (synthetic controls)"
 
 DATA_VIEW = "metrics-*"
 _BASE = "FROM metrics-* | WHERE @timestamp >= NOW() - 3 hours"
+
+# Deterministic host labels used by the synthetic seeder and interaction manifest.
+SYNTHETIC_HOST_NAMES: tuple[str, ...] = ("host-1", "host-2", "host-3")
+RANGE_SLIDER_DEFAULT_BOUNDS: tuple[str, str] = ("20", "80")
+RANGE_INTERACTION_SELECTION = "40..60"
 
 _PANEL_QUERIES: dict[str, str] = {
     "interaction-value": (
@@ -75,7 +79,7 @@ class InteractionFailureCanary:
 
     canary_id: str
     dashboard: DashboardIR
-    expected_failure_classes: tuple[FailureClass, ...]
+    expected_failure_classes: tuple[str, ...]
     description: str = ""
 
 
@@ -138,6 +142,7 @@ def _classic_control(
     kind: str,
     field_name: str,
     defaults: list[str] | None = None,
+    available_options: list[str] | None = None,
 ) -> ControlIR:
     raw: dict[str, Any] = {
         "type": kind,
@@ -145,6 +150,8 @@ def _classic_control(
         "data_view_id": DATA_VIEW,
         "field_name": field_name,
     }
+    if available_options:
+        raw["available_options"] = list(available_options)
     if defaults:
         raw["defaults"] = list(defaults)
     metadata = _control_metadata(field_name)
@@ -158,6 +165,7 @@ def _classic_control(
         field_name=field_name,
         data_view=DATA_VIEW,
         selected_options=list(defaults or []),
+        available_options=list(available_options or defaults or []),
         status=AssetStatus.TRANSLATED,
         metadata=metadata,
         source_extension=raw,
@@ -263,13 +271,15 @@ def _build_controls() -> list[ControlIR]:
             label="host.name",
             kind="options_list",
             field_name="host.name",
+            available_options=list(SYNTHETIC_HOST_NAMES),
+            defaults=[SYNTHETIC_HOST_NAMES[0]],
         ),
         _classic_control(
             control_id="latency_ms",
             label="latency_ms",
             kind="range_slider",
             field_name="latency_ms",
-            defaults=["20", "80"],
+            defaults=list(RANGE_SLIDER_DEFAULT_BOUNDS),
         ),
     ]
 
@@ -389,10 +399,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=base_controls[:1],
             ),
-            expected_failure_classes=(
-                FailureClass.INTERACTION_REGRESSION,
-                FailureClass.RENDER_ERROR,
-            ),
+            expected_failure_classes=("render_error",),
             description="Lens accessor points at a column the query never emits.",
         ),
         InteractionFailureCanary(
@@ -417,7 +424,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=base_controls[2:3],
             ),
-            expected_failure_classes=(FailureClass.QUERY_CONTRACT_ERROR,),
+            expected_failure_classes=("query_contract_error",),
             description="Field control bound with ? instead of ?? in BY clause.",
         ),
         InteractionFailureCanary(
@@ -446,7 +453,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=[],
             ),
-            expected_failure_classes=(FailureClass.FIELD_GAP,),
+            expected_failure_classes=("field_gap",),
             description="Breakdown references a field absent from target telemetry.",
         ),
         InteractionFailureCanary(
@@ -471,7 +478,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=[],
             ),
-            expected_failure_classes=(FailureClass.DATA_GAP,),
+            expected_failure_classes=("data_gap",),
             description="Required dimension value never seeded despite field presence.",
         ),
         InteractionFailureCanary(
@@ -497,7 +504,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=base_controls[:1],
             ),
-            expected_failure_classes=(FailureClass.UNEXPECTED_EMPTY,),
+            expected_failure_classes=("unexpected_empty",),
             description="Query succeeds but returns zero rows on a data-required panel.",
         ),
         InteractionFailureCanary(
@@ -519,7 +526,7 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
                 ],
                 controls=[],
             ),
-            expected_failure_classes=(FailureClass.CONTROL_NOT_FOUND,),
+            expected_failure_classes=("control_not_found",),
             description="Manifest declares a control that is absent from the dashboard.",
         ),
     )
@@ -542,6 +549,9 @@ def write_interaction_canary_artifact(artifact_dir: str | Path) -> Path:
 __all__ = [
     "INTERACTION_CANARY_TITLE",
     "INTERACTION_CANARY_UID",
+    "RANGE_INTERACTION_SELECTION",
+    "RANGE_SLIDER_DEFAULT_BOUNDS",
+    "SYNTHETIC_HOST_NAMES",
     "InteractionFailureCanary",
     "build_interaction_canary",
     "build_interaction_failure_canaries",

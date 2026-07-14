@@ -768,7 +768,6 @@ def _iter_packet_source_promql_queries(packet: dict[str, Any], source: str):
 
 
 _ESQL_IDENTIFIER_PARAM_RE = re.compile(r"\?\?([A-Za-z_][A-Za-z0-9_]*)")
-_ESQL_VALUE_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)([A-Za-z_][A-Za-z0-9_]*)")
 _CLASSIC_OPTIONS_CONTROL_TYPES = frozenset(
     {"options", "option", "options_list", "options_list_control"}
 )
@@ -811,6 +810,25 @@ def _control_choice_values(control: Mapping[str, Any]) -> list[str]:
             if text and _is_literal_dimension_value(text):
                 _append_unique(collected, text)
     return collected
+
+
+def _collect_non_field_param_defaults(controls: Any) -> dict[str, str]:
+    defaults: dict[str, str] = {}
+    if not isinstance(controls, list):
+        return defaults
+    for control in controls:
+        if not isinstance(control, Mapping):
+            continue
+        variable_type = str(control.get("variable_type") or "").strip()
+        if variable_type not in _ESQL_NON_FIELD_VARIABLE_TYPES:
+            continue
+        variable_name = str(control.get("variable_name") or "").strip()
+        if not variable_name:
+            continue
+        choices = _control_choice_values(control)
+        if choices:
+            defaults[variable_name] = choices[0]
+    return defaults
 
 
 def _collect_non_field_param_names(controls: Any) -> set[str]:
@@ -913,6 +931,7 @@ def _iter_yaml_queries(
     source: str,
     identifier_choices: Mapping[str, Sequence[str]] | None = None,
     skip_params: set[str] | None = None,
+    param_defaults: Mapping[str, str] | None = None,
 ):
     if isinstance(node, dict):
         controls = node.get("controls")
@@ -920,6 +939,8 @@ def _iter_yaml_queries(
         scoped_choices.update(_field_control_choices(controls))
         scoped_skip = set(skip_params or ())
         scoped_skip.update(_collect_non_field_param_names(controls))
+        scoped_defaults = dict(param_defaults or {})
+        scoped_defaults.update(_collect_non_field_param_defaults(controls))
         yield from _iter_dashboard_filter_queries(node, source)
         esql = node.get("esql")
         if isinstance(esql, dict) and isinstance(esql.get("query"), str):
@@ -928,23 +949,24 @@ def _iter_yaml_queries(
                 scoped_choices,
                 skip_params=scoped_skip,
             ):
-                yield _strip_non_field_esql_params(query, scoped_skip), source
+                yield _substitute_non_field_esql_params(query, scoped_defaults), source
         elif isinstance(esql, str):
             for query in _expand_identifier_control_queries(
                 esql,
                 scoped_choices,
                 skip_params=scoped_skip,
             ):
-                yield _strip_non_field_esql_params(query, scoped_skip), source
+                yield _substitute_non_field_esql_params(query, scoped_defaults), source
         lens_query = _lens_to_contract_query(node.get("lens"))
         if lens_query:
-            yield _strip_non_field_esql_params(lens_query, scoped_skip), source
+            yield _substitute_non_field_esql_params(lens_query, scoped_defaults), source
         for value in node.values():
             yield from _iter_yaml_queries(
                 value,
                 source,
                 scoped_choices,
                 scoped_skip,
+                scoped_defaults,
             )
     elif isinstance(node, list):
         for item in node:
@@ -953,6 +975,7 @@ def _iter_yaml_queries(
                 source,
                 identifier_choices,
                 skip_params,
+                param_defaults,
             )
 
 
@@ -1344,13 +1367,27 @@ def _grok_timeseries_labels(query: str) -> list[str]:
     return labels
 
 
-def _strip_non_field_esql_params(query: str, skip_params: set[str]) -> str:
-    if not skip_params:
+def _substitute_non_field_esql_params(
+    query: str,
+    param_defaults: Mapping[str, str],
+) -> str:
+    if not param_defaults:
         return query
     rendered = query
-    for name in sorted(skip_params):
-        rendered = re.sub(rf"\?\?{re.escape(name)}\b", " ", rendered)
-        rendered = re.sub(rf"(?<!\?)\?{re.escape(name)}\b", " ", rendered)
+    for name, default in sorted(param_defaults.items()):
+        replacement = str(default or "").strip()
+        if not replacement:
+            continue
+        rendered = re.sub(
+            rf"\?\?{re.escape(name)}\b",
+            replacement,
+            rendered,
+        )
+        rendered = re.sub(
+            rf"(?<!\?)\?{re.escape(name)}\b",
+            replacement,
+            rendered,
+        )
     return rendered
 
 
