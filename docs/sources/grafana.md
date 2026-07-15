@@ -273,6 +273,35 @@ This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
 
+### Chained/Label-Filtered Query Variables And Control Warnings (Issue #269)
+
+Grafana query variables can chain: `label_values(metric{instance="$instance"},
+id)` scopes `$id`'s option list to whichever `$instance` is currently
+selected. Two things follow from Kibana ES|QL controls having no
+cross-control dependency mechanism (a control's populate-query cannot read
+another control's live selection):
+
+- **The chained scope itself degrades, not silently.** The migrated `$id`
+  control still works and still lists real values, but it lists *every* `id`
+  rather than only the ones under the selected `$instance` — the control is
+  broader than the Grafana source, not broken. This degradation is recorded
+  as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
+  $instance in Grafana ... Kibana ES|QL controls cannot express that
+  inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
+  CLI summary and included per-dashboard in the JSON report
+  (`control_warnings`), rather than only being discoverable by reading the
+  emitted ES|QL.
+- **A control dropped because its target field is absent is also not
+  silent.** When live schema discovery (`--es-url`) positively confirms a
+  variable's resolved field doesn't exist on the target, the control is
+  dropped from the dashboard (as before — a field that isn't ingested yet
+  can't populate a dropdown) but now records a matching
+  `control_warnings` entry so an offline run and a live run against a
+  not-yet-fully-ingested target don't silently diverge in their control set
+  with no explanation. Controls have no `PanelResult`-style per-item tracking
+  of their own, so `control_warnings` is dashboard-scoped rather than
+  per-control.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are

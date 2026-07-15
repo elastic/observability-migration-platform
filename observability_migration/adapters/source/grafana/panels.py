@@ -242,6 +242,11 @@ class VariableContext:
     control: dict | None = None
     handled: bool = False
     trace: list = field(default_factory=list)
+    # Deliberately separate from `trace` (which mixes internal/speculative
+    # notes, e.g. custom_variable_rule's note that is only accurate before
+    # `_ensure_param_controls` runs): entries here are user-facing
+    # dashboard-level warnings a caller can surface directly (issue #269).
+    control_warnings: list = field(default_factory=list)
 
 
 ESQLShape = _ESQLShapeCanonical
@@ -5073,6 +5078,39 @@ def _extract_variable_source_metric(query_text):
     return metric_match.group(1) if metric_match else ""
 
 
+def _extract_variable_scope_template_refs(query_text):
+    """Other template variables that scope a ``label_values()`` control (#269).
+
+    Grafana supports *chained* query variables, e.g.
+    ``label_values(container_memory_cache{instance="$instance"}, id)``: the
+    ``$id`` control's option list is meant to be scoped to whichever
+    ``$instance`` is currently selected, not every ``id`` in the index.
+
+    Kibana's ES|QL ``VALUES_FROM_QUERY`` control has no mechanism for one
+    control's populate-query to depend on another control's live selection
+    (there is no cross-control binding today), so this scope cannot be
+    reproduced exactly. Callers use this to detect the shape and attach an
+    explicit degradation warning instead of silently listing every value —
+    the control still works, it is just broader than the Grafana source.
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return []
+    refs: list[str] = []
+    for ref_match in _VARIABLE_REFERENCE_RE.finditer(selector_match.group("selector")):
+        name = ref_match.group(1) or ref_match.group(2)
+        if name and name not in refs:
+            refs.append(name)
+    return refs
+
+
 def _resolve_control_scope_metric(metric_name, resolver, rule_pack):
     """Resolve a control's scoping metric to its physical target field.
 
@@ -5538,12 +5576,41 @@ def query_variable_rule(context):
     if field_name is None:
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
+        # Issue #269 Defect 1: a control dropped here vanishes with no trace
+        # anywhere else -- controls have no PanelResult-style tracking of
+        # their own, so without this the same source dashboard silently
+        # yields a different control set depending on whether a target was
+        # reachable at migrate time, with no warning on the missing control.
+        context.control_warnings.append(
+            f"variable '{name}' dropped: resolved field '{field_name}' is not "
+            "present on the target (data not yet ingested, or genuinely "
+            "absent); re-run once the field exists to recover this control"
+        )
         return f"skipped unavailable control field {field_name}"
     if resolver and resolver.field_exists(field_name) is True:
         if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
             return f"skipped non-aggregatable control field {field_name}"
+    scope_refs = [
+        ref for ref in _extract_variable_scope_template_refs(query_text) if ref != name
+    ]
+    if scope_refs:
+        # Issue #269 Defect 2: Grafana chains this variable's option list to
+        # whichever value(s) are currently selected on `scope_refs` (e.g.
+        # `label_values(metric{instance="$instance"}, id)`). Kibana's ES|QL
+        # VALUES_FROM_QUERY control has no cross-control dependency mechanism
+        # today, so the migrated control's populate-query cannot re-apply
+        # that scope -- it lists every value instead of just the ones under
+        # the selected scope. The control is still present and functional
+        # (not a silent drop), just broader than the Grafana source.
+        context.control_warnings.append(
+            f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in scope_refs)} in "
+            "Grafana (label_values() selector); Kibana ES|QL controls cannot "
+            "express that inter-control dependency, so the migrated control "
+            f"lists every '{field_name}' value instead of only those under the "
+            "selected scope"
+        )
     if binds_esql_named_params(context.rule_pack):
         # The target binds Grafana template variables as native ES|QL
         # parameters (``?<name>``), so the control must DEFINE that ES|QL
@@ -5650,7 +5717,17 @@ def translate_variables(
     resolver=None,
     repeat_variable_names=None,
     include_variable_names=False,
+    collect_warnings=None,
 ):
+    """Translate Grafana template variables into Kibana controls.
+
+    ``collect_warnings``, if given a list, is extended with any dashboard-
+    level control-translation warnings (issue #269: a control silently
+    dropped because the target lacks its field, or a chained/label-filtered
+    variable whose Grafana scope can't be expressed in a Kibana control).
+    Optional and additive so existing callers that only want ``controls``
+    are unaffected.
+    """
     rule_pack = rule_pack or RulePackConfig()
     controls = []
     for var in template_list:
@@ -5663,6 +5740,8 @@ def translate_variables(
             repeat_variable_names=set(repeat_variable_names or ()),
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
+        if collect_warnings is not None:
+            collect_warnings.extend(context.control_warnings)
         if context.control:
             control = dict(context.control)
             if include_variable_names and var.get("name"):
@@ -7414,6 +7493,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
         include_variable_names=True,
+        collect_warnings=result.control_warnings,
     )
     # Issue #282: bind each emitted ``??var`` grouping identifier to a fields
     # control before the ``?var`` completeness pass so it is not shadowed by a

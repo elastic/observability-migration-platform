@@ -13011,6 +13011,129 @@ class TextboxVariableTests(unittest.TestCase):
         self.assertEqual(len(controls), 0)
 
 
+class ChainedVariableControlFidelityTests(unittest.TestCase):
+    """Regression tests for issue #269: metric-scoped, label-filtered, and
+    chained Grafana query variables must not silently drop/degrade in the
+    migrated Kibana controls without a surfaced warning."""
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        self.rule_pack = migrate.RulePackConfig()
+        set_runtime_feature(
+            self.rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=True,
+            source="test",
+            confidence="assumed",
+        )
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+        # Issue #269's exact repro: `$id` is scoped to the currently selected
+        # `$instance` (`label_values(container_memory_cache{instance="$instance"}, id)`),
+        # and the panel filters on `$id` alone.
+        self.dashboard = {
+            "title": "Label-filter control repro (container_memory_cache)",
+            "uid": "label-filter-repro-01",
+            "panels": [
+                {
+                    "id": 2,
+                    "type": "timeseries",
+                    "title": "container_memory_cache",
+                    "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+                    "targets": [{"expr": 'avg(container_memory_cache{id="$id"})', "refId": "A"}],
+                }
+            ],
+            "templating": {
+                "list": [
+                    {
+                        "name": "instance",
+                        "type": "query",
+                        "definition": "label_values(container_memory_cache,instance)",
+                        "current": {"text": "cadvisor:8080", "value": "cadvisor:8080"},
+                        "options": [],
+                    },
+                    {
+                        "name": "id",
+                        "type": "query",
+                        "definition": 'label_values(container_memory_cache{instance="$instance"},id)',
+                        "current": {"text": "id_1", "value": "id_1"},
+                        "options": [],
+                    },
+                ]
+            },
+        }
+
+    def _translate(self, resolver):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                self.dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        return result, doc["dashboards"][0]
+
+    def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
+        # Defect 2: the migrated `id` control lists every `id` regardless of
+        # the selected `instance` -- Kibana ES|QL controls have no
+        # cross-control dependency mechanism. That is an accepted
+        # degradation (not a silent one): it must be reported as a
+        # dashboard-level control warning.
+        _result, doc = self._translate(self.resolver)
+        controls = {c["variable_name"]: c for c in doc["controls"]}
+        self.assertIn("id", controls)
+        self.assertNotIn("instance", controls["id"]["query"])
+        self.assertNotIn("?instance", controls["id"]["query"])
+
+        result, _doc = self._translate(self.resolver)
+        self.assertTrue(
+            any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_control_dropped_for_absent_target_field_is_a_surfaced_warning_not_silent(self):
+        # Defect 1: a control must not silently vanish when target-schema
+        # discovery positively confirms its resolved field is absent -- that
+        # must show up as a dashboard-level control warning so the same
+        # source dashboard doesn't yield an unexplained, structurally
+        # different result depending on whether a target was reachable.
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertNotIn("instance", variable_names)
+        self.assertTrue(
+            any(
+                "variable 'instance' dropped" in w and "service.instance.id" in w
+                for w in result.control_warnings
+            ),
+            result.control_warnings,
+        )
+
+    def test_offline_migrate_keeps_both_controls_with_only_the_scope_warning(self):
+        # Without a resolver (offline migrate, no --es-url) the source-
+        # faithful scope is kept for the `instance` control itself; only the
+        # inter-control dependency (Defect 2) is unrepresentable.
+        result, doc = self._translate(None)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertEqual(variable_names, {"instance", "id"})
+        self.assertEqual(len(result.control_warnings), 1)
+        self.assertIn("scoped by $instance", result.control_warnings[0])
+
+
 class LokiDashboardIntegrationTests(unittest.TestCase):
     """End-to-end tests for a synthetic LogQL dashboard migration."""
 
