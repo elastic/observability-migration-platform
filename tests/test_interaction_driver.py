@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import builtins
+import gc
 import importlib
 import sys
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -2365,6 +2367,27 @@ def test_settle_succeeds_despite_pre_step_pending_request() -> None:
     assert len(result.network) == 1
     assert result.network[0].opaque_id == "post-step"
     assert result.pending_requests == ()
+
+
+def test_collector_retains_request_identity_until_terminal_callback() -> None:
+    clock = FakeClock()
+    page = InstrumentedFakePage(clock=clock, body_text="dashboard body")
+    browser = PlaywrightKibanaBrowser(page, clock=clock.__call__)
+    request = page.emit_esql_request("panel-1", opaque_id="pending")
+    request_ref = weakref.ref(request)
+
+    del request
+    gc.collect()
+
+    pending_request = request_ref()
+    assert pending_request is not None
+    assert len(browser.capture([], cursor=None).pending_requests) == 1
+
+    page.emit_esql_response(pending_request)
+    del pending_request
+    gc.collect()
+
+    assert request_ref() is None
 
 
 def test_capture_scopes_pending_requests_to_cursor() -> None:

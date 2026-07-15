@@ -450,6 +450,30 @@ def test_unsupported_adapter_and_capability_reject(
         load_scenario(path)
 
 
+@pytest.mark.parametrize("assertion_key", ["query_contains", "query_not_contains"])
+def test_query_bar_query_text_assertions_reject(
+    tmp_path: Path,
+    assertion_key: str,
+) -> None:
+    doc = _minimal_doc()
+    control = doc["controls"][0]
+    control["adapter"] = "query_bar"
+    control["options"] = {
+        "strategy": "declared",
+        "include": ['service.environment:"prod"'],
+    }
+    control["assertions"]["query_contains"] = []
+    control["assertions"]["query_not_contains"] = []
+    control["assertions"][assertion_key] = ['service.environment:"prod"']
+    path = _write_manifest(tmp_path, doc, name=f"query-bar-{assertion_key}.yaml")
+
+    with pytest.raises(
+        ManifestError,
+        match=rf"controls\[0\]\.assertions\.{assertion_key} is unsupported for query_bar",
+    ):
+        load_scenario(path)
+
+
 def test_unsupported_option_strategy_rejects(tmp_path: Path) -> None:
     path = _mutated_manifest(
         tmp_path,

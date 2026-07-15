@@ -345,11 +345,8 @@ def _merge_assertions(
 
     for control in controls:
         assertions = control.assertions
-        # Query-bar text is translated into the request's filter DSL by Kibana;
-        # it is not embedded in the ES|QL query string.
-        if control.adapter != "query_bar":
-            query_contains.extend(assertions.query_contains)
-            query_not_contains.extend(assertions.query_not_contains)
+        query_contains.extend(assertions.query_contains)
+        query_not_contains.extend(assertions.query_not_contains)
         required_columns.extend(assertions.required_columns)
         expected_legend.extend(assertions.expected_legend)
         resolved_unaffected = _resolve_unaffected_panels(control, panel_contract)

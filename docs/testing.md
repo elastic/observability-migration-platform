@@ -123,7 +123,7 @@ for both on Serverless). Full command examples are in `command-contract.md`.
 | ES\|QL oracle | `verifier.live_validate` | Elasticsearch accepts the emitted ES\|QL (`real_bug` vs `data_gap`) |
 | Typed UI contract | `verifier.dashboards_api` | Kibana's native Dashboards API accepts the mapped panels. The oracle maps all 11 ES\|QL visualization families the API exposes (`xy`, metric, gauge, heatmap, tag cloud, region map, data table, pie, mosaic, treemap, waffle), plus markdown. |
 | Render audit | `observability_migration.targets.kibana.render_audit_driver` | panels actually render in Kibana (see below) |
-| Interaction audit | `targets/kibana/interaction_{audit,scenarios,driver,runner}.py` | control selection drives affected panel queries (see below) |
+| Interaction audit | `targets/kibana/interaction_{audit,scenarios,driver,runner}.py` | control selection reaches intended panels with adapter-specific evidence (see below) |
 | Numeric parity | `obs-migrate compare` + `verifier.corpus_gate` | native PROMQL and translated ES\|QL are numerically close |
 | Trend guard | `verifier.benchmark_gate` | success metrics + denominators don't drop vs a compatible baseline |
 
@@ -147,10 +147,10 @@ audit below.
     **warn** (verify data/time window or a broken query).
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
-- **Default-state control coverage:** `extract_controls` → `build_interaction_plan`
-  → `audit_control_interactions` still compare snapshots for identifier-control
-  defaults via separate canary variants in the render-audit CLI. Live click
-  automation lives in the interaction audit.
+- **Default-state control coverage:** the local render-audit script uploads
+  separate `build_late_bound_grouping_canary` variants and snapshots each
+  identifier-control default. Live click automation lives in the interaction
+  audit.
 - **Self-test:** `tests/test_render_audit_selftest.py` — a clean canary must pass
   and corrupting each panel must make the gate bite (proves it's not vacuous). It
   also pins the late-bound grouping case (issue #282): because a `by ($grouping)`
@@ -186,19 +186,25 @@ can't pass. Two options:
 
 ### Interaction audit (control-truth gate)
 
-The interaction audit proves that selecting a dashboard control changes the
-**affected** panel queries (and leaves unaffected panels alone). It is Playwright-
-driven, requires Elastic Stack **9.5+**, and stays nightly/manual until the suite
-has a stability history.
+The interaction audit proves that selecting a dashboard control reaches the
+intended **affected** panels (and leaves unaffected panels alone) with evidence
+appropriate to that adapter. ES|QL controls validate parameter/query contracts;
+native action controls validate UI state and panel refresh unless a stronger
+contract is documented below. It is Playwright-driven, requires Elastic Stack
+**9.5+**, and stays nightly/manual until the suite has a stability history.
 
 - **Static render audit vs interaction audit:** render audit answers "does each
   panel paint without a Lens error at default state?"; interaction audit answers
   "does this control selection rewrite the right ES\|QL and refresh the right
   panels?"
 - **Adapters / capabilities** (scenario manifests under
-  `parity-rig/interaction-scenarios/`): `esql_value`, multi-value, `esql_interval`,
-  `esql_function`, `esql_field`, options-list, and range. Each control declares a
-  capability:
+  `parity-rig/interaction-scenarios/`): `esql_value` (including multi-select via
+  `multiple: true`), `esql_interval`, `esql_function`, `esql_field`,
+  `options_list`, `range_slider`, `query_bar`, `filter_pill`, `time_range`, and
+  `panel_filter`. Query-bar steps currently verify the exact entered text plus
+  affected/unaffected panel refresh. Kibana translates that text into filter DSL,
+  so query-text assertions are rejected until the audit captures a stable filter
+  DSL contract. Each control declares a capability:
   - `migrated_live` — expected to work end-to-end after migration.
   - `kibana_only` — Kibana supports it; the migrator does not emit it yet
     (synthetic canary coverage).

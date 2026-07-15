@@ -299,7 +299,7 @@ class _NetworkEventCollector:
         self._clock = clock
         self._network: list[NetworkEvidence] = []
         self._console_errors: list[str] = []
-        self._pending: dict[int, tuple[int, float, str, str, str]] = {}
+        self._pending: dict[int, tuple[Any, int, float, str, str, str]] = {}
         self._active_terminal_callbacks: set[int] = set()
         self._page: Any | None = None
         self._handlers: dict[str, Any] = {}
@@ -335,9 +335,14 @@ class _NetworkEventCollector:
 
     def _finalize_pending_requests(self, *, error: str) -> None:
         bounded_error = _bound_text(error, limit=_MAX_CONSOLE_MESSAGE)
-        for _request_id, (index, _started, _panel_id, _endpoint, _opaque_id) in list(
-            self._pending.items()
-        ):
+        for _request_id, (
+            _request,
+            index,
+            _started,
+            _panel_id,
+            _endpoint,
+            _opaque_id,
+        ) in list(self._pending.items()):
             self._network[index] = enrich_esql_response(
                 self._network[index],
                 status=-1,
@@ -392,6 +397,7 @@ class _NetworkEventCollector:
             index = len(self._network)
             self._network.append(evidence)
             self._pending[id(request)] = (
+                request,
                 index,
                 self._clock(),
                 evidence.panel_id,
@@ -412,7 +418,7 @@ class _NetworkEventCollector:
                 return
             self._active_terminal_callbacks.add(request_id)
             try:
-                index, _started, _panel_id, _endpoint, _opaque_id = pending
+                _request, index, _started, _panel_id, _endpoint, _opaque_id = pending
                 status = int(getattr(response, "status", 0) or 0)
                 body: object = {}
                 parse_error = ""
@@ -441,7 +447,7 @@ class _NetworkEventCollector:
             pending = self._pending.pop(id(request), None)
             if pending is None:
                 return
-            index, _started, _panel_id, _endpoint, _opaque_id = pending
+            _request, index, _started, _panel_id, _endpoint, _opaque_id = pending
             failure = getattr(request, "failure", None)
             error_text = ""
             if failure is not None:
@@ -482,7 +488,14 @@ class _NetworkEventCollector:
         now = self._clock()
         start_index = 0 if cursor is None else cursor.network_index
         pending: list[tuple[int, PendingRequest]] = []
-        for _request_id, (index, started, panel_id, endpoint, opaque_id) in self._pending.items():
+        for _request_id, (
+            _request,
+            index,
+            started,
+            panel_id,
+            endpoint,
+            opaque_id,
+        ) in self._pending.items():
             if index < start_index:
                 continue
             age_ms = max(0, int((now - started) * 1000))

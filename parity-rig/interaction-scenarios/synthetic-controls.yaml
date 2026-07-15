@@ -123,7 +123,6 @@ controls:
     assertions:
       affected_panels: query_dependency
       unaffected_panels: [interaction-unaffected]
-      query_contains: ['service.environment:"prod"']
       minimum_rows: 1
       expect_data_change: false
   - label: gap grafana any variable

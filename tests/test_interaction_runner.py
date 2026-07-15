@@ -553,6 +553,9 @@ def test_source_only_controls_skip_browser_discovery(tmp_path: Path) -> None:
     assert "live" in browser.discover_calls
     gap = next(r for r in report.results if r.name == "source_only:coverage_gap")
     assert gap.status is InteractionStatus.WARN
+
+
+def test_query_bar_checks_selection_and_affected_panel_refresh(tmp_path: Path) -> None:
     control = ControlScenario(
         label="query bar",
         key="query_bar",
@@ -564,7 +567,6 @@ def test_source_only_controls_skip_browser_discovery(tmp_path: Path) -> None:
         ),
         assertions=Assertions(
             affected_panels=("panel-a",),
-            query_contains=('service.environment:"prod"',),
             minimum_rows=1,
             expect_data_change=False,
         ),
@@ -590,6 +592,8 @@ def test_source_only_controls_skip_browser_discovery(tmp_path: Path) -> None:
     )
 
     assert report.results[0].status is InteractionStatus.PASS
+    assert browser.select_calls == [("query_bar", 'service.environment:"prod"')]
+    assert browser.selected["query_bar"] == ('service.environment:"prod"',)
 
 
 def test_multiple_value_control_builds_sequence_wire_expectation() -> None:

@@ -671,6 +671,17 @@ def _parse_controls(value: Any, manifest_path: Path) -> tuple[ControlScenario, .
         assertions = _parse_assertions(
             control.get("assertions"), manifest_path, field_prefix
         )
+        if adapter == "query_bar":
+            for assertion_name, fragments in (
+                ("query_contains", assertions.query_contains),
+                ("query_not_contains", assertions.query_not_contains),
+            ):
+                if fragments:
+                    raise ManifestError(
+                        f"{manifest_path}: {field_prefix}.assertions.{assertion_name} "
+                        "is unsupported for query_bar because Kibana translates query-bar "
+                        "text into filter DSL"
+                    )
         multiple = _require_bool(
             control.get("multiple", False),
             manifest_path,
