@@ -55,6 +55,7 @@ def build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     query_ir = _query_ir_dict(panel_result)
     query_language = str(getattr(panel_result, "query_language", "") or "").lower()
     grafana_type = str(getattr(panel_result, "grafana_type", "") or "").lower()
+    kibana_type = str(getattr(panel_result, "kibana_type", "") or "").lower()
     status = str(getattr(panel_result, "status", "") or "").lower()
     output_shape = str(query_ir.get("output_shape", "") or "").lower()
     candidates: list[dict[str, Any]] = []
@@ -76,6 +77,16 @@ def build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     if status in {"not_feasible", "requires_manual"}:
         add("manual_redesign", 1, "required", "Current translation flow cannot preserve this panel safely")
         add("block", 2, "required", "Do not auto-promote this panel")
+        return candidates
+
+    if kibana_type == "links":
+        add("native_links_panel", 1, "preferred", "Navigation links map to a native Kibana links panel")
+        add("manual_redesign", 2, "review", "Unresolved dynamic dashboard links still need manual wiring")
+        return candidates
+
+    if kibana_type == "image":
+        add("native_image_panel", 1, "preferred", "Image URLs map to a native Kibana image panel")
+        add("manual_redesign", 2, "review", "Target-inaccessible image URLs still need manual replacement")
         return candidates
 
     if grafana_type == "text":

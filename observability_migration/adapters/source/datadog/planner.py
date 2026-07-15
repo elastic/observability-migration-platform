@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,8 @@ UNTRANSLATABLE_FORMULA_FUNCS = {
 }
 
 TEXT_WIDGET_TYPES = {"note", "free_text", "image", "iframe"}
+
+_ABSOLUTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 # Widget types that represent a Datadog-side status/check view rather than
 # a queryable metric. These have no direct Kibana equivalent (Elastic uses
@@ -95,6 +98,29 @@ def plan_widget(widget: NormalizedWidget) -> PanelPlan:
 
 def _plan_is_complete(context: PlanContext, _detail: str | None) -> bool:
     return bool(context.plan.backend)
+
+
+@PLANNER_PRECHECKS.register(
+    "datadog.plan.image_widget",
+    priority=5,
+    summary="Route Datadog image widgets with a real absolute URL to a native Kibana image panel.",
+)
+def image_widget_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type != "image":
+        return None
+    url = str(context.widget.raw_definition.get("url") or "").strip()
+    if not _ABSOLUTE_URL_RE.match(url):
+        # Datadog's own internal /static/... asset paths (and any other
+        # relative reference) would 404 inside Kibana. Decline and let
+        # ``text_widget_rule`` fall back to the markdown placeholder, which at
+        # least surfaces the original URL for manual follow-up (degrade
+        # gracefully rather than emit a broken image panel).
+        return None
+    context.plan.backend = "image"
+    context.plan.kibana_type = "image"
+    context.plan.confidence = 1.0
+    context.plan.reasons.append("image widget with absolute URL -> native Kibana image panel")
+    return "selected native image panel"
 
 
 @PLANNER_PRECHECKS.register(

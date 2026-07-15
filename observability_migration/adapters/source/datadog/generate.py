@@ -439,7 +439,9 @@ def _build_yaml_panel(
     dd_y = int(layout.get("y") or 0)
     dd_w = int(layout.get("width") or 0)
 
-    if result.backend == "markdown" or result.status in ("not_feasible", "requires_manual"):
+    if result.backend == "image":
+        panel = _build_image_panel(widget, result, 0, 0, 12, 6)
+    elif result.backend == "markdown" or result.status in ("not_feasible", "requires_manual"):
         panel = _build_markdown_panel(widget, result, 0, 0, 8, 6)
     elif result.backend == "lens" and result.yaml_panel and result.yaml_panel.get("type") == "lens":
         panel = _build_lens_panel(widget, result, data_view, 0, 0, 8, 8)
@@ -765,6 +767,52 @@ def _build_markdown_panel(
         "markdown": {"content": content},
     }
     panel["_markdown_role"] = "text" if is_text_widget else "placeholder"
+    return panel
+
+
+_DATADOG_IMAGE_FIT_MAP = {
+    "fill": "fill",
+    "contain": "contain",
+    "cover": "cover",
+    "none": "none",
+    # Datadog's deprecated aliases retain their closest CSS object-fit
+    # semantics on the Kibana image panel.
+    "fit": "contain",
+    "zoom": "cover",
+    "center": "none",
+    # Kibana has no scale-down enum; contain is the non-cropping fallback.
+    "scale-down": "contain",
+}
+
+
+def _build_image_panel(
+    widget: NormalizedWidget,
+    result: TranslationResult,
+    x: int, y: int, w: int, h: int,
+) -> dict[str, Any]:
+    """Build a native ``image`` YAML panel (kb-dashboard-core ``ImagePanel``).
+
+    Only reached when ``image_widget_rule`` confirmed an absolute http(s) URL
+    (see planner.py); the relative/static-asset fallback still goes through
+    ``_build_markdown_panel``.
+    """
+    url = str(widget.raw_definition.get("url") or "").strip()
+    image_config: dict[str, Any] = {"from_url": url}
+    source_sizing = str(widget.raw_definition.get("sizing") or "").strip().lower()
+    fit = _DATADOG_IMAGE_FIT_MAP.get(source_sizing)
+    if fit:
+        image_config["fit"] = fit
+    if source_sizing == "scale-down":
+        result.warnings.append("image sizing scale-down approximated as contain")
+        if result.status == "ok":
+            result.status = "warning"
+
+    panel = {
+        "title": result.title or widget.title or "",
+        "size": {"w": w, "h": h},
+        "position": {"x": x, "y": y},
+        "image": image_config,
+    }
     return panel
 
 

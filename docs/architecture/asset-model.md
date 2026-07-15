@@ -57,12 +57,14 @@ same way.
 
 ### PanelIR
 
-A leaf panel (`kind="panel"`) embeds a `VisualIR` (presentation: chart type +
-config, including the ES|QL query string) and carries layout/title through
-`VisualIR.layout`/`VisualIR.title`. A section/row (`kind="section"`) carries
-`children: list[PanelIR]` instead. `PanelIR.to_yaml_panel_entry()` /
-`PanelIR.from_yaml_panel_entry()` round-trip one kb-dashboard-core
-`panels[]` entry (leaf or nested `section`).
+A leaf panel (`kind="panel"`) embeds a `VisualIR` and carries layout/title
+through `VisualIR.layout`/`VisualIR.title`. `VisualIR.presentation.kind`
+identifies the kb-dashboard-core block (`esql`, `lens`, `markdown`, `links`,
+or `image`), while `presentation.config` preserves that block's configuration
+(including the ES|QL query string for `esql`). A section/row
+(`kind="section"`) carries `children: list[PanelIR]` instead.
+`PanelIR.to_yaml_panel_entry()` / `PanelIR.from_yaml_panel_entry()` round-trip
+one kb-dashboard-core `panels[]` entry (leaf or nested `section`).
 
 ### ControlIR
 

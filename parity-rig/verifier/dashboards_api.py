@@ -1012,7 +1012,7 @@ def api_panel_from_report_panel(
     kind, config = _visual_presentation(panel)
     visual_ir = panel.get("visual_ir") if isinstance(panel.get("visual_ir"), dict) else {}
     has_standard_presentation = isinstance(visual_ir.get("presentation"), dict)
-    if has_standard_presentation and kind in {"markdown", "esql"}:
+    if has_standard_presentation and kind in {"markdown", "esql", "links", "image"}:
         production_result = _production_map_panel(panel)
         if production_result.api_panel is not None:
             return production_result.api_panel, []

@@ -10,11 +10,11 @@ Grafana supports two types of links:
 - **Panel links** (``panel.links[]``): per-panel drilldowns to dashboards or
   external URLs with variable substitution.
 
-Kibana does not have a direct equivalent of Grafana's link system.  This module
-translates them into the closest available representations:
+Kibana's links panel and drilldowns cover part of Grafana's link system. This
+module translates each link into the closest available representation:
 
-- Dashboard links → metadata preserved in the YAML and manifest for manual
-  wiring (Kibana uses navigation links in the dashboard description or markdown).
+- Dashboard links with absolute HTTP(S) destinations → a native Kibana links
+  panel; dynamic/relative links remain metadata for manual wiring.
 - Panel links → URL drilldowns where possible, or preserved as panel notes.
 """
 
@@ -28,6 +28,7 @@ _GRAFANA_VAR_RE = re.compile(
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
     r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
 )
+_ABSOLUTE_HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def _rewrite_grafana_variables_to_kibana(url: str) -> str:
@@ -71,11 +72,29 @@ def translate_dashboard_links(dashboard: dict[str, Any]) -> list[dict[str, Any]]
                 f"{' — preserves time range' if keep_time else ''}"
             )
             entry["kibana_action"] = "manual_navigation"
-        elif link_type == "link":
+        elif (
+            link_type == "link"
+            and _ABSOLUTE_HTTP_URL_RE.match(url.strip())
+            and _GRAFANA_VAR_RE.search(url) is None
+        ):
             rewritten = _rewrite_grafana_variables_to_kibana(url) if url else ""
             entry["translated_url"] = rewritten
             entry["target_blank"] = target_blank
+            entry["include_vars"] = include_vars
+            entry["keep_time"] = keep_time
             entry["kibana_action"] = "url_drilldown"
+        elif link_type == "link":
+            if _GRAFANA_VAR_RE.search(url):
+                entry["description"] = (
+                    "Grafana dashboard link contains inline template variables that "
+                    "Kibana links panels cannot resolve; manual navigation wiring required"
+                )
+            else:
+                entry["description"] = (
+                    "Grafana dashboard link has no absolute http(s) destination; "
+                    "manual navigation wiring required"
+                )
+            entry["kibana_action"] = "manual_navigation"
         else:
             entry["kibana_action"] = "unsupported"
 
@@ -126,6 +145,43 @@ def translate_panel_links(panel: dict[str, Any]) -> list[dict[str, Any]]:
     return translated
 
 
+def build_links_panel(dashboard_links: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Synthesize a native Kibana ``links`` panel from translated dashboard links.
+
+    Only ``url_drilldown`` entries (Grafana ``type: "link"``, a concrete
+    external URL) have a destination we can resolve at translation time.
+    ``dashboards``-type links are tag-driven and resolved dynamically by
+    Grafana at view time — there is no specific target saved-object ID to
+    point a Kibana ``dashboardLink`` at, so those stay ``manual_navigation``
+    (surfaced via :func:`build_links_summary`) instead of being synthesized
+    here. Returns ``None`` when there is nothing translatable to show.
+    """
+    items: list[dict[str, Any]] = []
+    for link in dashboard_links:
+        if link.get("kibana_action") != "url_drilldown":
+            continue
+        url = str(link.get("translated_url") or "").strip()
+        if not url:
+            continue
+        item: dict[str, Any] = {"url": url}
+        title = str(link.get("title") or "").strip()
+        if title:
+            item["label"] = title
+        if link.get("target_blank"):
+            item["new_tab"] = True
+        items.append(item)
+
+    if not items:
+        return None
+
+    return {
+        "title": "Dashboard Links",
+        "size": {"w": 48, "h": 3},
+        "position": {"x": 0, "y": 0},
+        "links": {"layout": "horizontal", "items": items},
+    }
+
+
 def build_links_summary(
     dashboard_links: list[dict[str, Any]],
     panel_links_map: dict[str, list[dict[str, Any]]],
@@ -155,6 +211,7 @@ def build_links_summary(
 
 
 __all__ = [
+    "build_links_panel",
     "build_links_summary",
     "translate_dashboard_links",
     "translate_panel_links",

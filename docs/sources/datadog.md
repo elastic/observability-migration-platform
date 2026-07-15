@@ -338,13 +338,21 @@ Use that doc for:
   validated starter field-profile template, and
   `examples/cue/datadog-field-profile.cue` remains the optional CUE authoring
   example.
+- `image` widgets with a real absolute `http(s)` URL map to a native Kibana
+  `image` panel (see `docs/targets/kibana.md#links-and-image-panels`) via
+  `planner.py::image_widget_rule`. Relative/internal Datadog asset URLs (e.g.
+  `/static/...`) would 404 in Kibana and still degrade to the previous
+  markdown-embed placeholder. CSS-compatible `sizing` values map to Kibana
+  `fit`; deprecated Datadog aliases map as `fit` → `contain`, `zoom` →
+  `cover`, and `center` → `none` (`scale-down` degrades to `contain` with a
+  warning because Kibana has no exact equivalent).
 
 ## Per-Widget Planning And Translation
 
 The Datadog path is now organized around executable stages:
 
 1. `normalize.py`: turn raw Datadog dashboards into `NormalizedDashboard` and `NormalizedWidget`.
-2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked`.
+2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `image`, `group`, or `blocked`.
 3. `preflight.py`: resolve mapped target fields and surface capability risks before translation.
 4. `translate.py`: run registry-backed metric, log, and Lens translation rules.
 5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload

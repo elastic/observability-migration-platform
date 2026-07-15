@@ -328,6 +328,17 @@ Use that doc for:
 - `--preflight`, `--polish-metadata`, and `--review-explanations` remain
   Grafana-specific workflow helpers; use the canonical command doc for the
   audited CLI surfaces around upload, smoke, and shared target management.
+- Dashboard-level `links[]` of type `"link"` (a concrete external URL) are
+  synthesized into a real native Kibana `links` panel appended at the end of
+  the dashboard (see `docs/targets/kibana.md#links-and-image-panels`).
+  Tag-driven `type: "dashboards"` links, relative URLs, and URLs containing
+  inline Grafana variables have no safely resolvable destination at translation
+  time and are only surfaced as manual-navigation notes in the migration
+  report. External links that request `includeVars` or `keepTime` are emitted
+  with a migration warning because Kibana links panels cannot append Grafana
+  variables or inherit the dashboard time range automatically. The `dashlist`
+  *panel* type (a dynamic, search-driven widget with no fixed link list) is
+  unaffected and still skipped -- see `GRAFANA_SKIPPED_PANEL_TYPES`.
 
 For overlay-driven authoring before exporting YAML, a matching starter CUE file
 is available at `examples/cue/grafana-rule-pack.cue`.

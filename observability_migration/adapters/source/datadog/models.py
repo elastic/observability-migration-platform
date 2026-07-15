@@ -39,6 +39,10 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "hostmap": "markdown",
     "free_text": "markdown",
     "note": "markdown",
+    # Overridden per-widget to "image" by ``image_widget_rule`` when the
+    # widget carries a real absolute http(s) URL; this default only applies
+    # when that rule declines (relative/static URL) and the widget falls
+    # through to the generic text-widget markdown placeholder.
     "image": "markdown",
     "iframe": "markdown",
     "group": "group",

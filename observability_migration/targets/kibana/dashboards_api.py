@@ -909,6 +909,88 @@ def _cfg_mosaic(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     return out
 
 
+def _native_link_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one kb-dashboard-core ``links.items[]`` entry to a native link.
+
+    YAML uses ``url``/``dashboard`` as the discriminating field (no explicit
+    ``type``); the native API instead requires an explicit ``type`` of
+    ``externalLink``/``dashboardLink``. ``new_tab``/``encode``/``with_filters``/
+    ``with_time`` map straight onto the native ``options`` bag.
+    """
+    if not isinstance(item, dict):
+        return None
+    label = str(item.get("label") or "")
+    url = str(item.get("url") or "").strip()
+    dashboard = str(item.get("dashboard") or "").strip()
+    if url:
+        # kb-dashboard-core defaults ``new_tab`` to false, while the native
+        # external-link API defaults ``open_in_new_tab`` to true. Always emit
+        # the value so an omitted YAML field does not silently change behavior.
+        options: dict[str, Any] = {"open_in_new_tab": bool(item.get("new_tab", False))}
+        if "encode" in item:
+            options["encode_url"] = bool(item["encode"])
+        link: dict[str, Any] = {"type": "externalLink", "destination": url}
+        if label:
+            link["label"] = label
+        link["options"] = options
+        return link
+    if dashboard:
+        options = {}
+        if "new_tab" in item:
+            options["open_in_new_tab"] = bool(item["new_tab"])
+        if "with_filters" in item:
+            options["use_filters"] = bool(item["with_filters"])
+        if "with_time" in item:
+            options["use_time_range"] = bool(item["with_time"])
+        link = {"type": "dashboardLink", "destination": dashboard}
+        if label:
+            link["label"] = label
+        if options:
+            link["options"] = options
+        return link
+    return None
+
+
+def _cfg_links(title: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a native ``links`` panel config from a kb-dashboard-core ``links`` block."""
+    raw_items = cfg.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
+    links = [mapped for item in items if (mapped := _native_link_item(item)) is not None]
+    if not links:
+        return None
+    out: dict[str, Any] = {"links": links}
+    if title:
+        out["title"] = title
+    layout = str(cfg.get("layout") or "").strip()
+    if layout in ("horizontal", "vertical"):
+        out["layout"] = layout
+    return out
+
+
+_IMAGE_FIT_VALUES = {"contain", "cover", "fill", "none"}
+
+
+def _cfg_image(title: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a native ``image`` panel config from a kb-dashboard-core ``image`` block."""
+    url = str(cfg.get("from_url") or "").strip()
+    if not url:
+        return None
+    image_config: dict[str, Any] = {"src": {"type": "url", "url": url}}
+    fit = str(cfg.get("fit") or "").strip()
+    if fit in _IMAGE_FIT_VALUES:
+        image_config["object_fit"] = fit
+    background_color = cfg.get("background_color")
+    if background_color:
+        image_config["background_color"] = str(background_color)
+    description = cfg.get("description")
+    if description:
+        image_config["alt_text"] = str(description)
+    out: dict[str, Any] = {"image_config": image_config}
+    if title:
+        out["title"] = title
+    return out
+
+
 def _cfg_region_map(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     metric = _api_column(cfg.get("metric"), role="region_metric") or (_columns(cfg.get("metrics"), role="region_metric") or [{"column": "value"}])[0]
     region = (
@@ -982,6 +1064,18 @@ def map_panel(panel: dict[str, Any]) -> PanelMapping:
             {"grid": grid, "type": "markdown", "config": {"title": title, "content": content, "settings": {}}},
             kind="markdown",
         )
+
+    if kind == "links":
+        links_config = _cfg_links(title, cfg)
+        if links_config is None:
+            return PanelMapping(None, reason="links panel has no mappable url/dashboard entries", kind="links")
+        return PanelMapping({"grid": grid, "type": "links", "config": links_config}, kind="links")
+
+    if kind == "image":
+        image_config = _cfg_image(title, cfg)
+        if image_config is None:
+            return PanelMapping(None, reason="image panel has no from_url", kind="image")
+        return PanelMapping({"grid": grid, "type": "image", "config": image_config}, kind="image")
 
     if kind != "esql":
         return PanelMapping(None, reason=f"presentation kind '{kind or '(none)'}' not mappable", kind=kind)
@@ -1093,7 +1187,7 @@ def _stable_dashboard_id(dashboard: dict[str, Any]) -> str:
 
 
 def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
-    """Map one YAML *leaf* panel (``esql`` or ``markdown``) to an API panel."""
+    """Map one YAML leaf panel (``esql``/``markdown``/``links``/``image``) to the API."""
     title = str(panel.get("title") or "")
     grid = _grid_from_yaml(panel)
     hide_title = bool(panel.get("hide_title"))
@@ -1109,6 +1203,24 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             markdown_config["hide_title"] = True
         return PanelMapping({"grid": grid, "type": "markdown", "config": markdown_config}, kind="markdown")
 
+    links = panel.get("links")
+    if isinstance(links, dict):
+        links_config = _cfg_links(title, links)
+        if links_config is None:
+            return PanelMapping(None, reason="links panel has no mappable url/dashboard entries", kind="links")
+        if hide_title:
+            links_config["hide_title"] = True
+        return PanelMapping({"grid": grid, "type": "links", "config": links_config}, kind="links")
+
+    image = panel.get("image")
+    if isinstance(image, dict):
+        image_config = _cfg_image(title, image)
+        if image_config is None:
+            return PanelMapping(None, reason="image panel has no from_url", kind="image")
+        if hide_title:
+            image_config["hide_title"] = True
+        return PanelMapping({"grid": grid, "type": "image", "config": image_config}, kind="image")
+
     esql = panel.get("esql")
     if isinstance(esql, dict):
         esql_config, kind, reason = _config_from_esql(title, esql)
@@ -1118,7 +1230,7 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             esql_config["hide_title"] = True
         return PanelMapping({"grid": grid, "type": "vis", "config": esql_config}, kind=kind)
 
-    return PanelMapping(None, reason="panel has neither esql nor markdown", kind="")
+    return PanelMapping(None, reason="panel has none of esql/markdown/links/image", kind="")
 
 
 def _selected_options(control: dict[str, Any]) -> list[str | int | float]:
