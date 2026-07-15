@@ -5559,6 +5559,10 @@ def query_variable_rule(context):
     query_text = context.query_text or _variable_query_text(context.variable)
     context.query_text = query_text
     if "query_result(" in query_text.lower():
+        context.control_warnings.append(
+            f"variable '{name}' uses Grafana query_result(), which has no "
+            "equivalent Kibana control population query; no Kibana control was emitted"
+        )
         return f"skipped query_result helper variable {name}"
     source_field = _extract_variable_source_field(query_text) or name
     context.source_field = source_field
@@ -5574,23 +5578,35 @@ def query_variable_rule(context):
         rule_pack = context.rule_pack or RulePackConfig()
         field_name = rule_pack.control_field_overrides.get(source_field, source_field)
     if field_name is None:
+        context.control_warnings.append(
+            f"variable '{name}' could not resolve source field '{source_field}' "
+            "to a supported target field; no Kibana control was emitted"
+        )
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
-        # Issue #269 Defect 1: a control dropped here vanishes with no trace
-        # anywhere else -- controls have no PanelResult-style tracking of
-        # their own, so without this the same source dashboard silently
-        # yields a different control set depending on whether a target was
-        # reachable at migrate time, with no warning on the missing control.
+        # Issue #269 Defect 1: keep the source control even when live schema
+        # discovery cannot find its field yet. Dropping it makes offline/live
+        # output structurally inconsistent, and `_ensure_param_controls`
+        # otherwise has to synthesize it again when a panel binds `?name`,
+        # contradicting a "dropped" warning. The kept control starts empty and
+        # self-heals once telemetry containing the field is ingested.
         context.control_warnings.append(
-            f"variable '{name}' dropped: resolved field '{field_name}' is not "
+            f"variable '{name}' kept, but resolved field '{field_name}' is not "
             "present on the target (data not yet ingested, or genuinely "
-            "absent); re-run once the field exists to recover this control"
+            "absent); the control may have no options until the field is ingested"
         )
-        return f"skipped unavailable control field {field_name}"
     if resolver and resolver.field_exists(field_name) is True:
         if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to '{field_name}', but that field "
+                "has incompatible target types; no Kibana control was emitted"
+            )
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to non-aggregatable target field "
+                f"'{field_name}'; no Kibana control was emitted"
+            )
             return f"skipped non-aggregatable control field {field_name}"
     scope_refs = [
         ref for ref in _extract_variable_scope_template_refs(query_text) if ref != name
@@ -5667,6 +5683,10 @@ def textbox_variable_rule(context):
         return None
     name = context.variable.get("name", "")
     context.handled = True
+    context.control_warnings.append(
+        f"textbox variable '{name}' has no direct Kibana control equivalent; "
+        "use the Kibana query bar or a KQL filter instead"
+    )
     context.trace.append(
         f"textbox variable '{name}' has no direct Kibana control equivalent; "
         "use the Kibana query bar or KQL filter instead"
@@ -5722,11 +5742,10 @@ def translate_variables(
     """Translate Grafana template variables into Kibana controls.
 
     ``collect_warnings``, if given a list, is extended with any dashboard-
-    level control-translation warnings (issue #269: a control silently
-    dropped because the target lacks its field, or a chained/label-filtered
-    variable whose Grafana scope can't be expressed in a Kibana control).
-    Optional and additive so existing callers that only want ``controls``
-    are unaffected.
+    level control-translation warnings: broader chained controls, controls
+    retained against an absent target field, and unsupported variable shapes
+    that cannot emit a Kibana control. Optional and additive so existing
+    callers that only want ``controls`` are unaffected.
     """
     rule_pack = rule_pack or RulePackConfig()
     controls = []

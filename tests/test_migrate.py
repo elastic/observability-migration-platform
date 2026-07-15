@@ -6949,9 +6949,35 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
-    def test_query_variable_skips_missing_control_fields(self):
+    def test_visible_query_result_variable_drop_is_surfaced_as_control_warning(self):
+        warnings = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "total",
+                "label": "total_servers",
+                "query": 'query_result(count(node_uname_info{job=~"$job"}))',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+            collect_warnings=warnings,
+        )
+
+        self.assertEqual(controls, [])
+        self.assertTrue(
+            any(
+                "query_result" in warning
+                and "no Kibana control was emitted" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
+
+    def test_query_variable_keeps_missing_control_fields_with_warning(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
         resolver.field_exists = lambda field: field != "k8s.namespace.name"
+        warnings = []
         controls = migrate.translate_variables(
             [{
                 "type": "query",
@@ -6962,8 +6988,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             datasource_index="logs-*",
             rule_pack=self.rule_pack,
             resolver=resolver,
+            collect_warnings=warnings,
         )
-        self.assertEqual(controls, [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["field"], "k8s.namespace.name")
+        self.assertTrue(
+            any(
+                "variable 'namespace' kept" in warning
+                and "k8s.namespace.name" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
 
     def test_query_variable_skips_conflicting_control_fields(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
@@ -9541,10 +9577,16 @@ class TranslatorRegressionTests(unittest.TestCase):
                 resolver=self.resolver,
             )
             migrate.annotate_results_with_verification([result], [])
+            result.control_warnings = ["variable 'job' needs manual scope review"]
             manifest_path = pathlib.Path(tmpdir) / "migration_manifest.json"
             migrate.save_migration_manifest([result], manifest_path)
             manifest = json.loads(manifest_path.read_text())
         self.assertEqual(manifest["summary"]["dashboards"], 1)
+        self.assertEqual(manifest["summary"]["control_warnings"], 1)
+        self.assertEqual(
+            manifest["dashboards"][0]["control_warnings"],
+            ["variable 'job' needs manual scope review"],
+        )
         self.assertEqual(manifest["dashboards"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["query_language"], "promql")
@@ -13097,12 +13139,12 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
             result.control_warnings,
         )
 
-    def test_control_dropped_for_absent_target_field_is_a_surfaced_warning_not_silent(self):
-        # Defect 1: a control must not silently vanish when target-schema
-        # discovery positively confirms its resolved field is absent -- that
-        # must show up as a dashboard-level control warning so the same
-        # source dashboard doesn't yield an unexplained, structurally
-        # different result depending on whether a target was reachable.
+    def test_control_for_absent_target_field_is_kept_with_a_surfaced_warning(self):
+        # Defect 1: target-schema discovery may positively confirm that the
+        # resolved field is absent because telemetry has not arrived yet. Keep
+        # the source control so offline/live output stays deterministic and the
+        # dropdown self-heals once the field is ingested, but surface the
+        # data-readiness gap explicitly.
         orig_field_exists = self.resolver.field_exists
 
         def field_exists(field):
@@ -13114,12 +13156,50 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
 
         result, doc = self._translate(self.resolver)
         variable_names = {c["variable_name"] for c in doc["controls"]}
-        self.assertNotIn("instance", variable_names)
+        self.assertIn("instance", variable_names)
         self.assertTrue(
             any(
-                "variable 'instance' dropped" in w and "service.instance.id" in w
+                "variable 'instance' kept" in w and "service.instance.id" in w
                 for w in result.control_warnings
             ),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_absent_referenced_control_is_not_reported_dropped_then_resynthesized(self):
+        # A panel that binds ?instance requires the corresponding ES|QL
+        # control. Historically query_variable_rule reported it as dropped,
+        # then _ensure_param_controls silently synthesized it again, leaving
+        # the report and artifact in direct contradiction.
+        self.dashboard["panels"][0]["targets"][0]["expr"] = (
+            'avg(container_memory_cache{instance="$instance",id="$id"})'
+        )
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        instance_controls = [
+            control
+            for control in doc["controls"]
+            if control.get("variable_name") == "instance"
+        ]
+        self.assertEqual(len(instance_controls), 1)
+        self.assertIn("?instance", doc["panels"][0]["esql"]["query"])
+        self.assertTrue(
+            any("variable 'instance' kept" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
             result.control_warnings,
         )
 

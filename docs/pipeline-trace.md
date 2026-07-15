@@ -38,30 +38,22 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
-| grafana | Diverse Panel Types Test | 10 | 3 | 7 | 0 | 0 | 0 | 1 |
-| grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
-| grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
-| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
-| grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | Node Exporter Full | 116 | 39 | 77 | 0 | 0 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 28 | 10 | 5 | 1 | 0 | 0 |
-| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
-| datadog | Apache - Overview | 22 | 12 | 8 | 1 | 1 | 0 | 0 |
+| datadog | Apache - Overview | 22 | 12 | 9 | 1 | 0 | 0 | 0 |
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
 | datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
 | datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
-| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 28 | 3 | 2 | 9 | 0 |
-| datadog | Kubernetes - Overview | 57 | 2 | 39 | 4 | 2 | 10 | 0 |
-| datadog | MongoDB - Overview | 43 | 13 | 20 | 1 | 0 | 9 | 0 |
+| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 31 | 1 | 1 | 9 | 0 |
+| datadog | Kubernetes - Overview | 57 | 2 | 41 | 4 | 0 | 10 | 0 |
+| datadog | MongoDB - Overview | 43 | 12 | 21 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
-| datadog | NGINX - Overview | 27 | 12 | 5 | 2 | 2 | 6 | 0 |
+| datadog | NGINX - Overview | 27 | 12 | 6 | 2 | 1 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 24 | 5 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 10 | 27 | 3 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
-**22 dashboards, 673 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
+**14 dashboards, 426 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -69,9 +61,9 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 237 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 247 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 212 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 27 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 235 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 164 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -79,21 +71,21 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Count | Warning |
 |------:|---------|
-| 220 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
-| 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 35 | Grafana panel description is not carried into Kibana YAML automatically |
-| 34 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
-| 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 21 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
-| 19 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
+| 187 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
+| 136 | Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana |
+| 21 | Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 21 | Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 11 | Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 10 | rollup interval is approximated in ES\|QL |
 | 9 | as_count interval semantics are approximated in ES\|QL |
-| 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
-| 7 | rollup interval is approximated in ES\|QL |
 | 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
-| 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
-| 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
-| 5 | Grafana panel has 20 field override(s); verify visual mappings manually |
-| 5 | Grafana panel has 17 field override(s); verify visual mappings manually |
+| 5 | rate semantics approximated with delta over observed bucket span |
+| 5 | top(10) on timeseries approximated as ranked table of top-10 groups — ES\|QL cannot filter to N series in a single pass |
+| 5 | Scope filter with template variable broadened to LIKE pattern; apply specific values via Kibana dashboard controls |
+| 4 | hostmap visual approximated as a grouped table; host dimensions and metric values are preserved, but Datadog tile coloring is not |
+| 4 | XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column |
+| 4 | default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted |
+| 3 | XY chart grouped by multiple tags (worker, task); composited into a single breakdown column |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -248,26 +240,24 @@ reports, verification, and downstream analysis.
 From the latest trace run:
 
 ```
-Elements:            696 total (673 panels + 23 rows)
-Renderable panels:   673
-  Migrated:              96 (14.3%)
-  With warnings:        141 (21.0%)
-  OK:                   107 (15.9%)
-  Warning:              222 (33.0%)
-  Requires manual:       30 (4.5%)
-  Not feasible:          14 (2.1%)
-  Skipped:               63 (9.4%)
+Elements:            426 total (426 panels)
+Renderable panels:   426
+  OK:                   105 (24.6%)
+  Warning:              233 (54.7%)
+  Requires manual:       21 (4.9%)
+  Not feasible:           5 (1.2%)
+  Skipped:               62 (14.6%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                  237
-  MINOR_ISSUE:              247
-  EXPECTED_LIMITATION:      212
+  CORRECT:                   27
+  MINOR_ISSUE:              235
+  EXPECTED_LIMITATION:      164
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-07-13 10:29 UTC*
+*Last generated: 2026-07-15 18:23 UTC*

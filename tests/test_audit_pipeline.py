@@ -8,6 +8,7 @@ from scripts.audit_pipeline import (
     PanelAudit,
     _section_dashboard_summary,
     _section_per_dashboard_traces,
+    _verdict,
     generate_pipeline_trace_md,
 )
 
@@ -55,6 +56,19 @@ class PipelineTraceSummaryTests(unittest.TestCase):
 
         self.assertIn("| datadog | Nested widgets | 4 | 1 | 1 | 1 | 1 | 0 |", trace_doc)
         self.assertIn("**File:** `nested.json` — **Panels:** 4", trace_doc)
+
+    def test_omitted_or_unbound_template_filter_is_not_classified_correct(self):
+        for warning in (
+            "Scope filter with template variable could not be bound exactly",
+            "Datadog $scope template variable was omitted",
+        ):
+            with self.subTest(warning=warning):
+                panel = PanelAudit(
+                    status="warning",
+                    translated_query="FROM metrics-* | STATS value = AVG(cpu)",
+                    warnings=[warning],
+                )
+                self.assertEqual(_verdict(panel), "MINOR_ISSUE")
 
 
 if __name__ == "__main__":

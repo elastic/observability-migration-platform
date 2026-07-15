@@ -4,7 +4,7 @@ widgets: 57
 panels: 47
 controls: 9
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 2, 'requires_manual': 4, 'skipped': 10, 'warning': 39}
+statuses: {'ok': 2, 'requires_manual': 4, 'skipped': 10, 'warning': 41}
 - title='Datadog note 24'; kind=markdown
 - title='Datadog note 6152894268304392'; kind=markdown
 - title='Clusters'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
@@ -40,10 +40,10 @@ statuses: {'not_feasible': 2, 'ok': 2, 'requires_manual': 4, 'skipped': 10, 'war
 - title='Not ready'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Not ready (widget 31)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_query2']; breakdowns=[]; primary=; metric=
 - title='Container states'; kind=esql; type=line; dimension=time_bucket; metrics=['running', 'waiting', 'terminated', 'ready']; breakdowns=[]; primary=; metric=
-- title='CPU utilization per node'; kind=markdown
+- title='CPU utilization per node'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['host.name']; primary=; metric=
 - title='Sum Kubernetes CPU requests per node'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Most CPU-intensive pods'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.pod.name']; primary=; metric=
-- title='Memory usage per node'; kind=markdown
+- title='Memory usage per node'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['host.name']; primary=; metric=
 - title='Sum Kubernetes memory requests per node'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Most memory-intensive pods'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['k8s.pod.name']; primary=; metric=
 - title='Network in per node'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=

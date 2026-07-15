@@ -358,6 +358,48 @@ The Datadog path is now organized around executable stages:
 5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload
    and kb-dashboard YAML, then hand off to review-artifact/report/compile steps.
 
+### Hostmap Fallback
+
+Datadog hostmaps store their metric requests under keyed `fill`/`size`
+objects rather than the standard request array. Those queries are normalized
+and, when they include a host/category grouping, emitted as a grouped Kibana
+datatable. This preserves the target dimension and metric values while
+explicitly warning that Datadog's tile layout and value-based coloring are not
+available. An ungrouped hostmap still requires manual redesign because no
+host/value table can be constructed.
+
+### Template-Variable Filter Limitations
+
+Tag-backed metric template variables can become Kibana options-list controls,
+but Datadog also supports variable shapes that do not have a faithful direct
+equivalent:
+
+- A variable referenced only by log widgets binds to the logs data view and
+  uses log-field mapping. Metric-only and unreferenced variables bind to the
+  metrics data view. A variable shared by metric and log widgets still needs
+  review because one Kibana options-list control cannot target two data views.
+- Source `available_values` and preselected defaults are retained in the typed
+  `ControlIR`. Kibana options-list controls populate from target field values,
+  so `available_values` is provenance rather than an enforced static
+  allow-list in generated YAML.
+- `$scope` represents an entire Datadog scope expression rather than one tag
+  field. It is omitted with an explicit manual-recreation warning; the
+  migration does not claim that a nonexistent single control replaces it.
+- Template variables inside Datadog log filters are removed from executable
+  ES|QL because the substitution cannot be bound exactly. The panel is marked
+  with a warning and the filter must be recreated in Kibana rather than being
+  silently reported as a clean translation.
+
+### Dynamic Group-By Template Variables
+
+A metric grouping such as `by {host}` maps to the corresponding target field
+(`host.name` in the OTel profile). A grouping that is itself a Datadog
+template variable, such as `by {$grouping}`, cannot be resolved to a stable
+target field during migration. It is therefore emitted as
+`requires_manual` with no executable ES|QL rather than querying a literal
+`` `$grouping` `` field that does not exist. Choose a fixed Datadog tag before
+migration or recreate the selector as a Kibana field control.
+
 ### Formula Translation Specifics
 
 The translator handles Datadog formulas at three layers:
@@ -367,6 +409,16 @@ The translator handles Datadog formulas at three layers:
   - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric, 5 minute) BY TBUCKET(5 minute)` (or `INCREASE(...)` for `diff`/`monotonic_diff`). This is the native ES|QL time-series aggregation — same pattern the Grafana adapter uses for PromQL `rate()`. Mirrors Datadog counter-rate semantics directly.
   - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
 - **Multi-query formulas with different filters** (e.g. `count:x{direction:in} / count:x{direction:out}`) translate via per-aggregation `WHERE` clauses inside `STATS`: each query's tag filters are attached to its own aggregation expression. The outer `WHERE` becomes the `TIME_FILTER` plus an `OR` of the spec filters. Different groupings are still surfaced as `requires_manual` because the resolution between divergent group sets is semantically ambiguous.
+- **Direct-reference table formulas with different request reducers** apply
+  each reducer independently (for example `AVG` for message-rate columns and
+  `LAST` for a lag column) after the shared time-bucket stage. Composite
+  formulas that mix queries with incompatible reducers remain blocked because
+  reducer ordering would be ambiguous.
+- **Value-filtered count aggregators** such as
+  `count(v: v>=0):metric{scope} by {service}` retain the numeric predicate as
+  an ES|QL metric filter before `COUNT(*)`. Function-chain behavior such as
+  `.as_rate()` and `.rollup(10)` then follows the existing warned rate/rollup
+  approximation path instead of forcing manual review.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 
 ### Parity Harness

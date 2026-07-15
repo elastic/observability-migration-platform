@@ -753,6 +753,16 @@ def build_summary_view(
                         reasons=list(pr.reasons),
                     )
                 )
+        control_warnings = list(getattr(r, "control_warnings", []) or [])
+        if control_warnings:
+            warning_items.append(
+                AttentionItem(
+                    dashboard=r.dashboard_title,
+                    panel="Dashboard controls",
+                    status="warning",
+                    reasons=control_warnings,
+                )
+            )
         # Red panels not already flagged above are added to the worklist (deduped).
         for pr in renderable:
             if _gate(pr, "Red") and pr.title not in seen_attention:

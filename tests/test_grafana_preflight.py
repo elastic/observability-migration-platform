@@ -51,6 +51,47 @@ class GrafanaPreflightReportTests(unittest.TestCase):
         self.assertIn("Panels: 1 (1 Green by static analysis)", summary)
         self.assertNotIn("ready for deployment", summary)
 
+    def test_preflight_report_includes_dashboard_control_warnings(self):
+        panel = SimpleNamespace(
+            readiness="",
+            verification_packet={
+                "semantic_gate": "Green",
+                "source_execution": {"status": "not_configured"},
+            },
+        )
+        result = SimpleNamespace(
+            dashboard_title="Chained controls",
+            total_panels=1,
+            panel_results=[panel],
+            control_warnings=["variable 'id' is broader than its Grafana scope"],
+        )
+
+        report = preflight.build_preflight_report(
+            [result],
+            validation_summary={},
+            validation_records=[],
+            verification_payload={},
+            schema_contract={
+                "required_indexes": {},
+                "required_fields": {},
+                "counter_expectations": {},
+                "totals": {},
+            },
+        )
+
+        self.assertEqual(report["summary"]["control_warnings"], 1)
+        self.assertEqual(
+            report["control_warnings"],
+            [{
+                "dashboard": "Chained controls",
+                "warnings": ["variable 'id' is broader than its Grafana scope"],
+            }],
+        )
+        self.assertTrue(
+            any("1 dashboard control warning" in action for action in report["actions"]),
+            report["actions"],
+        )
+
     def test_serverless_action_summary_does_not_report_zero_data_nodes(self):
         panel = SimpleNamespace(
             readiness="elastic_ready",

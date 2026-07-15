@@ -288,19 +288,21 @@ another control's live selection):
   as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
   $instance in Grafana ... Kibana ES|QL controls cannot express that
   inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
-  CLI summary and included per-dashboard in the JSON report
+  CLI summary, included in the Markdown summary warning worklist, and recorded
+  per-dashboard in the JSON report, migration manifest, and preflight report
   (`control_warnings`), rather than only being discoverable by reading the
-  emitted ES|QL.
-- **A control dropped because its target field is absent is also not
-  silent.** When live schema discovery (`--es-url`) positively confirms a
-  variable's resolved field doesn't exist on the target, the control is
-  dropped from the dashboard (as before — a field that isn't ingested yet
-  can't populate a dropdown) but now records a matching
-  `control_warnings` entry so an offline run and a live run against a
-  not-yet-fully-ingested target don't silently diverge in their control set
-  with no explanation. Controls have no `PanelResult`-style per-item tracking
-  of their own, so `control_warnings` is dashboard-scoped rather than
-  per-control.
+  emitted ES|QL. Unsupported visible `query_result()` variables, textbox
+  variables, unresolved fields, incompatible field types, and non-aggregatable
+  fields use the same surfaced warning path.
+- **A control whose target field is absent is kept with a data-readiness
+  warning.** When live schema discovery (`--es-url`) positively confirms a
+  variable's resolved field doesn't exist on the target, the control remains
+  in the dashboard so offline and live migrations have the same structure,
+  any panel `?var` binding remains valid, and the dropdown can self-heal once
+  telemetry containing the field arrives. Its option list may be empty until
+  then, so a matching `control_warnings` entry explains the data-readiness
+  gap. Controls have no `PanelResult`-style per-item tracking of their own, so
+  `control_warnings` is dashboard-scoped rather than per-control.
 
 ## Command Coverage
 

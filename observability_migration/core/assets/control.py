@@ -101,6 +101,8 @@ class ControlIR:
         defaults_raw = raw.get("defaults") if "defaults" in raw else raw.get("default")
         if defaults_raw is None:
             defaults_raw = raw.get("selected_options")
+        if defaults_raw is None:
+            defaults_raw = raw.get("preselected")
         if isinstance(defaults_raw, list):
             selected_options = [str(item) for item in defaults_raw]
         elif defaults_raw is not None:

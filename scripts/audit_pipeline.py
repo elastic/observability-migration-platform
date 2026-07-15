@@ -423,7 +423,17 @@ def _verdict(panel: PanelAudit) -> str:
         return "MINOR_ISSUE"
     if panel.warnings:
         for w in panel.warnings:
-            if any(k in w.lower() for k in ("collapsed", "approximated", "dropped", "meta-metric")):
+            if any(
+                keyword in w.lower()
+                for keyword in (
+                    "collapsed",
+                    "approximated",
+                    "dropped",
+                    "meta-metric",
+                    "could not be bound",
+                    "omitted",
+                )
+            ):
                 return "MINOR_ISSUE"
     if not panel.translated_query and panel.status != "skipped":
         return "EXPECTED_LIMITATION"

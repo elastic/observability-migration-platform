@@ -96,6 +96,7 @@ def _build_dashboard_yaml_doc(
     """
     panels = []
     result_map = {r.widget_id: r for r in results}
+    _warn_mixed_template_variable_usage(dashboard, result_map)
 
     for widget in dashboard.widgets:
         result = result_map.get(widget.id)
@@ -148,7 +149,11 @@ def _build_dashboard_yaml_doc(
         doc["dashboards"][0]["filters"] = filters
 
     controls = _build_controls_from_template_vars(
-        dashboard.template_variables, data_view, field_map,
+        dashboard.template_variables,
+        data_view,
+        field_map,
+        logs_data_view=logs_index,
+        widgets=dashboard.widgets,
     )
     if controls:
         doc["dashboards"][0]["controls"] = controls
@@ -224,6 +229,22 @@ def generate_dashboard_artifacts(
     dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
     dashboard_ir.uid = str(dashboard.id or "")
     dashboard_ir.title = dashboard.title or dashboard_ir.title
+    template_vars_by_name = {
+        variable.name: variable
+        for variable in dashboard.template_variables
+        if variable.name
+    }
+    for control_ir in dashboard_ir.controls:
+        template_var = template_vars_by_name.get(control_ir.label)
+        if template_var is None:
+            continue
+        control_ir.variable_name = template_var.name
+        control_ir.variable_type = "datadog_template"
+        control_ir.available_options = [
+            str(value)
+            for value in template_var.available_values
+            if str(value)
+        ]
     exported_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
     yaml_string = yaml.dump(exported_doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
     native_dashboard, counts = native_dashboard_from_ir(dashboard_ir)
@@ -301,6 +322,9 @@ def _build_controls_from_template_vars(
     template_vars: list[TemplateVariable],
     data_view: str,
     field_map: FieldMapProfile | None,
+    *,
+    logs_data_view: str = "logs-*",
+    widgets: list[NormalizedWidget] | None = None,
 ) -> list[dict[str, Any]]:
     """Build Kibana dashboard controls from Datadog template variables.
 
@@ -325,11 +349,13 @@ def _build_controls_from_template_vars(
         # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
         # is a real field name in the log-query path.)
         tag = tag.lstrip("@")
-        es_field = field_map.map_tag(tag, context="metric") if field_map else tag
+        context = _template_variable_query_context(tv.name, widgets or [])
+        control_data_view = logs_data_view if context == "log" else data_view
+        es_field = field_map.map_tag(tag, context=context) if field_map else tag
         control: dict[str, Any] = {
             "type": "options",
             "label": tv.name,
-            "data_view": data_view,
+            "data_view": control_data_view,
             "field": es_field,
             "multiple": len(tv.defaults) > 1 or tv.default == "*",
         }
@@ -338,6 +364,73 @@ def _build_controls_from_template_vars(
             control["preselected"] = preselected
         controls.append(control)
     return controls
+
+
+def _template_variable_query_context(
+    variable_name: str,
+    widgets: list[NormalizedWidget],
+) -> str:
+    """Return ``log`` only when a variable is referenced exclusively by logs."""
+    log_widget_ids, metric_widget_ids = _template_variable_usage(
+        variable_name,
+        widgets,
+    )
+    return "log" if log_widget_ids and not metric_widget_ids else "metric"
+
+
+def _template_variable_usage(
+    variable_name: str,
+    widgets: list[NormalizedWidget],
+) -> tuple[set[str], set[str]]:
+    escaped_name = re.escape(variable_name)
+    reference_re = re.compile(
+        rf"\$(?:\{{{escaped_name}(?::[^}}]+)?\}}|{escaped_name}\b)"
+    )
+    log_widget_ids: set[str] = set()
+    metric_widget_ids: set[str] = set()
+
+    pending = list(widgets)
+    while pending:
+        widget = pending.pop()
+        pending.extend(widget.children)
+        for query in widget.queries:
+            if not reference_re.search(query.raw_query or ""):
+                continue
+            if query.log_query is not None or query.data_source == "logs":
+                log_widget_ids.add(widget.id)
+            if query.metric_query is not None or query.data_source == "metrics":
+                metric_widget_ids.add(widget.id)
+
+    return log_widget_ids, metric_widget_ids
+
+
+def _warn_mixed_template_variable_usage(
+    dashboard: NormalizedDashboard,
+    result_map: dict[str, TranslationResult],
+) -> None:
+    for variable in dashboard.template_variables:
+        log_widget_ids, metric_widget_ids = _template_variable_usage(
+            variable.name,
+            dashboard.widgets,
+        )
+        if not log_widget_ids or not metric_widget_ids:
+            continue
+        detail = (
+            f"Template variable '${variable.name}' is used by both metric and "
+            "log widgets; the migrated options-list control targets the metrics "
+            "data view because one Kibana control cannot target both data views. "
+            "Recreate a separate logs control or filter in Kibana"
+        )
+        for widget_id in log_widget_ids | metric_widget_ids:
+            result = result_map.get(widget_id)
+            if result is None:
+                continue
+            if detail not in result.warnings:
+                result.warnings.append(detail)
+            if detail not in result.semantic_losses:
+                result.semantic_losses.append(detail)
+            if result.status == "ok":
+                result.status = "warning"
 
 
 def _template_var_preselected(tv: TemplateVariable) -> list[str]:
@@ -891,7 +984,7 @@ _DD_TYPE_KIBANA_MAP: dict[str, str] = {
     "free_text": "markdown",
     "image": "markdown",
     "iframe": "markdown",
-    "hostmap": "markdown",
+    "hostmap": "datatable",
 }
 
 
@@ -1217,7 +1310,7 @@ _DD_TYPE_FAMILY: dict[str, str] = {
     "free_text": "markdown",
     "image": "markdown",
     "iframe": "markdown",
-    "hostmap": "markdown",
+    "hostmap": "table",
 }
 
 
