@@ -1208,6 +1208,8 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
         links_config = _cfg_links(title, links)
         if links_config is None:
             return PanelMapping(None, reason="links panel has no mappable url/dashboard entries", kind="links")
+        if hide_title:
+            links_config["hide_title"] = True
         return PanelMapping({"grid": grid, "type": "links", "config": links_config}, kind="links")
 
     image = panel.get("image")
@@ -1215,6 +1217,8 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
         image_config = _cfg_image(title, image)
         if image_config is None:
             return PanelMapping(None, reason="image panel has no from_url", kind="image")
+        if hide_title:
+            image_config["hide_title"] = True
         return PanelMapping({"grid": grid, "type": "image", "config": image_config}, kind="image")
 
     esql = panel.get("esql")

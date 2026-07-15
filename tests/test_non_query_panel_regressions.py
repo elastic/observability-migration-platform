@@ -57,6 +57,19 @@ def test_links_mapper_preserves_title_and_false_new_tab():
     assert result.api_panel["config"]["links"][1]["options"]["open_in_new_tab"] is True
 
 
+def test_links_yaml_mapper_preserves_hide_title():
+    result = dashboards_api.map_yaml_panel(
+        {
+            "title": "Dashboard Links",
+            "hide_title": True,
+            "links": {"items": [{"url": "https://example.com/docs"}]},
+        }
+    )
+
+    assert result.api_panel is not None
+    assert result.api_panel["config"]["hide_title"] is True
+
+
 def test_image_yaml_mapper_preserves_native_image_configuration():
     result = dashboards_api.map_yaml_panel(
         {
@@ -83,6 +96,19 @@ def test_image_yaml_mapper_preserves_native_image_configuration():
             "alt_text": "System architecture",
         },
     }
+
+
+def test_image_yaml_mapper_preserves_hide_title():
+    result = dashboards_api.map_yaml_panel(
+        {
+            "title": "Architecture",
+            "hide_title": True,
+            "image": {"from_url": "https://example.com/architecture.png"},
+        }
+    )
+
+    assert result.api_panel is not None
+    assert result.api_panel["config"]["hide_title"] is True
 
 
 def test_relative_grafana_dashboard_link_stays_manual():
