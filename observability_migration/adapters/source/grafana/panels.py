@@ -65,6 +65,7 @@ from observability_migration.targets.kibana.emit.layout import (
 )
 
 from .extract import _normalize_text_panel_content
+from .links import build_links_panel, translate_dashboard_links
 from .manifest import (
     analyze_panel_targets,
     build_dashboard_inventory,
@@ -7439,6 +7440,58 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
             source_file=result.source_file,
             folder_title=result.folder_title,
         )
+    # Grafana dashboard-level ``links[]`` of type "link" (a concrete external
+    # URL) have a resolvable destination and become a real Kibana ``links``
+    # panel; tag-driven "dashboards" links stay manual (see
+    # ``build_links_panel``). Appended last, at the next free row, so it
+    # never overlaps a panel/section already placed by the loop above. A
+    # matching ``PanelResult`` is added so the YAML leaf-panel count and the
+    # migration-report panel-result count stay 1:1 (see
+    # tests/test_grafana_yaml_generation.py's snapshot pairing invariant).
+    grafana_dashboard_links = translate_dashboard_links(dashboard)
+    links_panel = build_links_panel(grafana_dashboard_links)
+    if links_panel is not None:
+        links_panel["position"] = {"x": 0, "y": dashboard_y_cursor}
+        top_level_panels.append(links_panel)
+        n_url_links = sum(
+            1 for link in grafana_dashboard_links if link.get("kibana_action") == "url_drilldown"
+        )
+        link_warnings: list[str] = []
+        if any(
+            link.get("kibana_action") == "url_drilldown" and link.get("include_vars")
+            for link in grafana_dashboard_links
+        ):
+            link_warnings.append(
+                "Grafana link template variables are dropped because Kibana links panels "
+                "cannot forward dashboard variables automatically"
+            )
+        if any(
+            link.get("kibana_action") == "url_drilldown" and link.get("keep_time")
+            for link in grafana_dashboard_links
+        ):
+            link_warnings.append(
+                "Grafana link time range forwarding is dropped because Kibana external "
+                "links cannot inherit the dashboard time range automatically"
+            )
+        links_panel_result = PanelResult(
+            str(links_panel.get("title") or "Dashboard Links"),
+            "dashboard_links",
+            "links",
+            "migrated_with_warnings" if link_warnings else "migrated",
+            0.8 if link_warnings else 1.0,
+            reasons=[
+                f"synthesized from {n_url_links} Grafana dashboard-level link(s)",
+                *link_warnings,
+            ],
+        )
+        _sync_visual_ir(links_panel_result, links_panel)
+        result.panel_results.append(links_panel_result)
+        result.yaml_panel_results.append(links_panel_result)
+        # ``total_panels`` is also the denominator for target migration
+        # dispositions. Include this synthesized renderable panel so
+        # migrated/warning counts cannot exceed their denominator.
+        result.total_panels += 1
+
     recompute_result_counts(result)
     controls = _strip_internal_control_metadata(controls)
 

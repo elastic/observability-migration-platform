@@ -13394,7 +13394,9 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
 
     def test_node_exporter_full_panel_count(self):
         result, _yaml_doc = self._translate_dashboard("node-exporter-full.json")
-        self.assertEqual(result.total_panels, 132)
+        # 132 source elements plus one rendered links panel synthesized from
+        # dashboard-level external-link metadata.
+        self.assertEqual(result.total_panels, 133)
         self.assertGreater(result.migrated + result.migrated_with_warnings, 90,
                            "Most panels should migrate")
 

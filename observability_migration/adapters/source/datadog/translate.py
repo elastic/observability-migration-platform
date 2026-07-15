@@ -159,6 +159,10 @@ def translate_widget(
         trace=list(plan.trace),
     )
 
+    if plan.backend == "image":
+        result.status = "ok"
+        return result
+
     if plan.backend in ("markdown", "blocked"):
         is_text_widget = widget.widget_type in (
             "note", "free_text", "image", "iframe",

@@ -59,6 +59,35 @@ _REPRESENTATIVE_PANELS: list[tuple[str, dict[str, Any]]] = [
         _panel(kind="markdown", config={"content": "# hello\nworld"}),
     ),
     (
+        "links",
+        _panel(
+            title="Navigation",
+            kind="links",
+            config={
+                "layout": "horizontal",
+                "items": [
+                    {
+                        "label": "Runbook",
+                        "url": "https://example.com/runbook",
+                        "new_tab": False,
+                    }
+                ],
+            },
+        ),
+    ),
+    (
+        "image",
+        _panel(
+            title="Architecture",
+            kind="image",
+            config={
+                "from_url": "https://example.com/architecture.png",
+                "fit": "cover",
+                "description": "System architecture",
+            },
+        ),
+    ),
+    (
         "xy_line_with_breakdown",
         _panel(
             config={
