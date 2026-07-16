@@ -202,7 +202,11 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--field-profile",
         default="otel",
-        help="Target field mapping profile. Grafana currently supports 'otel' only.",
+        help=(
+            "Target field mapping profile. Grafana supports 'otel' (discover "
+            "+ OTel/Prometheus normalization) and 'passthrough' (emit source "
+            "label/metric names verbatim)."
+        ),
     )
     parser.add_argument(
         "--esql-index",
@@ -1634,9 +1638,16 @@ def _write_run_summary(
     print(f"  Run summary: {summary_path}")
 
 
+_GRAFANA_FIELD_PROFILES = ("otel", "passthrough")
+
+
 def _validate_field_profile(args: argparse.Namespace) -> None:
-    if args.field_profile != "otel":
-        print("Grafana supports --field-profile otel only", file=sys.stderr)
+    if args.field_profile not in _GRAFANA_FIELD_PROFILES:
+        print(
+            "Grafana supports --field-profile "
+            f"{' or '.join(_GRAFANA_FIELD_PROFILES)} only",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
 
@@ -2005,6 +2016,7 @@ def main(argv: list[str] | None = None):
         index_pattern=args.esql_index or args.data_view,
         es_api_key=args.es_api_key or None,
         verify=verify,
+        passthrough=(args.field_profile == "passthrough"),
     )
 
     base_dir = dashboard_output_dir(root_output_dir)

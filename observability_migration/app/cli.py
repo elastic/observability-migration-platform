@@ -189,8 +189,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="otel",
         help=(
             "Target field mapping profile. Defaults to 'otel' for all sources; "
-            "Grafana currently supports 'otel' only, while Datadog also supports "
-            "Datadog-specific built-ins and YAML profile files."
+            "Grafana supports 'otel' and 'passthrough', while Datadog also "
+            "supports Datadog-specific built-ins and YAML profile files."
         ),
     )
     migrate.add_argument(

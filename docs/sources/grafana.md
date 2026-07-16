@@ -115,6 +115,17 @@ field names in the target cluster. The Grafana adapter uses `SchemaResolver`
 and rule packs to bridge this gap — this is the Grafana equivalent of Datadog's
 field profiles.
 
+`--field-profile` selects the resolution mode:
+
+- **`otel`** (default) — full `SchemaResolver` behavior: auto-detect the target
+  layout and normalize Prometheus names to OTel/Prometheus field names.
+- **`passthrough`** — emit source label and metric names verbatim, skipping the
+  automatic normalization below. Explicit rule-pack overrides
+  (`label_rewrites`, `ignored_labels`, `control_field_overrides`) still apply,
+  so `passthrough` is "no *automatic* remapping", not "no mapping at all". Use
+  it when the target already stores raw Prometheus names (dual-shipping or
+  source-faithful clusters) and you want to avoid guessed OTel aliases.
+
 ### How Schema Resolution Works
 
 `SchemaResolver` first **auto-detects the target layout** (schema profile) from
@@ -232,6 +243,7 @@ To emit a validated starter rule-pack template:
 | Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
 | Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
+| Named profiles | `--field-profile otel` (normalize) or `passthrough` (verbatim source names) | `otel`, `elastic_agent`, `prometheus`, `passthrough`, or YAML path |
 
 ### Grouping Template Variables (Late-Bound `by ($var)`)
 

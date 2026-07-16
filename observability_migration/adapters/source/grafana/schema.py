@@ -29,6 +29,14 @@ class SchemaResolver:
     2. Online discovery via ES _field_caps API (when available)
     3. Built-in Prometheus→OTel candidate mappings (offline fallback)
     4. Pass-through (use label as-is)
+
+    When ``passthrough=True`` (the ``passthrough`` field profile), automatic
+    mapping is disabled: explicit rule-pack overrides (``label_rewrites``,
+    ``ignored_labels``, ``control_field_overrides``) still apply, but every
+    other label and metric name is emitted verbatim — steps 2/3 and the
+    auto-detected Prometheus namespacing (``labels.``/``prometheus.labels.``/
+    ``metrics.``/``prometheus.<m>.<suffix>``) are skipped. This mirrors the
+    Datadog ``passthrough`` profile and keeps source names source-faithful.
     """
 
     PROM_TO_OTEL_CANDIDATES = {
@@ -75,12 +83,21 @@ class SchemaResolver:
     _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
 
-    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None, verify: bool | str = True):
+    def __init__(
+        self,
+        rule_pack,
+        es_url=None,
+        index_pattern=None,
+        es_api_key=None,
+        verify: bool | str = True,
+        passthrough: bool = False,
+    ):
         self._rule_pack = rule_pack
         self._es_url = es_url
         self._index_pattern = index_pattern or "metrics-*"
         self._es_api_key = es_api_key
         self._verify = verify
+        self._passthrough = bool(passthrough)
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
@@ -310,6 +327,11 @@ class SchemaResolver:
             return None
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
+        # Passthrough profile: emit the source label verbatim, skipping live
+        # discovery and OTel/Prometheus normalization. Explicit rule-pack
+        # overrides above still win.
+        if self._passthrough:
+            return label
         self._discover_fields()
         # Metric-aware: when the label is scoped to a metric (a
         # `label_values(metric, label)` control, or a panel selector/group-by on
@@ -425,6 +447,10 @@ class SchemaResolver:
         cache pre-fill — it changes nothing about which field a label resolves
         to, only how many probes that resolution costs.
         """
+        # Passthrough resolution never probes, so priming would only waste
+        # round-trips.
+        if self._passthrough:
+            return
         if not metric_field or not self.has_field_capabilities():
             return
         candidates = []
@@ -563,6 +589,10 @@ class SchemaResolver:
         returns the expected default-layout name `prometheus.<metric>.value`
         so the contract layer can surface the missing field via preflight.
         """
+        # Passthrough profile: emit the source metric name verbatim, skipping
+        # discovery and any layout-specific prefixing/suffixing.
+        if self._passthrough:
+            return metric_name
         self._discover_fields()
         profile = self._current_schema_profile()
         if profile == "prometheus_native":

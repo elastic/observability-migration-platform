@@ -377,6 +377,7 @@ def _build_alert_schema_resolver(args):
             index_pattern=getattr(args, "esql_index", "") or getattr(args, "data_view", "") or None,
             es_api_key=getattr(args, "es_api_key", "") or None,
             verify=_resolve_tls_from_args(args),
+            passthrough=(getattr(args, "field_profile", "otel") == "passthrough"),
         )
     except Exception:
         return None

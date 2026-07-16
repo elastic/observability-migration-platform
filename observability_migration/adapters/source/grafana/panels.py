@@ -5504,6 +5504,7 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
             es_url=es_url,
             index_pattern=index_pattern,
             es_api_key=getattr(resolver, "_es_api_key", None),
+            passthrough=getattr(resolver, "_passthrough", False),
         )
     return cache[index_pattern]
 
