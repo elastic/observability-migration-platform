@@ -189,8 +189,15 @@ def _counter_refuted(resolver, metric: str) -> bool:
     return bool(refutes(metric)) if callable(refutes) else False
 
 
-def _default_instance_field(rp):
-    return "instance" if rp.native_promql else "service.instance.id"
+def _default_instance_field(rp, resolver=None):
+    """Return the series-identity field used when collapsing ``count()`` rows.
+
+    Strict passthrough and native PROMQL keep the source label ``instance``.
+    Otherwise fall back to the OTel default used by the ES|QL path.
+    """
+    if getattr(resolver, "_passthrough", False) or getattr(rp, "native_promql", False):
+        return "instance"
+    return "service.instance.id"
 
 
 def _keep(*field_lists) -> str:
@@ -2815,7 +2822,7 @@ def simple_agg_family_rule(context):
         # if neither can be determined we cannot honestly name the targets, so flag
         # for manual review instead of emitting a wrong number.
         if frag.outer_agg == "count":
-            instance_field = _default_instance_field(rp)
+            instance_field = _default_instance_field(rp, resolver)
             series_dims = [d for d in [*group_fields, instance_field] if d]
             series_dims = list(dict.fromkeys(series_dims))
             if not series_dims:
@@ -2938,7 +2945,7 @@ def simple_agg_family_rule(context):
         metric_like = context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         if metric_like:
             context.output_group_fields = []
-            by_clause = ", ".join(group_fields) if group_fields else _default_instance_field(rp)
+            by_clause = ", ".join(group_fields) if group_fields else _default_instance_field(rp, resolver)
             context.esql_query = "\n".join(
                 [
                     f"FROM {context.index}",
@@ -2951,7 +2958,7 @@ def simple_agg_family_rule(context):
             )
         else:
             context.output_group_fields = ["time_bucket"]
-            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp))
+            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp, resolver))
             context.esql_query = "\n".join(
                 [
                     f"FROM {context.index}",

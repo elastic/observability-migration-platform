@@ -33,10 +33,12 @@ class SchemaResolver:
     When ``passthrough=True`` (the ``passthrough`` field profile), automatic
     mapping is disabled: explicit rule-pack overrides (``label_rewrites``,
     ``ignored_labels``, ``control_field_overrides``) still apply, but every
-    other label and metric name is emitted verbatim — steps 2/3 and the
-    auto-detected Prometheus namespacing (``labels.``/``prometheus.labels.``/
-    ``metrics.``/``prometheus.<m>.<suffix>``) are skipped. This mirrors the
-    Datadog ``passthrough`` profile and keeps source names source-faithful.
+    other label and metric name is emitted verbatim. Live ``_field_caps``
+    discovery may still run for validation, but OTel/Prometheus candidate
+    remapping and auto-detected namespacing (``labels.``/
+    ``prometheus.labels.``/``metrics.``/``prometheus.<m>.<suffix>``) are
+    skipped. This mirrors the Datadog ``passthrough`` profile and keeps source
+    names source-faithful.
     """
 
     PROM_TO_OTEL_CANDIDATES = {
@@ -114,6 +116,10 @@ class SchemaResolver:
         # whether fields actually fell back depends on the labels in play
         # (issue #256).
         self._emitted_unverified_otel_default = False
+        # Set True when passthrough emits a bare source name that live caps do
+        # not advertise. Drives the run-summary empty-panel warning so a live
+        # OTel-shaped target is not silently treated as verified.
+        self._emitted_unverified_passthrough_field = False
 
     def _candidate_fields(self, label):
         candidates = []
@@ -267,7 +273,12 @@ class SchemaResolver:
         self._discover_fields()
         profile = self._current_schema_profile()
         has_capabilities = bool(self._field_cache)
-        if not has_capabilities:
+        if self._passthrough:
+            # Offline/empty discovery is always unverified. Live discovery is
+            # unverified when a bare source name was emitted but absent from
+            # the target caps.
+            otel_fallback = (not has_capabilities) or self._emitted_unverified_passthrough_field
+        elif not has_capabilities:
             otel_fallback = True
         else:
             otel_fallback = self._emitted_unverified_otel_default
@@ -275,7 +286,7 @@ class SchemaResolver:
             "status": self._discovery_status,
             "field_profile": "passthrough" if self._passthrough else "otel",
             "automatic_mapping": not self._passthrough,
-            "schema_profile": profile,
+            "schema_profile": None if self._passthrough else profile,
             "index_pattern": self._index_pattern,
             "field_count": len(self._field_cache or {}),
             "label_mappings": len(self._discovered_mappings),
@@ -334,6 +345,8 @@ class SchemaResolver:
         # discovery and OTel/Prometheus normalization. Explicit rule-pack
         # overrides above still win.
         if self._passthrough:
+            if self._field_cache and label not in self._field_cache:
+                self._emitted_unverified_passthrough_field = True
             return label
         self._discover_fields()
         # Metric-aware: when the label is scoped to a metric (a
@@ -595,6 +608,8 @@ class SchemaResolver:
         # Passthrough profile: emit the source metric name verbatim, skipping
         # discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:
+            if self._field_cache and metric_name not in self._field_cache:
+                self._emitted_unverified_passthrough_field = True
             return metric_name
         self._discover_fields()
         profile = self._current_schema_profile()

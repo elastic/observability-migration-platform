@@ -167,6 +167,32 @@ class TestPassthroughLabelResolution(unittest.TestCase):
         self.assertIn("strict passthrough", message.lower())
         self.assertNotIn("queries fall back to OTel field defaults", message)
 
+    def test_live_passthrough_flags_missing_bare_fields(self):
+        # Live caps exist but only under OTel aliases. Emitting bare ``instance``
+        # must mark the run as unverified so the empty-panel warning fires.
+        resolver = _passthrough_resolver(
+            field_cache={"service.instance.id": {"keyword": {"type": "keyword"}}}
+        )
+        self.assertEqual(resolver.resolve_label("instance"), "instance")
+        summary = resolver.field_resolution_summary()
+        self.assertTrue(summary["otel_fallback"])
+        self.assertEqual(summary["field_profile"], "passthrough")
+        self.assertIsNone(summary["schema_profile"])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            print_field_discovery_warning(summary)
+        self.assertIn("strict passthrough", output.getvalue().lower())
+
+    def test_live_passthrough_clears_fallback_when_bare_fields_exist(self):
+        resolver = _passthrough_resolver(
+            field_cache={"instance": {"keyword": {"type": "keyword"}}}
+        )
+        self.assertEqual(resolver.resolve_label("instance"), "instance")
+        summary = resolver.field_resolution_summary()
+        self.assertFalse(summary["otel_fallback"])
+        self.assertFalse(summary["automatic_mapping"])
+
     def test_cli_discovery_status_identifies_passthrough_mode(self):
         resolver = _passthrough_resolver(
             field_cache={"service.instance.id": {"keyword": {"type": "keyword"}}}
@@ -310,6 +336,62 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
         self.assertIn("instance RLIKE", result.esql_query)
         self.assertIn(", job", result.esql_query)
         self.assertNotIn("metrics.redis_up", result.esql_query)
+        self.assertNotIn("service.instance.id", result.esql_query)
+        self.assertNotIn("service.name", result.esql_query)
+
+    def test_count_comparison_uses_bare_instance_dimension(self):
+        # count(<metric> <cmp> <value>) collapses to one row per series using an
+        # instance dimension. Under passthrough that dimension must stay the
+        # source label ``instance``, not the OTel default ``service.instance.id``.
+        rule_pack = RulePackConfig()
+        rule_pack.assume_tsds_gauges = False
+        resolver = _passthrough_resolver(
+            rule_pack=rule_pack,
+            field_cache={
+                "up": {"double": {"type": "double"}},
+                "service.instance.id": {"keyword": {"type": "keyword"}},
+            },
+        )
+
+        result = translate_promql_to_esql(
+            "count(up == 0)",
+            esql_index="metrics-*",
+            panel_type="stat",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        self.assertIn(
+            "| STATS series_present = COUNT(*) BY instance\n",
+            result.esql_query,
+        )
+        self.assertNotIn("service.instance.id", result.esql_query)
+
+    def test_count_comparison_grouped_keeps_bare_instance_dimension(self):
+        rule_pack = RulePackConfig()
+        rule_pack.assume_tsds_gauges = False
+        resolver = _passthrough_resolver(
+            rule_pack=rule_pack,
+            field_cache={
+                "up": {"double": {"type": "double"}},
+                "job": {"keyword": {"type": "keyword"}},
+                "service.instance.id": {"keyword": {"type": "keyword"}},
+                "service.name": {"keyword": {"type": "keyword"}},
+            },
+        )
+
+        result = translate_promql_to_esql(
+            "count(up == 0) by (job)",
+            esql_index="metrics-*",
+            panel_type="stat",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        self.assertRegex(
+            result.esql_query,
+            r"\| STATS series_present = COUNT\(\*\) BY .*job.*instance",
+        )
         self.assertNotIn("service.instance.id", result.esql_query)
         self.assertNotIn("service.name", result.esql_query)
 
