@@ -345,10 +345,16 @@ def print_field_discovery_warning(field_discovery):
     print("\n" + "!" * 70)
     print("WARNING: migrated panels may render empty")
     print("!" * 70)
-    print(f"  {_describe_field_discovery(field_discovery)}.")
     if field_discovery.get("field_profile") == "passthrough":
+        if field_discovery.get("status") == "ok":
+            print(
+                f"  Raw source fields are missing from target index "
+                f"'{index_pattern}'."
+            )
+        else:
+            print(f"  {_describe_field_discovery(field_discovery)}.")
         print(
-            f"  Strict passthrough emits raw source label and metric names against\n"
+            "  Strict passthrough emits raw source label and metric names against\n"
             f"  index '{index_pattern}'. Without matching target fields these names\n"
             "  are unverified and panels can come up empty."
         )
@@ -357,6 +363,7 @@ def print_field_discovery_warning(field_discovery):
             "       with --field-profile otel and --es-url for automatic mapping."
         )
         return
+    print(f"  {_describe_field_discovery(field_discovery)}.")
     # Discovery that ran did reach the target, so don't claim the schema is
     # missing — distinguish a recognized-but-incomplete schema from one where
     # no known layout matched at all.

@@ -295,7 +295,10 @@ Grafana accepts:
   automatic remapping. Explicit rule-pack `label_rewrites` / `ignored_labels` /
   `control_field_overrides` still apply. With `--es-url`, live `_field_caps`
   discovery may still run for validation and empty-panel warnings, but
-  automatic mapping is disabled.
+  automatic mapping is disabled. Alerts-only runs perform the same validation
+  and record it under `alerts.field_discovery` in `run_summary.json`. A native
+  PROMQL query that references a rewritten or ignored label routes through the
+  ES|QL translator so the explicit rule-pack override is not bypassed.
 
 Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
 built-ins `elastic_agent`, `prometheus`, and `passthrough`, plus YAML profile

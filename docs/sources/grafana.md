@@ -124,7 +124,10 @@ field profiles.
   (`label_rewrites`, `ignored_labels`, `control_field_overrides`) still apply,
   so `passthrough` is "no *automatic* remapping", not "no mapping at all". Use
   it when the target already stores raw Prometheus names (dual-shipping or
-  source-faithful clusters) and you want to avoid guessed OTel aliases.
+  source-faithful clusters) and you want to avoid guessed OTel aliases. Native
+  PROMQL queries that reference rewritten or ignored labels fall back to ES|QL
+  so those explicit rules remain effective. Alerts-only runs also use live
+  `_field_caps` for validation and include the result in the run summary.
 
 ### How Schema Resolution Works
 

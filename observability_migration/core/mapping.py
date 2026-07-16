@@ -1033,13 +1033,59 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
     try:
         from observability_migration.adapters.source.grafana.panels import (
             _promql_label_matcher_has_template_variable,
+            _promql_uses_rule_pack_label_overrides,
+            _record_passthrough_native_labels,
         )
         primary_expr = str(_primary_source_query(ir).get("expr", "") or "")
         has_control_bound_matcher = _promql_label_matcher_has_template_variable(primary_expr)
+        _record_passthrough_native_labels(primary_expr, resolver)
+        requires_esql_for_label_rules = bool(
+            getattr(resolver, "_passthrough", False)
+            and _promql_uses_rule_pack_label_overrides(
+                primary_expr,
+                getattr(resolver, "_rule_pack", None),
+            )
+        )
     except ImportError:
         has_control_bound_matcher = False
+        requires_esql_for_label_rules = False
     if has_control_bound_matcher:
         return ""
+
+    if requires_esql_for_label_rules:
+        from observability_migration.adapters.source.grafana.promql import (
+            _esql_identifier,
+        )
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+
+        translated = translate_promql_to_esql(
+            primary_expr,
+            datasource_index=data_view,
+            esql_index=data_view,
+            panel_type="stat",
+            rule_pack=getattr(resolver, "_rule_pack", None),
+            resolver=resolver,
+            query_language="promql",
+        )
+        query = str(getattr(translated, "esql_query", "") or "").strip()
+        if getattr(translated, "feasibility", "") == "not_feasible" or not query:
+            return ""
+        if _promql_expr_has_comparison(primary_expr):
+            return query
+        if not _has_explicit_threshold(ir):
+            return ""
+        where_clause = _threshold_where_clause_from_source(ir)
+        output_field = str(
+            getattr(translated, "output_metric_field", "") or "value"
+        )
+        where_clause = re.sub(
+            r"\bvalue\b",
+            _esql_identifier(output_field),
+            where_clause,
+        )
+        return f"{query} | WHERE {where_clause}" if where_clause else ""
 
     exact_rank_spec = _grafana_unified_exact_topk_bottomk_spec(ir)
     if exact_rank_spec:

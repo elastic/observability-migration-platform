@@ -1332,6 +1332,47 @@ _PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | fr
 )
 
 
+def _promql_label_names(expr):
+    """Return label names used by matchers or grouping modifiers."""
+    labels = set()
+    for selector in re.findall(r"\{([^{}]*)\}", str(expr or "")):
+        labels.update(
+            re.findall(
+                r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)",
+                selector,
+            )
+        )
+    sanitized = _strip_promql_string_literals(str(expr or ""))
+    for group in re.findall(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^)]*)\)",
+        sanitized,
+        re.IGNORECASE,
+    ):
+        labels.update(name.strip() for name in group.split(",") if name.strip())
+    # __name__ is a metric selector, not a stored label field.
+    labels.discard("__name__")
+    return labels
+
+
+def _promql_uses_rule_pack_label_overrides(expr, rule_pack):
+    """Whether native PROMQL would bypass an explicit label rule."""
+    labels = _promql_label_names(expr)
+    overridden = set(getattr(rule_pack, "label_rewrites", {}))
+    overridden.update(getattr(rule_pack, "ignored_labels", []))
+    return bool(labels & overridden)
+
+
+def _record_passthrough_native_labels(expr, resolver):
+    """Validate raw native-PROMQL labels without remapping the expression."""
+    if not getattr(resolver, "_passthrough", False):
+        return
+    resolve = getattr(resolver, "resolve_label", None)
+    if not callable(resolve):
+        return
+    for label in sorted(_promql_label_names(expr)):
+        resolve(label)
+
+
 def _prefix_native_metric_fields(expr, resolver):
     """Rewrite bare metric selectors in a native PROMQL expression to their
     resolved ``metrics.<name>`` field (issue #270).
@@ -1896,6 +1937,16 @@ def _translate_panel_native_promql(
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
     runtime_features = getattr(rule_pack, "runtime_features", {})
+    _record_passthrough_native_labels(expr, resolver)
+    if (
+        getattr(resolver, "_passthrough", False)
+        and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+    ):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+        )
+        return None
     if not can_use_native_promql(expr, runtime_features=runtime_features):
         if (
             _promql_label_matcher_has_template_variable(expr)
@@ -2167,6 +2218,16 @@ def _translate_multi_target_native_promql(
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
         runtime_features = getattr(rule_pack, "runtime_features", {})
+        _record_passthrough_native_labels(expr, resolver)
+        if (
+            getattr(resolver, "_passthrough", False)
+            and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+        ):
+            _append_unique(
+                panel_notes,
+                "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+            )
+            return None
         if not can_use_native_promql(expr, runtime_features=runtime_features):
             if (
                 _promql_label_matcher_has_template_variable(expr)
