@@ -298,6 +298,19 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("field_capabilities_discovery", text)
         self.assertIn("Datadog `--data-view` is an explicit override", text)
 
+    def test_command_contract_documents_field_profile_defaults_and_passthrough(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("### Field Profile Contract", text)
+        # Default is otel for every source, including Grafana.
+        self.assertIn("defaults to `otel` for every source migration, including", text)
+        self.assertIn("Grafana", text)
+        self.assertIn("**`otel`** (default)", text)
+        self.assertIn("**`passthrough`**", text)
+        self.assertIn("automatic mapping is disabled", text)
+        self.assertIn("`default` (alias of `otel`)", text)
+        self.assertIn("--field-profile passthrough", text)
+        self.assertIn("Grafana exits `2`, Datadog exits `1`", text)
+
     def test_command_contract_documents_esql_index_and_data_view_distinction(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         # --esql-index must be defined in the canonical flag table, not just

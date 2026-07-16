@@ -136,7 +136,7 @@ Datadog.
 |---|---|---|---|
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
-| `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source. Grafana supports `otel` and `passthrough`; Datadog also supports source-specific built-ins (`elastic_agent`, `prometheus`, `passthrough`) and YAML profile files. ECS fallback is not implemented in this pass. |
+| `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source (including Grafana). Grafana accepts `otel` and `passthrough`; Datadog also accepts `default` (alias of `otel`), `elastic_agent`, `prometheus`, `passthrough`, and YAML profile files. ECS fallback is not implemented in this pass. |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -282,19 +282,45 @@ non-zero; for alerts it yields an empty alert set. Each run prints
 
 ### Field Profile Contract
 
-`--field-profile` defaults to `otel` for every source migration. Grafana
-accepts `otel` (schema discovery plus OTel/Prometheus label normalization) and
-`passthrough` (emit source label/metric names verbatim, skipping automatic
-normalization; explicit rule-pack `label_rewrites`/`ignored_labels`/
-`control_field_overrides` still apply). Datadog accepts `otel` plus its existing
-Datadog-specific built-ins (`elastic_agent`, `prometheus`, `passthrough`) and
-YAML profile files. Any other value is rejected (Grafana exits `2`, Datadog
-exits `1`). ECS fallback is planned separately and is not part of this contract.
+`--field-profile` defaults to `otel` for every source migration, including
+Grafana (`grafana-migrate`, `obs-migrate migrate --source grafana`) and
+Datadog. Explicitly setting `--field-profile otel` is equivalent to omitting
+the flag.
+
+Grafana accepts:
+
+- **`otel`** (default) — schema discovery plus OTel/Prometheus label and metric
+  normalization through `SchemaResolver`.
+- **`passthrough`** — emit source label and metric names verbatim, skipping
+  automatic remapping. Explicit rule-pack `label_rewrites` / `ignored_labels` /
+  `control_field_overrides` still apply. With `--es-url`, live `_field_caps`
+  discovery may still run for validation and empty-panel warnings, but
+  automatic mapping is disabled.
+
+Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
+built-ins `elastic_agent`, `prometheus`, and `passthrough`, plus YAML profile
+files. Any other value is rejected (Grafana exits `2`, Datadog exits `1`). ECS
+fallback is planned separately and is not part of this contract.
+
+```bash
+# Grafana passthrough: keep raw Prometheus names when the target already stores them
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir infra/grafana/dashboards \
+  --output-dir migration_output \
+  --assets dashboards \
+  --field-profile passthrough \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY"
+```
 
 Datadog `--data-view` is an explicit override, not a hidden default. If omitted,
-the active profile controls the metric index (`otel` uses `metrics-*`,
-`prometheus` uses `metrics-prometheus-*`, and custom YAML profiles can set their
-own `metric_index`).
+the active profile controls the metric index (`otel` / `default` / `passthrough`
+/ `elastic_agent` use `metrics-*`, `prometheus` uses `metrics-prometheus-*`, and
+custom YAML profiles can set their own `metric_index`).
 
 ### Target index flags: data-view vs esql-index
 
