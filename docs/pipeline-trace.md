@@ -38,6 +38,14 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
+| grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
+| grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
+| grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
+| grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
+| grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 10 | 5 | 1 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
 | datadog | Apache - Overview | 22 | 12 | 9 | 1 | 0 | 0 | 0 |
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
@@ -53,7 +61,7 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
-**14 dashboards, 426 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
+**22 dashboards, 676 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -61,9 +69,9 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 27 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 235 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 164 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 38 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 455 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 206 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -73,19 +81,19 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 |------:|---------|
 | 187 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
 | 136 | Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana |
+| 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
+| 35 | Grafana panel description is not carried into Kibana YAML automatically |
+| 34 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
+| 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
+| 21 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
 | 21 | Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
 | 21 | Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 19 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
 | 11 | Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
 | 10 | rollup interval is approximated in ES\|QL |
 | 9 | as_count interval semantics are approximated in ES\|QL |
+| 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
 | 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
-| 5 | rate semantics approximated with delta over observed bucket span |
-| 5 | top(10) on timeseries approximated as ranked table of top-10 groups — ES\|QL cannot filter to N series in a single pass |
-| 5 | Scope filter with template variable broadened to LIKE pattern; apply specific values via Kibana dashboard controls |
-| 4 | hostmap visual approximated as a grouped table; host dimensions and metric values are preserved, but Datadog tile coloring is not |
-| 4 | XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column |
-| 4 | default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted |
-| 3 | XY chart grouped by multiple tags (worker, task); composited into a single breakdown column |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -240,24 +248,26 @@ reports, verification, and downstream analysis.
 From the latest trace run:
 
 ```
-Elements:            426 total (426 panels)
-Renderable panels:   426
-  OK:                   105 (24.6%)
-  Warning:              233 (54.7%)
-  Requires manual:       21 (4.9%)
-  Not feasible:           5 (1.2%)
-  Skipped:               62 (14.6%)
+Elements:            699 total (676 panels + 23 rows)
+Renderable panels:   676
+  Migrated:              99 (14.6%)
+  With warnings:        141 (20.9%)
+  OK:                   105 (15.5%)
+  Warning:              233 (34.5%)
+  Requires manual:       26 (3.8%)
+  Not feasible:           9 (1.3%)
+  Skipped:               63 (9.3%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                   27
-  MINOR_ISSUE:              235
-  EXPECTED_LIMITATION:      164
+  CORRECT:                   38
+  MINOR_ISSUE:              455
+  EXPECTED_LIMITATION:      206
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-07-15 18:23 UTC*
+*Last generated: 2026-07-16 07:55 UTC*
