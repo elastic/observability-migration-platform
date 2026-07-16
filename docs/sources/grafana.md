@@ -243,7 +243,7 @@ To emit a validated starter rule-pack template:
 | Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
 | Live field discovery | `--es-url` feeds `SchemaResolver`; `passthrough` retains capabilities for validation but disables automatic mapping | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
-| Named profiles | `--field-profile otel` (normalize) or `passthrough` (verbatim source names) | `otel`, `elastic_agent`, `prometheus`, `passthrough`, or YAML path |
+| Named profiles | `--field-profile otel` (normalize) or `--field-profile passthrough` (verbatim source names) | `otel`, `elastic_agent`, `prometheus`, `passthrough`, or YAML path |
 
 ### Grouping Template Variables (Late-Bound `by ($var)`)
 
