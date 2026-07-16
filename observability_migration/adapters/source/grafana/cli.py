@@ -1651,6 +1651,52 @@ def _validate_field_profile(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def _build_dashboard_schema_resolver(
+    args: argparse.Namespace,
+    rule_pack,
+    *,
+    verify: bool | str,
+) -> SchemaResolver:
+    return SchemaResolver(
+        rule_pack,
+        es_url=args.es_url or None,
+        index_pattern=args.esql_index or args.data_view,
+        es_api_key=args.es_api_key or None,
+        verify=verify,
+        passthrough=(args.field_profile == "passthrough"),
+    )
+
+
+def _print_schema_discovery_status(
+    resolver: SchemaResolver,
+    *,
+    field_profile: str,
+) -> None:
+    """Print discovery status without implying passthrough remapped fields."""
+    discovery = resolver.discovery_status()
+    if discovery["status"] == "ok":
+        if field_profile == "passthrough":
+            print(
+                f"  Discovered {discovery['field_count']} fields "
+                "(field_profile=passthrough; automatic mapping disabled)"
+            )
+            return
+        profile = resolver.schema_profile() or "generic/otel"
+        print(
+            f"  Discovered {discovery['field_count']} fields, "
+            f"{len(resolver._discovered_mappings)} label mappings "
+            f"(schema_profile={profile})"
+        )
+        if resolver.schema_profile() is None:
+            print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
+    elif discovery["status"] == "empty":
+        print("  WARNING: schema discovery reached Elasticsearch but found no fields")
+    elif discovery["status"] == "error":
+        print(f"  WARNING: schema discovery failed: {discovery['error']}")
+    else:
+        print("  Schema discovery: offline mode")
+
+
 def _clear_dashboard_artifacts(
     yaml_dir: Path,
     compiled_dir: Path,
@@ -2010,13 +2056,10 @@ def main(argv: list[str] | None = None):
 
     verify = _resolve_tls_from_args(args)
 
-    resolver = SchemaResolver(
+    resolver = _build_dashboard_schema_resolver(
+        args,
         rule_pack,
-        es_url=args.es_url or None,
-        index_pattern=args.esql_index or args.data_view,
-        es_api_key=args.es_api_key or None,
         verify=verify,
-        passthrough=(args.field_profile == "passthrough"),
     )
 
     base_dir = dashboard_output_dir(root_output_dir)
@@ -2039,22 +2082,10 @@ def main(argv: list[str] | None = None):
     if args.es_url:
         print(f"\n  Schema discovery: {args.es_url}")
         resolver._discover_fields()
-        discovery = resolver.discovery_status()
-        if discovery["status"] == "ok":
-            profile = resolver.schema_profile() or "generic/otel"
-            print(
-                f"  Discovered {discovery['field_count']} fields, "
-                f"{len(resolver._discovered_mappings)} label mappings "
-                f"(schema_profile={profile})"
-            )
-            if resolver.schema_profile() is None:
-                print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
-        elif discovery["status"] == "empty":
-            print("  WARNING: schema discovery reached Elasticsearch but found no fields")
-        elif discovery["status"] == "error":
-            print(f"  WARNING: schema discovery failed: {discovery['error']}")
-        else:
-            print("  Schema discovery: offline mode")
+        _print_schema_discovery_status(
+            resolver,
+            field_profile=args.field_profile,
+        )
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
 

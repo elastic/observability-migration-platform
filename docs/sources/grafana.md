@@ -238,10 +238,10 @@ To emit a validated starter rule-pack template:
 
 | Aspect | Grafana (SchemaResolver + rule packs) | Datadog (FieldMapProfile) |
 |---|---|---|
-| Metric name mapping | Profile-dependent and automatic — pass-through for OTel/generic targets, rewritten to `prometheus.<metric>.{counter,value,rate}` (Fleet remote_write) or `metrics.<metric>` (native endpoint); native `PROMQL` panels query the metric name directly | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
+| Metric name mapping | `otel` maps automatically — pass-through for OTel/generic targets, rewritten to `prometheus.<metric>.{counter,value,rate}` (Fleet remote_write) or `metrics.<metric>` (native endpoint). `passthrough` always emits the bare source metric name. Native `PROMQL` panels query the metric name directly. | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
 | Tag / label mapping | `SchemaResolver` with multi-level priority and live discovery | `tag_map` dictionary with optional `tag_prefix` fallback |
 | Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
-| Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
+| Live field discovery | `--es-url` feeds `SchemaResolver`; `passthrough` retains capabilities for validation but disables automatic mapping | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 | Named profiles | `--field-profile otel` (normalize) or `passthrough` (verbatim source names) | `otel`, `elastic_agent`, `prometheus`, `passthrough`, or YAML path |
 

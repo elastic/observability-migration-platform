@@ -153,7 +153,8 @@ class SchemaResolver:
                 self._field_cache = resp.json().get("fields", {})
                 self._discovery_status = "ok" if self._field_cache else "empty"
                 self._discovery_error = ""
-                self._build_discovered_mappings()
+                if not self._passthrough:
+                    self._build_discovered_mappings()
             else:
                 self._discovery_status = "error"
                 self._discovery_error = f"_field_caps returned HTTP {resp.status_code}: {getattr(resp, 'text', '')}"
@@ -272,6 +273,8 @@ class SchemaResolver:
             otel_fallback = self._emitted_unverified_otel_default
         return {
             "status": self._discovery_status,
+            "field_profile": "passthrough" if self._passthrough else "otel",
+            "automatic_mapping": not self._passthrough,
             "schema_profile": profile,
             "index_pattern": self._index_pattern,
             "field_count": len(self._field_cache or {}),
@@ -712,6 +715,10 @@ class SchemaResolver:
             return True
         if has_component_suffix:
             return True
+        # Strict passthrough queries the bare source field. Do not classify it
+        # from a namespaced field that will not appear in the emitted query.
+        if self._passthrough:
+            return False
         profile = self._current_schema_profile()
         # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
         if profile == "prometheus_remote_write":

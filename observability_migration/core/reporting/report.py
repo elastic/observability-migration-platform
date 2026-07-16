@@ -346,6 +346,17 @@ def print_field_discovery_warning(field_discovery):
     print("WARNING: migrated panels may render empty")
     print("!" * 70)
     print(f"  {_describe_field_discovery(field_discovery)}.")
+    if field_discovery.get("field_profile") == "passthrough":
+        print(
+            f"  Strict passthrough emits raw source label and metric names against\n"
+            f"  index '{index_pattern}'. Without matching target fields these names\n"
+            "  are unverified and panels can come up empty."
+        )
+        print(
+            "  Fix: ensure the target stores the raw Prometheus names, or re-run\n"
+            "       with --field-profile otel and --es-url for automatic mapping."
+        )
+        return
     # Discovery that ran did reach the target, so don't claim the schema is
     # missing — distinguish a recognized-but-incomplete schema from one where
     # no known layout matched at all.
