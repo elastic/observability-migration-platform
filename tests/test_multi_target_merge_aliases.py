@@ -250,6 +250,63 @@ def test_shared_helper_wraps_bare_irate_for_formula_fusion_and_merge():
     assert "IRATE(node_cpu_seconds_total, 1m)" not in stats_line
 
 
+def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():
+    """Pretranslated merge must not leave bare+wrapped OVER_TIME in one STATS."""
+    q_wrapped = (
+        "TS metrics-*\n"
+        "| STATS process_virtual_memory_bytes = "
+        "AVG(AVG_OVER_TIME(process_virtual_memory_bytes, 5m)) "
+        "BY time_bucket = TBUCKET(5 minute), instance\n"
+        "| KEEP time_bucket, instance, process_virtual_memory_bytes\n"
+        "| SORT time_bucket ASC"
+    )
+    q_bare = (
+        "TS metrics-*\n"
+        "| STATS process_resident_memory_max_bytes = "
+        "AVG_OVER_TIME(process_resident_memory_max_bytes, 5m) "
+        "BY time_bucket = TBUCKET(5 minute), instance\n"
+        "| KEEP time_bucket, instance, process_resident_memory_max_bytes\n"
+        "| SORT time_bucket ASC"
+    )
+    merged = _merge_pretranslated_xy_queries(
+        [
+            _translation("A", "virt", "process_virtual_memory_bytes", q_wrapped),
+            _translation("B", "res", "process_resident_memory_max_bytes", q_bare),
+        ]
+    )
+    assert merged is not None
+    query = merged["query"]
+    assert "AVG(AVG_OVER_TIME(process_resident_memory_max_bytes, 5m))" in query
+    assert re.search(
+        r"(?:STATS|,)\s*`?process_resident_memory_max_bytes_B`?\s*=\s*AVG_OVER_TIME\(",
+        query.replace("\n", " "),
+    ) is None
+
+
+def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
+    """Single-target join-ratio fast path must share the CASE-shape invariant."""
+    from observability_migration.adapters.source.grafana.translate import (
+        translate_promql_to_esql,
+    )
+
+    expr = (
+        'sum by(instance) (irate(node_cpu_guest_seconds_total{instance="n", mode="user"}[1m]))'
+        " / on(instance) group_left "
+        'sum by (instance)(irate(node_cpu_seconds_total{instance="n"}[1m]))'
+    )
+    ctx = translate_promql_to_esql(
+        expr,
+        esql_index="metrics-*",
+        rule_pack=RulePackConfig(),
+        resolver=SchemaResolver(RulePackConfig()),
+    )
+    assert ctx.feasibility == "feasible"
+    query = ctx.esql_query or ""
+    assert 'IRATE(CASE((mode == "user")' in query
+    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
+    assert "IRATE(node_cpu_seconds_total, 1m)" not in query
+
+
 def _walk_panels(panels, found):
     for panel in panels or []:
         title = (panel.get("title") or "").strip()

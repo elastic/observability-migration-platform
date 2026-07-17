@@ -82,6 +82,7 @@ from .promql import (
     _build_formula_plan,
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
+    _finalize_fused_stats_assignments,
     _format_scalar_value,
     _is_counter_fallback,
     _matcher_to_esql,
@@ -89,7 +90,6 @@ from .promql import (
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
-    _wrap_bare_ts_value_args_when_case_siblings,
     grafana_template_var_name,
     substitute_grafana_range_macros,
     substitute_scalar_template_vars,
@@ -3687,7 +3687,11 @@ def _merge_pretranslated_xy_queries(translations):
         if part.strip()
     ]
 
-    renamed_assignments = _wrap_bare_ts_value_args_when_case_siblings(renamed_assignments)
+    renamed_assignments = _finalize_fused_stats_assignments(
+        renamed_assignments,
+        group_fields=group_fields,
+        source_type=next(iter(source_types)),
+    )
 
     def _pipe_stage(stage: str) -> str:
         text = stage.strip()

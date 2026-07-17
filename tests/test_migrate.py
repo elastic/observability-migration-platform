@@ -1697,7 +1697,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
             translated.esql_query,
         )
-        self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
+        # Denominator stays IRATE (not AVG_OVER_TIME) but is CASE-shaped when the
+        # numerator already uses CASE, to avoid ES ClassCast on mixed STATS args.
+        self.assertIn(
+            "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)",
+            translated.esql_query,
+        )
+        self.assertNotIn("IRATE(node_cpu_seconds_total, 1m)", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
         self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")

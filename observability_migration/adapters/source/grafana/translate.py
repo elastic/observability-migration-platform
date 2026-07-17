@@ -50,6 +50,7 @@ from .promql import (
     _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
     _expand_late_bound_group_by_terms,
+    _finalize_fused_stats_assignments,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -1479,6 +1480,19 @@ def join_family_rule(context):
                     right_stats_call = inlined
                 else:
                     _append_unique(context.warnings, f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}")
+
+            # Keep CASE-shaped and bare TS value args from mixing in one STATS
+            # (same ClassCast class as multi-target merge).
+            stats_assignments = _finalize_fused_stats_assignments(
+                [
+                    f"numerator = {left_stats_call}",
+                    f"denominator = {right_stats_call}",
+                ],
+                group_fields=output_group,
+                source_type="TS",
+            )
+            left_stats_call = stats_assignments[0].split("=", 1)[1].strip()
+            right_stats_call = stats_assignments[1].split("=", 1)[1].strip()
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
