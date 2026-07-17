@@ -109,6 +109,41 @@ the *current* code and fails if ERROR counts rise. → See
 > passing the schema gate is **necessary but not sufficient** — real Kibana
 > (Tier 4) is the authority.
 
+### Grafana ES|QL structural harness (offline)
+
+Closes the offline gap where sibling Grafana emitters can produce ES-illegal or
+self-inconsistent fused `STATS` / `EVAL` pipelines that unit snapshots never
+assert. Spec:
+`docs/superpowers/specs/2026-07-17-grafana-translation-correctness-harness-design.md`.
+
+| Piece | Module / test | What it proves |
+|---|---|---|
+| Structural oracle | `observability_migration/adapters/source/grafana/esql_structural_oracle.py` | ERROR rules on emitted ES\|QL: `STATS_CASE_BARE_TS_MIX`, `STATS_BARE_WRAPPED_OVER_TIME_MIX`, `EVAL_UNDEFINED_COLUMN`, `EMPTY_FEASIBLE_QUERY`; WARNING `MIXED_IRATE_AVG_OVER_TIME`. Skips native `PROMQL(...)` passthrough. |
+| Oracle unit tests | `tests/test_esql_structural_oracle.py` | Each rule has a positive/negative fixture |
+| Emitter path matrix | `observability_migration/adapters/source/grafana/esql_emitters.py`, `tests/test_grafana_esql_emitter_matrix.py` | Every registered fusion path has a minimal fixture + oracle run |
+| Fixture corpus gate | `tests/test_grafana_fixture_structural_gate.py` | All `infra/grafana/dashboards/*.json` leaf panels translate to oracle-clean ES\|QL |
+| Property hook (optional) | `tests/test_promql_property.py` | Feasible Hypothesis examples also run the oracle (not `PROMQL` passthrough) |
+| Seed intake + mutation self-test | `scripts/intake_translation_seeds.py`, `tests/test_translation_seed_intake.py` | Live/smoke failures become committed regression seeds |
+
+**Adding a regression seed**
+
+1. Capture a live/smoke/render failure report JSON with `disposition: real_bug`
+   (alias-shaped `Unknown column` failures are reclassified when the report
+   includes `esql_query`).
+2. Propose seeds offline:
+   ```bash
+   .venv/bin/python scripts/intake_translation_seeds.py \
+     --report /path/to/report.json \
+     --out-dir tests/fixtures/translation_seeds \
+     --dry-run
+   ```
+3. Commit the generated JSON under `tests/fixtures/translation_seeds/` and wire
+   an oracle-expecting test (see `tests/test_translation_seed_intake.py` for the
+   mutation self-test pattern).
+
+Datadog, alerts, variables, and the full migratable surface are deferred —
+https://github.com/elastic/observability-migration-platform/issues/301.
+
 ---
 
 ## Tier 4 — Live authority
