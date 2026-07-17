@@ -20,16 +20,19 @@ Goal: choose the future Elastic telemetry layout, migrate assets against that co
 ## If telemetry already exists
 
 - **Grafana:** use `--field-profile auto --es-url <url> --preflight`. `auto`
-  requires `--es-url`; it detects the named Prometheus layouts or resolves
-  against live generic/OTel fields.
+  requires `--es-url`; it detects clear named Prometheus layouts or, when caps
+  are ambiguous, emits as **`otel`** with an explicit warning.
 - **Datadog:** select the expected profile explicitly and add
   `--es-url <url> --preflight`. Datadog does not auto-detect profiles; inspect
   the confirmed/missing totals and `target_readiness_contract.json`.
-- Treat a live `missing` field or Grafana `profile_mismatch` as a profile/index
-  mismatch to resolve before upload (`profile_mismatch` is a Grafana preflight
-  blocker). For Datadog, `Preflight: issues` with missing-field warns means the
-  live layout does not satisfy the selected profile even when translation
-  continues. `unknown` means discovery did not provide evidence.
+- Treat a live `missing` field as a profile/index mismatch to resolve before
+  upload. For Grafana, inspect `required_target_contract.json`:
+  `profile_mismatch` (planned ≠ detected named layout) is recorded there for
+  operator visibility — translation keeps the plan; it is **not** a separate
+  preflight blocker beyond existing missing-field severity. For Datadog,
+  `Preflight: issues` with missing-field warns means the live layout does not
+  satisfy the selected profile even when translation continues. `unknown` means
+  discovery did not provide evidence.
 
 ## Grafana / Prometheus — select the planned layout
 

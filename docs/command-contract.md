@@ -136,7 +136,7 @@ Datadog.
 |---|---|---|---|
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
-| `--field-profile` | Grafana, Datadog | Target field mapping profile | Defaults to `otel` for every source (including Grafana). Grafana accepts `otel` and `passthrough`; Datadog also accepts `default` (alias of `otel`), `elastic_agent`, `prometheus`, `passthrough`, and YAML profile files. ECS fallback is not implemented in this pass. |
+| `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write`, `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus`, `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. ECS fallback is not implemented in this pass. |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -287,23 +287,45 @@ Grafana (`grafana-migrate`, `obs-migrate migrate --source grafana`) and
 Datadog. Explicitly setting `--field-profile otel` is equivalent to omitting
 the flag.
 
+Both sources share the same operator model:
+
+1. **`--field-profile` selects the plan** — emitted queries and field names follow
+   that profile's mapping rules, including offline runs with no `--es-url`.
+2. **With `--es-url`, verify against live `_field_caps`** — readiness and
+   type-aware checks only; the tool does **not** silently remap to a different
+   layout when caps disagree with the plan.
+3. **Artifacts record the plan plus per-field status** where contracts exist
+   (Grafana `required_target_contract.json`, Datadog
+   `target_readiness_contract.json`).
+
 Grafana accepts:
 
-- **`otel`** (default) — schema discovery plus OTel/Prometheus label and metric
-  normalization through `SchemaResolver`.
-- **`passthrough`** — emit source label and metric names verbatim, skipping
-  automatic remapping. Explicit rule-pack `label_rewrites` / `ignored_labels` /
-  `control_field_overrides` still apply. With `--es-url`, live `_field_caps`
-  discovery may still run for validation and empty-panel warnings, but
-  automatic mapping is disabled. Alerts-only runs perform the same validation
-  and record it under `alerts.field_discovery` in `run_summary.json`. A native
-  PROMQL query that references a rewritten or ignored label routes through the
-  ES|QL translator so the explicit rule-pack override is not bypassed.
+- **`otel`** (default) — bare / OTel-candidate metric and label mapping. With
+  `--es-url`, verify fields exist; warn on missing.
+- **`prometheus_remote_write`** — planned Fleet/Agent remote-write layout:
+  `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*`. With
+  `--es-url`, verify; set `profile_mismatch` when live caps look like another
+  named layout (translation keeps the plan).
+- **`prometheus_native`** — planned native ES Prometheus endpoint layout:
+  `metrics.<metric>`, `labels.*`. Same verify / mismatch rule as
+  `prometheus_remote_write`.
+- **`passthrough`** — emit source label and metric names verbatim; automatic mapping is disabled. Explicit rule-pack `label_rewrites` / `ignored_labels` /
+  `control_field_overrides` still apply. With `--es-url`, validate bare names
+  when possible; no automatic remapping. Alerts-only runs perform the same
+  validation and record it under `alerts.field_discovery` in `run_summary.json`.
+  A native PROMQL query that references a rewritten or ignored label routes
+  through the ES|QL translator so the explicit rule-pack override is not
+  bypassed.
+- **`auto`** (Grafana-only) — requires `--es-url`. Detect a clear
+  `prometheus_remote_write` or `prometheus_native` layout from caps; if
+  ambiguous, emit as **`otel`** and warn. Rejected without `--es-url`.
 
 Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
 built-ins `elastic_agent`, `prometheus`, and `passthrough`, plus YAML profile
-files. Any other value is rejected (Grafana exits `2`, Datadog exits `1`). ECS
-fallback is planned separately and is not part of this contract.
+files. Datadog has **no `auto`** profile — always pick an explicit plan. With
+`--es-url`, field readiness uses `confirmed` / `missing` / `unknown` against
+that plan. Any other value is rejected (Grafana exits `2`, Datadog exits `1`).
+ECS fallback is planned separately and is not part of this contract.
 
 ```bash
 # Grafana passthrough: keep raw Prometheus names when the target already stores them
@@ -415,11 +437,14 @@ the source and the target ingest the same telemetry.
 Dashboard migrations also write `schema_change_report.md` and
 `telemetry_contract.json` inside the per-source `dashboards/` artifact
 directory. Live target readiness artifacts are source-specific: Grafana
-preflight writes `required_target_contract.json` with `schema_profile`,
-`field_capabilities_discovery`, and resolved target-field statuses; Datadog
-dashboard runs write `target_readiness_contract.json` with the active
-`field_profile`, metric/log index patterns, source fields, resolved target
-fields, and statuses.
+preflight writes `required_target_contract.json` with the operator's
+`field_profile`, `planned_schema_profile`, `detected_schema_profile`,
+`profile_mismatch` (planned ≠ detected named layout; surfaced for operator
+visibility — translation keeps the plan), backward-compatible `schema_profile`
+(the detected layout), `field_capabilities_discovery`, and resolved
+target-field statuses; Datadog dashboard runs write `target_readiness_contract.json`
+with the active `field_profile`, metric/log index patterns, source fields,
+resolved target fields, and statuses.
 
 **Live extraction (`--input-mode api`)**
 

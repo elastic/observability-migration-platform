@@ -59,7 +59,7 @@ grafana-migrate \
 ```
 
 - `--prometheus-url` / `--loki-url` take **literal URLs** — there are no standard `$PROMETHEUS_URL`/`$LOKI_URL` repo env vars; substitute the user's real endpoints or omit them.
-- **Populated targets:** Grafana may use `--field-profile auto --es-url ...` when telemetry already exists; otherwise choose an explicit planned profile (`prepare-target-telemetry`).
+- **Populated targets:** Grafana may use `--field-profile auto --es-url ...` when telemetry already exists (ambiguous caps → `otel` + warn); otherwise choose an explicit planned profile (`prepare-target-telemetry`). Datadog always requires an explicit profile — no `auto`.
 - Set `--esql-index` for Prometheus query/discovery even when `--data-view` differs as the Kibana UI bind.
 - Drop `--es-url`/source URLs to run a faster `static_analysis` pass (state the lower confidence).
 
@@ -73,7 +73,7 @@ Primary artifact: `readiness_out/dashboards/preflight_report.json`.
 | Clean vs. rework buckets | `summary.readiness`: `ready` (clean) · `needs_metrics_mapping` / `needs_log_fielding` (mapping rework) · `manual_only` (redesign) |
 | Quality gates | `summary.semantic_gates`: `green` / `yellow` / `red` |
 | Hard stops | `blockers` (Red-gated panels, missing required fields, non-migratable datasources, RED cluster health, missing metrics) |
-| Prep work (not blocking) | `actions` (field mapping needed, unconfirmed counters, missing labels, high-complexity dashboards, YELLOW cluster) |
+| Prep work (not blocking) | `actions` (field mapping needed, unconfirmed counters, missing labels, high-complexity dashboards, YELLOW cluster). Grafana `profile_mismatch` on `required_target_contract.json` is operator visibility — check planned vs detected layout there; it is not a separate preflight blocker. |
 | One-paragraph readout | `customer_action_summary` |
 
 Human-readable: `readiness_out/dashboards/migration_summary.md` (verdict, scorecard, must-fix worklist).

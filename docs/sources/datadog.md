@@ -125,6 +125,22 @@ setup all produce different field paths. Field profiles bridge this gap:
 a profile tells the translator how to rename every Datadog metric name and
 tag key into the correct Elasticsearch field.
 
+### Alignment with Grafana
+
+Grafana and Datadog share the same operator mental model for `--field-profile`:
+
+1. **Choose a planned profile** — assets-first migration works before telemetry
+   exists; emitted queries follow that profile's mapping rules.
+2. **Emit field names for the plan** — offline runs do not require `--es-url`.
+3. **With `--es-url`, verify against live `_field_caps`** — readiness uses
+   `confirmed` / `missing` / `unknown` on `target_readiness_contract.json`;
+   live caps do not silently remap to a different layout.
+
+Datadog differs in one important way: there is **no `--field-profile auto`**.
+Always pick an explicit built-in profile or YAML path. Wrong profile →
+missing-field warnings in preflight; emitted queries still follow the chosen
+plan.
+
 ### How Field Profiles Work
 
 A profile supplies:
@@ -315,6 +331,9 @@ Use that doc for:
   rollout evidence; alert artifacts are written under `<output-dir>/alerts`;
   Datadog also writes a root `run_summary.json`.
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
+  There is no `auto` profile — pick the plan that matches your ingest route,
+  then verify with `--es-url` (`confirmed` / `missing` / `unknown` on
+  `target_readiness_contract.json`).
 - `--env-file` loads Datadog API credentials for API extraction and live metric
   source execution during verification.
 - `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env
