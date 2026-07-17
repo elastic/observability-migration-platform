@@ -31,7 +31,21 @@ _PRETRANSLATED_FUSE_WARNING = (
     "Fused multi-target panel from independently translated ES|QL queries"
 )
 
-MATRIX_CELLS: tuple[str, ...] = GRAFANA_ESQL_EMITTERS
+MATRIX_CELLS: tuple[str, ...] = (
+    "single_target_formula",
+    "join_family_ratio",
+    "shared_measure_pipeline",
+    "pretranslated_xy_merge",
+    "same_metric_collapse",
+)
+
+EMITTER_MATRIX_TESTS: dict[str, str] = {
+    "single_target_formula": "test_emitter_single_target_formula",
+    "join_family_ratio": "test_emitter_join_family_ratio",
+    "shared_measure_pipeline": "test_emitter_shared_measure_pipeline",
+    "pretranslated_xy_merge": "test_emitter_pretranslated_xy_merge",
+    "same_metric_collapse": "test_emitter_same_metric_collapse",
+}
 
 
 def test_registry_symbols_exist_in_source():
@@ -45,6 +59,10 @@ def test_registry_symbols_exist_in_source():
 
 def test_every_emitter_has_matrix_cell():
     assert set(MATRIX_CELLS) == set(GRAFANA_ESQL_EMITTERS)
+    assert set(EMITTER_MATRIX_TESTS) == set(MATRIX_CELLS)
+    for emitter_id, test_name in EMITTER_MATRIX_TESTS.items():
+        test_fn = globals().get(test_name)
+        assert callable(test_fn), f"missing matrix test {test_name!r} for emitter {emitter_id!r}"
 
 
 def _rule_pack_and_resolver() -> tuple[RulePackConfig, SchemaResolver]:
