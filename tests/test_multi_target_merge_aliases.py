@@ -21,6 +21,10 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+from observability_migration.adapters.source.grafana.esql_structural_oracle import (
+    check_esql_structure,
+    structural_errors,
+)
 from observability_migration.adapters.source.grafana.panels import (
     _merge_pretranslated_xy_queries,
     translate_panel,
@@ -162,6 +166,7 @@ def test_merge_remaps_stats_alias_into_legend_eval_without_prior_eval_stages():
     assert "EVAL Max = node_cpu_scaling_frequency_max_hertz\n" not in query
     assert "EVAL Min = node_cpu_scaling_frequency_min_hertz\n" not in query
     _assert_eval_rhs_defined_after_stats(query)
+    assert structural_errors(check_esql_structure(query)) == []
 
 
 def test_merge_remaps_reserved_stats_alias_into_legend_eval():
@@ -274,6 +279,7 @@ def test_merge_wraps_bare_irate_when_sibling_uses_case_inline():
     assert "IRATE(node_cpu_seconds_total, 1m)" not in query
     assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
     _assert_no_bare_ts_alongside_case(query)
+    assert structural_errors(check_esql_structure(query)) == []
 
 
 def test_shared_helper_wraps_bare_irate_for_formula_fusion_and_merge():
@@ -363,6 +369,7 @@ def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():
         r"(?:STATS|,)\s*`?process_resident_memory_max_bytes_B`?\s*=\s*AVG_OVER_TIME\(",
         query.replace("\n", " "),
     ) is None
+    assert structural_errors(check_esql_structure(query)) == []
 
 
 def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
@@ -387,6 +394,7 @@ def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
     assert 'IRATE(CASE((mode == "user")' in query
     assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
     assert "IRATE(node_cpu_seconds_total, 1m)" not in query
+    assert structural_errors(check_esql_structure(query)) == []
 
 
 def _walk_panels(panels, found):
@@ -431,3 +439,4 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             assert "IRATE(node_cpu_seconds_total, 1m)" not in query
             assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
             _assert_no_bare_ts_alongside_case(query)
+        assert structural_errors(check_esql_structure(query)) == []
