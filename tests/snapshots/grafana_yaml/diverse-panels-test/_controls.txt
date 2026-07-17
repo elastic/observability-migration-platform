@@ -1,1 +1,1 @@
-control: type=options field=service.instance.id multiple=True
+control: type=esql field=None multiple=False

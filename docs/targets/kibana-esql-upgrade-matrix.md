@@ -206,7 +206,7 @@ prerequisites we cannot prove** (see conditional cases below).
 
 | PromQL | Behavior | Falls back to |
 |---|---|---|
-| `histogram_quantile(phi, …)` | Translates to ES|QL `PERCENTILE()` **only** when the base metric is provably histogram / exponential-histogram typed. | `not_feasible` when the field type cannot be confirmed — we will not emit a `PERCENTILE()` that silently misreads a non-histogram field. |
+| `histogram_quantile(phi, …)` | Translates to ES|QL `PERCENTILE()` when the base metric is histogram / exponential-histogram typed, or when the type is **unknown** (assumes exponential_histogram + warn). Known wrong types (e.g. `aggregate_metric_double`) and bare classic `_bucket` series without `sum by (le)` stay blocked. | `not_feasible` for proven non-distribution field types or unsupported bucket shapes; unknown type is feasible with an assume+warn. |
 | `topk(k, …)` / `topk by (…) (k, …)` | **Feasible**, approximated as a latest-bucket ES|QL top-N. | Grouped form keeps inner labels; ungrouped form collapses to a single series and warns to add a `preferred_group_labels` hint. |
 | `label_replace(v, dst, repl, src, rx)` | **Feasible** via `EVAL` for a full copy (`$1` over `(.*)`) or a constant replacement, and via an anchored `GROK` for a single capture group. | Complex multi-capture replacements skip the rename (warning emitted) but the underlying query still runs. |
 

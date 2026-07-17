@@ -46,6 +46,14 @@ else
   for grouping in exporter transport receiver; do
     "$PY" -c "import json; from observability_migration.core.coverage.canary import build_late_bound_grouping_canary; json.dump(build_late_bound_grouping_canary(default_grouping='$grouping'), open('$WORK/in/late-bound-grouping-$grouping.json','w'))"
   done
+  # Gap A: also render-audit the label-matcher param canary so
+  # ``metric{instance="$instance"}`` → ``?instance`` + control binding is
+  # exercised in a real Kibana render every nightly run.
+  echo "-- generate label-matcher param canaries for every instance choice (gap A) --"
+  for instance in 'localhost:8888' 'remote:9100'; do
+    safe="$(printf '%s' "$instance" | tr ':' '_')"
+    "$PY" -c "import json; from observability_migration.core.coverage.canary import build_label_matcher_param_canary; json.dump(build_label_matcher_param_canary(default_instance='$instance'), open('$WORK/in/label-matcher-param-$safe.json','w'))"
+  done
 fi
 
 echo "-- migrate + upload to local Kibana (security disabled, no key) --"

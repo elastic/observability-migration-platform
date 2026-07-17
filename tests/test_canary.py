@@ -20,14 +20,11 @@ import jsonschema
 import yaml
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
-from observability_migration.adapters.source.grafana.runtime_features import (
-    ESQL_NAMED_PARAM_BINDING,
-    set_runtime_feature,
-)
 from observability_migration.core.coverage import supported_types as st
 from observability_migration.core.coverage.canary import (
     CANARY_KIBANA_TARGETS,
     build_grafana_canary,
+    build_label_matcher_param_canary,
     build_late_bound_grouping_canary,
 )
 
@@ -52,13 +49,26 @@ def _migrate_canary():
 
 
 def _migrate_late_bound_grouping_canary(default_grouping="transport"):
-    # Mirror the live render-audit CLI, which probes ``--es-url`` and enables
-    # ES|QL named-parameter binding, so the pure ``by ($grouping)`` panel takes
-    # the late-bound field-control path (issue #282).
+    # Dashboard templating enables named-param binding (gap A); late-bound
+    # grouping also requires that feature for ``??grouping`` field controls.
     rp = rules.RulePackConfig()
-    set_runtime_feature(rp, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe")
     resolver = schema.SchemaResolver(rp)
     canary = build_late_bound_grouping_canary(default_grouping=default_grouping)
+    with tempfile.TemporaryDirectory() as td:
+        result, yaml_path = panels.translate_dashboard(
+            canary, Path(td),
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=rp, resolver=resolver,
+        )
+        payload = yaml.safe_load(yaml_path.read_text())
+    return result, payload
+
+
+def _migrate_label_matcher_param_canary(default_instance="localhost:8888"):
+    # Must rely on dashboard-templating enablement alone (no manual set_runtime_feature).
+    rp = rules.RulePackConfig()
+    resolver = schema.SchemaResolver(rp)
+    canary = build_label_matcher_param_canary(default_instance=default_instance)
     with tempfile.TemporaryDirectory() as td:
         result, yaml_path = panels.translate_dashboard(
             canary, Path(td),
@@ -174,3 +184,47 @@ def test_late_bound_grouping_canary_variants_cover_each_field_choice():
             if control.get("variable_type") == "fields"
         )
         assert field_control["default"] == choice
+
+
+def test_label_matcher_param_canary_emits_param_and_control():
+    result, payload = _migrate_label_matcher_param_canary()
+    dash = payload["dashboards"][0]
+
+    controls = dash.get("controls") or []
+    assert any(c.get("variable_name") == "instance" for c in controls), controls
+
+    panels_by_title = {p.get("title"): p for p in dash["panels"]}
+    filtered = panels_by_title["requests by instance filter"]
+    assert "?instance" in filtered["esql"]["query"]
+    assert "Dropped variable-driven label filters" not in str(filtered)
+
+    assert [pr.status for pr in result.panel_results if pr.status not in _TRANSLATED] == []
+    assert all(
+        "Dropped variable-driven label filters" not in " ".join(pr.reasons or [])
+        for pr in result.panel_results
+    )
+
+
+def test_label_matcher_param_canary_validates_against_kibana_schema():
+    _result, payload = _migrate_label_matcher_param_canary()
+    schema_doc = json.loads(SCHEMA_PATH.read_text())
+    validator = jsonschema.Draft202012Validator(schema_doc)
+    errors = sorted(validator.iter_errors(payload), key=lambda e: list(e.path))
+    detail = "\n  ".join(
+        f"@{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}" for e in errors[:10]
+    )
+    assert not errors, f"label-matcher canary YAML has {len(errors)} Kibana-schema error(s):\n  {detail}"
+
+
+def test_label_matcher_param_canary_variants_cover_each_instance_choice():
+    for choice in ("localhost:8888", "remote:9100"):
+        dashboard = build_label_matcher_param_canary(default_instance=choice)
+        variable = dashboard["templating"]["list"][0]
+        assert variable["current"]["value"] == choice
+        _result, payload = _migrate_label_matcher_param_canary(choice)
+        control = next(
+            c
+            for c in payload["dashboards"][0]["controls"]
+            if c.get("variable_name") == "instance"
+        )
+        assert control.get("default") == choice or choice in str(control.get("default"))

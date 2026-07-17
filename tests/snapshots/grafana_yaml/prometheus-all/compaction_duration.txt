@@ -1,6 +1,9 @@
 title: Compaction duration
 grafana_type: graph
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: Aggregating over a per-element / between two time-series (sum(A / B)) cannot be expressed accurately in ES|QL; rewrite as a ratio of aggregates if the series are label-aligned
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: instance
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Approximated sum(increase|rate(m_sum)/increase|rate(m_count)) as a ratio of aggregates (sum(m_sum)/sum(m_count)); per-series means are not weighted the same as Prometheus

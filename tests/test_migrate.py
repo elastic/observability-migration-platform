@@ -1518,7 +1518,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
         )
 
-    def test_filtered_outer_agg_wraps_case_inside_nested_ts_function(self):
+    def test_filtered_outer_counter_agg_wraps_case_around_nested_ts_function(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM(RATE(node_cpu_seconds_total, 5m))",
             ['mode == "system"'],
@@ -1526,19 +1526,24 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM(RATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m))',
+            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total, 5m), NULL))',
         )
-        self.assertNotIn("CASE((mode == \"system\"), RATE(", expr)
+        self.assertNotIn("RATE(CASE(", expr)
 
-    def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
+    def test_filtered_last_over_time_sum_inlines_case_on_field(self):
+        # Window-less LAST_OVER_TIME (counter-without-rate summary path) must
+        # CASE-wrap the field so divergent per-target filters can fuse (Express
+        # "Count by class") instead of refusing the shared pipeline.
         expr = promql._inline_filters_into_stats_expr(
             "SUM(LAST_OVER_TIME(kube_pod_container_resource_requests))",
             ['resource == "cpu"'],
             timeseries_window="5m",
         )
 
-        self.assertIsNone(expr)
-
+        self.assertEqual(
+            expr,
+            'SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL), 5m))',
+        )
     def test_filtered_percentile_inlines_value_arg_and_keeps_percentile(self):
         # PERCENTILE(value, phi) takes the percentile as a top-level 2nd arg;
         # only the value expression may be wrapped in CASE so the emitted ES|QL
@@ -1725,7 +1730,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
+            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)',
             translated.esql_query,
         )
         # Denominator stays IRATE (not AVG_OVER_TIME) but is CASE-shaped when the
@@ -5598,19 +5603,25 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("TS metrics", translated.esql_query)
         self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
-        self.assertIn('IRATE(CASE((mode == "system")', translated.esql_query)
+        self.assertIn('CASE((mode == "system"), IRATE(', translated.esql_query)
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
-    def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
-        # sum(increase(A) / increase(B)) computes a per-element ratio then
-        # aggregates — semantically distinct from sum(A)/sum(B) and cannot
-        # be expressed accurately in ES|QL.
+    def test_agg_over_histogram_summary_ratio_approximates_as_ratio_of_sums(self):
+        # sum(increase(m_sum)/increase(m_count)) is the Prometheus histogram-mean
+        # idiom. Exact per-element semantics cannot be preserved, but the
+        # ratio-of-aggregates form is the standard ES|QL-expressible approximation.
         expr = (
             'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) '
             '/ increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)'
         )
         translated = self.translate(expr, panel_type="graph")
-        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("prometheus_tsdb_compaction_duration_sum", translated.esql_query)
+        self.assertIn("prometheus_tsdb_compaction_duration_count", translated.esql_query)
+        self.assertTrue(
+            any("Approximated sum(" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_sum_over_metric_subtraction_applies_linearity(self):
         # Bug A fix: sum(A - B) = sum(A) - sum(B) by linearity of SUM.
@@ -7818,6 +7829,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("health_status", control_names)
         binding = next(c for c in controls if c.get("variable_name") == "health_status")
         self.assertEqual(binding["default"], ".*")
+        self.assertNotIn("query", binding)
+        self.assertEqual(
+            binding["choices"],
+            [".*", "Healthy", "Progressing", "Degraded"],
+        )
+
+    def test_custom_regex_variable_uses_static_binding_not_variable_named_field(self):
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        resolver = migrate.SchemaResolver(rule_pack)
+        controls = panels._ensure_param_controls(
+            [],
+            {"diskdevices"},
+            [{
+                "type": "custom",
+                "name": "diskdevices",
+                "query": "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+",
+                "current": {
+                    "value": "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+",
+                },
+            }],
+            "metrics-*",
+            resolver=resolver,
+            rule_pack=rule_pack,
+        )
+
+        self.assertEqual(len(controls), 1)
+        binding = controls[0]
+        self.assertNotIn("query", binding)
+        self.assertEqual(binding["variable_name"], "diskdevices")
+        self.assertEqual(
+            binding["choices"],
+            ["[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"],
+        )
 
     def test_dashboard_emits_a_control_for_every_emitted_param(self):
         """Issue #131: every ?var a panel emits must have a binding control, so
@@ -15632,6 +15676,9 @@ class NativePromqlTests(unittest.TestCase):
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
         self.assertIn("BY time_bucket = TBUCKET(5 minute), device", query)
         self.assertNotIn(", interface", query)
+        self.assertIn("EVAL Operational_state_UP = node_network_up_A", query)
+        self.assertIn("EVAL Physical_link_state = node_network_carrier_B", query)
+        self.assertNotIn("EVAL Operational_state_UP = node_network_up\n", query)
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         # TS is the time-series-faithful source the PromQL contract wants, so the gauge
