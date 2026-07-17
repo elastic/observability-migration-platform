@@ -546,12 +546,26 @@ def build_target_schema_contract(
     unresolved_variables: Counter = Counter()
     feature_gaps: list[str] = []
     schema_profile = None
+    field_profile = None
+    planned_schema_profile = None
+    detected_schema_profile = None
+    profile_mismatch = None
     field_capabilities_index = ""
     field_capabilities_discovery = {"status": "not_attempted", "error": "", "field_count": 0}
     if resolver:
-        schema_profile_fn = getattr(resolver, "schema_profile", None)
-        if callable(schema_profile_fn):
-            schema_profile = schema_profile_fn()
+        summary_fn = getattr(resolver, "field_resolution_summary", None)
+        if callable(summary_fn):
+            summary = summary_fn()
+            field_profile = summary.get("field_profile")
+            planned_schema_profile = summary.get("planned_schema_profile")
+            detected_schema_profile = summary.get("detected_schema_profile")
+            profile_mismatch = summary.get("profile_mismatch")
+            if summary.get("schema_profile") is not None:
+                schema_profile = summary.get("schema_profile")
+        if schema_profile is None:
+            schema_profile_fn = getattr(resolver, "schema_profile", None)
+            if callable(schema_profile_fn):
+                schema_profile = schema_profile_fn()
         field_capabilities_index = str(getattr(resolver, "_index_pattern", "") or "")
         discovery_status_fn = getattr(resolver, "discovery_status", None)
         if callable(discovery_status_fn):
@@ -696,6 +710,10 @@ def build_target_schema_contract(
     unknown = sum(1 for v in field_status.values() if v["status"] == "unknown")
 
     return {
+        "field_profile": field_profile,
+        "planned_schema_profile": planned_schema_profile,
+        "detected_schema_profile": detected_schema_profile,
+        "profile_mismatch": profile_mismatch,
         "schema_profile": schema_profile,
         "field_capabilities_index": field_capabilities_index,
         "field_capabilities_discovery": field_capabilities_discovery,
