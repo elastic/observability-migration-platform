@@ -419,14 +419,22 @@ class SchemaResolver:
         # Source-faithful: if the target advertises the original label as a real
         # field, use it as-is. This keeps PromQL semantics intact when the target
         # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
-        if self._field_cache and label in self._field_cache:
+        # When a named Prometheus plan is active, the operator-selected layout
+        # wins over bare caps (e.g. OTel-shaped targets that also carry bare
+        # source labels) — skip this shortcut so emit follows the plan.
+        planned = self._effective_schema_profile()
+        if (
+            self._field_cache
+            and label in self._field_cache
+            and planned not in {"prometheus_remote_write", "prometheus_native"}
+        ):
             return label
         # Fleet `prometheus.remote_write` data streams store the original
         # Prometheus label `<name>` under `prometheus.labels.<name>`. When that
         # profile is active, prefer it over the OTEL candidates below — the
         # namespaced form is the actual stored field and OTEL fields are not
         # present at all in this layout.
-        profile = self._namespacing_schema_profile()
+        profile = planned or self._namespacing_schema_profile()
         if profile == "prometheus_remote_write":
             return f"prometheus.labels.{label}"
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
@@ -674,8 +682,9 @@ class SchemaResolver:
             return f"metrics.{metric_name}"
         if profile != "prometheus_remote_write":
             return metric_name
-        if self._field_cache and metric_name in self._field_cache:
-            return metric_name
+        # Bare metric names in caps must not override the remote_write plan —
+        # emit `prometheus.<metric>.<suffix>` even when OTel-shaped targets
+        # advertise the logical PromQL name as a field.
         if prefer == "counter":
             suffixes = (".counter", ".rate", ".value")
         elif prefer == "rate":
