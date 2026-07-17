@@ -17,7 +17,7 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 | `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
 | `otel` (default) | OTel collector / generic normalized layout | `http_requests_total` (pass-through) | exact field → OTel candidate (`service.name`) → as-is |
 | `passthrough` | Keep source metric/label names as-is | `http_requests_total` | `service` |
-| `auto` (populated targets only; requires `--es-url`) | Infer from live `_field_caps` | detected | detected |
+| `auto` (populated targets only; requires `--es-url`) | Infer from live `_field_caps` | remote_write / native when caps are clear; otherwise bare / OTel candidate + warn | same |
 
 **Label resolution order** (`resolve_label`): ignored labels → rule-pack `label_rewrites` → exact field match (source-faithful) → profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) → discovered OTel mapping from `_field_caps` → built-in candidate (e.g. `instance` → `service.instance.id`/`host.name`, `job` → `service.name`) → pass-through.
 

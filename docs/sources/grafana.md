@@ -120,6 +120,14 @@ names for that plan immediately (including offline runs with no `--es-url`).
 With `--es-url`, live `_field_caps` **verify** the plan — they do not silently
 remap queries to a different detected layout.
 
+> **Breaking change (plan→emit→verify):** Default **`otel`** no longer picks a
+> Prometheus namespaced layout from live caps alone. Use **`--field-profile auto
+> --es-url`** to infer Fleet remote-write or native `/_prometheus` layouts, or
+> set **`prometheus_remote_write`** / **`prometheus_native`** explicitly when you
+> know the ingest route. Under **`otel`**, `resolve_metric_field()` still
+> field-selects `metrics.<name>` when caps advertise that field but not the bare
+> PromQL name (OTel Collector / issue #270) — that is not profile remapping.
+
 | Profile | Offline emit | With `--es-url` |
 |---|---|---|
 | **`otel`** (default) | Bare / OTel-candidate mapping | Verify fields; warn on missing |

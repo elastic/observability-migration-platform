@@ -298,6 +298,13 @@ Both sources share the same operator model:
    (Grafana `required_target_contract.json`, Datadog
    `target_readiness_contract.json`).
 
+> **Breaking change:** Default Grafana **`otel`** no longer auto-namespaces from
+> live caps. For Fleet remote-write or native Prometheus endpoint layouts, pass
+> **`--field-profile auto --es-url`** or an explicit **`prometheus_remote_write`**
+> / **`prometheus_native`** plan. Explicit **`otel`** still field-selects
+> `metrics.<name>` when the bare PromQL name is absent from caps (OTel Collector
+> shape; issue #270).
+
 Grafana accepts:
 
 - **`otel`** (default) — bare / OTel-candidate metric and label mapping. With
