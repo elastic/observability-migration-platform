@@ -397,6 +397,8 @@ class SchemaResolver:
 
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.
+        if self._effective_schema_profile() == "prometheus_native":
+            return
         if self._compute_schema_profile(self._field_cache or {}) == "prometheus_native":
             return
         known_fields = set((self._field_cache or {}).keys())
@@ -729,6 +731,15 @@ class SchemaResolver:
             # contract layer can surface missing fields via preflight.
             return f"metrics.{metric_name}"
         if profile != "prometheus_remote_write":
+            # OTel plan (and auto when resolved to otel): field-level candidate
+            # selection only — do not switch the planned layout to
+            # prometheus_native when caps advertise metrics.* (issue #270).
+            cache = self._field_cache or {}
+            if metric_name in cache:
+                return metric_name
+            prefixed = f"metrics.{metric_name}"
+            if prefixed in cache:
+                return prefixed
             return metric_name
         # Bare metric names in caps must not override the remote_write plan —
         # emit `prometheus.<metric>.<suffix>` even when OTel-shaped targets
@@ -831,7 +842,7 @@ class SchemaResolver:
         # from a namespaced field that will not appear in the emitted query.
         if self._passthrough:
             return False
-        profile = self._current_schema_profile()
+        profile = self._namespacing_schema_profile() or self._current_schema_profile()
         # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
         if profile == "prometheus_remote_write":
             counter_field = f"prometheus.{metric_name}.counter"

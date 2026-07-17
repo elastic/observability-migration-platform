@@ -156,6 +156,62 @@ def test_auto_ambiguous_caps_falls_back_to_otel_and_warns():
     )
 
 
+def _remote_write_field_caps():
+    return {
+        "prometheus.labels.instance": {"keyword": {"type": "keyword"}},
+        "prometheus.http_requests_total.counter": {
+            "long": {"type": "long", "time_series_metric": "counter"}
+        },
+    }
+
+
+def _native_field_caps():
+    return {
+        "metrics.http_requests_total": {
+            "double": {"type": "double", "time_series_metric": "counter"}
+        },
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+
+
+def test_auto_detects_prometheus_remote_write_and_emits_namespaced():
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = _remote_write_field_caps()
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "auto"
+    assert summary["planned_schema_profile"] == "prometheus_remote_write"
+    assert summary.get("auto_fallback") is None
+    assert not summary.get("profile_warnings")
+    assert resolver.resolve_label("instance") == "prometheus.labels.instance"
+    assert resolver.resolve_metric_field("http_requests_total").startswith(
+        "prometheus.http_requests_total."
+    )
+
+
+def test_auto_detects_prometheus_native_and_emits_metrics_prefix():
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = _native_field_caps()
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "auto"
+    assert summary["planned_schema_profile"] == "prometheus_native"
+    assert summary.get("auto_fallback") is None
+    assert not summary.get("profile_warnings")
+    assert resolver.resolve_label("instance") == "labels.instance"
+    assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
+
+
 def test_planned_remote_write_keeps_emit_when_detected_native():
     resolver = SchemaResolver(
         RulePackConfig(),
