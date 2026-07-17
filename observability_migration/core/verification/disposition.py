@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from observability_migration.adapters.source.grafana.promql import _split_top_level_csv
+from observability_migration.targets.kibana.emit.esql_utils import _split_top_level_csv
 
 # Structured semantic-loss marker recorded when a panel/widget is kept as a
 # self-healing visualization. Mirrors the placeholder path's marker so coverage
