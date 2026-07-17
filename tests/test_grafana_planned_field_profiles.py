@@ -51,6 +51,16 @@ def test_offline_prometheus_native_emits_native_paths():
     assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
 
 
+def test_offline_prometheus_metrics_emits_nested_metricbeat_paths():
+    """Classic Metricbeat use_types=false — Grafana twin of Datadog `prometheus`."""
+    resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_metrics")
+    assert resolver.resolve_label("instance") == "prometheus.labels.instance"
+    assert (
+        resolver.resolve_metric_field("http_requests_total")
+        == "prometheus.metrics.http_requests_total"
+    )
+
+
 def test_offline_otel_keeps_bare_or_candidate_without_es_url():
     resolver = SchemaResolver(RulePackConfig(), field_profile="otel")
     # No live caps: bare source label is acceptable for otel plan.
@@ -174,6 +184,16 @@ def _native_field_caps():
     }
 
 
+def _metrics_nested_field_caps():
+    """Classic Metricbeat nested layout (Datadog `prometheus` twin)."""
+    return {
+        "prometheus.labels.instance": {"keyword": {"type": "keyword"}},
+        "prometheus.metrics.http_requests_total": {
+            "double": {"type": "double", "time_series_metric": "counter"}
+        },
+    }
+
+
 def test_auto_detects_prometheus_remote_write_and_emits_namespaced():
     resolver = SchemaResolver(
         RulePackConfig(),
@@ -212,6 +232,27 @@ def test_auto_detects_prometheus_native_and_emits_metrics_prefix():
     assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
 
 
+def test_auto_detects_prometheus_metrics_and_emits_nested():
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = _metrics_nested_field_caps()
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "auto"
+    assert summary["planned_schema_profile"] == "prometheus_metrics"
+    assert summary.get("auto_fallback") is None
+    assert not summary.get("profile_warnings")
+    assert resolver.resolve_label("instance") == "prometheus.labels.instance"
+    assert (
+        resolver.resolve_metric_field("http_requests_total")
+        == "prometheus.metrics.http_requests_total"
+    )
+
+
 def test_planned_remote_write_keeps_emit_when_detected_native():
     resolver = SchemaResolver(
         RulePackConfig(),
@@ -245,6 +286,11 @@ def test_cli_accepts_prometheus_remote_write():
 
 def test_cli_accepts_prometheus_native():
     args = SimpleNamespace(field_profile="prometheus_native", es_url="")
+    grafana_cli._validate_field_profile(args)
+
+
+def test_cli_accepts_prometheus_metrics():
+    args = SimpleNamespace(field_profile="prometheus_metrics", es_url="")
     grafana_cli._validate_field_profile(args)
 
 
@@ -409,6 +455,28 @@ def test_otel_plan_warns_when_live_caps_look_like_remote_write():
     )
 
 
+def test_otel_plan_warns_when_live_caps_look_like_prometheus_metrics():
+    resolver = _planned_resolver("otel", field_cache=_metrics_nested_field_caps())
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "otel"
+    assert summary["detected_schema_profile"] == "prometheus_metrics"
+    assert resolver.resolve_metric_field("http_requests_total") != (
+        "prometheus.metrics.http_requests_total"
+    )
+    assert any(
+        "prometheus_metrics" in w and "otel" in w.lower()
+        for w in summary.get("profile_warnings", [])
+    )
+
+
+def test_typed_fleet_detection_wins_over_nested_when_both_present():
+    cache = {
+        **_remote_write_field_caps(),
+        **_metrics_nested_field_caps(),
+    }
+    assert SchemaResolver._compute_schema_profile(cache) == "prometheus_remote_write"
+
+
 def test_otel_issue270_metrics_prefix_without_profile_flip():
     resolver = _planned_resolver(
         "otel",
@@ -431,6 +499,7 @@ def test_otel_issue270_metrics_prefix_without_profile_flip():
     [
         ("otel", None, None),  # otel: candidate or bare; metric not prometheus./metrics.
         ("prometheus_remote_write", "prometheus.labels.instance", "prometheus.http_requests_total."),
+        ("prometheus_metrics", "prometheus.labels.instance", "prometheus.metrics.http_requests_total"),
         ("prometheus_native", "labels.instance", "metrics.http_requests_total"),
         ("passthrough", "instance", "http_requests_total"),
     ],
@@ -463,6 +532,14 @@ def test_offline_emit_matrix_per_profile(profile, label, metric_prefix):
             False,
         ),
         (
+            "prometheus_metrics",
+            "nested",
+            "prometheus.labels.instance",
+            "prometheus.metrics.http_requests_total",
+            "prometheus_metrics",
+            False,
+        ),
+        (
             "prometheus_native",
             "native",
             "labels.instance",
@@ -479,6 +556,14 @@ def test_offline_emit_matrix_per_profile(profile, label, metric_prefix):
             True,
         ),
         (
+            "prometheus_metrics",
+            "fleet",
+            "prometheus.labels.instance",
+            "prometheus.metrics.http_requests_total",
+            "prometheus_remote_write",
+            True,
+        ),
+        (
             "prometheus_native",
             "fleet",
             "labels.instance",
@@ -492,6 +577,14 @@ def test_offline_emit_matrix_per_profile(profile, label, metric_prefix):
             "prometheus.labels.instance",
             "prometheus.http_requests_total.",
             "prometheus_remote_write",
+            False,
+        ),
+        (
+            "auto",
+            "nested",
+            "prometheus.labels.instance",
+            "prometheus.metrics.http_requests_total",
+            "prometheus_metrics",
             False,
         ),
         (
@@ -520,8 +613,12 @@ def test_live_emit_matrix_plan_vs_caps(
     expect_detected,
     expect_mismatch,
 ):
-    cache = _remote_write_field_caps() if caps == "fleet" else _native_field_caps()
-    resolver = _planned_resolver(profile, field_cache=cache)
+    caches = {
+        "fleet": _remote_write_field_caps(),
+        "native": _native_field_caps(),
+        "nested": _metrics_nested_field_caps(),
+    }
+    resolver = _planned_resolver(profile, field_cache=caches[caps])
     assert resolver.resolve_label("instance") == expect_label
     metric = resolver.resolve_metric_field("http_requests_total")
     if expect_metric_prefix.endswith("."):

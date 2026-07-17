@@ -45,6 +45,7 @@ class SchemaResolver:
         {
             "otel",
             "prometheus_remote_write",
+            "prometheus_metrics",
             "prometheus_native",
             "passthrough",
             "auto",
@@ -89,11 +90,21 @@ class SchemaResolver:
     }
 
     _PROMETHEUS_LABEL_RE = re.compile(r"^prometheus\.labels\.[A-Za-z_][A-Za-z0-9_]*$")
+    # Fleet / Metricbeat ``use_types`` layout: typed leaves under prometheus.<metric>.
     _PROMETHEUS_METRIC_LEAF_RE = re.compile(r"^prometheus\.[A-Za-z_][A-Za-z0-9_]*\.(counter|value)$")
+    # Classic Metricbeat remote_write (use_types=false): prometheus.metrics.<name>.
+    _PROMETHEUS_NESTED_METRIC_RE = re.compile(r"^prometheus\.metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     # Native Elastic /_prometheus/api/v1/write endpoint: metrics land under
     # `metrics.<name>` and Prometheus labels land under `labels.<name>`.
     _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
+    _NAMED_PROMETHEUS_PLANS = frozenset(
+        {
+            "prometheus_remote_write",
+            "prometheus_metrics",
+            "prometheus_native",
+        }
+    )
 
     def __init__(
         self,
@@ -210,19 +221,22 @@ class SchemaResolver:
     def _compute_schema_profile(cls, field_cache):
         """Identify well-known target layouts from `field_cache`.
 
-        Recognises two layouts:
+        Recognises three layouts (first match wins):
 
-        ``prometheus_remote_write`` — Elastic Fleet integration: labels under
-        ``prometheus.labels.<name>``, metrics under
-        ``prometheus.<metric>.{counter,value}``.  Fleet takes priority and
-        short-circuits the loop as soon as both signals are found.
+        ``prometheus_remote_write`` — Fleet / Metricbeat ``use_types`` layout:
+        labels under ``prometheus.labels.<name>``, metrics under
+        ``prometheus.<metric>.{counter,value}``.
+
+        ``prometheus_metrics`` — classic Metricbeat remote_write
+        (``use_types=false``): labels under ``prometheus.labels.<name>``,
+        metrics under ``prometheus.metrics.<name>``.
 
         ``prometheus_native`` — native ``/_prometheus/api/v1/write`` endpoint:
         metrics under ``metrics.<name>``, labels under ``labels.<name>``.
-        Detected after a full scan when Fleet patterns are absent.
         """
         has_prom_label = False
         has_prom_metric_leaf = False
+        has_prom_nested_metric = False
         has_native_metric = False
         has_native_label = False
         for field_name in field_cache:
@@ -230,12 +244,16 @@ class SchemaResolver:
                 has_prom_label = True
             if not has_prom_metric_leaf and cls._PROMETHEUS_METRIC_LEAF_RE.match(field_name):
                 has_prom_metric_leaf = True
+            if not has_prom_nested_metric and cls._PROMETHEUS_NESTED_METRIC_RE.match(field_name):
+                has_prom_nested_metric = True
             if not has_native_metric and cls._NATIVE_METRIC_RE.match(field_name):
                 has_native_metric = True
             if not has_native_label and cls._NATIVE_LABEL_RE.match(field_name):
                 has_native_label = True
             if has_prom_label and has_prom_metric_leaf:
                 return "prometheus_remote_write"
+        if has_prom_label and has_prom_nested_metric:
+            return "prometheus_metrics"
         if has_native_metric and has_native_label:
             return "prometheus_native"
         return None
@@ -263,7 +281,7 @@ class SchemaResolver:
         if self._auto_resolved_profile is not None:
             return self._auto_resolved_profile
         detected = self._compute_schema_profile(self._field_cache or {})
-        if detected in {"prometheus_remote_write", "prometheus_native"}:
+        if detected in self._NAMED_PROMETHEUS_PLANS:
             self._auto_resolved_profile = detected
         else:
             self._auto_resolved_profile = "otel"
@@ -284,7 +302,7 @@ class SchemaResolver:
         """
         if self._field_profile != "otel":
             return
-        if detected not in {"prometheus_remote_write", "prometheus_native"}:
+        if detected not in self._NAMED_PROMETHEUS_PLANS:
             return
         marker = f"otel plan with detected {detected}"
         if any(marker in warning for warning in self._profile_warnings):
@@ -308,10 +326,10 @@ class SchemaResolver:
         plan = self._field_profile
         if plan == "auto":
             self._ensure_auto_profile_resolved()
-            if self._auto_resolved_profile in {"prometheus_remote_write", "prometheus_native"}:
+            if self._auto_resolved_profile in self._NAMED_PROMETHEUS_PLANS:
                 return self._auto_resolved_profile
             return None
-        if plan in {"prometheus_remote_write", "prometheus_native"}:
+        if plan in self._NAMED_PROMETHEUS_PLANS:
             return plan
         return None
 
@@ -488,7 +506,7 @@ class SchemaResolver:
         # When a named Prometheus plan is active, scoped/co-occurrence must not
         # prefer bare caps over the planned namespaced emit (same constraint as
         # the bare `_field_cache` short-circuit below).
-        if metric_field and planned not in {"prometheus_remote_write", "prometheus_native"}:
+        if metric_field and planned not in self._NAMED_PROMETHEUS_PLANS:
             scoped = self._resolve_label_scoped_to_metric(label, metric_field)
             if scoped is not None:
                 return scoped
@@ -501,7 +519,7 @@ class SchemaResolver:
         if (
             self._field_cache
             and label in self._field_cache
-            and planned not in {"prometheus_remote_write", "prometheus_native"}
+            and planned not in self._NAMED_PROMETHEUS_PLANS
         ):
             return label
         # Fleet `prometheus.remote_write` data streams store the original
@@ -510,7 +528,7 @@ class SchemaResolver:
         # namespaced form is the actual stored field and OTEL fields are not
         # present at all in this layout.
         profile = planned or self._namespacing_schema_profile()
-        if profile == "prometheus_remote_write":
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
             return f"prometheus.labels.{label}"
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist
@@ -571,7 +589,7 @@ class SchemaResolver:
         """
         candidates = [label]
         profile = self._namespacing_schema_profile()
-        if profile == "prometheus_remote_write":
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
             candidates.append(f"prometheus.labels.{label}")
         elif profile == "prometheus_native":
             candidates.append(f"labels.{label}")
@@ -755,6 +773,10 @@ class SchemaResolver:
             # suffix variants.  Return the prefixed form unconditionally so the
             # contract layer can surface missing fields via preflight.
             return f"metrics.{metric_name}"
+        if profile == "prometheus_metrics":
+            # Classic Metricbeat remote_write (use_types=false): nested under
+            # prometheus.metrics.<name> with labels under prometheus.labels.*.
+            return f"prometheus.metrics.{metric_name}"
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to
@@ -873,6 +895,10 @@ class SchemaResolver:
             counter_field = f"prometheus.{metric_name}.counter"
             if self._field_cache and counter_field in self._field_cache:
                 return is_counter_metric_field(self.field_capability(counter_field))
+        if profile == "prometheus_metrics":
+            nested = f"prometheus.metrics.{metric_name}"
+            if is_counter_metric_field(self.field_capability(nested)):
+                return True
         # Native endpoint layout: metric is stored as `metrics.<name>` with
         # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
         if profile == "prometheus_native":

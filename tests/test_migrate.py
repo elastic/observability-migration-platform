@@ -1888,6 +1888,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
         self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
 
+    def test_resolver_detects_prometheus_metrics_profile(self):
+        """Classic Metricbeat nested layout (use_types=false)."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {
+                "keyword": {"aggregatable": True, "time_series_dimension": True}
+            },
+            "prometheus.metrics.http_requests_total": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_metrics")
+
     def test_resolver_does_not_detect_profile_when_only_otel_fields(self):
         self.seed_field_caps({
             "service.instance.id": {"keyword": {"aggregatable": True, "time_series_dimension": True}},

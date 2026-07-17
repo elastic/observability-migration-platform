@@ -40,7 +40,8 @@ How you plan to ship Prometheus into Elastic decides the field profile:
 
 | Ingest route | `--field-profile` | Metric `http_requests_total` → | Label `service` → |
 |---|---|---|---|
-| Elastic Fleet/Agent Prometheus integration | `prometheus_remote_write` | `prometheus.http_requests_total.counter`/`.value`/`.rate` | `prometheus.labels.service` |
+| Elastic Fleet/Agent Prometheus integration (`use_types`) | `prometheus_remote_write` | `prometheus.http_requests_total.counter`/`.value`/`.rate` | `prometheus.labels.service` |
+| Classic Metricbeat remote_write (`use_types=false`) | `prometheus_metrics` | `prometheus.metrics.http_requests_total` | `prometheus.labels.service` |
 | Native ES `/_prometheus/api/v1/write` endpoint | `prometheus_native` | `metrics.http_requests_total` | `labels.service` |
 | OTel collector / generic normalized layout | `otel` (default) | `http_requests_total` | OTel candidate (`service.name`) → as-is |
 | Keep source metric/label names as-is | `passthrough` | `http_requests_total` | `service` |

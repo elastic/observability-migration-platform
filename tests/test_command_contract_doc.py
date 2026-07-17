@@ -235,6 +235,7 @@ class CommandContractDocTests(unittest.TestCase):
         # The verified model is profile-aware: the resolver auto-detects how the
         # Prometheus data landed in Elastic before resolving labels/metrics.
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("schema_change_report.md", text)
         self.assertIn("telemetry_contract.json", text)
@@ -246,6 +247,7 @@ class CommandContractDocTests(unittest.TestCase):
         text = PREPARE_TARGET_TELEMETRY_SKILL.read_text(encoding="utf-8")
         # Covers both sources' target-layout mechanics in one place.
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("--field-profile", text)
         # Datadog has NO auto-detection (the key honesty contrast vs Prometheus).
@@ -264,6 +266,7 @@ class CommandContractDocTests(unittest.TestCase):
     def test_understand_source_schema_skill_documents_three_profile_model(self):
         text = UNDERSTAND_SCHEMA_SKILL.read_text(encoding="utf-8")
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("_field_caps", text)
         # Honest about the hard dependency: detection needs data already in ES.

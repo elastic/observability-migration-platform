@@ -204,9 +204,10 @@ def parse_args(argv: list[str] | None = None):
         default="otel",
         help=(
             "Target field mapping profile. Grafana supports 'otel', "
-            "'prometheus_remote_write', 'prometheus_native', 'passthrough', "
-            "and 'auto' (requires --es-url). Datadog uses a separate profile "
-            "set via the unified CLI."
+            "'prometheus_remote_write', 'prometheus_metrics', "
+            "'prometheus_native', 'passthrough', and 'auto' (requires "
+            "--es-url). Datadog uses a separate profile set via the "
+            "unified CLI."
         ),
     )
     parser.add_argument(
@@ -1642,6 +1643,7 @@ def _write_run_summary(
 _GRAFANA_FIELD_PROFILES = (
     "otel",
     "prometheus_remote_write",
+    "prometheus_metrics",
     "prometheus_native",
     "passthrough",
     "auto",

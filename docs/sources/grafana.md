@@ -122,27 +122,30 @@ remap queries to a different detected layout.
 
 > **Breaking change (plan→emit→verify):** Default **`otel`** no longer picks a
 > Prometheus namespaced layout from live caps alone. Use **`--field-profile auto
-> --es-url`** to infer Fleet remote-write or native `/_prometheus` layouts, or
-> set **`prometheus_remote_write`** / **`prometheus_native`** explicitly when you
-> know the ingest route. Under **`otel`**, `resolve_metric_field()` still
-> field-selects `metrics.<name>` when caps advertise that field but not the bare
-> PromQL name (OTel Collector / issue #270) — that is not profile remapping.
-> When live caps clearly look like Fleet or native while the plan is still
-> `otel`, migrate records a warning; emit stays on `otel` (no silent remap).
+> --es-url`** to infer Fleet typed remote-write, classic Metricbeat nested, or
+> native `/_prometheus` layouts, or set **`prometheus_remote_write`** /
+> **`prometheus_metrics`** / **`prometheus_native`** explicitly when you know the
+> ingest route. Under **`otel`**, `resolve_metric_field()` still field-selects
+> `metrics.<name>` when caps advertise that field but not the bare PromQL name
+> (OTel Collector / issue #270) — that is not profile remapping. When live caps
+> clearly look like a named Prometheus layout while the plan is still `otel`,
+> migrate records a warning; emit stays on `otel` (no silent remap).
 
 | Profile | Offline emit | With `--es-url` |
 |---|---|---|
 | **`otel`** (default) | Bare / OTel-candidate mapping | Verify fields; warn on missing |
 | **`prometheus_remote_write`** | `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*` | Verify; `profile_mismatch` if caps look like another named layout |
+| **`prometheus_metrics`** | `prometheus.metrics.<metric>`, `prometheus.labels.*` | Same mismatch rule (classic Metricbeat `use_types=false`) |
 | **`prometheus_native`** | `metrics.<metric>`, `labels.*` | Same mismatch rule |
 | **`passthrough`** | Source names verbatim (rule-pack overrides still apply) | Validate bare names when possible; no automatic remapping |
-| **`auto`** (Grafana-only) | Rejected without `--es-url` | Detect clear remote_write / native layout; ambiguous or empty caps → emit as **`otel`** + warn |
+| **`auto`** (Grafana-only) | Rejected without `--es-url` | Detect clear typed / nested / native layout; ambiguous or empty caps → emit as **`otel`** + warn |
 
 Example planned layouts:
 
 | Profile | Metric `http_requests_total` → | Label `service` → |
 |---|---|---|
 | `prometheus_remote_write` | `prometheus.http_requests_total.counter` / `.value` / `.rate` | `prometheus.labels.service` |
+| `prometheus_metrics` | `prometheus.metrics.http_requests_total` | `prometheus.labels.service` |
 | `prometheus_native` | `metrics.http_requests_total` | `labels.service` |
 | `otel` (default) | `http_requests_total` (pass-through) | exact match → OTel candidate → as-is |
 | `passthrough` | `http_requests_total` | `service` |

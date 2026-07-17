@@ -13,11 +13,12 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 | Schema profile | How the data got into Elastic | Metric `http_requests_total` → | Label `service` → |
 |---|---|---|---|
-| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration | `prometheus.http_requests_total.counter` / `.value` / `.rate` (suffix by role) | `prometheus.labels.service` |
+| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration (`use_types`) | `prometheus.http_requests_total.counter` / `.value` / `.rate` (suffix by role) | `prometheus.labels.service` |
+| `prometheus_metrics` | Classic Metricbeat remote_write (`use_types=false`) | `prometheus.metrics.http_requests_total` | `prometheus.labels.service` |
 | `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
 | `otel` (default) | OTel collector / generic normalized layout | `http_requests_total` (pass-through) | exact field → OTel candidate (`service.name`) → as-is |
 | `passthrough` | Keep source metric/label names as-is | `http_requests_total` | `service` |
-| `auto` (populated targets only; requires `--es-url`) | Infer from live `_field_caps` | remote_write / native when caps are clear; otherwise bare / OTel candidate + warn | same |
+| `auto` (populated targets only; requires `--es-url`) | Infer from live `_field_caps` | typed / nested / native when caps are clear; otherwise bare / OTel candidate + warn | same |
 
 **Label resolution order** (`resolve_label`): ignored labels → rule-pack `label_rewrites` → exact field match (source-faithful) → profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) → discovered OTel mapping from `_field_caps` → built-in candidate (e.g. `instance` → `service.instance.id`/`host.name`, `job` → `service.name`) → pass-through.
 
@@ -25,9 +26,9 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 **Histogram field type matters for `histogram_quantile`:** when field caps show `exponential_histogram` / `histogram`, translation uses `PERCENTILE()` (with `TO_TDIGEST()` for classic histograms). When the type is **unknown** (offline / no caps), the engine **assumes exponential_histogram and warns**. Known-wrong types such as `aggregate_metric_double` stay `not_feasible`. Prefer ES ≥ 9.5 native `histogram_quantile` when the runtime probe supports it.
 
-**Assets first is supported.** Choose `otel`, `prometheus_remote_write`, `prometheus_native`, or `passthrough` from the intended ingest route, migrate the assets, ingest first, then rerun with `--es-url` and `--preflight`; `_field_caps` verifies the planned fields rather than defining the plan. Before that, `unknown` field status means verification is pending. Live `--es-url` also probes `esql_named_param_binding` and native `PROMQL` support (`--translation-mode`).
+**Assets first is supported.** Choose `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, or `passthrough` from the intended ingest route, migrate the assets, ingest first, then rerun with `--es-url` and `--preflight`; `_field_caps` verifies the planned fields rather than defining the plan. Before that, `unknown` field status means verification is pending. Live `--es-url` also probes `esql_named_param_binding` and native `PROMQL` support (`--translation-mode`).
 
-**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus` (Metricbeat remote_write), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
+**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus` (Metricbeat `prometheus.metrics.*` — Grafana twin `prometheus_metrics`), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
 
 ## Get the mapping for the user's own dashboards
 

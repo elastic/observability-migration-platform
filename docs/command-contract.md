@@ -136,7 +136,7 @@ Datadog.
 |---|---|---|---|
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
-| `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write`, `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. ECS fallback is not implemented in this pass. |
+| `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write` (Fleet `use_types` typed leaves), `prometheus_metrics` (classic Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. ECS fallback is not implemented in this pass. |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -299,9 +299,10 @@ Both sources share the same operator model:
    `target_readiness_contract.json`).
 
 > **Breaking change:** Default Grafana **`otel`** no longer auto-namespaces from
-> live caps. For Fleet remote-write or native Prometheus endpoint layouts, pass
-> **`--field-profile auto --es-url`** or an explicit **`prometheus_remote_write`**
-> / **`prometheus_native`** plan. Explicit **`otel`** still field-selects
+> live caps. For Fleet typed remote-write, classic Metricbeat nested, or native
+> Prometheus endpoint layouts, pass **`--field-profile auto --es-url`** or an
+> explicit **`prometheus_remote_write`** / **`prometheus_metrics`** /
+> **`prometheus_native`** plan. Explicit **`otel`** still field-selects
 > `metrics.<name>` when the bare PromQL name is absent from caps (OTel Collector
 > shape; issue #270).
 
@@ -309,10 +310,13 @@ Grafana accepts:
 
 - **`otel`** (default) — bare / OTel-candidate metric and label mapping. With
   `--es-url`, verify fields exist; warn on missing.
-- **`prometheus_remote_write`** — planned Fleet/Agent remote-write layout:
-  `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*`. With
-  `--es-url`, verify; set `profile_mismatch` when live caps look like another
-  named layout (translation keeps the plan).
+- **`prometheus_remote_write`** — planned Fleet/Agent remote-write layout
+  (`use_types`): `prometheus.<metric>.{counter,value,rate}`,
+  `prometheus.labels.*`. With `--es-url`, verify; set `profile_mismatch` when
+  live caps look like another named layout (translation keeps the plan).
+- **`prometheus_metrics`** — classic Metricbeat remote_write
+  (`use_types=false`): `prometheus.metrics.<metric>`, `prometheus.labels.*`.
+  Same verify / mismatch rule. Aligns with Datadog's `prometheus` profile.
 - **`prometheus_native`** — planned native ES Prometheus endpoint layout:
   `metrics.<metric>`, `labels.*`. Same verify / mismatch rule as
   `prometheus_remote_write`.
@@ -324,12 +328,14 @@ Grafana accepts:
   through the ES|QL translator so the explicit rule-pack override is not
   bypassed.
 - **`auto`** (Grafana-only) — requires `--es-url`. Detect a clear
-  `prometheus_remote_write` or `prometheus_native` layout from caps; if
-  ambiguous, emit as **`otel`** and warn. Rejected without `--es-url`.
+  `prometheus_remote_write`, `prometheus_metrics`, or `prometheus_native`
+  layout from caps; if ambiguous, emit as **`otel`** and warn. Rejected
+  without `--es-url`.
 
 Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
 built-ins `elastic_agent`, `prometheus` (Metricbeat remote_write:
-`prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`
+`prometheus.metrics.*` / `prometheus.labels.*`; Grafana twin:
+`prometheus_metrics`), `prometheus_native`
 (Elasticsearch `/_prometheus` write: `metrics.*` / `labels.*`), and
 `passthrough`, plus YAML profile files. Datadog has **no `auto`** profile —
 always pick an explicit plan. With
