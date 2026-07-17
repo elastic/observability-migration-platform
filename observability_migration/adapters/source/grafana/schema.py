@@ -243,7 +243,11 @@ class SchemaResolver:
     def _ensure_auto_profile_resolved(self):
         if self._field_profile != "auto" or self._auto_resolved_profile is not None:
             return
-        if not self._field_cache:
+        # Offline ``auto`` (no discovery yet): behave like otel silently.
+        # CLI rejects ``auto`` without ``--es-url``; after discovery runs
+        # (including empty/errored caps) we always resolve so operators get the
+        # same ambiguous → otel + warn signal.
+        if not self._discovery_attempted and not self._field_cache:
             return
         self.resolve_auto_profile()
 
@@ -252,7 +256,7 @@ class SchemaResolver:
 
         When caps clearly match a named Prometheus layout, the effective emit
         plan follows that layout. Otherwise the effective plan is ``otel`` and a
-        warning is recorded once.
+        warning is recorded once (including empty or unrecognized caps).
         """
         if self._field_profile != "auto":
             return self._field_profile
@@ -270,6 +274,26 @@ class SchemaResolver:
                     "falling back to otel"
                 )
         return self._auto_resolved_profile
+
+    def _maybe_warn_otel_plan_vs_named_layout(self, detected):
+        """Warn when default ``otel`` plan meets a clearly named live layout.
+
+        Emit still follows ``otel`` (plan→verify; no silent remap). The warning
+        steers operators toward ``--field-profile auto`` or an explicit
+        Prometheus profile when Fleet/native caps are present.
+        """
+        if self._field_profile != "otel":
+            return
+        if detected not in {"prometheus_remote_write", "prometheus_native"}:
+            return
+        marker = f"otel plan with detected {detected}"
+        if any(marker in warning for warning in self._profile_warnings):
+            return
+        self._profile_warnings.append(
+            f"field profile otel emits bare/OTel candidate names, but live caps "
+            f"look like {detected}; use --field-profile {detected} or auto "
+            f"with --es-url if panels query empty"
+        )
 
     def _effective_schema_profile(self):
         """Return the planned schema profile used for emit, if any.
@@ -360,6 +384,7 @@ class SchemaResolver:
         self._ensure_auto_profile_resolved()
         detected = None if self._passthrough else self._current_schema_profile()
         planned = self._effective_schema_profile()
+        self._maybe_warn_otel_plan_vs_named_layout(detected)
         profile_mismatch = (
             planned is not None
             and detected is not None

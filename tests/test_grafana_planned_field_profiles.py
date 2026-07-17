@@ -374,3 +374,164 @@ def test_cli_discovery_status_shows_auto_fallback():
     message = output.getvalue()
     assert "field_profile=auto" in message
     assert "auto_fallback=otel" in message
+
+
+def test_auto_empty_caps_after_discovery_falls_back_to_otel_and_warns():
+    """Empty/errored caps with --es-url must not silently skip auto resolution."""
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {}
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "auto"
+    assert summary.get("auto_fallback") == "otel"
+    assert summary.get("planned_schema_profile") is None
+    assert any("falling back to otel" in w for w in summary.get("profile_warnings", []))
+    assert resolver.resolve_label("instance") != "prometheus.labels.instance"
+    assert not resolver.resolve_metric_field("http_requests_total").startswith("prometheus.")
+
+
+def test_otel_plan_warns_when_live_caps_look_like_remote_write():
+    """Default otel keeps emit, but surfaces a layout hint when Fleet caps are clear."""
+    resolver = _planned_resolver("otel", field_cache=_remote_write_field_caps())
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "otel"
+    assert summary["detected_schema_profile"] == "prometheus_remote_write"
+    assert summary["profile_mismatch"] is False  # otel planned emit is None, not a named mismatch
+    assert resolver.resolve_label("instance") != "prometheus.labels.instance"
+    assert any(
+        "prometheus_remote_write" in w and "otel" in w.lower()
+        for w in summary.get("profile_warnings", [])
+    )
+
+
+def test_otel_issue270_metrics_prefix_without_profile_flip():
+    resolver = _planned_resolver(
+        "otel",
+        field_cache={
+            "service.instance.id": {"keyword": {"type": "keyword"}},
+            "metrics.http_requests_total": {
+                "double": {"type": "double", "time_series_metric": "counter"}
+            },
+        },
+    )
+    assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == "otel"
+    assert summary["planned_schema_profile"] is None
+    assert summary["detected_schema_profile"] is None  # needs labels.* too for native
+
+
+@pytest.mark.parametrize(
+    ("profile", "label", "metric_prefix"),
+    [
+        ("otel", None, None),  # otel: candidate or bare; metric not prometheus./metrics.
+        ("prometheus_remote_write", "prometheus.labels.instance", "prometheus.http_requests_total."),
+        ("prometheus_native", "labels.instance", "metrics.http_requests_total"),
+        ("passthrough", "instance", "http_requests_total"),
+    ],
+)
+def test_offline_emit_matrix_per_profile(profile, label, metric_prefix):
+    resolver = SchemaResolver(RulePackConfig(), field_profile=profile)
+    resolved_label = resolver.resolve_label("instance")
+    resolved_metric = resolver.resolve_metric_field("http_requests_total")
+    if label is None:
+        assert resolved_label in {"instance", "service.instance.id", "host.name"}
+        assert not resolved_metric.startswith("prometheus.")
+        assert resolved_metric != "metrics.http_requests_total"
+    else:
+        assert resolved_label == label
+        if metric_prefix.endswith("."):
+            assert resolved_metric.startswith(metric_prefix)
+        else:
+            assert resolved_metric == metric_prefix
+
+
+@pytest.mark.parametrize(
+    ("profile", "caps", "expect_label", "expect_metric_prefix", "expect_detected", "expect_mismatch"),
+    [
+        (
+            "prometheus_remote_write",
+            "fleet",
+            "prometheus.labels.instance",
+            "prometheus.http_requests_total.",
+            "prometheus_remote_write",
+            False,
+        ),
+        (
+            "prometheus_native",
+            "native",
+            "labels.instance",
+            "metrics.http_requests_total",
+            "prometheus_native",
+            False,
+        ),
+        (
+            "prometheus_remote_write",
+            "native",
+            "prometheus.labels.instance",
+            "prometheus.http_requests_total.",
+            "prometheus_native",
+            True,
+        ),
+        (
+            "prometheus_native",
+            "fleet",
+            "labels.instance",
+            "metrics.http_requests_total",
+            "prometheus_remote_write",
+            True,
+        ),
+        (
+            "auto",
+            "fleet",
+            "prometheus.labels.instance",
+            "prometheus.http_requests_total.",
+            "prometheus_remote_write",
+            False,
+        ),
+        (
+            "auto",
+            "native",
+            "labels.instance",
+            "metrics.http_requests_total",
+            "prometheus_native",
+            False,
+        ),
+        (
+            "passthrough",
+            "fleet",
+            "instance",
+            "http_requests_total",
+            None,
+            False,
+        ),
+    ],
+)
+def test_live_emit_matrix_plan_vs_caps(
+    profile,
+    caps,
+    expect_label,
+    expect_metric_prefix,
+    expect_detected,
+    expect_mismatch,
+):
+    cache = _remote_write_field_caps() if caps == "fleet" else _native_field_caps()
+    resolver = _planned_resolver(profile, field_cache=cache)
+    assert resolver.resolve_label("instance") == expect_label
+    metric = resolver.resolve_metric_field("http_requests_total")
+    if expect_metric_prefix.endswith("."):
+        assert metric.startswith(expect_metric_prefix)
+    else:
+        assert metric == expect_metric_prefix
+    summary = resolver.field_resolution_summary()
+    assert summary["field_profile"] == profile
+    assert summary["detected_schema_profile"] == expect_detected
+    assert summary["profile_mismatch"] is expect_mismatch
+    if profile == "auto":
+        assert summary["planned_schema_profile"] == expect_detected
+        assert summary.get("auto_fallback") is None

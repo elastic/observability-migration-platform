@@ -127,6 +127,8 @@ remap queries to a different detected layout.
 > know the ingest route. Under **`otel`**, `resolve_metric_field()` still
 > field-selects `metrics.<name>` when caps advertise that field but not the bare
 > PromQL name (OTel Collector / issue #270) — that is not profile remapping.
+> When live caps clearly look like Fleet or native while the plan is still
+> `otel`, migrate records a warning; emit stays on `otel` (no silent remap).
 
 | Profile | Offline emit | With `--es-url` |
 |---|---|---|
@@ -134,7 +136,7 @@ remap queries to a different detected layout.
 | **`prometheus_remote_write`** | `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*` | Verify; `profile_mismatch` if caps look like another named layout |
 | **`prometheus_native`** | `metrics.<metric>`, `labels.*` | Same mismatch rule |
 | **`passthrough`** | Source names verbatim (rule-pack overrides still apply) | Validate bare names when possible; no automatic remapping |
-| **`auto`** (Grafana-only) | Rejected without `--es-url` | Detect clear remote_write / native layout; ambiguous caps → emit as **`otel`** + warn |
+| **`auto`** (Grafana-only) | Rejected without `--es-url` | Detect clear remote_write / native layout; ambiguous or empty caps → emit as **`otel`** + warn |
 
 Example planned layouts:
 

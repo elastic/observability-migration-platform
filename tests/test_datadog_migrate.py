@@ -3687,6 +3687,15 @@ class TestFieldMap(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_profile("nonexistent")
 
+    def test_load_profile_rejects_auto(self):
+        """Datadog stays explicit-only — no Grafana-style auto profile."""
+        with self.assertRaises(ValueError) as ctx:
+            load_profile("auto")
+        message = str(ctx.exception)
+        self.assertIn("auto", message.lower())
+        self.assertIn("otel", message)
+        self.assertNotIn("prometheus_remote_write", message)
+
 
 class TestDatadogCliFieldProfileContract(unittest.TestCase):
     def test_parse_args_defaults_field_profile_to_otel(self):
