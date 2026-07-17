@@ -49,9 +49,10 @@ All paths are under `<output-dir>/dashboards/` unless noted. Field names below a
 | What you want | File | Field(s) |
 |---|---|---|
 | Human-readable overview | `migration_summary.md` | verdict, scorecard, per-dashboard table |
-| Dashboard count | `migration_report.json` | `summary.dashboards` |
-| Panel count + per-panel type | `migration_manifest.json` | `summary.panels`; per panel `panels[].grafana_type` (Datadog: widget type) |
-| Per-dashboard inventory (links, variables, annotations, rows, panels, folder) | `migration_manifest.json` | `dashboards[].inventory` (`links`, `annotations`, `variables`, `rows`, `panels`, `folder_title`) |
+| Dashboard count (cross-source) | `migration_manifest.json` | `summary.dashboards` |
+| Dashboard count (report; source-specific) | `migration_report.json` | Grafana: `summary.dashboards`; Datadog: `summary.total_dashboards` |
+| Panel count + per-panel type | `migration_manifest.json` | `summary.panels`; Grafana: `panels[].grafana_type`; Datadog: `panels[].datadog_widget_type` |
+| Per-dashboard inventory (Grafana only: links, variables, annotations, rows, panels, folder) | `migration_manifest.json` | `dashboards[].inventory` (`links`, `annotations`, `variables`, `rows`, `panels`, `folder_title`) — **Datadog has no `inventory` block** |
 | Datasource distribution (Grafana, needs `--preflight`) | `preflight_report.json` | `datasource_audit.datasource_types`, `datasource_audit.datasource_details` |
 | Datasources that **cannot** migrate | `preflight_report.json` | `datasource_audit.non_migratable`, `datasource_audit.non_migratable_panels` |
 | Run scope (which asset families ran) | `<output-dir>/run_summary.json` | top-level summary |
@@ -61,13 +62,14 @@ Non-migratable datasources flagged today include InfluxDB, MySQL/Postgres/MSSQL,
 ## Honest limits (tell the user)
 
 - **Grafana API extraction is capped at 500 dashboards** per search request.
-- **Dashboard tags are not summarized** in these artifacts today — only folder grouping (`folder_title`) is indexed. If the user asks for a tag breakdown, say it is not currently produced.
+- **Dashboard tags are not summarized** in these artifacts today — only folder grouping (`folder_title`, Grafana inventory) is indexed. If the user asks for a tag breakdown, say it is not currently produced.
+- **Datadog field names differ from Grafana** — use `datadog_widget_type` (not `grafana_type`) and prefer `migration_manifest.json` `summary.dashboards` for a cross-source count.
 - The datasource audit is a Grafana-side artifact gated behind `--preflight`; Datadog inventory comes from the manifest/report rather than a datasource audit.
 
 ## Do NOT
 
 - Do **not** claim there is a dedicated `scan`/`inventory` subcommand.
-- Do **not** cite fields you have not confirmed exist (e.g. there is `grafana_type`, not a guaranteed `kibana_type`, on manifest panels; folder is `folder_title`). When unsure of a field, open the JSON and check.
+- Do **not** cite fields you have not confirmed exist (e.g. Grafana has `grafana_type`; Datadog has `datadog_widget_type`; folder is `folder_title` on Grafana inventory). When unsure of a field, open the JSON and check.
 - Do **not** turn this into a readiness/feasibility verdict — route that to `assess-migration-readiness`.
 
 ## See also

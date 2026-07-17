@@ -11,10 +11,10 @@ Goal: move from "the migrated panel is empty or wrong" to a concrete source-to-E
 
 | Symptom | First move |
 |---|---|
-| Empty uploaded panel / "No results found" | Use `debug-uploaded-kibana-dashboard` to capture the exact ES|QL Kibana is running, then compare its fields and filters to the artifacts below |
-| Unknown column / missing field error | Read the field name from the Kibana/ES error and locate it in `required_target_contract.json` (Grafana), `target_readiness_contract.json` (Datadog), or the emitted query |
-| Values look wrong but data exists | Compare source query fields/tags to translated query fields in `verification_packets.json` and the schema report |
-| Many panels fail the same way | Fix the rule pack / field profile and rerun; do not hand-edit every panel first |
+| Empty uploaded panel / "No results found" | Use `debug-uploaded-kibana-dashboard` to capture the exact ES|QL Kibana is running, then compare its fields and filters to the artifacts below. Classify with render-audit taxonomy when available: `render_error` (bug) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness) |
+| Unknown column / missing field error | Read the field name from the Kibana/ES error and locate it in `required_target_contract.json` (Grafana), `target_readiness_contract.json` (Datadog), or the emitted query. For Grafana, also check `--esql-index` vs `--data-view` |
+| Values look wrong but data exists | First rule out **accepted approximations** (`explain-migration-gaps` / `docs/sources/grafana.md` Current Boundaries: `histogram_quantile` → `PERCENTILE`, histogram mean ratio-of-aggregates, multi-target fusion). Only then compare source vs translated fields in `verification_packets.json` / schema report |
+| Many panels fail the same way | Fix the rule pack / field profile / index flags and rerun; do not hand-edit every panel first |
 
 ## Package-native artifacts and commands
 
@@ -30,17 +30,19 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
 
 ## Remediation loop
 
-1. **Prove it is a mapping/data-view issue** — confirm the target has data in the selected time range and index. Empty data is not a mapping fix.
+1. **Prove it is a mapping / index / data issue** — confirm the target has data in the selected time range and **correct stream**. For Grafana Prometheus panels, wrong/missing `--esql-index` (query + discovery target) vs `--data-view` (Kibana UI bind) is the most common empty-panel cause — fix flags before rewriting rule packs (`docs/command-contract.md` → Target index flags). Empty data is not a mapping fix.
 2. **Open the schema report** — read `<output-dir>/dashboards/schema_change_report.md` and find the row for the failing panel. Regenerate with `obs-migrate schema-report` only if you are combining old artifact dirs or rebuilding the report.
 3. **Check required fields** — open `required_target_contract.json` (Grafana) or `target_readiness_contract.json` (Datadog). Prioritize fields marked `missing` or `unknown`.
-4. **Compare three sources of truth** — source query fields/tags, translated ES|QL fields, and Kibana's actual runtime query. If Kibana changed aliases or buckets, note that separately.
+4. **Compare three sources of truth** — source query fields/tags, translated ES|QL fields (prefer `native/*.native.json` / `ir/*.ir.json`), and Kibana's actual runtime query. If Kibana changed aliases or buckets, note that separately.
 5. **Choose the right fix layer**:
-   - **Grafana / PromQL:** add or adjust a rule pack and rerun with `--rules-file <custom-rule-pack.yaml>`.
+   - **Wrong index / data view (Grafana):** set `--esql-index` and `--data-view` correctly and rerun — often no rule-pack change needed.
+   - **Approximation, not mapping:** if `reasons` cite `PERCENTILE` / assumed histogram / ratio of aggregates / multi-target fusion, explain via `explain-migration-gaps` — do not thrash profiles to "fix" expected warnings.
+   - **Grafana / PromQL mapping:** add or adjust a rule pack and rerun with `--rules-file <custom-rule-pack.yaml>`.
    - **Datadog:** choose a built-in `--field-profile` (`otel`, `prometheus`, `elastic_agent`, `passthrough`) or pass a custom YAML profile.
-   - **Target ingest:** if Elastic lacks the needed field entirely, fix the telemetry producer/index template/runtime field before rerunning migration.
+   - **Target ingest:** if Elastic lacks the needed field entirely, fix the telemetry producer/index template/runtime field before rerunning migration (`prepare-target-telemetry`).
 6. **Use generated starters when possible** — Grafana runs can write suggestions with `--suggest-rule-pack-out <path>`; both sources can emit templates with `obs-migrate extensions --source grafana|datadog --template-out <path>`.
 7. **Rerun the smallest useful scope** — prefer one dashboard (`try-one-source-dashboard`) or selected assets before a full sweep.
-8. **Validate again** — use `validate-side-by-side` for numeric parity where applicable, and `debug-uploaded-kibana-dashboard` if the UI is still empty.
+8. **Validate again** — use `validate-side-by-side` for numeric parity where applicable, render audit / `debug-uploaded-kibana-dashboard` if the UI is still empty.
 
 ## Fix examples
 
@@ -49,7 +51,8 @@ Grafana rule-pack path:
 ```bash
 obs-migrate extensions --source grafana --format yaml --template-out custom-rule-pack.yaml
 # edit label_rewrites / label_candidates
-obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
+obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml \
+  --data-view "metrics-*" --esql-index "metrics-*"
 ```
 
 Datadog field-profile path:
@@ -63,7 +66,8 @@ obs-migrate migrate --source datadog ... --field-profile custom-field-profile.ya
 ## Honest limits / Do NOT
 
 - **Do NOT invent `verification_packets.json` keys from memory.** Open the file and read the actual shape for the run.
-- **Do NOT call every empty panel a translator bug.** Missing telemetry, wrong time range, wrong data view, and filters that match no documents are common.
+- **Do NOT call every empty panel a translator bug.** Missing telemetry, wrong time range, wrong `--esql-index`/`--data-view`, and filters that match no documents are common.
+- **Do NOT treat approximation warnings as mapping bugs** — triage with `explain-migration-gaps` first.
 - **Do NOT patch Kibana panels one-by-one before finding the shared mapping root cause** unless the user explicitly needs a one-off emergency repair.
 - **Do NOT use repo-only scripts for package users.** `obs-migrate schema-report`, `obs-migrate extensions`, `--rules-file`, `--field-profile`, and `--suggest-rule-pack-out` are the package-native paths.
 - **Do NOT present a custom rule pack/profile as proven until you rerun and validate the affected panel.**
@@ -71,6 +75,9 @@ obs-migrate migrate --source datadog ... --field-profile custom-field-profile.ya
 ## See also
 
 - `understand-source-schema` — source-to-target mapping model and report locations.
-- `debug-uploaded-kibana-dashboard` — capture Kibana's actual runtime query.
+- `prepare-target-telemetry` — ingest route / index flags before blaming translation.
+- `explain-migration-gaps` — approximation vs redesign triage.
+- `debug-uploaded-kibana-dashboard` — capture Kibana's actual runtime query + render-audit taxonomy.
 - `validate-side-by-side` — compare translated results after remediation.
 - `try-one-source-dashboard` / `migrate-selected-assets` — rerun the smallest useful scope.
+- `docs/testing.md` — render-audit classifications.
