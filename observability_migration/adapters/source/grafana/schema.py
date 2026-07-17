@@ -119,6 +119,8 @@ class SchemaResolver:
         self._field_profile = field_profile
         self._passthrough = field_profile == "passthrough"
         self._auto_fallback_warned = False
+        self._auto_resolved_profile = None
+        self._profile_warnings = []
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
@@ -178,6 +180,7 @@ class SchemaResolver:
                 self._field_cache = resp.json().get("fields", {})
                 self._discovery_status = "ok" if self._field_cache else "empty"
                 self._discovery_error = ""
+                self._ensure_auto_profile_resolved()
                 if not self._passthrough:
                     self._build_discovered_mappings()
             else:
@@ -237,17 +240,53 @@ class SchemaResolver:
             return "prometheus_native"
         return None
 
-    def _effective_schema_profile(self):
-        """Return the planned schema profile used for offline emit, if any.
+    def _ensure_auto_profile_resolved(self):
+        if self._field_profile != "auto" or self._auto_resolved_profile is not None:
+            return
+        if not self._field_cache:
+            return
+        self.resolve_auto_profile()
 
-        Named Prometheus layouts emit under their plan. ``otel``, ``passthrough``,
-        and ``auto`` (offline) emit through the OTel/candidate path (``None``).
+    def resolve_auto_profile(self):
+        """Resolve ``field_profile=auto`` from live caps after discovery.
+
+        When caps clearly match a named Prometheus layout, the effective emit
+        plan follows that layout. Otherwise the effective plan is ``otel`` and a
+        warning is recorded once.
+        """
+        if self._field_profile != "auto":
+            return self._field_profile
+        if self._auto_resolved_profile is not None:
+            return self._auto_resolved_profile
+        detected = self._compute_schema_profile(self._field_cache or {})
+        if detected in {"prometheus_remote_write", "prometheus_native"}:
+            self._auto_resolved_profile = detected
+        else:
+            self._auto_resolved_profile = "otel"
+            if not self._auto_fallback_warned:
+                self._auto_fallback_warned = True
+                self._profile_warnings.append(
+                    "field profile auto could not detect a named Prometheus layout; "
+                    "falling back to otel"
+                )
+        return self._auto_resolved_profile
+
+    def _effective_schema_profile(self):
+        """Return the planned schema profile used for emit, if any.
+
+        Named Prometheus layouts emit under their plan. ``otel`` and
+        ``passthrough`` emit through the OTel/candidate path (``None``).
+        ``auto`` uses live detection when caps are available; offline or
+        ambiguous caps behave like ``otel``.
         """
         if self._passthrough:
             return None
         plan = self._field_profile
         if plan == "auto":
-            plan = "otel"
+            self._ensure_auto_profile_resolved()
+            if self._auto_resolved_profile in {"prometheus_remote_write", "prometheus_native"}:
+                return self._auto_resolved_profile
+            return None
         if plan in {"prometheus_remote_write", "prometheus_native"}:
             return plan
         return None
@@ -318,6 +357,7 @@ class SchemaResolver:
         (e.g. ``prometheus_remote_write`` without ``prometheus.labels.namespace``
         resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262."""
         self._discover_fields()
+        self._ensure_auto_profile_resolved()
         detected = None if self._passthrough else self._current_schema_profile()
         planned = self._effective_schema_profile()
         profile_mismatch = (
@@ -335,7 +375,7 @@ class SchemaResolver:
             otel_fallback = True
         else:
             otel_fallback = self._emitted_unverified_otel_default
-        return {
+        summary = {
             "status": self._discovery_status,
             "field_profile": self._field_profile,
             "planned_schema_profile": planned,
@@ -349,6 +389,11 @@ class SchemaResolver:
             "otel_fallback": otel_fallback,
             "error": self._discovery_error,
         }
+        if self._field_profile == "auto" and self._auto_resolved_profile == "otel":
+            summary["auto_fallback"] = "otel"
+        if self._profile_warnings:
+            summary["profile_warnings"] = list(self._profile_warnings)
+        return summary
 
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.

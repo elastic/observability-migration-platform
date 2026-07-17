@@ -125,3 +125,42 @@ def test_planned_remote_write_mismatch_when_native_detected():
     summary = resolver.field_resolution_summary()
     assert summary["detected_schema_profile"] == "prometheus_native"
     assert summary["profile_mismatch"] is True
+
+
+def test_auto_ambiguous_caps_falls_back_to_otel_and_warns():
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    # Caps that match neither Fleet nor native patterns:
+    resolver._field_cache = {"host.name": {"keyword": {}}, "http_requests_total": {"double": {}}}
+    summary = resolver.field_resolution_summary()  # or ensure_fields / discover hook used by CLI
+    assert summary["field_profile"] in {"auto", "otel"}  # document chosen canonical
+    # Effective emit is otel-like (bare or candidate), not prometheus.labels.*
+    assert resolver.resolve_label("job") != "prometheus.labels.job"
+    # Warning / note present — implement via summary key or list attribute:
+    assert summary.get("auto_fallback") == "otel" or any(
+        "otel" in w.lower() for w in getattr(resolver, "_profile_warnings", [])
+    )
+
+
+def test_planned_remote_write_keeps_emit_when_detected_native():
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="prometheus_remote_write",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {
+        "metrics.http_requests_total": {"double": {}},
+        "labels.instance": {"keyword": {}},
+    }
+    assert resolver.resolve_label("instance") == "prometheus.labels.instance"
+    summary = resolver.field_resolution_summary()
+    assert summary.get("profile_mismatch") is True
+    assert summary.get("detected_schema_profile") == "prometheus_native"
+    assert summary.get("planned_schema_profile") == "prometheus_remote_write"
