@@ -27,7 +27,7 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 **Assets first is supported.** Choose `otel`, `prometheus_remote_write`, `prometheus_native`, or `passthrough` from the intended ingest route, migrate the assets, ingest first, then rerun with `--es-url` and `--preflight`; `_field_caps` verifies the planned fields rather than defining the plan. Before that, `unknown` field status means verification is pending. Live `--es-url` also probes `esql_named_param_binding` and native `PROMQL` support (`--translation-mode`).
 
-**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus`, `elastic_agent`, `passthrough`. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
+**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus` (Metricbeat remote_write), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
 
 ## Get the mapping for the user's own dashboards
 
@@ -101,7 +101,7 @@ obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
 
 The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates). `extensions` and `--suggest-rule-pack-out` are shipped in the package.
 
-**Datadog** — pick a built-in `--field-profile {otel,prometheus,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
+**Datadog** — pick a built-in `--field-profile {otel,prometheus,prometheus_native,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
 
 ## Do NOT
 

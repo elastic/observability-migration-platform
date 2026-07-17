@@ -38,7 +38,7 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
    - **Wrong index / data view (Grafana):** set `--esql-index` and `--data-view` correctly and rerun — often no rule-pack change needed.
    - **Approximation, not mapping:** if `reasons` cite `PERCENTILE` / assumed histogram / ratio of aggregates / multi-target fusion, explain via `explain-migration-gaps` — do not thrash profiles to "fix" expected warnings.
    - **Grafana / PromQL mapping:** add or adjust a rule pack and rerun with `--rules-file <custom-rule-pack.yaml>`.
-   - **Datadog:** choose a built-in `--field-profile` (`otel`, `prometheus`, `elastic_agent`, `passthrough`) or pass a custom YAML profile.
+   - **Datadog:** choose a built-in `--field-profile` (`otel`, `prometheus`, `prometheus_native`, `elastic_agent`, `passthrough`) or pass a custom YAML profile.
    - **Target ingest:** if Elastic lacks the needed field entirely, fix the telemetry producer/index template/runtime field before rerunning migration (`prepare-target-telemetry`).
 6. **Use generated starters when possible** — Grafana runs can write suggestions with `--suggest-rule-pack-out <path>`; both sources can emit templates with `obs-migrate extensions --source grafana|datadog --template-out <path>`.
 7. **Rerun the smallest useful scope** — prefer one dashboard (`try-one-source-dashboard`) or selected assets before a full sweep.

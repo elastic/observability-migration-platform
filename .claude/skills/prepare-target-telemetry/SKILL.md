@@ -64,7 +64,8 @@ You cannot point Datadog at Elastic directly, and its field profile does not aut
 |---|---|---|---|
 | OTel Collector → ES | `otel` (default) | `system.cpu.user` | `host.name` |
 | Elastic Agent / Metricbeat | `elastic_agent` | `system.cpu.user.pct` | `host.name` |
-| Custom legacy `prometheus.metrics.*` pipeline | `prometheus` | `prometheus.metrics.system_cpu_user` | `instance` |
+| Metricbeat / Agent Prometheus remote_write | `prometheus` | `prometheus.metrics.system_cpu_user` | `prometheus.labels.instance` |
+| Elasticsearch native `/_prometheus` write | `prometheus_native` | `metrics.system_cpu_user` | `labels.instance` |
 | Custom / unknown | `passthrough` or custom YAML | `system.cpu.user` | `host` (as-is) |
 
 ## Verify after telemetry starts (both sources)

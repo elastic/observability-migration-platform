@@ -69,7 +69,7 @@ Give operators one mental model for `--field-profile` on both sources:
 | Profile | Behavior |
 |---|---|
 | `otel` / `default` | Planned OTel-ish maps (default) |
-| `elastic_agent`, `prometheus`, `passthrough`, YAML | Explicit plan only |
+| `elastic_agent`, `prometheus` (Metricbeat), `prometheus_native` (ES `/_prometheus`), `passthrough`, YAML | Explicit plan only |
 | + `--es-url` | Field readiness against that plan (`confirmed` / `missing` / `unknown`) |
 
 No profile auto-detection. Wrong profile → missing-field warns/blocks in preflight; emitted queries still follow the chosen profile.

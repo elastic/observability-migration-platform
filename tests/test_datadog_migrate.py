@@ -41,6 +41,7 @@ from observability_migration.adapters.source.datadog.execution import build_sour
 from observability_migration.adapters.source.datadog.field_map import (
     OTEL_PROFILE,
     PASSTHROUGH_PROFILE,
+    PROMETHEUS_NATIVE_PROFILE,
     PROMETHEUS_PROFILE,
     FieldMapProfile,
     load_profile,
@@ -3649,6 +3650,39 @@ class TestFieldMap(unittest.TestCase):
     def test_passthrough_keeps_names(self):
         self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system_cpu_user")
         self.assertEqual(PASSTHROUGH_PROFILE.map_tag("host"), "host")
+
+    def test_prometheus_metricbeat_profile_uses_prometheus_metrics_and_labels(self):
+        """Metricbeat remote_write layout: prometheus.metrics.* + prometheus.labels.*."""
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_metric("http.requests"),
+            "prometheus.metrics.http_requests",
+        )
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("host"), "prometheus.labels.instance")
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("env"), "prometheus.labels.env")
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("kube_namespace"),
+            "prometheus.labels.kube_namespace",
+        )
+        # Unmapped tags still land under prometheus.labels.* via tag_prefix.
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("custom_dim"),
+            "prometheus.labels.custom_dim",
+        )
+        # Must not emit ECS host.name / kubernetes.* under this layout.
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "host.name")
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "instance")
+
+    def test_prometheus_native_profile_uses_metrics_and_labels_prefixes(self):
+        """Native Elasticsearch /_prometheus write: metrics.* + labels.*."""
+        profile = load_profile("prometheus_native")
+        self.assertEqual(profile.name, "prometheus_native")
+        self.assertEqual(profile.map_metric("http.requests"), "metrics.http_requests")
+        self.assertEqual(profile.map_tag("host"), "labels.instance")
+        self.assertEqual(profile.map_tag("env"), "labels.env")
+        self.assertEqual(profile.map_tag("kube_namespace"), "labels.kube_namespace")
+        self.assertEqual(profile.map_tag("custom_dim"), "labels.custom_dim")
+        self.assertEqual(profile.metric_index, "metrics-*.prometheus-*")
+        self.assertEqual(PROMETHEUS_NATIVE_PROFILE.map_metric("http.requests"), "metrics.http_requests")
 
     def test_load_builtin_profile(self):
         profile = load_profile("otel")

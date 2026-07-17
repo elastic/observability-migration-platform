@@ -166,20 +166,34 @@ translator checks `tag_map` for an explicit mapping. If none exists, it applies
 
 ### Built-in Profiles
 
-| Profile | Default metric index | Metric prefix | Description |
-|---|---|---|---|
-| `otel` (default) | `metrics-*` | _(none)_ | OpenTelemetry Collector field names |
-| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | Prometheus remote-write field names |
-| `elastic_agent` | `metrics-*` | _(none)_ | Elastic Agent / Metricbeat integration field names |
-| `passthrough` | `metrics-*` | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+| Profile | Default metric index | Metric prefix | Tag prefix / notes | Description |
+|---|---|---|---|---|
+| `otel` (default) | `metrics-*` | _(none)_ | ECS / OTel semantic maps | OpenTelemetry Collector field names |
+| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | `prometheus.labels.*` (`host` → `prometheus.labels.instance`) | Metricbeat / Agent Prometheus **remote_write** integration layout |
+| `prometheus_native` | `metrics-*.prometheus-*` | `metrics.` | `labels.*` (`host` → `labels.instance`) | Elasticsearch native `/_prometheus` remote-write layout |
+| `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
+| `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
 
 ### Tag Mapping (Shared Baseline)
 
-All profiles except `passthrough` share a common tag mapping baseline:
+`otel` and `elastic_agent` share a common ECS-oriented tag baseline (with
+`elastic_agent` preferring `kubernetes.*` and `otel` preferring `k8s.*` for
+several Kubernetes keys). The Prometheus profiles do **not** use that baseline —
+they emit Metricbeat/native Prometheus label paths instead:
+
+| Datadog tag | `otel` / `elastic_agent` | `prometheus` | `prometheus_native` |
+|---|---|---|---|
+| `host` | `host.name` | `prometheus.labels.instance` | `labels.instance` |
+| `env` | `deployment.environment` | `prometheus.labels.env` | `labels.env` |
+| `service` | `service.name` | `prometheus.labels.service` | `labels.service` |
+| `kube_namespace` | `k8s.namespace.name` / `kubernetes.namespace` | `prometheus.labels.kube_namespace` | `labels.kube_namespace` |
+| other tags | profile-specific maps | `prometheus.labels.<tag>` | `labels.<tag>` |
+
+Shared `otel` / `elastic_agent` baseline details:
 
 | Datadog tag | Elasticsearch field |
 |---|---|
-| `host` | `host.name` (`instance` for `prometheus` profile) |
+| `host` | `host.name` |
 | `env` | `deployment.environment` |
 | `service` | `service.name` |
 | `version` | `service.version` |
@@ -187,10 +201,10 @@ All profiles except `passthrough` share a common tag mapping baseline:
 | `status` | `log.level` (only in log context; kept as `status` in metric queries) |
 | `container_name` | `container.name` |
 | `container_id` | `container.id` |
-| `pod_name` | `kubernetes.pod.name` |
-| `kube_namespace` | `kubernetes.namespace` |
-| `kube_cluster_name` | `kubernetes.cluster.name` |
-| `kube_deployment` | `kubernetes.deployment.name` |
+| `pod_name` | `kubernetes.pod.name` (`otel`: `k8s.pod.name`) |
+| `kube_namespace` | `kubernetes.namespace` (`otel`: `k8s.namespace.name`) |
+| `kube_cluster_name` | `kubernetes.cluster.name` (`otel`: `k8s.cluster.name`) |
+| `kube_deployment` | `kubernetes.deployment.name` (`otel`: `k8s.deployment.name`) |
 | `image_name` | `container.image.name` |
 | `image_tag` | `container.image.tag` |
 
@@ -216,8 +230,9 @@ common system metrics:
 | Your ingestion pipeline | Recommended profile |
 |---|---|
 | OTel Collector → Elasticsearch | `otel` (default) |
-| Prometheus → remote_write → Elasticsearch | `prometheus` |
-| Elastic Agent / Metricbeat → Elasticsearch | `elastic_agent` |
+| Metricbeat / Agent Prometheus remote_write → Elasticsearch | `prometheus` |
+| Elasticsearch native `/_prometheus` remote write | `prometheus_native` |
+| Elastic Agent / Metricbeat system integrations → Elasticsearch | `elastic_agent` |
 | Custom pipeline or unknown | Start with `passthrough`, then iterate |
 
 ### Using a Built-in Profile

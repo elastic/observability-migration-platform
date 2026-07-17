@@ -255,18 +255,74 @@ OTEL_PROFILE = FieldMapProfile(
     metric_suffix="",
 )
 
+def _prometheus_metricbeat_tag_map() -> dict[str, str]:
+    """Tags for Metricbeat / integration Prometheus remote_write layout.
+
+    Official Metricbeat stores labels under ``prometheus.labels.*`` (not ECS
+    ``host.name`` / ``kubernetes.*``). ``host`` maps to the common Prometheus
+    ``instance`` label name under that prefix.
+    """
+    return {
+        "host": "prometheus.labels.instance",
+        "instance": "prometheus.labels.instance",
+        "job": "prometheus.labels.job",
+        "env": "prometheus.labels.env",
+        "service": "prometheus.labels.service",
+        "version": "prometheus.labels.version",
+        "pod_name": "prometheus.labels.pod_name",
+        "kube_namespace": "prometheus.labels.kube_namespace",
+        "kube_cluster_name": "prometheus.labels.kube_cluster_name",
+        "kube_deployment": "prometheus.labels.kube_deployment",
+        "container_name": "prometheus.labels.container_name",
+        "container_id": "prometheus.labels.container_id",
+    }
+
+
+def _prometheus_native_tag_map() -> dict[str, str]:
+    """Tags for Elasticsearch native ``/_prometheus`` remote-write layout."""
+    return {
+        "host": "labels.instance",
+        "instance": "labels.instance",
+        "job": "labels.job",
+        "env": "labels.env",
+        "service": "labels.service",
+        "version": "labels.version",
+        "pod_name": "labels.pod_name",
+        "kube_namespace": "labels.kube_namespace",
+        "kube_cluster_name": "labels.kube_cluster_name",
+        "kube_deployment": "labels.kube_deployment",
+        "container_name": "labels.container_name",
+        "container_id": "labels.container_id",
+    }
+
+
+# Metricbeat / Elastic Agent Prometheus remote_write integration layout:
+# metrics under ``prometheus.metrics.*``, labels under ``prometheus.labels.*``.
 PROMETHEUS_PROFILE = FieldMapProfile(
     name="prometheus",
     metric_index="metrics-prometheus-*",
     logs_index="logs-*",
     timestamp_field="@timestamp",
     metrics_dataset_filter="prometheus",
-    tag_map={
-        **_default_tag_map(),
-        "host": "instance",
-    },
+    tag_map=_prometheus_metricbeat_tag_map(),
     metric_prefix="prometheus.metrics.",
     metric_suffix="",
+    tag_prefix="prometheus.labels.",
+)
+
+# Elasticsearch native Prometheus remote-write endpoint
+# (``/_prometheus/api/v1/write``): metrics under ``metrics.*``, labels under
+# ``labels.*`` on ``metrics-*.prometheus-*`` data streams.
+PROMETHEUS_NATIVE_PROFILE = FieldMapProfile(
+    name="prometheus_native",
+    metric_index="metrics-*.prometheus-*",
+    logs_index="logs-*",
+    timestamp_field="@timestamp",
+    metrics_dataset_filter="",
+    tag_map=_prometheus_native_tag_map(),
+    metric_prefix="metrics.",
+    metric_suffix="",
+    tag_prefix="labels.",
 )
 
 ELASTIC_AGENT_PROFILE = FieldMapProfile(
@@ -310,6 +366,7 @@ BUILTIN_PROFILES: dict[str, FieldMapProfile] = {
     "default": OTEL_PROFILE,
     "otel": OTEL_PROFILE,
     "prometheus": PROMETHEUS_PROFILE,
+    "prometheus_native": PROMETHEUS_NATIVE_PROFILE,
     "elastic_agent": ELASTIC_AGENT_PROFILE,
     "passthrough": PASSTHROUGH_PROFILE,
 }
