@@ -4061,6 +4061,9 @@ def _build_shared_measure_pipeline(index, specs):
         if not scoped_expr:
             return None
         stats_terms.append(f"{_esql_identifier(spec.alias)} = {scoped_expr}")
+    # Same CASE-shape invariant as ``_merge_pretranslated_xy_queries``: never mix
+    # ``IRATE(CASE(...))`` with bare ``IRATE(metric)`` in one TS STATS.
+    stats_terms = _wrap_bare_ts_value_args_when_case_siblings(stats_terms)
     parts = [
         f"{base.source_type} {index}",
         f"| WHERE {base.time_filter}",
@@ -4094,6 +4097,37 @@ def _timeseries_stats_window(specs):
         if match:
             return match.group(1).strip()
     return "5m"
+
+
+_BARE_TS_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    r"\((?P<field>[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*(?P<window>[^)]+)\)"
+)
+
+
+def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
+    """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
+
+    Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
+    ``TS ... | STATS`` measure uses ``IRATE(CASE(cond, metric, NULL), …)`` and
+    another uses bare ``IRATE(other_metric, …)``. Wrapping the bare value arg
+    as ``CASE(true, other_metric, NULL)`` keeps semantics (always true) while
+    giving every time-series aggregate a CASE-shaped value expression.
+
+    Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
+    pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
+    """
+    if not any("CASE(" in assignment for assignment in assignments):
+        return assignments
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
+            f"{match.group('window')})"
+        )
+
+    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
 
 
 _OUTER_TO_TS_AGG = {
@@ -5429,6 +5463,7 @@ __all__ = [
     "_strip_grafana_substitutions",
     "_summary_mode_from_metadata",
     "_unique_safe_alias",
+    "_wrap_bare_ts_value_args_when_case_siblings",
     "classify_promql_complexity",
     "grafana_template_var_name",
     "preprocess_grafana_macros",

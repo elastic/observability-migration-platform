@@ -89,6 +89,7 @@ from .promql import (
     _split_top_level_csv,
     _summary_mode_from_metadata,
     _unique_safe_alias,
+    _wrap_bare_ts_value_args_when_case_siblings,
     grafana_template_var_name,
     substitute_grafana_range_macros,
     substitute_scalar_template_vars,
@@ -3627,7 +3628,12 @@ def _merge_pretranslated_xy_queries(translations):
 
         # Rewrite EVAL expressions to use renamed STATS aliases, then bind the
         # final series column to ``result_alias``.
+        # When there are no EVAL stages the STATS output name *is* the metric —
+        # remap it through alias_map so legend EVAL does not reference the
+        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss).
         rewritten_metric_expr = item["metric_field"]
+        if rewritten_metric_expr in alias_map:
+            rewritten_metric_expr = alias_map[rewritten_metric_expr]
         for eval_stage in item["eval_stages"]:
             body = eval_stage[len("EVAL ") :].strip()
             if "=" not in body:
@@ -3680,6 +3686,8 @@ def _merge_pretranslated_xy_queries(translations):
         for part in _split_top_level_csv(by_text)
         if part.strip()
     ]
+
+    renamed_assignments = _wrap_bare_ts_value_args_when_case_siblings(renamed_assignments)
 
     def _pipe_stage(stage: str) -> str:
         text = stage.strip()
