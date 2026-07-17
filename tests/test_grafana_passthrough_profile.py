@@ -313,7 +313,7 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
             index_pattern="metrics-*",
             es_api_key="key",
             verify="/tmp/test-ca.pem",
-            passthrough=True,
+            field_profile="passthrough",
         )
 
     def test_alert_resolver_inherits_passthrough(self):

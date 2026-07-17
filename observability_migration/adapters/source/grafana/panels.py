@@ -5566,7 +5566,7 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
             index_pattern=index_pattern,
             es_api_key=getattr(resolver, "_es_api_key", None),
             verify=getattr(resolver, "_verify", True),
-            passthrough=getattr(resolver, "_passthrough", False),
+            field_profile=getattr(resolver, "_field_profile", "otel"),
         )
     return cache[index_pattern]
 
