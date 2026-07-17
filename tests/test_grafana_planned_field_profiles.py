@@ -80,6 +80,34 @@ def test_planned_prometheus_native_wins_over_bare_otel_caps():
     assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
 
 
+def test_planned_remote_write_metric_scoped_wins_over_bare_otel_caps():
+    resolver = _planned_resolver(
+        "prometheus_remote_write",
+        field_cache=_otel_shaped_field_cache(),
+    )
+    metric = resolver.resolve_metric_field("http_requests_total")
+    # Scoped co-occurrence would pick bare `instance`; planned emit must win.
+    resolver._cooccurrence_cache = {
+        (metric, "instance"): True,
+        (metric, "service.instance.id"): False,
+        (metric, "prometheus.labels.instance"): False,
+    }
+    assert resolver.resolve_label("instance", metric_field=metric) == "prometheus.labels.instance"
+
+
+def test_planned_prometheus_native_metric_scoped_wins_over_bare_otel_caps():
+    resolver = _planned_resolver(
+        "prometheus_native",
+        field_cache=_otel_shaped_field_cache(),
+    )
+    metric = resolver.resolve_metric_field("http_requests_total")
+    resolver._cooccurrence_cache = {
+        (metric, "instance"): True,
+        (metric, "labels.instance"): False,
+    }
+    assert resolver.resolve_label("instance", metric_field=metric) == "labels.instance"
+
+
 def test_planned_remote_write_mismatch_when_native_detected():
     resolver = _planned_resolver(
         "prometheus_remote_write",

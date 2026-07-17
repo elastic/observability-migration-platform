@@ -405,6 +405,7 @@ class SchemaResolver:
                 self._emitted_unverified_passthrough_field = True
             return label
         self._discover_fields()
+        planned = self._effective_schema_profile()
         # Metric-aware: when the label is scoped to a metric (a
         # `label_values(metric, label)` control, or a panel selector/group-by on
         # `metric{label=...}`), prefer the candidate field that co-occurs with
@@ -412,7 +413,10 @@ class SchemaResolver:
         # would pick any field that merely *exists* in the index — even one
         # written by unrelated sources — and select a disjoint document set from
         # the metric scope, emptying the control/panel (issue #163).
-        if metric_field:
+        # When a named Prometheus plan is active, scoped/co-occurrence must not
+        # prefer bare caps over the planned namespaced emit (same constraint as
+        # the bare `_field_cache` short-circuit below).
+        if metric_field and planned not in {"prometheus_remote_write", "prometheus_native"}:
             scoped = self._resolve_label_scoped_to_metric(label, metric_field)
             if scoped is not None:
                 return scoped
@@ -422,7 +426,6 @@ class SchemaResolver:
         # When a named Prometheus plan is active, the operator-selected layout
         # wins over bare caps (e.g. OTel-shaped targets that also carry bare
         # source labels) — skip this shortcut so emit follows the plan.
-        planned = self._effective_schema_profile()
         if (
             self._field_cache
             and label in self._field_cache
