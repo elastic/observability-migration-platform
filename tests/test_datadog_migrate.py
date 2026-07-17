@@ -3684,6 +3684,43 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(profile.metric_index, "metrics-*.prometheus-*")
         self.assertEqual(PROMETHEUS_NATIVE_PROFILE.map_metric("http.requests"), "metrics.http_requests")
 
+    def test_prometheus_profiles_keep_log_queries_on_ecs_fields(self):
+        parsed = parse_log_query("service:web status:error host:api01")
+
+        for profile in (PROMETHEUS_PROFILE, PROMETHEUS_NATIVE_PROFILE):
+            with self.subTest(profile=profile.name):
+                where = log_ast_to_esql_where(parsed.ast, profile)
+                self.assertEqual(
+                    where,
+                    'service.name == "web" AND log.level == "error" AND host.name == "api01"',
+                )
+                self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+                self.assertEqual(profile.map_log_field("host"), "host.name")
+                self.assertNotIn("prometheus.labels.", where)
+                self.assertNotIn("labels.service", where)
+
+    def test_custom_profile_can_split_metric_and_log_tag_maps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_path = Path(tmpdir) / "profile.yaml"
+            profile_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "split",
+                        "tag_map": {"service": "prometheus.labels.service"},
+                        "log_tag_map": {"service": "service.name"},
+                        "tag_prefix": "prometheus.labels.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = load_profile(str(profile_path))
+
+        self.assertEqual(profile.map_tag("service", context="metric"), "prometheus.labels.service")
+        self.assertEqual(profile.map_tag("custom", context="metric"), "prometheus.labels.custom")
+        self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+        self.assertEqual(profile.map_tag("custom", context="log"), "custom")
+
     def test_load_builtin_profile(self):
         profile = load_profile("otel")
         self.assertEqual(profile.name, "otel")

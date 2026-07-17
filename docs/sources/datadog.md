@@ -148,7 +148,8 @@ A profile supplies:
 | Property | Purpose |
 |---|---|
 | `metric_map` | Explicit Datadog metric name → ES field overrides (e.g. `system.cpu.user` → `system.cpu.user.pct`) |
-| `tag_map` | Datadog tag / log attribute → ES field name (e.g. `host` → `host.name`) |
+| `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
+| `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
 | `tag_prefix` | Default prefix applied to unmapped tags |
 | `metric_index` / `logs_index` | Default Elasticsearch index patterns for metrics and logs |
@@ -160,9 +161,12 @@ the translator first checks `metric_map` for an explicit override. If none
 exists, it converts dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
-**Translation behavior for tags:** When a Datadog tag key is encountered, the
-translator checks `tag_map` for an explicit mapping. If none exists, it applies
-`tag_prefix` (if set) or keeps the original tag name.
+**Translation behavior for tags:** Metric queries check `tag_map`, then apply
+`tag_prefix` (if set) or keep the original tag name. Log queries use
+`log_tag_map` when the profile provides one; unmapped log attributes then stay
+unchanged instead of inheriting the metric `tag_prefix`. The built-in
+Prometheus profiles therefore keep ECS / OTel log fields rather than emitting
+`prometheus.labels.*` or `labels.*` paths against `logs-*`.
 
 ### Built-in Profiles
 
@@ -174,20 +178,25 @@ translator checks `tag_map` for an explicit mapping. If none exists, it applies
 | `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
 | `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
 
+> **Breaking change:** `--field-profile prometheus` now maps metric-query tags
+> to `prometheus.labels.*` (including `host` → `prometheus.labels.instance`)
+> instead of ECS/bare fields. Use `prometheus_native` for `labels.*` on native
+> `/_prometheus` data streams. Log queries continue to use ECS / OTel fields.
+
 ### Tag Mapping (Shared Baseline)
 
 `otel` and `elastic_agent` share a common ECS-oriented tag baseline (with
 `elastic_agent` preferring `kubernetes.*` and `otel` preferring `k8s.*` for
-several Kubernetes keys). The Prometheus profiles do **not** use that baseline —
-they emit Metricbeat/native Prometheus label paths instead:
+several Kubernetes keys). Prometheus profiles use their label paths for metric
+queries, but their log queries use the OTel baseline:
 
-| Datadog tag | `otel` / `elastic_agent` | `prometheus` | `prometheus_native` |
-|---|---|---|---|
-| `host` | `host.name` | `prometheus.labels.instance` | `labels.instance` |
-| `env` | `deployment.environment` | `prometheus.labels.env` | `labels.env` |
-| `service` | `service.name` | `prometheus.labels.service` | `labels.service` |
-| `kube_namespace` | `k8s.namespace.name` / `kubernetes.namespace` | `prometheus.labels.kube_namespace` | `labels.kube_namespace` |
-| other tags | profile-specific maps | `prometheus.labels.<tag>` | `labels.<tag>` |
+| Datadog tag | `otel` / `elastic_agent` | `prometheus` metric query | `prometheus_native` metric query | Prometheus-profile log query |
+|---|---|---|---|---|
+| `host` | `host.name` | `prometheus.labels.instance` | `labels.instance` | `host.name` |
+| `env` | `deployment.environment` | `prometheus.labels.env` | `labels.env` | `deployment.environment` |
+| `service` | `service.name` | `prometheus.labels.service` | `labels.service` | `service.name` |
+| `kube_namespace` | `k8s.namespace.name` / `kubernetes.namespace` | `prometheus.labels.kube_namespace` | `labels.kube_namespace` | `k8s.namespace.name` |
+| other tags | profile-specific maps | `prometheus.labels.<tag>` | `labels.<tag>` | Original tag (or custom `log_tag_map`) |
 
 Shared `otel` / `elastic_agent` baseline details:
 

@@ -23,14 +23,15 @@ candidates — both wrong for this layout:
 
 ### What was fixed
 
-Added a third schema profile `"prometheus_native"` detected by the presence of both `metrics.*`
-and `labels.*` fields in the field capabilities response:
+Added the `"prometheus_native"` named schema profile, detected by the presence
+of both `metrics.*` and `labels.*` fields in the field capabilities response:
 
 - `resolve_metric_field` → returns `f"metrics.{metric_name}"` (no suffix variants)
 - `resolve_label` → returns `f"labels.{label}"` unconditionally (OTel candidates skipped)
 - `is_counter` → checks capability of `metrics.<name>` field for non-suffix metrics
 - `_build_discovered_mappings` → skipped entirely (native indices have no OTel fields)
-- Fleet `prometheus_remote_write` profile takes priority when both patterns coexist
+- Fleet `prometheus_remote_write` and classic Metricbeat
+  `prometheus_metrics` profiles take priority when their patterns coexist
 
 ### How to live-test
 
@@ -48,11 +49,11 @@ Expected: all counter panels (`RATE`) and gauge panels (`AVG`) return `STRICT_PA
 
 ### Field naming reference
 
-| Prometheus element | Native endpoint ES field | Fleet `prometheus.remote_write` field |
-|---|---|---|
-| metric value (`__name__`) | `metrics.<metric_name>` | `prometheus.<metric>.{counter,value,rate}` |
-| label `<name>` | `labels.<name>` | `prometheus.labels.<name>` |
-| counter type | `time_series_metric: counter` (auto by name suffix) | `.counter` leaf field |
+| Prometheus element | Native endpoint ES field | Fleet typed remote_write field | Classic Metricbeat field |
+|---|---|---|---|
+| metric value (`__name__`) | `metrics.<metric_name>` | `prometheus.<metric>.{counter,value,rate}` | `prometheus.metrics.<metric_name>` |
+| label `<name>` | `labels.<name>` | `prometheus.labels.<name>` | `prometheus.labels.<name>` |
+| counter type | `time_series_metric: counter` (auto by name suffix) | `.counter` leaf field | Capability metadata on the metric field |
 
 ---
 

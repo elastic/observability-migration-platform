@@ -253,6 +253,30 @@ def test_auto_detects_prometheus_metrics_and_emits_nested():
     )
 
 
+def test_summary_separates_mapping_from_automatic_profile_selection():
+    otel = SchemaResolver(RulePackConfig(), field_profile="otel").field_resolution_summary()
+    automatic = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es.example",
+        field_profile="auto",
+    )
+    automatic._discovery_attempted = True
+    automatic._discovery_status = "ok"
+    automatic._field_cache = _native_field_caps()
+    auto_summary = automatic.field_resolution_summary()
+    passthrough = SchemaResolver(
+        RulePackConfig(),
+        field_profile="passthrough",
+    ).field_resolution_summary()
+
+    assert otel["automatic_mapping"] is True
+    assert otel["automatic_profile_selection"] is False
+    assert auto_summary["automatic_mapping"] is True
+    assert auto_summary["automatic_profile_selection"] is True
+    assert passthrough["automatic_mapping"] is False
+    assert passthrough["automatic_profile_selection"] is False
+
+
 def test_planned_remote_write_keeps_emit_when_detected_native():
     resolver = SchemaResolver(
         RulePackConfig(),
@@ -453,6 +477,16 @@ def test_otel_plan_warns_when_live_caps_look_like_remote_write():
         "prometheus_remote_write" in w and "otel" in w.lower()
         for w in summary.get("profile_warnings", [])
     )
+
+
+def test_otel_plan_warning_is_idempotent_across_summary_calls():
+    resolver = _planned_resolver("otel", field_cache=_remote_write_field_caps())
+
+    first = resolver.field_resolution_summary()
+    second = resolver.field_resolution_summary()
+
+    assert len(first.get("profile_warnings", [])) == 1
+    assert second.get("profile_warnings") == first.get("profile_warnings")
 
 
 def test_otel_plan_warns_when_live_caps_look_like_prometheus_metrics():

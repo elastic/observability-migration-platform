@@ -4102,10 +4102,13 @@ def _timeseries_stats_window(specs):
     return "5m"
 
 
+_ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)"
+
+
 _BARE_TS_VALUE_ARG = re.compile(
     r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
     r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
-    r"\((?P<field>[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*(?P<window>[^)]+)\)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
 )
 
 
@@ -4138,19 +4141,19 @@ def _infer_stats_metric_field(expr: str) -> str:
     text = (expr or "").strip()
     wrapped = re.fullmatch(
         rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*(?:{_TS_AGG_FUNC_PATTERN})\(\s*"
-        rf"([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*[^)]+\)\s*\)",
+        rf"({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)\s*\)",
         text,
     )
     if wrapped:
         return wrapped.group(1)
     bare_ts = re.fullmatch(
-        rf"(?:{_TS_AGG_FUNC_PATTERN})\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*[^)]+\)",
+        rf"(?:{_TS_AGG_FUNC_PATTERN})\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)",
         text,
     )
     if bare_ts:
         return bare_ts.group(1)
     bare_regular = re.fullmatch(
-        r"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)",
+        rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*\)",
         text,
     )
     if bare_regular:

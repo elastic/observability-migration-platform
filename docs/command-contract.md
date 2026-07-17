@@ -136,7 +136,7 @@ Datadog.
 |---|---|---|---|
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
-| `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write` (Fleet `use_types` typed leaves), `prometheus_metrics` (classic Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. ECS fallback is not implemented in this pass. |
+| `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write` (Fleet `use_types` typed leaves), `prometheus_metrics` (classic Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. Datadog Prometheus profiles apply label paths to metric queries while log queries retain ECS / OTel fields. |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -332,6 +332,11 @@ Grafana accepts:
   layout from caps; if ambiguous, emit as **`otel`** and warn. Rejected
   without `--es-url`.
 
+Grafana field-discovery summaries retain `automatic_mapping` as the mapping
+state (`false` only for `passthrough`). The separate
+`automatic_profile_selection` key is `true` only when the requested profile is
+`auto`.
+
 Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
 built-ins `elastic_agent`, `prometheus` (Metricbeat remote_write:
 `prometheus.metrics.*` / `prometheus.labels.*`; Grafana twin:
@@ -341,7 +346,13 @@ built-ins `elastic_agent`, `prometheus` (Metricbeat remote_write:
 always pick an explicit plan. With
 `--es-url`, field readiness uses `confirmed` / `missing` / `unknown` against
 that plan. Any other value is rejected (Grafana exits `2`, Datadog exits `1`).
-ECS fallback is planned separately and is not part of this contract.
+Prometheus profile label paths apply only to metric queries; Datadog log
+queries continue to use ECS / OTel field mappings.
+
+> **Breaking change:** Datadog `--field-profile prometheus` now emits
+> `prometheus.labels.*` for metric tags rather than ECS/bare fields. Choose
+> `prometheus_native` for native `labels.*` metrics. Log-query mappings are
+> unchanged.
 
 ```bash
 # Grafana passthrough: keep raw Prometheus names when the target already stores them

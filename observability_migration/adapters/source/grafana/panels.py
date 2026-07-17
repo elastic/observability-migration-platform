@@ -3493,6 +3493,34 @@ def _try_collapse_same_metric_targets(translations):
     return collapsed
 
 
+_ESQL_ALIAS_TOKEN_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|'
+    r"'(?:\\.|[^'\\])*'|"
+    r"`(?:\\.|``|[^`])*`|"
+    r"[A-Za-z_][A-Za-z0-9_.]*"
+)
+
+
+def _canonical_esql_alias(identifier):
+    """Return the column name represented by a possibly quoted identifier."""
+    text = str(identifier or "").strip()
+    if len(text) >= 2 and text.startswith("`") and text.endswith("`"):
+        return text[1:-1].replace("``", "`").replace("\\`", "`")
+    return text
+
+
+def _rewrite_esql_alias_references(expression, alias_map):
+    """Rewrite identifier tokens without touching ES|QL string literals."""
+
+    def _replace(match):
+        token = match.group(0)
+        if token.startswith(("'", '"')):
+            return token
+        return alias_map.get(_canonical_esql_alias(token), token)
+
+    return _ESQL_ALIAS_TOKEN_RE.sub(_replace, expression)
+
+
 def _merge_pretranslated_xy_queries(translations):
     """Fuse already-translated XY ES|QL queries when formula-plan fusion fails.
 
@@ -3617,7 +3645,7 @@ def _merge_pretranslated_xy_queries(translations):
         alias_map: dict[str, str] = {}
         for assignment in item["assignments"]:
             left, right = assignment.split("=", 1)
-            old_alias = left.strip()
+            old_alias = _canonical_esql_alias(left)
             new_alias = _unique_safe_alias(
                 f"{old_alias}_{alias_hint}",
                 used_aliases,
@@ -3631,7 +3659,8 @@ def _merge_pretranslated_xy_queries(translations):
         # When there are no EVAL stages the STATS output name *is* the metric —
         # remap it through alias_map so legend EVAL does not reference the
         # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss).
-        rewritten_metric_expr = item["metric_field"]
+        metric_field = _canonical_esql_alias(item["metric_field"])
+        rewritten_metric_expr = metric_field
         if rewritten_metric_expr in alias_map:
             rewritten_metric_expr = alias_map[rewritten_metric_expr]
         for eval_stage in item["eval_stages"]:
@@ -3639,15 +3668,9 @@ def _merge_pretranslated_xy_queries(translations):
             if "=" not in body:
                 continue
             left, right = body.split("=", 1)
-            expr = right.strip()
-            for old_alias, new_alias in alias_map.items():
-                expr = re.sub(
-                    rf"\b{re.escape(old_alias)}\b",
-                    new_alias,
-                    expr,
-                )
-            out_name = left.strip()
-            if out_name == item["metric_field"]:
+            expr = _rewrite_esql_alias_references(right.strip(), alias_map)
+            out_name = _canonical_esql_alias(left)
+            if out_name == metric_field:
                 rewritten_metric_expr = expr
             else:
                 mapped = alias_map.get(out_name) or _unique_safe_alias(
@@ -3657,8 +3680,6 @@ def _merge_pretranslated_xy_queries(translations):
                 )
                 alias_map[out_name] = mapped
                 eval_parts.append(f"| EVAL {_esql_identifier(mapped)} = {expr}")
-                if out_name == item["metric_field"]:
-                    rewritten_metric_expr = mapped
 
         if translation.metadata.get("negate_result"):
             rewritten_metric_expr = f"(-1 * {rewritten_metric_expr})"

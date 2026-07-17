@@ -1,7 +1,8 @@
 # Grafana ↔ Datadog field-profile alignment — design
 
 **Date:** 2026-07-17  
-**Status:** Implemented (see `docs/superpowers/plans/2026-07-17-grafana-datadog-field-profile-alignment.md`)  
+**Status:** Implemented; see the canonical [Field Profile Contract](../../command-contract.md#field-profile-contract)
+
 **Depends on:** Grafana `passthrough` (#299) — planned profiles build on that CLI surface
 
 ## Goal
@@ -58,13 +59,14 @@ Give operators one mental model for `--field-profile` on both sources:
 |---|---|---|
 | `otel` | Bare / OTel-candidate mapping (current non-namespaced path) | Verify; warn on missing |
 | `prometheus_remote_write` | `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*` | Verify; **`profile_mismatch`** if live layout looks like another named profile |
+| `prometheus_metrics` | `prometheus.metrics.<metric>`, `prometheus.labels.*` | Same mismatch rule |
 | `prometheus_native` | `metrics.<metric>`, `labels.*` | Same mismatch rule |
 | `passthrough` | Source names verbatim (rule-pack overrides still apply) | Validate bare names exist when possible; no automatic remapping |
-| `auto` | **Rejected** without `--es-url` | Detect clear `prometheus_remote_write` / `prometheus_native`; if ambiguous → emit as **`otel`** and **warn** |
+| `auto` | **Rejected** without `--es-url` | Detect clear `prometheus_remote_write` / `prometheus_metrics` / `prometheus_native`; if ambiguous → emit as **`otel`** and **warn** |
 
 `profile_mismatch` (Grafana): planned profile ≠ detected named layout. Translation **keeps the plan**; preflight/report warn (or block only if existing Grafana preflight already treats mismatch as blocker — preserve current severity unless tests require otherwise). Do not silently switch emit rules to the detected layout.
 
-### Datadog profiles (semantics unchanged; docs/skills aligned)
+### Datadog profiles (explicit-only; docs/skills aligned)
 
 | Profile | Behavior |
 |---|---|
@@ -73,6 +75,8 @@ Give operators one mental model for `--field-profile` on both sources:
 | + `--es-url` | Field readiness against that plan (`confirmed` / `missing` / `unknown`) |
 
 No profile auto-detection. Wrong profile → missing-field warns/blocks in preflight; emitted queries still follow the chosen profile.
+Prometheus profiles use their label prefixes for metric queries only; log
+queries retain ECS / OTel field mappings.
 
 ### Alignment rules (must hold)
 
@@ -83,7 +87,7 @@ No profile auto-detection. Wrong profile → missing-field warns/blocks in prefl
 
 ## Implementation sketch (for the plan)
 
-1. **Grafana `SchemaResolver`:** accept explicit `field_profile` ∈ `{otel, prometheus_remote_write, prometheus_native, passthrough, auto}`; planned emit without requiring discovery; discovery used for verify + `auto` detection only.
+1. **Grafana `SchemaResolver`:** accept explicit `field_profile` ∈ `{otel, prometheus_remote_write, prometheus_metrics, prometheus_native, passthrough, auto}`; planned emit without requiring discovery; discovery used for verify + `auto` detection only.
 2. **Grafana CLI:** expand `_GRAFANA_FIELD_PROFILES`; `auto` requires `--es-url`; wire alert + alternate-index resolvers the same way.
 3. **Preflight / contracts:** record `field_profile`, `schema_profile` / detected layout, mismatch flag; keep Datadog contract shape.
 4. **Tests:** planned offline emit for each Grafana named profile; `auto` ambiguous → otel + warn; mismatch does not change emitted names; Datadog regression that profiles remain explicit.
@@ -94,6 +98,7 @@ Reuse direction already explored in local WIP / stash (planned Grafana profiles 
 ## Success criteria
 
 - Offline Grafana migrate with `--field-profile prometheus_remote_write` emits `prometheus.*` fields without `--es-url`.
+- Offline Grafana migrate with `--field-profile prometheus_metrics` emits `prometheus.metrics.*` / `prometheus.labels.*` without `--es-url`.
 - Live run with wrong plan vs caps surfaces mismatch/missing without rewriting queries to the detected layout.
 - `auto` without clear caps → otel mapping + explicit warning; `auto` without `--es-url` → clear error.
 - Datadog still has no `auto`; default `otel`; readiness statuses unchanged in meaning.

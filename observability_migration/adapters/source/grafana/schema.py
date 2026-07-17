@@ -132,6 +132,7 @@ class SchemaResolver:
         self._auto_fallback_warned = False
         self._auto_resolved_profile = None
         self._profile_warnings = []
+        self._otel_plan_warning_profiles = set()
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
@@ -304,9 +305,9 @@ class SchemaResolver:
             return
         if detected not in self._NAMED_PROMETHEUS_PLANS:
             return
-        marker = f"otel plan with detected {detected}"
-        if any(marker in warning for warning in self._profile_warnings):
+        if detected in self._otel_plan_warning_profiles:
             return
+        self._otel_plan_warning_profiles.add(detected)
         self._profile_warnings.append(
             f"field profile otel emits bare/OTel candidate names, but live caps "
             f"look like {detected}; use --field-profile {detected} or auto "
@@ -397,7 +398,11 @@ class SchemaResolver:
         every dashboard label exists in the target, and a label missing from a
         recognized profile still falls through to a blind OTel candidate
         (e.g. ``prometheus_remote_write`` without ``prometheus.labels.namespace``
-        resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262."""
+        resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262.
+
+        ``automatic_mapping`` retains its compatibility meaning (all profiles
+        except strict ``passthrough``); ``automatic_profile_selection`` reports
+        the separate ``field_profile=auto`` layout-selection behavior."""
         self._discover_fields()
         self._ensure_auto_profile_resolved()
         detected = None if self._passthrough else self._current_schema_profile()
@@ -424,7 +429,8 @@ class SchemaResolver:
             "planned_schema_profile": planned,
             "detected_schema_profile": detected,
             "profile_mismatch": profile_mismatch,
-            "automatic_mapping": self._field_profile == "auto",
+            "automatic_mapping": not self._passthrough,
+            "automatic_profile_selection": self._field_profile == "auto",
             "schema_profile": detected,
             "index_pattern": self._index_pattern,
             "field_count": len(self._field_cache or {}),

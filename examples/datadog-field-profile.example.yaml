@@ -26,6 +26,11 @@ tag_map:
   kube_namespace: kubernetes.namespace
   datacenter: cloud.region
 
+log_tag_map:
+  host: host.name
+  service: service.name
+  status: log.level
+
 metric_prefix: ""
 metric_suffix: ""
 tag_prefix: ""

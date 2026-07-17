@@ -11,6 +11,14 @@ COMMAND_CONTRACT = ROOT / "docs" / "command-contract.md"
 KIBANA_TARGET_DOC = ROOT / "docs" / "targets" / "kibana.md"
 GRAFANA_SOURCE_DOC = ROOT / "docs" / "sources" / "grafana.md"
 DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
+ASSET_MODEL_DOC = ROOT / "docs" / "architecture" / "asset-model.md"
+FIELD_PROFILE_DESIGN = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-07-17-grafana-datadog-field-profile-alignment-design.md"
+)
 ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
 MIGRATE_ALL_SUPPORTED_SKILL = ROOT / ".cursor" / "skills" / "migrate-all-supported-assets" / "SKILL.md"
 REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKILL.md"
@@ -242,6 +250,26 @@ class CommandContractDocTests(unittest.TestCase):
         # Metric names are NOT a no-op: they are rewritten per profile.
         self.assertNotIn("PromQL metric names pass through to ES", text)
         self.assertIn("field_capabilities_discovery", text)
+
+    def test_field_profile_contract_docs_cover_new_layouts_and_summary_keys(self):
+        grafana_comparison = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8").split(
+            "### Comparison with Datadog Field Profiles",
+            1,
+        )[1].split("### ", 1)[0]
+        asset_model = ASSET_MODEL_DOC.read_text(encoding="utf-8")
+        design = FIELD_PROFILE_DESIGN.read_text(encoding="utf-8")
+        command_contract = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        datadog = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")
+
+        self.assertIn("prometheus_metrics", grafana_comparison)
+        self.assertIn("prometheus_metrics", asset_model)
+        self.assertIn("prometheus_metrics", design)
+        self.assertNotIn(
+            "docs/superpowers/plans/2026-07-17-grafana-datadog-field-profile-alignment.md",
+            design,
+        )
+        self.assertIn("automatic_profile_selection", command_contract)
+        self.assertIn("Prometheus profiles therefore keep ECS / OTel log fields", datadog)
 
     def test_prepare_target_telemetry_skill_routes_pre_migration_setup(self):
         text = PREPARE_TARGET_TELEMETRY_SKILL.read_text(encoding="utf-8")

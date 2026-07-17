@@ -26,6 +26,7 @@ from observability_migration.adapters.source.grafana.panels import (
     translate_panel,
 )
 from observability_migration.adapters.source.grafana.promql import (
+    _ESQL_FIELD_REFERENCE_PATTERN,
     MeasureSpec,
     _build_shared_measure_pipeline,
     _wrap_bare_ts_value_args_when_case_siblings,
@@ -81,7 +82,7 @@ def _assert_no_bare_ts_alongside_case(query: str) -> None:
     for assignment in assignments:
         assert "IRATE(node_cpu_seconds_total, 1m)" not in assignment
         assert re.search(
-            r"\b(?:RATE|IRATE|INCREASE)\([A-Za-z_][A-Za-z0-9_.]*\s*,",
+            rf"\b(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
             assignment,
         ) is None or "CASE(" in assignment, assignment
 
@@ -160,6 +161,73 @@ def test_merge_remaps_stats_alias_into_legend_eval_without_prior_eval_stages():
     assert "EVAL CPU = node_cpu_scaling_frequency_hertz\n" not in query
     assert "EVAL Max = node_cpu_scaling_frequency_max_hertz\n" not in query
     assert "EVAL Min = node_cpu_scaling_frequency_min_hertz\n" not in query
+    _assert_eval_rhs_defined_after_stats(query)
+
+
+def test_merge_remaps_reserved_stats_alias_into_legend_eval():
+    """Backtick syntax must not become part of the alias-map key."""
+    q_in = (
+        "TS metrics-*\n"
+        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total, 5m)) "
+        "BY time_bucket = TBUCKET(5 minute)\n"
+        "| KEEP time_bucket, `IN`\n"
+        "| SORT time_bucket ASC"
+    )
+    q_out = (
+        "TS metrics-*\n"
+        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total, 5m)) "
+        "BY time_bucket = TBUCKET(5 minute)\n"
+        "| KEEP time_bucket, OUT\n"
+        "| SORT time_bucket ASC"
+    )
+
+    merged = _merge_pretranslated_xy_queries(
+        [
+            _translation("A", "IN", "IN", q_in),
+            _translation("B", "OUT", "OUT", q_out),
+        ]
+    )
+
+    assert merged is not None
+    query = merged["query"]
+    assert "IN_A = SUM(RATE(haproxy_frontend_bytes_in_total, 5m))" in query
+    assert "EVAL `IN` = IN_A" in query
+    assert "EVAL `IN` = IN\n" not in query
+    assert "EVAL OUT = OUT_B" in query
+    _assert_eval_rhs_defined_after_stats(query)
+
+
+def test_merge_rewrites_reserved_alias_references_inside_eval():
+    """Quoted STATS/output aliases must compare and rewrite by column name."""
+    q_in = (
+        "TS metrics-*\n"
+        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total, 5m)), "
+        "tmp = AVG(haproxy_frontend_bytes_in_total) "
+        "BY time_bucket = TBUCKET(5 minute)\n"
+        "| EVAL `IN` = COALESCE(`IN`, tmp)\n"
+        "| KEEP time_bucket, `IN`\n"
+        "| SORT time_bucket ASC"
+    )
+    q_out = (
+        "TS metrics-*\n"
+        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total, 5m)) "
+        "BY time_bucket = TBUCKET(5 minute)\n"
+        "| KEEP time_bucket, OUT\n"
+        "| SORT time_bucket ASC"
+    )
+
+    merged = _merge_pretranslated_xy_queries(
+        [
+            _translation("A", "IN", "IN", q_in),
+            _translation("B", "OUT", "OUT", q_out),
+        ]
+    )
+
+    assert merged is not None
+    query = merged["query"]
+    assert "COALESCE(`IN`" not in query
+    assert "EVAL `IN` = COALESCE(IN_A, tmp_A)" in query
+    assert "EVAL `IN` = IN\n" not in query
     _assert_eval_rhs_defined_after_stats(query)
 
 
@@ -248,6 +316,20 @@ def test_shared_helper_wraps_bare_irate_for_formula_fusion_and_merge():
     stats_line = next(line for line in parts if line.startswith("| STATS"))
     assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in stats_line
     assert "IRATE(node_cpu_seconds_total, 1m)" not in stats_line
+
+
+def test_shared_helper_wraps_backtick_quoted_recording_rule_field():
+    assignments = [
+        'numerator = SUM(IRATE(CASE((mode == "user"), `node:cpu:guest`, NULL), 1m))',
+        "denominator = SUM(IRATE(`node:cpu:total`, 1m))",
+    ]
+
+    wrapped = _wrap_bare_ts_value_args_when_case_siblings(assignments)
+
+    assert wrapped[1] == (
+        "denominator = SUM(IRATE(CASE(true, `node:cpu:total`, NULL), 1m))"
+    )
+    assert "IRATE(`node:cpu:total`, 1m)" not in wrapped[1]
 
 
 def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():

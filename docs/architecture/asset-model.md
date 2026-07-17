@@ -143,8 +143,8 @@ Grafana preflight (`--preflight`) writes this artifact under
 
 | Key | Meaning |
 |---|---|
-| `field_profile` | CLI `--field-profile` plan (`otel`, `prometheus_remote_write`, `prometheus_native`, `passthrough`, `auto`) |
-| `planned_schema_profile` | Effective emit layout derived from the plan (`prometheus_remote_write`, `prometheus_native`, or `null` for otel/passthrough/auto→otel) |
+| `field_profile` | CLI `--field-profile` plan (`otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto`) |
+| `planned_schema_profile` | Effective emit layout derived from the plan (`prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, or `null` for otel/passthrough/auto→otel) |
 | `detected_schema_profile` | Named layout inferred from live `_field_caps` when `--es-url` was used |
 | `profile_mismatch` | `true` when `planned_schema_profile` and `detected_schema_profile` are both named layouts and differ |
 | `schema_profile` | Backward-compatible alias of `detected_schema_profile` |
