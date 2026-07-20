@@ -125,6 +125,22 @@ setup all produce different field paths. Field profiles bridge this gap:
 a profile tells the translator how to rename every Datadog metric name and
 tag key into the correct Elasticsearch field.
 
+### Alignment with Grafana
+
+Grafana and Datadog share the same operator mental model for `--field-profile`:
+
+1. **Choose a planned profile** — assets-first migration works before telemetry
+   exists; emitted queries follow that profile's mapping rules.
+2. **Emit field names for the plan** — offline runs do not require `--es-url`.
+3. **With `--es-url`, verify against live `_field_caps`** — readiness uses
+   `confirmed` / `missing` / `unknown` on `target_readiness_contract.json`;
+   live caps do not silently remap to a different layout.
+
+Datadog differs in one important way: there is **no `--field-profile auto`**.
+Always pick an explicit built-in profile or YAML path. Wrong profile →
+missing-field warnings in preflight; emitted queries still follow the chosen
+plan.
+
 ### How Field Profiles Work
 
 A profile supplies:
@@ -132,7 +148,8 @@ A profile supplies:
 | Property | Purpose |
 |---|---|
 | `metric_map` | Explicit Datadog metric name → ES field overrides (e.g. `system.cpu.user` → `system.cpu.user.pct`) |
-| `tag_map` | Datadog tag / log attribute → ES field name (e.g. `host` → `host.name`) |
+| `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
+| `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
 | `tag_prefix` | Default prefix applied to unmapped tags |
 | `metric_index` / `logs_index` | Default Elasticsearch index patterns for metrics and logs |
@@ -144,26 +161,48 @@ the translator first checks `metric_map` for an explicit override. If none
 exists, it converts dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
-**Translation behavior for tags:** When a Datadog tag key is encountered, the
-translator checks `tag_map` for an explicit mapping. If none exists, it applies
-`tag_prefix` (if set) or keeps the original tag name.
+**Translation behavior for tags:** Metric queries check `tag_map`, then apply
+`tag_prefix` (if set) or keep the original tag name. Log queries use
+`log_tag_map` when the profile provides one; unmapped log attributes then stay
+unchanged instead of inheriting the metric `tag_prefix`. The built-in
+Prometheus profiles therefore keep ECS / OTel log fields rather than emitting
+`prometheus.labels.*` or `labels.*` paths against `logs-*`.
 
 ### Built-in Profiles
 
-| Profile | Default metric index | Metric prefix | Description |
-|---|---|---|---|
-| `otel` (default) | `metrics-*` | _(none)_ | OpenTelemetry Collector field names |
-| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | Prometheus remote-write field names |
-| `elastic_agent` | `metrics-*` | _(none)_ | Elastic Agent / Metricbeat integration field names |
-| `passthrough` | `metrics-*` | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+| Profile | Default metric index | Metric prefix | Tag prefix / notes | Description |
+|---|---|---|---|---|
+| `otel` (default) | `metrics-*` | _(none)_ | ECS / OTel semantic maps | OpenTelemetry Collector field names |
+| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | `prometheus.labels.*` (`host` → `prometheus.labels.instance`) | Metricbeat / Agent Prometheus **remote_write** integration layout |
+| `prometheus_native` | `metrics-*.prometheus-*` | `metrics.` | `labels.*` (`host` → `labels.instance`) | Elasticsearch native `/_prometheus` remote-write layout |
+| `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
+| `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+
+> **Breaking change:** `--field-profile prometheus` now maps metric-query tags
+> to `prometheus.labels.*` (including `host` → `prometheus.labels.instance`)
+> instead of ECS/bare fields. Use `prometheus_native` for `labels.*` on native
+> `/_prometheus` data streams. Log queries continue to use ECS / OTel fields.
 
 ### Tag Mapping (Shared Baseline)
 
-All profiles except `passthrough` share a common tag mapping baseline:
+`otel` and `elastic_agent` share a common ECS-oriented tag baseline (with
+`elastic_agent` preferring `kubernetes.*` and `otel` preferring `k8s.*` for
+several Kubernetes keys). Prometheus profiles use their label paths for metric
+queries, but their log queries use the OTel baseline:
+
+| Datadog tag | `otel` / `elastic_agent` | `prometheus` metric query | `prometheus_native` metric query | Prometheus-profile log query |
+|---|---|---|---|---|
+| `host` | `host.name` | `prometheus.labels.instance` | `labels.instance` | `host.name` |
+| `env` | `deployment.environment` | `prometheus.labels.env` | `labels.env` | `deployment.environment` |
+| `service` | `service.name` | `prometheus.labels.service` | `labels.service` | `service.name` |
+| `kube_namespace` | `k8s.namespace.name` / `kubernetes.namespace` | `prometheus.labels.kube_namespace` | `labels.kube_namespace` | `k8s.namespace.name` |
+| other tags | profile-specific maps | `prometheus.labels.<tag>` | `labels.<tag>` | Original tag (or custom `log_tag_map`) |
+
+Shared `otel` / `elastic_agent` baseline details:
 
 | Datadog tag | Elasticsearch field |
 |---|---|
-| `host` | `host.name` (`instance` for `prometheus` profile) |
+| `host` | `host.name` |
 | `env` | `deployment.environment` |
 | `service` | `service.name` |
 | `version` | `service.version` |
@@ -171,10 +210,10 @@ All profiles except `passthrough` share a common tag mapping baseline:
 | `status` | `log.level` (only in log context; kept as `status` in metric queries) |
 | `container_name` | `container.name` |
 | `container_id` | `container.id` |
-| `pod_name` | `kubernetes.pod.name` |
-| `kube_namespace` | `kubernetes.namespace` |
-| `kube_cluster_name` | `kubernetes.cluster.name` |
-| `kube_deployment` | `kubernetes.deployment.name` |
+| `pod_name` | `kubernetes.pod.name` (`otel`: `k8s.pod.name`) |
+| `kube_namespace` | `kubernetes.namespace` (`otel`: `k8s.namespace.name`) |
+| `kube_cluster_name` | `kubernetes.cluster.name` (`otel`: `k8s.cluster.name`) |
+| `kube_deployment` | `kubernetes.deployment.name` (`otel`: `k8s.deployment.name`) |
 | `image_name` | `container.image.name` |
 | `image_tag` | `container.image.tag` |
 
@@ -200,8 +239,9 @@ common system metrics:
 | Your ingestion pipeline | Recommended profile |
 |---|---|
 | OTel Collector → Elasticsearch | `otel` (default) |
-| Prometheus → remote_write → Elasticsearch | `prometheus` |
-| Elastic Agent / Metricbeat → Elasticsearch | `elastic_agent` |
+| Metricbeat / Agent Prometheus remote_write → Elasticsearch | `prometheus` |
+| Elasticsearch native `/_prometheus` remote write | `prometheus_native` |
+| Elastic Agent / Metricbeat system integrations → Elasticsearch | `elastic_agent` |
 | Custom pipeline or unknown | Start with `passthrough`, then iterate |
 
 ### Using a Built-in Profile
@@ -315,6 +355,9 @@ Use that doc for:
   rollout evidence; alert artifacts are written under `<output-dir>/alerts`;
   Datadog also writes a root `run_summary.json`.
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
+  There is no `auto` profile — pick the plan that matches your ingest route,
+  then verify with `--es-url` (`confirmed` / `missing` / `unknown` on
+  `target_readiness_contract.json`).
 - `--env-file` loads Datadog API credentials for API extraction and live metric
   source execution during verification.
 - `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env

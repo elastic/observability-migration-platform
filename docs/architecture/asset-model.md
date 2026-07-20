@@ -136,6 +136,28 @@ on different targets (e.g. PROMQL vs ES|QL on Elastic Serverless).
 It sits between `QueryIR` and `TargetQueryPlan` and is evaluated before the
 runtime query is considered final.
 
+### Grafana `required_target_contract.json`
+
+Grafana preflight (`--preflight`) writes this artifact under
+`<output-dir>/dashboards/required_target_contract.json`. Top-level keys include:
+
+| Key | Meaning |
+|---|---|
+| `field_profile` | CLI `--field-profile` plan (`otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto`) |
+| `planned_schema_profile` | Effective emit layout derived from the plan (`prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, or `null` for otel/passthrough/auto→otel) |
+| `detected_schema_profile` | Named layout inferred from live `_field_caps` when `--es-url` was used |
+| `profile_mismatch` | `true` when `planned_schema_profile` and `detected_schema_profile` are both named layouts and differ |
+| `schema_profile` | Backward-compatible alias of `detected_schema_profile` |
+| `field_capabilities_index` | Index pattern probed for `_field_caps` |
+| `field_capabilities_discovery` | Discovery status object (`status`, `error`, `field_count`) |
+| `required_fields` | Per resolved target field: `status` (`confirmed`/`missing`/`unknown`), `type`, `target_field`, `source_fields`, `roles`, `panels` |
+| `counter_expectations` | Per metric: `source_field`, `target_field`, `expected_counter`, `confirmed_counter`, `panels` |
+| `totals` | Aggregate counts (`fields`, `fields_confirmed`, `fields_missing`, `fields_unknown`, …) |
+
+When `field_profile=auto` and caps are ambiguous, `planned_schema_profile` is
+`null`, emit follows otel rules, and preflight may record `auto_fallback=otel`
+via the resolver summary (surfaced on the contract when wired through preflight).
+
 ## Source Extensions
 
 Every shared contract has a `source_extension: dict` field for

@@ -61,8 +61,8 @@ obs-migrate migrate \
   --create-alert-rules
 ```
 
-- `--upload` recompiles and pushes dashboards through `kb-dashboard-cli`; `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
-- Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect, then `obs-migrate upload`.
+- `--upload` pushes dashboards via the **typed Dashboards API** (in-memory / persisted `native/*.native.json` payloads). It does **not** require `kb-dashboard-cli` recompile for the default path; pass `--compile` / `--legacy-import` only when you intentionally want NDJSON/YAML compile artifacts. `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
+- Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect `full_out/dashboards/native/`, then `obs-migrate upload --artifact-dir full_out/dashboards`.
 - File-based sources: swap `--input-mode api` for `--input-mode files --input-dir <dir>` pointing at all exported dashboard JSON.
 - **Custom-CA / self-signed clusters:** `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) verifies against a private CA; `--insecure` (env `OBS_MIGRATE_INSECURE`) skips verification for testing only. Both cover source, Elasticsearch, Kibana, and the Node upload step.
 
@@ -78,22 +78,23 @@ The whole point of a bulk run is the **coverage report**. Read it; do not assume
 | Which asset families ran | `full_out/run_summary.json` | top-level summary |
 | Alert rule creation results | `full_out/alerts/monitor_rule_upload_results.json` (Datadog) / `full_out/alerts/alert_rule_upload_results.json` (Grafana) | created / failed / skipped |
 
-The dashboards that **cannot** migrate appear as non-clean entries in `migration_summary.md` and as `requires_manual` / `not_feasible` panels (with `reasons`) in the manifest. Alerts that cannot be emitted are reported in the alert artifacts. Relay these explicitly — that list is the deliverable, not an afterthought.
+The dashboards that **cannot** migrate appear as non-clean entries in `migration_summary.md` and as `requires_manual` / `not_feasible` panels (with `reasons`) in the manifest. Panels that **migrated with warnings** (accepted approximations such as `histogram_quantile` → `PERCENTILE`) are also non-clean — triage with `explain-migration-gaps` rather than counting them as hard failures by default. Alerts that cannot be emitted are reported in the alert artifacts. Relay these explicitly — that list is the deliverable, not an afterthought.
 
 ## Step 3 — Verify and hand off the gaps
 
-1. State the **coverage**: how many dashboards/panels and rules migrated cleanly vs. need rework, straight from the summary/report.
-2. For broken/empty uploaded panels, hand off to the `debug-uploaded-kibana-dashboard` skill (it captures the real ES|QL Kibana runs and classifies the failure).
-3. For panels that didn't migrate at all, the "explain the gaps" skill (Phase E) turns each `reason` into manual rebuild guidance once it lands.
-4. Migrated rules are **disabled**; review with `obs-migrate audit-rules` before enabling.
+1. State the **coverage**: how many dashboards/panels and rules migrated cleanly vs. warned vs. need rework, straight from the summary/report.
+2. For broken/empty uploaded panels, hand off to the `debug-uploaded-kibana-dashboard` skill (captures real ES|QL and classifies `render_error` vs field/data gaps).
+3. For warned or blocked panels, use `explain-migration-gaps` — it separates accepted approximations from redesign work.
+4. Stronger gates when staking a cutover claim: `obs-migrate verify` / `validate-side-by-side`, `verifier.live_validate`, `verifier.dashboards_api`, and **render audit** (`docs/testing.md`) — the last is the only gate for Lens accessor / "invalid column" / empty-state failures that ES|QL execution misses.
+5. Migrated rules are **disabled**; review with `obs-migrate audit-rules` before enabling (`review-and-enable-migrated-alerts`).
 
 ## Honest limits (tell the user)
 
-- **Exit 0 ≠ everything is perfect.** The run can succeed while individual panels are `requires_manual` / empty. Trust the report, not just the exit code.
+- **Exit 0 ≠ everything is perfect.** The run can succeed while individual panels are `requires_manual` / `migrated_with_warnings` / empty. Trust the report, not just the exit code.
 - **Grafana API extraction is capped at 500 dashboards** per search request — a very large org may not be fully covered in one API pass; note it and consider file exports for the remainder.
 - **No `--es-url` ⇒ no live validation.** A target-less run still translates and reports, but does not prove panels render against real data.
 - **Created rules are disabled.** A bulk alert migration arms nothing; rules are disabled and tagged `obs-migration` until enabled by a human.
-- **Empty panels are often missing data, not a bug.** A clean translation renders empty without matching telemetry in the target; lighting panels up with synthetic data is a separate capability.
+- **Empty panels are often missing data, not a bug.** A clean translation renders empty without matching telemetry in the target; use `prepare-target-telemetry` / `obs-migrate seed-sample-data`.
 - **Degrade gracefully:** unsupported assets are surfaced with reasons, never hidden — that is the contract.
 
 ## Do NOT
@@ -108,7 +109,10 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 
 - `assess-migration-readiness` skill — run this first to know how much will migrate (and at what evidence level) before sweeping.
 - `migrate-selected-assets` skill — migrate a chosen subset instead of everything.
+- `explain-migration-gaps` skill — plain-language triage of warned vs blocked panels.
 - `debug-uploaded-kibana-dashboard` skill — diagnose individual broken uploaded panels after the sweep.
+- `prepare-production-cutover` skill — go/no-go after the sweep + validation.
 - `revert-migration` skill — remove the generated dashboards/rules if the user backs out.
 - `obs-migrate migrate --help` — authoritative asset/upload flags for the installed version.
 - `docs/command-contract.md` — asset-scope contract and artifact descriptions (online docs / repo).
+- `docs/testing.md` — layered verifier and render-audit gates.

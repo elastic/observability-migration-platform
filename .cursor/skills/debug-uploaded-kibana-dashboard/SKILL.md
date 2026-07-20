@@ -28,7 +28,7 @@ The Kibana Lens panel is rendering, but the numbers, labels, series count, or sh
 1. **`take_snapshot`** to map the panel. Find the panel's container element.
 2. **`list_network_requests`** with `resourceTypes: ["xhr","fetch"]` (Lens dispatches `/api/.../_query` over fetch). Filter the list for entries whose URL ends in `_query`.
 3. For each `_query` request: **`get_network_request`** with that `reqid` and `requestFilePath: "/tmp/<panel-slug>.network-request"`, `responseFilePath: "/tmp/<panel-slug>.network-response"`. The request body contains the **exact ES|QL** Lens sent (this is the one source of truth — not the YAML, which is pre-Lens).
-4. Compare the request body's `query` field with the YAML at `/tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards/yaml/<dash>.yaml`. If they differ, Kibana is doing its own column-rewriting (it sometimes adds `BUCKET(@timestamp,...)` or aliases) — note that as a downstream Kibana transform, not a translator bug.
+4. Compare the request body's `query` field with the panel ES|QL in `native/*.native.json` / `ir/*.ir.json` (YAML under `dashboards/yaml/` is a compatibility view). If they differ, Kibana may be doing its own column-rewriting (it sometimes adds `BUCKET(@timestamp,...)` or aliases) — note that as a downstream Kibana transform, not a translator bug.
 5. Re-run the exact query via the cluster directly to confirm Kibana isn't lying:
 
    ```bash
@@ -89,17 +89,23 @@ The translator emitted markdown rather than ES|QL because the source PromQL hit 
      function: (el) => el.innerText
      args: ["<uid of the markdown panel>"]
    ```
-3. Look up the source PromQL in the migration report:
+3. Look up the source PromQL in the migration report / native IR (prefer package artifacts under the user's `--output-dir`, not only parity-rig paths):
    ```
-   /tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards/migration_report.json
+   <output-dir>/dashboards/migration_report.json
+   <output-dir>/dashboards/native/*.native.json
+   <output-dir>/dashboards/ir/*.ir.json
    ```
-   Find the panel by title and read `promql` + `notes`.
-4. Classify against the documented gaps (from `parity-rig/RESULTS.md`):
-   - `histogram_quantile`, `topk`, `bottomk`, `label_replace`, `vector()`, `predict_linear` — out of scope, documented.
-   - `A or B`, `A unless B` between different metrics — refused by design (commit `a6f4932`).
-   - `A / B` between distinct vectors with no explicit `on()` — should fall through to ES|QL translation (commit `ea49d15`); if it didn't, the gate is missing a case.
+   Find the panel by title and read `promql` / `reasons` / `esql` (YAML is a legacy-bridge view; native/IR are the review source of truth).
+4. Classify against current boundaries (`docs/sources/grafana.md` Current Boundaries — not outdated gap lists):
+   - **`histogram_quantile` with `sum(... by (le))`:** usually **migrates with warnings** (ES|QL `PERCENTILE()`, possibly "assumed exponential_histogram"). Markdown/`not_feasible` only for bare classic `*_bucket` without `sum by (le)`, known-wrong types (`aggregate_metric_double`), or unsupported shapes. Do **not** call standard quantile panels "out of scope."
+   - **`topk`:** often approximated (latest-bucket top-N) with a warning — check status before assuming markdown.
+   - Still typically hard stops: `bottomk`, `count_values`, `__name__` introspection, subqueries, generic `sum(A/B)` that is not a `_sum`/`_count` pair, unfusable multi-branch `or`/`join`.
+   - Histogram mean `sum(m_sum)/sum(m_count)` idioms approximate as a ratio of aggregates with a warning.
+   - `A or B`, `A unless B` between different metrics — refused by design when incompatible.
+   - `A / B` between distinct vectors with no explicit `on()` — should fall through to ES|QL when supported; if it didn't, the gate may be missing a case.
    - "Divergent filters/groupings cannot be translated safely" — by design when operands have incompatible filter or BY shapes.
-5. If the pattern is a *new* class that mig-to-kbn could plausibly translate, file an issue and link to the captured panel screenshot. Otherwise this is working as intended; report it back to the user as expected.
+5. Map empty/wrong UI to **render-audit taxonomy** when available (`docs/testing.md`): `render_error` (translator/Lens bug, fail) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness, warn). Late-bound grouping "invalid column" after a missing label is usually a field/data gap, not a translator regression.
+6. If the pattern is a *new* class that mig-to-kbn could plausibly translate, file an issue and link to the captured panel screenshot. Otherwise report expected approximation vs hard stop clearly.
 
 ## Workflow D — runtime error popup (red toast in Kibana)
 
@@ -215,8 +221,10 @@ This is the foundation of `parity-rig/verifier/` (the framework in flight). The 
 
 For any panel, the agent has *two* sources of truth besides Kibana:
 
-1. **The migration report**: `/tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards/migration_report.json`. Find the panel by `title`. Useful fields: `status`, `feasibility`, `promql`, `esql`, `reasons`, `notes`, `query_ir.source_expression`, `query_ir.target_query`. The `esql` here is what mig-to-kbn emitted; the actual Kibana query (from Workflow A step 3) may differ.
-2. **The compiled NDJSON**: `/tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards/compiled/.../compiled_dashboards.ndjson`. The dashboard saved-object IDs live here. Useful when the agent needs to construct deep-link Kibana URLs (`<kibana>/app/dashboards#/view/<id>`).
+1. **Migration artifacts** (prefer the user's `--output-dir`): `dashboards/migration_report.json`, `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`. Find the panel by `title`. Useful fields: `status`, `promql`, `esql`, `reasons`, `notes`, `query_ir`. Repo-only parity-rig paths under `/tmp/mig-to-kbn-e2e/` are optional developer loops — label them as such.
+2. **Dashboard id for deep links:** from `native/*.native.json` `dashboard_id` (or compiled NDJSON when `--compile` / legacy import was used). Construct `<kibana>/app/dashboards#/view/<id>`.
+
+Render-audit driver (package): `python -m observability_migration.targets.kibana.render_audit_driver` or `scripts/run_render_audit_local.sh` for local no-SSO stacks — see `docs/testing.md`.
 
 ## After diagnosis
 
@@ -250,6 +258,8 @@ If a real translator gap is identified:
 
 - [`~/.cursor/skills/chrome-devtools-debugging/SKILL.md`](~/.cursor/skills/chrome-devtools-debugging/SKILL.md) — the generic foundation this skill builds on.
 - [`~/.cursor/skills/chrome-devtools-debugging/agent-browser.md`](~/.cursor/skills/chrome-devtools-debugging/agent-browser.md) — `agent-browser` CLI reference for the bulk / diff / HAR primitives used by Workflow E.
-- `parity-rig/verifier/bootstrap.sh` — one-time `agent-browser` SAML + persistent state setup.
-- `parity-rig/RESULTS.md` — known translator gaps and what each commit fixed.
+- `parity-rig/verifier/bootstrap.sh` — one-time `agent-browser` SAML + persistent state setup (**repo-only**).
+- `docs/sources/grafana.md` — Current Boundaries (approximations vs hard stops).
+- `docs/testing.md` — render-audit taxonomy and layered verifier gates.
 - `docs/command-contract.md` — canonical mig-to-kbn CLIs (`obs-migrate`, `grafana-validate-uploaded`).
+- `explain-migration-gaps` — plain-language triage when status is warned/blocked.

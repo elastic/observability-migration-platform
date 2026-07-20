@@ -16,6 +16,7 @@ from observability_migration.core.assets.alerting import (
 )
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import AUTOMATED_TIER, map_alerts_batch
+from observability_migration.core.reporting.report import print_field_discovery_warning
 from observability_migration.core.selection import (
     apply_cli_selection,
     criteria_from_args,
@@ -377,6 +378,7 @@ def _build_alert_schema_resolver(args):
             index_pattern=getattr(args, "esql_index", "") or getattr(args, "data_view", "") or None,
             es_api_key=getattr(args, "es_api_key", "") or None,
             verify=_resolve_tls_from_args(args),
+            field_profile=getattr(args, "field_profile", "otel"),
         )
     except Exception:
         return None
@@ -431,8 +433,14 @@ def run_alert_pipeline(
     # Reuse the caller's resolver (dashboard flow already built one); only build
     # our own on the alerts-only path so field discovery / the PROMQL probe run
     # once per migrate.
-    if resolver is None:
+    owns_resolver = resolver is None
+    if owns_resolver:
         resolver = _build_alert_schema_resolver(args)
+    if resolver is not None and getattr(args, "es_url", ""):
+        # Passthrough resolution deliberately does not trigger discovery while
+        # emitting raw names. Prime capabilities here so alert translation can
+        # still validate every emitted metric/label against the live target.
+        resolver.discovery_status()
     mapping_batch = map_alerts_batch(
         all_alert_irs,
         data_view=getattr(args, "data_view", "metrics-*"),
@@ -477,12 +485,18 @@ def run_alert_pipeline(
     print(f"    By tier: {by_tier}")
     if by_kind:
         print(f"    By kind: {by_kind}")
-    return {
+    summary = {
         "total": len(all_alert_irs),
         "artifacts_dir": str(output_dir),
         "by_automation_tier": by_tier,
         "by_kind": by_kind,
     }
+    if resolver is not None:
+        field_discovery = resolver.field_resolution_summary()
+        summary["field_discovery"] = field_discovery
+        if owns_resolver:
+            print_field_discovery_warning(field_discovery)
+    return summary
 
 
 __all__ = [

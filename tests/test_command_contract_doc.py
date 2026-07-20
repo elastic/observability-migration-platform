@@ -11,6 +11,14 @@ COMMAND_CONTRACT = ROOT / "docs" / "command-contract.md"
 KIBANA_TARGET_DOC = ROOT / "docs" / "targets" / "kibana.md"
 GRAFANA_SOURCE_DOC = ROOT / "docs" / "sources" / "grafana.md"
 DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
+ASSET_MODEL_DOC = ROOT / "docs" / "architecture" / "asset-model.md"
+FIELD_PROFILE_DESIGN = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-07-17-grafana-datadog-field-profile-alignment-design.md"
+)
 ALERTING_EXAMPLES_README = ROOT / "examples" / "alerting" / "README.md"
 MIGRATE_ALL_SUPPORTED_SKILL = ROOT / ".cursor" / "skills" / "migrate-all-supported-assets" / "SKILL.md"
 REVERT_MIGRATION_SKILL = ROOT / ".cursor" / "skills" / "revert-migration" / "SKILL.md"
@@ -235,6 +243,7 @@ class CommandContractDocTests(unittest.TestCase):
         # The verified model is profile-aware: the resolver auto-detects how the
         # Prometheus data landed in Elastic before resolving labels/metrics.
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("schema_change_report.md", text)
         self.assertIn("telemetry_contract.json", text)
@@ -242,10 +251,31 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertNotIn("PromQL metric names pass through to ES", text)
         self.assertIn("field_capabilities_discovery", text)
 
+    def test_field_profile_contract_docs_cover_new_layouts_and_summary_keys(self):
+        grafana_comparison = GRAFANA_SOURCE_DOC.read_text(encoding="utf-8").split(
+            "### Comparison with Datadog Field Profiles",
+            1,
+        )[1].split("### ", 1)[0]
+        asset_model = ASSET_MODEL_DOC.read_text(encoding="utf-8")
+        design = FIELD_PROFILE_DESIGN.read_text(encoding="utf-8")
+        command_contract = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        datadog = DATADOG_SOURCE_DOC.read_text(encoding="utf-8")
+
+        self.assertIn("prometheus_metrics", grafana_comparison)
+        self.assertIn("prometheus_metrics", asset_model)
+        self.assertIn("prometheus_metrics", design)
+        self.assertNotIn(
+            "docs/superpowers/plans/2026-07-17-grafana-datadog-field-profile-alignment.md",
+            design,
+        )
+        self.assertIn("automatic_profile_selection", command_contract)
+        self.assertIn("Prometheus profiles therefore keep ECS / OTel log fields", datadog)
+
     def test_prepare_target_telemetry_skill_routes_pre_migration_setup(self):
         text = PREPARE_TARGET_TELEMETRY_SKILL.read_text(encoding="utf-8")
         # Covers both sources' target-layout mechanics in one place.
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("--field-profile", text)
         # Datadog has NO auto-detection (the key honesty contrast vs Prometheus).
@@ -264,6 +294,7 @@ class CommandContractDocTests(unittest.TestCase):
     def test_understand_source_schema_skill_documents_three_profile_model(self):
         text = UNDERSTAND_SCHEMA_SKILL.read_text(encoding="utf-8")
         self.assertIn("prometheus_remote_write", text)
+        self.assertIn("prometheus_metrics", text)
         self.assertIn("prometheus_native", text)
         self.assertIn("_field_caps", text)
         # Honest about the hard dependency: detection needs data already in ES.
@@ -297,6 +328,19 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("target_readiness_contract.json", text)
         self.assertIn("field_capabilities_discovery", text)
         self.assertIn("Datadog `--data-view` is an explicit override", text)
+
+    def test_command_contract_documents_field_profile_defaults_and_passthrough(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("### Field Profile Contract", text)
+        # Default is otel for every source, including Grafana.
+        self.assertIn("defaults to `otel` for every source migration, including", text)
+        self.assertIn("Grafana", text)
+        self.assertIn("**`otel`** (default)", text)
+        self.assertIn("**`passthrough`**", text)
+        self.assertIn("automatic mapping is disabled", text)
+        self.assertIn("`default` (alias of `otel`)", text)
+        self.assertIn("--field-profile passthrough", text)
+        self.assertIn("Grafana exits `2`, Datadog exits `1`", text)
 
     def test_command_contract_documents_esql_index_and_data_view_distinction(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")

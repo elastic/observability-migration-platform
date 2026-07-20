@@ -126,29 +126,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.rule_pack = migrate.RulePackConfig()
         self.resolver = migrate.SchemaResolver(self.rule_pack)
 
-    def translate(self, expr, panel_type="graph", translation_hints=None):
+    def _resolver(self, field_profile="otel", fields=None):
+        """SchemaResolver with an explicit planned field profile."""
+        resolver = migrate.SchemaResolver(self.rule_pack, field_profile=field_profile)
+        if fields is not None:
+            self._seed_resolver(resolver, fields)
+        return resolver
+
+    def _seed_resolver(self, resolver, fields):
+        resolver._discovery_attempted = True
+        resolver._field_cache = fields
+        resolver._discovered_mappings = {}
+        resolver._schema_profile_cache_id = None
+
+    def _remote_write_resolver(self, fields):
+        return self._resolver("prometheus_remote_write", fields)
+
+    def _native_profile_resolver(self, fields):
+        return self._resolver("prometheus_native", fields)
+
+    def translate(self, expr, panel_type="graph", translation_hints=None, resolver=None):
         return migrate.translate_promql_to_esql(
             expr,
             esql_index="metrics-*",
             panel_type=panel_type,
             rule_pack=self.rule_pack,
-            resolver=self.resolver,
+            resolver=resolver or self.resolver,
             translation_hints=translation_hints,
         )
 
-    def translate_panel(self, panel):
+    def translate_panel(self, panel, resolver=None):
         return migrate.translate_panel(
             panel,
             datasource_index="metrics-*",
             esql_index="metrics-*",
             rule_pack=self.rule_pack,
-            resolver=self.resolver,
+            resolver=resolver or self.resolver,
         )
 
     def seed_field_caps(self, fields):
-        self.resolver._discovery_attempted = True
-        self.resolver._field_cache = fields
-        self.resolver._discovered_mappings = {}
+        self._seed_resolver(self.resolver, fields)
 
     def test_schema_resolver_otel_profile_covers_workload_labels(self):
         self.assertEqual(self.resolver.resolve_label("deployment"), "k8s.deployment.name")
@@ -1680,7 +1697,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
             translated.esql_query,
         )
-        self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
+        # Denominator stays IRATE (not AVG_OVER_TIME) but is CASE-shaped when the
+        # numerator already uses CASE, to avoid ES ClassCast on mixed STATS args.
+        self.assertIn(
+            "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)",
+            translated.esql_query,
+        )
+        self.assertNotIn("IRATE(node_cpu_seconds_total, 1m)", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
         self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")
@@ -1871,6 +1894,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
         self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
 
+    def test_resolver_detects_prometheus_metrics_profile(self):
+        """Classic Metricbeat nested layout (use_types=false)."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {
+                "keyword": {"aggregatable": True, "time_series_dimension": True}
+            },
+            "prometheus.metrics.http_requests_total": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_metrics")
+
     def test_resolver_does_not_detect_profile_when_only_otel_fields(self):
         self.seed_field_caps({
             "service.instance.id": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
@@ -1942,7 +1977,9 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_field_resolution_summary_clears_fallback_for_known_profile(self):
         # Recognized profile where every resolved label is present as a real
         # namespaced field: resolution is verified, so no warning.
-        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        resolver = migrate.SchemaResolver(
+            self.rule_pack, es_url="https://example.es", field_profile="prometheus_remote_write",
+        )
         response = mock.Mock(status_code=200)
         response.json.return_value = {
             "fields": {
@@ -1960,10 +1997,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertFalse(summary["otel_fallback"])
 
     def test_field_resolution_summary_warns_on_missing_label_in_known_profile(self):
-        # PR #262 review: a recognized prometheus_remote_write target missing a
-        # dashboard's label still falls through to a blind OTel default
-        # (k8s.namespace.name). The run must warn even though a profile matched.
-        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        # Planned prometheus_remote_write emits namespaced labels even when
+        # absent from live caps — preflight surfaces missing fields; resolution
+        # does not fall back to blind OTel defaults during emit.
+        resolver = migrate.SchemaResolver(
+            self.rule_pack, es_url="https://example.es", field_profile="prometheus_remote_write",
+        )
         response = mock.Mock(status_code=200)
         response.json.return_value = {
             "fields": {
@@ -1972,13 +2011,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             }
         }
         with mock.patch.object(schema.requests, "get", return_value=response):
-            # instance is present (namespaced); namespace is absent -> blind OTel.
             self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
-            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
+            self.assertEqual(resolver.resolve_label("namespace"), "prometheus.labels.namespace")
             summary = resolver.field_resolution_summary()
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
-        self.assertTrue(summary["otel_fallback"])
+        self.assertFalse(summary["otel_fallback"])
 
     def test_field_resolution_summary_clears_fallback_when_otel_fields_confirmed(self):
         # Discovery returned live OTel fields that back resolution — every
@@ -2082,32 +2120,32 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertFalse(summary["otel_fallback"])
 
     def test_resolve_label_namespaces_to_prometheus_labels_when_profile_active(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
         })
-        self.assertEqual(self.resolver.resolve_label("instance"), "prometheus.labels.instance")
-        self.assertEqual(self.resolver.resolve_control_field("instance"), "prometheus.labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+        self.assertEqual(resolver.resolve_control_field("instance"), "prometheus.labels.instance")
 
     def test_resolve_metric_field_picks_counter_suffix_for_counter_metric(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
             "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            resolver.resolve_metric_field("http_requests_total", prefer="counter"),
             "prometheus.http_requests_total.counter",
         )
 
     def test_resolve_metric_field_picks_value_suffix_for_gauge_metric(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
             "prometheus.process_resident_memory_bytes.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("process_resident_memory_bytes", prefer="gauge"),
+            resolver.resolve_metric_field("process_resident_memory_bytes", prefer="gauge"),
             "prometheus.process_resident_memory_bytes.value",
         )
 
@@ -2127,20 +2165,20 @@ class TranslatorRegressionTests(unittest.TestCase):
         requested metric has no leaf at all, the fallback name must reflect
         the caller's `prefer` so the missing-field signal points at the
         right physical leaf."""
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.up.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="counter"),
+            resolver.resolve_metric_field("absent_metric", prefer="counter"),
             "prometheus.absent_metric.counter",
         )
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="gauge"),
+            resolver.resolve_metric_field("absent_metric", prefer="gauge"),
             "prometheus.absent_metric.value",
         )
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="rate"),
+            resolver.resolve_metric_field("absent_metric", prefer="rate"),
             "prometheus.absent_metric.rate",
         )
 
@@ -2148,7 +2186,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         """End-to-end: a PromQL counter rate against a remote_write profile
         target must produce ESQL referencing `prometheus.labels.instance` and
         `prometheus.http_requests_total.counter` in the right places."""
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.labels.path": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
@@ -2157,7 +2195,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         translated = self.translate(
-            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)',
+            resolver=resolver,
         )
         self.assertIn('prometheus.labels.instance == "i-1"', translated.esql_query)
         # The aggregation argument is the namespaced counter field.
@@ -2217,59 +2256,60 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
 
     def test_resolve_metric_field_prefixes_metrics_dot_for_native_profile(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            resolver.resolve_metric_field("http_requests_total", prefer="counter"),
             "metrics.http_requests_total",
         )
         # prefer is irrelevant for native layout (no suffix variants) — always prefixed
         self.assertEqual(
-            self.resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
+            resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
             "metrics.process_cpu_seconds_total",
         )
 
     def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
-        self.assertEqual(self.resolver.resolve_label("job"), "labels.job")
-        self.assertEqual(self.resolver.resolve_control_field("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("job"), "labels.job")
+        self.assertEqual(resolver.resolve_control_field("instance"), "labels.instance")
 
     def test_is_counter_uses_metrics_prefix_field_cap_for_native_profile(self):
         """is_counter() must check `metrics.<name>` capability, not bare name."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
-        self.assertTrue(self.resolver.is_counter("http_requests_total"))
-        self.assertFalse(self.resolver.is_counter("process_resident_memory_bytes"))
+        self.assertTrue(resolver.is_counter("http_requests_total"))
+        self.assertFalse(resolver.is_counter("process_resident_memory_bytes"))
 
     def test_is_counter_respects_native_profile_gauge_cap_for_total_suffix(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
 
-        self.assertFalse(self.resolver.is_counter("http_requests_total"))
+        self.assertFalse(resolver.is_counter("http_requests_total"))
 
     def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
         """End-to-end: counter rate against a native /_prometheus endpoint target
         must produce ES|QL referencing `metrics.*` metric fields and `labels.*`
         dimension fields, never bare names or prometheus.* nesting."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         translated = self.translate(
-            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)',
+            resolver=resolver,
         )
         self.assertIn("metrics.http_requests_total", translated.esql_query)
         self.assertIn('labels.instance == "i-1"', translated.esql_query)
@@ -2282,7 +2322,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         """For native profile: labels not yet observed in the field cache must
         still resolve to `labels.<name>`, not fall through to wrong OTel candidates
         (e.g. service.instance.id) which don't exist in this layout."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             # Only one metric field — enough to trigger native profile detection
             # once a labels.* field is also present.
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
@@ -2290,15 +2330,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             # NOTE: labels.instance deliberately NOT present in cache.
         })
         # Must return labels.instance, not service.instance.id or bare 'instance'.
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
-        self.assertEqual(self.resolver.resolve_label("namespace"), "labels.namespace")
-        self.assertEqual(self.resolver.resolve_label("unknown_label"), "labels.unknown_label")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("namespace"), "labels.namespace")
+        self.assertEqual(resolver.resolve_label("unknown_label"), "labels.unknown_label")
 
     def test_build_discovered_mappings_skipped_for_native_profile(self):
         """_build_discovered_mappings must not populate OTel entries for native
         profile — native indices have no OTel fields and scanning them is wasted
         work that could also produce stale fallbacks."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             # Simulate an OTel field that happens to be in the cache (edge case):
@@ -2306,22 +2346,23 @@ class TranslatorRegressionTests(unittest.TestCase):
             "service.instance.id": {"keyword": {"aggregatable": True}},
         })
         # Explicitly invoke _build_discovered_mappings the way _discover_fields does.
-        self.resolver._build_discovered_mappings()
+        resolver._build_discovered_mappings()
         # No OTel candidates should have been mapped.
-        self.assertEqual(self.resolver._discovered_mappings, {})
+        self.assertEqual(resolver._discovered_mappings, {})
         # resolve_label must still return the namespaced form, not the OTel field.
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
 
     def test_translator_gauge_metric_uses_ts_with_metrics_prefix_for_native_profile(self):
         """Gauge metrics in native profile must use TS (issue #8: FROM against a
         TSDS sums every per-sample doc and inflates the value) and still
         reference the `metrics.` prefixed field name."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         translated = self.translate(
-            'avg(process_resident_memory_bytes) by (instance)'
+            'avg(process_resident_memory_bytes) by (instance)',
+            resolver=resolver,
         )
         self.assertIn("metrics.process_resident_memory_bytes", translated.esql_query)
         self.assertIn("TS metrics-*", translated.esql_query)
@@ -2424,19 +2465,11 @@ class TranslatorRegressionTests(unittest.TestCase):
     # selector inside functions (verified live on issue #270).
 
     def _otel_resolver(self, fields):
-        resolver = migrate.SchemaResolver(self.rule_pack)
-        resolver._discovery_attempted = True
-        resolver._field_cache = fields
-        resolver._discovered_mappings = {}
-        return resolver
+        return self._resolver("otel", fields)
 
-    def _native_profile_resolver(self, fields):
-        """A resolver whose field cache trips the `prometheus_native` profile
-        (both `metrics.<name>` and `labels.<name>` present). On that profile
-        resolve_metric_field returns `metrics.<name>` unconditionally for the
-        preflight contract — so the native-PROMQL rewrite must gate on the field
-        cache itself, not on the resolver's return value alone."""
-        return self._otel_resolver(fields)
+    def _native_profile_resolver_for_promql(self, fields):
+        """Native planned profile for native-PROMQL rewrite tests."""
+        return self._resolver("prometheus_native", fields)
 
     def test_native_profile_does_not_prefix_label_matcher_or_grouping_keys(self):
         """Regression (#270 review): under the `prometheus_native` profile,
@@ -2444,15 +2477,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         The rewrite must touch only the metric selector, leaving label-matcher
         keys and `by(...)` grouping tokens bare so the PROMQL command still
         matches labels and groups correctly."""
-        resolver = self._native_profile_resolver({
+        resolver = self._native_profile_resolver_for_promql({
             "metrics.http_requests_total": {
                 "long": {"aggregatable": True, "time_series_metric": "counter"}
             },
             "labels.instance": {"keyword": {"aggregatable": True}},
         })
-        # Precondition: this cache is detected as the native profile, whose
-        # resolve_metric_field prefixes *any* token unconditionally.
-        self.assertEqual(resolver._current_schema_profile(), "prometheus_native")
+        # Precondition: planned native profile prefixes metrics unconditionally.
+        self.assertEqual(resolver._effective_schema_profile(), "prometheus_native")
         self.assertEqual(resolver.resolve_metric_field("instance"), "metrics.instance")
         q = panels.build_native_promql_query(
             'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance)',

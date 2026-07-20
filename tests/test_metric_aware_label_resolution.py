@@ -19,14 +19,19 @@ from observability_migration.adapters.source.grafana.rules import RulePackConfig
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
 
 
-def _live_resolver(field_cache, cooccurrence):
+def _live_resolver(field_cache, cooccurrence, field_profile="otel"):
     """A resolver with live caps and pre-seeded co-occurrence results.
 
     ``cooccurrence`` maps ``(metric_field, candidate)`` to True/False/None, the
     contract of the real ES|QL COUNT probe. Seeding the per-pair cache exercises
     the real resolution path (issue #182 batched probe) without any network.
     """
-    resolver = SchemaResolver(RulePackConfig(), es_url="https://es", index_pattern="metrics-*")
+    resolver = SchemaResolver(
+        RulePackConfig(),
+        es_url="https://es",
+        index_pattern="metrics-*",
+        field_profile=field_profile,
+    )
     resolver._discovery_attempted = True
     resolver._field_cache = dict(field_cache)
     resolver._discovery_status = "ok"
@@ -92,8 +97,8 @@ class TestMetricAwareLabelResolution(unittest.TestCase):
     def test_remote_write_profile_prefers_namespaced_label_over_otel(self):
         # Dual-shipping prometheus_remote_write index: both the source-faithful
         # `prometheus.labels.instance` and an OTel `service.instance.id` co-occur
-        # with the metric. The profile's namespaced form must win — metric-aware
-        # resolution must not regress source-faithful Prometheus behaviour.
+        # with the metric. The planned profile's namespaced form must win —
+        # metric-aware co-occurrence must not regress planned Prometheus emit.
         resolver = _live_resolver(
             field_cache={
                 "prometheus.labels.instance": {},
@@ -104,10 +109,30 @@ class TestMetricAwareLabelResolution(unittest.TestCase):
                 ("prometheus.redis_up.value", "prometheus.labels.instance"): True,
                 ("prometheus.redis_up.value", "service.instance.id"): True,
             },
+            field_profile="prometheus_remote_write",
         )
         self.assertEqual(resolver.schema_profile(), "prometheus_remote_write")
         self.assertEqual(
             resolver.resolve_label("instance", metric_field="prometheus.redis_up.value"),
+            "prometheus.labels.instance",
+        )
+
+    def test_prometheus_metrics_profile_prefers_namespaced_label_over_otel(self):
+        resolver = _live_resolver(
+            field_cache={
+                "prometheus.labels.instance": {},
+                "prometheus.metrics.redis_up": {},
+                "service.instance.id": {},
+            },
+            cooccurrence={
+                ("prometheus.metrics.redis_up", "prometheus.labels.instance"): True,
+                ("prometheus.metrics.redis_up", "service.instance.id"): True,
+            },
+            field_profile="prometheus_metrics",
+        )
+        self.assertEqual(resolver.schema_profile(), "prometheus_metrics")
+        self.assertEqual(
+            resolver.resolve_label("instance", metric_field="prometheus.metrics.redis_up"),
             "prometheus.labels.instance",
         )
 
@@ -124,6 +149,7 @@ class TestMetricAwareLabelResolution(unittest.TestCase):
                 ("metrics.redis_up", "labels.instance"): True,
                 ("metrics.redis_up", "service.instance.id"): True,
             },
+            field_profile="prometheus_native",
         )
         self.assertEqual(resolver.schema_profile(), "prometheus_native")
         self.assertEqual(

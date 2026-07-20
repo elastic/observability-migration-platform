@@ -41,6 +41,7 @@ from observability_migration.adapters.source.datadog.execution import build_sour
 from observability_migration.adapters.source.datadog.field_map import (
     OTEL_PROFILE,
     PASSTHROUGH_PROFILE,
+    PROMETHEUS_NATIVE_PROFILE,
     PROMETHEUS_PROFILE,
     FieldMapProfile,
     load_profile,
@@ -3650,6 +3651,76 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system_cpu_user")
         self.assertEqual(PASSTHROUGH_PROFILE.map_tag("host"), "host")
 
+    def test_prometheus_metricbeat_profile_uses_prometheus_metrics_and_labels(self):
+        """Metricbeat remote_write layout: prometheus.metrics.* + prometheus.labels.*."""
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_metric("http.requests"),
+            "prometheus.metrics.http_requests",
+        )
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("host"), "prometheus.labels.instance")
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("env"), "prometheus.labels.env")
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("kube_namespace"),
+            "prometheus.labels.kube_namespace",
+        )
+        # Unmapped tags still land under prometheus.labels.* via tag_prefix.
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("custom_dim"),
+            "prometheus.labels.custom_dim",
+        )
+        # Must not emit ECS host.name / kubernetes.* under this layout.
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "host.name")
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "instance")
+
+    def test_prometheus_native_profile_uses_metrics_and_labels_prefixes(self):
+        """Native Elasticsearch /_prometheus write: metrics.* + labels.*."""
+        profile = load_profile("prometheus_native")
+        self.assertEqual(profile.name, "prometheus_native")
+        self.assertEqual(profile.map_metric("http.requests"), "metrics.http_requests")
+        self.assertEqual(profile.map_tag("host"), "labels.instance")
+        self.assertEqual(profile.map_tag("env"), "labels.env")
+        self.assertEqual(profile.map_tag("kube_namespace"), "labels.kube_namespace")
+        self.assertEqual(profile.map_tag("custom_dim"), "labels.custom_dim")
+        self.assertEqual(profile.metric_index, "metrics-*.prometheus-*")
+        self.assertEqual(PROMETHEUS_NATIVE_PROFILE.map_metric("http.requests"), "metrics.http_requests")
+
+    def test_prometheus_profiles_keep_log_queries_on_ecs_fields(self):
+        parsed = parse_log_query("service:web status:error host:api01")
+
+        for profile in (PROMETHEUS_PROFILE, PROMETHEUS_NATIVE_PROFILE):
+            with self.subTest(profile=profile.name):
+                where = log_ast_to_esql_where(parsed.ast, profile)
+                self.assertEqual(
+                    where,
+                    'service.name == "web" AND log.level == "error" AND host.name == "api01"',
+                )
+                self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+                self.assertEqual(profile.map_log_field("host"), "host.name")
+                self.assertNotIn("prometheus.labels.", where)
+                self.assertNotIn("labels.service", where)
+
+    def test_custom_profile_can_split_metric_and_log_tag_maps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_path = Path(tmpdir) / "profile.yaml"
+            profile_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "split",
+                        "tag_map": {"service": "prometheus.labels.service"},
+                        "log_tag_map": {"service": "service.name"},
+                        "tag_prefix": "prometheus.labels.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = load_profile(str(profile_path))
+
+        self.assertEqual(profile.map_tag("service", context="metric"), "prometheus.labels.service")
+        self.assertEqual(profile.map_tag("custom", context="metric"), "prometheus.labels.custom")
+        self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+        self.assertEqual(profile.map_tag("custom", context="log"), "custom")
+
     def test_load_builtin_profile(self):
         profile = load_profile("otel")
         self.assertEqual(profile.name, "otel")
@@ -3686,6 +3757,15 @@ class TestFieldMap(unittest.TestCase):
     def test_load_unknown_profile_raises(self):
         with self.assertRaises(ValueError):
             load_profile("nonexistent")
+
+    def test_load_profile_rejects_auto(self):
+        """Datadog stays explicit-only — no Grafana-style auto profile."""
+        with self.assertRaises(ValueError) as ctx:
+            load_profile("auto")
+        message = str(ctx.exception)
+        self.assertIn("auto", message.lower())
+        self.assertIn("otel", message)
+        self.assertNotIn("prometheus_remote_write", message)
 
 
 class TestDatadogCliFieldProfileContract(unittest.TestCase):

@@ -66,7 +66,16 @@ The command writes **`comparison_report.json`** (machine-readable) and a sibling
 
 Besides **`FAIL`** (which sets exit `1`), verdicts **`ERROR`**, **`SKIP`**, and **`SHAPE_PASS`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` before trusting an all-green exit code.
 
-Route panels with verdict **`FAIL`** or structural rows the user expected to be numerically verified to the **`explain-migration-gaps`** skill for rebuild guidance. For a shareable headline scorecard (not per-panel parity), use **`report-migration-coverage`**.
+Route panels with verdict **`FAIL`** or structural rows the user expected to be numerically verified to the **`explain-migration-gaps`** skill for rebuild guidance. Note that **`STRUCTURAL`** can also hide panels that migrated with **accepted approximations** (`migrated_with_warnings`) — structural shape ≠ semantic fidelity; use `explain-migration-gaps` when the user expected numeric proof. For a shareable headline scorecard (not per-panel parity), use **`report-migration-coverage`**.
+
+### Beyond compare (see also)
+
+`obs-migrate compare` proves oracle parity where applicable; it does **not** prove Lens UI render. When the user asks "will it show up correctly in Kibana?", also point to:
+
+- `obs-migrate verify` (emitted-query + optional scorecard)
+- Render audit: `python -m observability_migration.targets.kibana.render_audit_driver` or `scripts/run_render_audit_local.sh` (`docs/testing.md`)
+- `verifier.live_validate` / `verifier.dashboards_api` for repo/CI gate workflows
+- `debug-uploaded-kibana-dashboard` for a single broken panel
 
 ## Honest limits / Do NOT
 
@@ -79,6 +88,9 @@ Route panels with verdict **`FAIL`** or structural rows the user expected to be 
 
 - `report-migration-coverage` skill — shareable coverage summary from migrate artifacts.
 - `explain-migration-gaps` skill — why a panel did not migrate cleanly and how to rebuild it.
+- `debug-uploaded-kibana-dashboard` skill — UI render failures after upload.
+- `prepare-production-cutover` skill — go/no-go using compare + render-audit + coverage.
 - `obs-migrate seed-sample-data` / `obs-migrate remove-sample-data` — optional deterministic data setup and teardown (`docs/command-contract.md`).
 - For Datadog, `obs-migrate migrate --source datadog --source-execution --validate` fills the verification packets' `source_execution`/`comparison` blocks with live source-vs-target verdicts (needs DD creds and the same telemetry on both sides) — the closest thing to a numeric oracle for Datadog panels.
 - `docs/command-contract.md` — full compare, seed, and remove flag reference for the installed version.
+- `docs/testing.md` — layered verifier and render-audit gates.

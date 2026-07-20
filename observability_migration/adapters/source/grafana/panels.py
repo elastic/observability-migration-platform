@@ -82,6 +82,7 @@ from .promql import (
     _build_formula_plan,
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
+    _finalize_fused_stats_assignments,
     _format_scalar_value,
     _is_counter_fallback,
     _matcher_to_esql,
@@ -1332,6 +1333,47 @@ _PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | fr
 )
 
 
+def _promql_label_names(expr):
+    """Return label names used by matchers or grouping modifiers."""
+    labels = set()
+    for selector in re.findall(r"\{([^{}]*)\}", str(expr or "")):
+        labels.update(
+            re.findall(
+                r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)",
+                selector,
+            )
+        )
+    sanitized = _strip_promql_string_literals(str(expr or ""))
+    for group in re.findall(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^)]*)\)",
+        sanitized,
+        re.IGNORECASE,
+    ):
+        labels.update(name.strip() for name in group.split(",") if name.strip())
+    # __name__ is a metric selector, not a stored label field.
+    labels.discard("__name__")
+    return labels
+
+
+def _promql_uses_rule_pack_label_overrides(expr, rule_pack):
+    """Whether native PROMQL would bypass an explicit label rule."""
+    labels = _promql_label_names(expr)
+    overridden = set(getattr(rule_pack, "label_rewrites", {}))
+    overridden.update(getattr(rule_pack, "ignored_labels", []))
+    return bool(labels & overridden)
+
+
+def _record_passthrough_native_labels(expr, resolver):
+    """Validate raw native-PROMQL labels without remapping the expression."""
+    if not getattr(resolver, "_passthrough", False):
+        return
+    resolve = getattr(resolver, "resolve_label", None)
+    if not callable(resolve):
+        return
+    for label in sorted(_promql_label_names(expr)):
+        resolve(label)
+
+
 def _prefix_native_metric_fields(expr, resolver):
     """Rewrite bare metric selectors in a native PROMQL expression to their
     resolved ``metrics.<name>`` field (issue #270).
@@ -1896,6 +1938,16 @@ def _translate_panel_native_promql(
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
     runtime_features = getattr(rule_pack, "runtime_features", {})
+    _record_passthrough_native_labels(expr, resolver)
+    if (
+        getattr(resolver, "_passthrough", False)
+        and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+    ):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+        )
+        return None
     if not can_use_native_promql(expr, runtime_features=runtime_features):
         if (
             _promql_label_matcher_has_template_variable(expr)
@@ -2167,6 +2219,16 @@ def _translate_multi_target_native_promql(
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
         runtime_features = getattr(rule_pack, "runtime_features", {})
+        _record_passthrough_native_labels(expr, resolver)
+        if (
+            getattr(resolver, "_passthrough", False)
+            and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+        ):
+            _append_unique(
+                panel_notes,
+                "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+            )
+            return None
         if not can_use_native_promql(expr, runtime_features=runtime_features):
             if (
                 _promql_label_matcher_has_template_variable(expr)
@@ -3431,6 +3493,34 @@ def _try_collapse_same_metric_targets(translations):
     return collapsed
 
 
+_ESQL_ALIAS_TOKEN_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|'
+    r"'(?:\\.|[^'\\])*'|"
+    r"`(?:\\.|``|[^`])*`|"
+    r"[A-Za-z_][A-Za-z0-9_.]*"
+)
+
+
+def _canonical_esql_alias(identifier):
+    """Return the column name represented by a possibly quoted identifier."""
+    text = str(identifier or "").strip()
+    if len(text) >= 2 and text.startswith("`") and text.endswith("`"):
+        return text[1:-1].replace("``", "`").replace("\\`", "`")
+    return text
+
+
+def _rewrite_esql_alias_references(expression, alias_map):
+    """Rewrite identifier tokens without touching ES|QL string literals."""
+
+    def _replace(match):
+        token = match.group(0)
+        if token.startswith(("'", '"')):
+            return token
+        return alias_map.get(_canonical_esql_alias(token), token)
+
+    return _ESQL_ALIAS_TOKEN_RE.sub(_replace, expression)
+
+
 def _merge_pretranslated_xy_queries(translations):
     """Fuse already-translated XY ES|QL queries when formula-plan fusion fails.
 
@@ -3555,7 +3645,7 @@ def _merge_pretranslated_xy_queries(translations):
         alias_map: dict[str, str] = {}
         for assignment in item["assignments"]:
             left, right = assignment.split("=", 1)
-            old_alias = left.strip()
+            old_alias = _canonical_esql_alias(left)
             new_alias = _unique_safe_alias(
                 f"{old_alias}_{alias_hint}",
                 used_aliases,
@@ -3566,21 +3656,21 @@ def _merge_pretranslated_xy_queries(translations):
 
         # Rewrite EVAL expressions to use renamed STATS aliases, then bind the
         # final series column to ``result_alias``.
-        rewritten_metric_expr = item["metric_field"]
+        # When there are no EVAL stages the STATS output name *is* the metric —
+        # remap it through alias_map so legend EVAL does not reference the
+        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss).
+        metric_field = _canonical_esql_alias(item["metric_field"])
+        rewritten_metric_expr = metric_field
+        if rewritten_metric_expr in alias_map:
+            rewritten_metric_expr = alias_map[rewritten_metric_expr]
         for eval_stage in item["eval_stages"]:
             body = eval_stage[len("EVAL ") :].strip()
             if "=" not in body:
                 continue
             left, right = body.split("=", 1)
-            expr = right.strip()
-            for old_alias, new_alias in alias_map.items():
-                expr = re.sub(
-                    rf"\b{re.escape(old_alias)}\b",
-                    new_alias,
-                    expr,
-                )
-            out_name = left.strip()
-            if out_name == item["metric_field"]:
+            expr = _rewrite_esql_alias_references(right.strip(), alias_map)
+            out_name = _canonical_esql_alias(left)
+            if out_name == metric_field:
                 rewritten_metric_expr = expr
             else:
                 mapped = alias_map.get(out_name) or _unique_safe_alias(
@@ -3590,8 +3680,6 @@ def _merge_pretranslated_xy_queries(translations):
                 )
                 alias_map[out_name] = mapped
                 eval_parts.append(f"| EVAL {_esql_identifier(mapped)} = {expr}")
-                if out_name == item["metric_field"]:
-                    rewritten_metric_expr = mapped
 
         if translation.metadata.get("negate_result"):
             rewritten_metric_expr = f"(-1 * {rewritten_metric_expr})"
@@ -3619,6 +3707,12 @@ def _merge_pretranslated_xy_queries(translations):
         for part in _split_top_level_csv(by_text)
         if part.strip()
     ]
+
+    renamed_assignments = _finalize_fused_stats_assignments(
+        renamed_assignments,
+        group_fields=group_fields,
+        source_type=next(iter(source_types)),
+    )
 
     def _pipe_stage(stage: str) -> str:
         text = stage.strip()
@@ -5504,6 +5598,8 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
             es_url=es_url,
             index_pattern=index_pattern,
             es_api_key=getattr(resolver, "_es_api_key", None),
+            verify=getattr(resolver, "_verify", True),
+            field_profile=getattr(resolver, "_field_profile", "otel"),
         )
     return cache[index_pattern]
 

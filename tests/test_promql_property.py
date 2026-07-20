@@ -21,6 +21,10 @@ from __future__ import annotations
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from observability_migration.adapters.source.grafana.esql_structural_oracle import (
+    check_esql_structure,
+    structural_errors,
+)
 from observability_migration.adapters.source.grafana.rules import RulePackConfig
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
 from observability_migration.adapters.source.grafana.translate import (
@@ -129,6 +133,17 @@ def _translate(expr: str, panel_type: str = "timeseries"):
     )
 
 
+def _assert_structural_oracle_clean(result) -> None:
+    """When translation is feasible ES|QL, the structural oracle must be clean."""
+    if result.feasibility != "feasible":
+        return
+    esql = result.esql_query or ""
+    if esql.strip().upper().startswith("PROMQL"):
+        return
+    errs = structural_errors(check_esql_structure(esql))
+    assert not errs, errs
+
+
 _KNOWN_FEASIBILITY = {"feasible", "not_feasible", "partial", "manual"}
 _LOSS_HINT = ("merg", "collaps", "drop", "approx", "not feasible", "manual")
 
@@ -140,6 +155,7 @@ class TestNoCrash:
         result = _translate(expr)
         assert isinstance(result.esql_query, str)
         assert result.feasibility in _KNOWN_FEASIBILITY
+        _assert_structural_oracle_clean(result)
 
     @settings(max_examples=80, deadline=None, suppress_health_check=[HealthCheck.too_slow])
     @given(
@@ -150,6 +166,7 @@ class TestNoCrash:
         result = _translate(expr, panel_type=panel_type)
         assert isinstance(result.esql_query, str)
         assert result.feasibility in _KNOWN_FEASIBILITY
+        _assert_structural_oracle_clean(result)
 
 
 class TestDeterminism:
@@ -162,6 +179,7 @@ class TestDeterminism:
         assert first.feasibility == second.feasibility
         assert sorted(first.warnings) == sorted(second.warnings)
         assert list(first.output_group_fields) == list(second.output_group_fields)
+        _assert_structural_oracle_clean(first)
 
 
 class TestLabelConservation:
@@ -172,6 +190,7 @@ class TestLabelConservation:
         result = _translate(expr)
         if result.feasibility != "feasible":
             return
+        _assert_structural_oracle_clean(result)
         non_time = [f for f in result.output_group_fields if f not in _TIME_LIKE]
         if len(non_time) >= len(labels):
             return
