@@ -15,14 +15,23 @@ def test_case_bare_irate_mix_is_error():
         "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     errs = structural_errors(check_esql_structure(q))
-    assert any(f.rule_id == StructuralRuleId.STATS_CASE_BARE_TS_MIX for f in errs)
+    assert any(f.rule_id == StructuralRuleId.STATS_TS_CASE_VALUE_ARG for f in errs)
 
 
 def test_case_true_wrap_is_clean():
     q = (
         "TS metrics-*\n"
-        '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
-        "b = SUM(IRATE(CASE(true, other, NULL), 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+        '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
+        "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    )
+    assert structural_errors(check_esql_structure(q)) == []
+
+
+def test_outer_case_irate_is_clean():
+    q = (
+        "TS metrics-*\n"
+        '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)) '
+        "BY time_bucket = TBUCKET(5 minute)\n"
     )
     assert structural_errors(check_esql_structure(q)) == []
 

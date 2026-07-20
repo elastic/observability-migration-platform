@@ -118,7 +118,7 @@ assert. Spec:
 
 | Piece | Module / test | What it proves |
 |---|---|---|
-| Structural oracle | `observability_migration/adapters/source/grafana/esql_structural_oracle.py` | ERROR rules on emitted ES\|QL: `STATS_CASE_BARE_TS_MIX`, `STATS_BARE_WRAPPED_OVER_TIME_MIX`, `EVAL_UNDEFINED_COLUMN`, `EMPTY_FEASIBLE_QUERY`; WARNING `MIXED_IRATE_AVG_OVER_TIME`. Skips native `PROMQL(...)` passthrough. |
+| Structural oracle | `observability_migration/adapters/source/grafana/esql_structural_oracle.py` | ERROR rules on emitted ES\|QL: `STATS_TS_CASE_VALUE_ARG` (illegal `IRATE(CASE(...))` / other TS funcs with CASE value args), `STATS_BARE_WRAPPED_OVER_TIME_MIX`, `EVAL_UNDEFINED_COLUMN`, `EMPTY_FEASIBLE_QUERY`; WARNING `MIXED_IRATE_AVG_OVER_TIME`. Skips native `PROMQL(...)` passthrough. |
 | Oracle unit tests | `tests/test_esql_structural_oracle.py` | Each rule has a positive/negative fixture |
 | Emitter path matrix | `observability_migration/adapters/source/grafana/esql_emitters.py`, `tests/test_grafana_esql_emitter_matrix.py` | Every registered fusion path has a minimal fixture + oracle run |
 | Fixture corpus gate | `tests/test_grafana_fixture_structural_gate.py` | All `infra/grafana/dashboards/*.json` leaf panels translate to oracle-clean ES\|QL |
@@ -156,8 +156,22 @@ Extension spec:
 | Fixture corpus gate | `tests/test_datadog_fixture_structural_gate.py` | `infra/datadog/dashboards/**/*.json` |
 | Seed intake | `scripts/intake_translation_seeds.py` with `source: datadog` | Non-Grafana regression seeds |
 
-Alerts, broader Grafana coverage (LogQL / variables / native PromQL smoke), and
-extracting a shared `translation_oracle` package are follow-ons —
+### Alert / monitor offline gate (PR2)
+
+Separate from dashboard ES|QL structure: Grafana unified/legacy rules and
+Datadog monitors map through `AlertingIR` → Kibana payloads with automation
+tiers. The offline gate hard-fails only on `real_bug` dispositions so
+`manual_required` / blocked / draft-review stay visible without counting as
+success.
+
+| Piece | Module / test | What it proves |
+|---|---|---|
+| Offline gate | `observability_migration/core/verification/alert_offline_gate.py` | Enablement safety (`enabled=False`), non-empty query when `payload_status=emitted`, required payload fields, empty action placeholders, nested ES\|QL structural oracle; `manual_required` / `parse_degraded` must not emit success-shaped payloads |
+| Unit + mutation | `tests/test_alert_offline_gate.py` | Each rule has a positive/negative case |
+| Fixture corpus gate | `tests/test_alert_fixture_offline_gate.py` | `examples/alerting/grafana/**` + `examples/alerting/monitors/datadog_monitors.json` have zero `real_bug` findings |
+
+Broader Grafana coverage (LogQL / variables / native PromQL smoke) and extracting
+a shared `translation_oracle` package remain follow-ons —
 https://github.com/elastic/observability-migration-platform/issues/301 and
 `docs/superpowers/specs/2026-07-20-translation-correctness-harness-extension-design.md`.
 

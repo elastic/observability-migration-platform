@@ -34,8 +34,8 @@ _GOOD_ALIAS_QUERY = (
 
 _GOOD_CASE_WRAP_QUERY = (
     "TS metrics-*\n"
-    '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
-    "b = SUM(IRATE(CASE(true, other, NULL), 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
+    "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
 )
 
 _DATADOG_GOOD_QUERY = (
@@ -53,9 +53,13 @@ def corrupt_break_eval_alias(query: str) -> str:
     )
 
 
-def corrupt_strip_case_true_wrap(query: str) -> str:
-    """Remove CASE(true, ...) guard so bare TS mixes with CASE-wrapped IRATE."""
-    return query.replace("CASE(true, other, NULL)", "other")
+def corrupt_to_inner_case_irate(query: str) -> str:
+    """Emit illegal IRATE(CASE(...)) value-arg shape (ClassCast class)."""
+    return (
+        "TS metrics-*\n"
+        '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
+        "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    )
 
 
 def corrupt_datadog_break_eval_alias(query: str) -> str:
@@ -127,8 +131,8 @@ def test_oracle_clean_query_passes_and_corruptions_error():
     )
 
     assert structural_errors(check_esql_structure(_GOOD_CASE_WRAP_QUERY)) == []
-    case_errs = structural_errors(check_esql_structure(corrupt_strip_case_true_wrap(_GOOD_CASE_WRAP_QUERY)))
-    assert any(e.rule_id == StructuralRuleId.STATS_CASE_BARE_TS_MIX for e in case_errs)
+    case_errs = structural_errors(check_esql_structure(corrupt_to_inner_case_irate(_GOOD_CASE_WRAP_QUERY)))
+    assert any(e.rule_id == StructuralRuleId.STATS_TS_CASE_VALUE_ARG for e in case_errs)
 
 
 def test_intake_proposes_seed_for_structural_mutation(tmp_path):

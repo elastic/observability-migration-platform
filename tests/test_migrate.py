@@ -1507,7 +1507,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
 
-    def test_filtered_ts_stats_inline_case_inside_timeseries_aggregate(self):
+    def test_filtered_ts_stats_wraps_case_around_timeseries_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM_OVER_TIME(machine_cpu_cores, 5m)",
             ['resource == "cpu"'],
@@ -1515,10 +1515,10 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
+            'CASE((resource == "cpu"), SUM_OVER_TIME(machine_cpu_cores, 5m), NULL)',
         )
 
-    def test_filtered_outer_agg_wraps_case_inside_nested_ts_function(self):
+    def test_filtered_outer_agg_wraps_case_around_nested_ts_function(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM(RATE(node_cpu_seconds_total, 5m))",
             ['mode == "system"'],
@@ -1526,9 +1526,9 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM(RATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m))',
+            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total, 5m), NULL))',
         )
-        self.assertNotIn("CASE((mode == \"system\"), RATE(", expr)
+        self.assertNotIn("RATE(CASE(", expr)
 
     def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
@@ -1694,16 +1694,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
+            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)',
             translated.esql_query,
         )
-        # Denominator stays IRATE (not AVG_OVER_TIME) but is CASE-shaped when the
-        # numerator already uses CASE, to avoid ES ClassCast on mixed STATS args.
-        self.assertIn(
-            "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)",
-            translated.esql_query,
-        )
-        self.assertNotIn("IRATE(node_cpu_seconds_total, 1m)", translated.esql_query)
+        # Denominator stays bare IRATE — legal next to outer-CASE numerators.
+        self.assertIn("IRATE(node_cpu_seconds_total, 1m)", translated.esql_query)
+        self.assertNotIn("IRATE(CASE(", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
         self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")
@@ -5567,7 +5563,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("TS metrics", translated.esql_query)
         self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
-        self.assertIn('IRATE(CASE((mode == "system")', translated.esql_query)
+        self.assertIn('CASE((mode == "system"), IRATE(node_cpu_seconds_total', translated.esql_query)
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):

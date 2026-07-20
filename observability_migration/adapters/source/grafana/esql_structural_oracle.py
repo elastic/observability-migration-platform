@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from observability_migration.adapters.source.grafana.promql import (
-    _BARE_TS_VALUE_ARG,
     _split_top_level_csv,
 )
 
@@ -38,6 +37,7 @@ class StructuralSeverity(str, Enum):
 
 class StructuralRuleId(str, Enum):
     STATS_CASE_BARE_TS_MIX = "STATS_CASE_BARE_TS_MIX"
+    STATS_TS_CASE_VALUE_ARG = "STATS_TS_CASE_VALUE_ARG"
     STATS_BARE_WRAPPED_OVER_TIME_MIX = "STATS_BARE_WRAPPED_OVER_TIME_MIX"
     EVAL_UNDEFINED_COLUMN = "EVAL_UNDEFINED_COLUMN"
     EMPTY_FEASIBLE_QUERY = "EMPTY_FEASIBLE_QUERY"
@@ -138,25 +138,34 @@ def _parse_stats_assignments(stage: str) -> list[str]:
     return _split_top_level_csv(match.group(1))
 
 
+# Illegal: time-series func value arg is CASE(...) — ClassCasts on current ES.
+_TS_INNER_CASE_VALUE = re.compile(
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    r"\(\s*CASE\(",
+    re.IGNORECASE,
+)
+
+
 def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
     if not assignments:
         return []
 
     findings: list[StructuralFinding] = []
-    has_case = any("CASE(" in assignment for assignment in assignments)
-    bare_ts_assignments = [
-        assignment for assignment in assignments if _BARE_TS_VALUE_ARG.search(assignment)
+    inner_case_assignments = [
+        assignment for assignment in assignments if _TS_INNER_CASE_VALUE.search(assignment)
     ]
-    if has_case and bare_ts_assignments:
+    if inner_case_assignments:
         findings.append(
             StructuralFinding(
-                rule_id=StructuralRuleId.STATS_CASE_BARE_TS_MIX,
+                rule_id=StructuralRuleId.STATS_TS_CASE_VALUE_ARG,
                 severity=StructuralSeverity.error,
                 message=(
-                    "STATS mixes CASE-wrapped and bare time-series value arguments; "
-                    "wrap bare metrics as CASE(true, field, NULL)"
+                    "STATS time-series function uses CASE(...) as its value argument; "
+                    "wrap CASE around the call instead "
+                    "(CASE(cond, IRATE(field, window), NULL))"
                 ),
-                evidence={"bare_assignments": bare_ts_assignments},
+                evidence={"assignments": inner_case_assignments},
             )
         )
 
