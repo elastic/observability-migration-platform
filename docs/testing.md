@@ -129,7 +129,8 @@ assert. Spec:
 
 1. Capture a live/smoke/render failure report JSON with `disposition: real_bug`
    (alias-shaped `Unknown column` failures are reclassified when the report
-   includes `esql_query`).
+   includes `esql_query`). Reports with `"source": "datadog"` (or Grafana, the
+   default) are accepted.
 2. Propose seeds offline:
    ```bash
    .venv/bin/python scripts/intake_translation_seeds.py \
@@ -141,8 +142,24 @@ assert. Spec:
    an oracle-expecting test (see `tests/test_translation_seed_intake.py` for the
    mutation self-test pattern).
 
-Datadog, alerts, variables, and the full migratable surface are deferred —
-https://github.com/elastic/observability-migration-platform/issues/301.
+### Datadog ES|QL structural harness (offline)
+
+Same offline gap as Grafana — sibling Datadog emitters can fuse illegal or
+self-inconsistent `STATS` / `EVAL` pipelines that unit snapshots never assert.
+Extension spec:
+`docs/superpowers/specs/2026-07-20-translation-correctness-harness-extension-design.md`.
+
+| Piece | Module / test | What it proves |
+|---|---|---|
+| Structural oracle | `observability_migration/adapters/source/datadog/esql_structural_oracle.py` | Shared STATS/EVAL + `MISSING_FROM` / empty feasible; skips non-ES\|QL backends |
+| Emitter path matrix | `observability_migration/adapters/source/datadog/esql_emitters.py`, `tests/test_datadog_esql_emitter_matrix.py` | Four translator routes oracle-clean |
+| Fixture corpus gate | `tests/test_datadog_fixture_structural_gate.py` | `infra/datadog/dashboards/**/*.json` |
+| Seed intake | `scripts/intake_translation_seeds.py` with `source: datadog` | Non-Grafana regression seeds |
+
+Alerts, broader Grafana coverage (LogQL / variables / native PromQL smoke), and
+extracting a shared `translation_oracle` package are follow-ons —
+https://github.com/elastic/observability-migration-platform/issues/301 and
+`docs/superpowers/specs/2026-07-20-translation-correctness-harness-extension-design.md`.
 
 ---
 
