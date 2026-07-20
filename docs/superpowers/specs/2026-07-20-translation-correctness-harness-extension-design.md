@@ -179,17 +179,25 @@ mandatory registry entries in PR1; add them when seed intake shows path skew.
 
 ---
 
-## PR2 — Alert rule offline gate (follow-on)
+## PR2 — Alert rule offline gate
+
+**Status:** Implemented (thin v1) on the #301 branch.
 
 Separate oracle from dashboard ES|QL structure:
 
-- Inputs: Grafana alerting rules + Datadog monitors → translated Kibana rule
-  payloads.
-- Checks: query legality / non-empty where claimed feasible; required fields;
-  action/connector placeholders; enablement safety (must not treat
-  `not_feasible` / degraded as success).
-- Disposition: `real_bug` vs `data_gap` / `config_gap`.
-- Small fixture matrix + docs update.
+- **Module:** `observability_migration/core/verification/alert_offline_gate.py`
+- **Inputs:** Grafana alerting rules + Datadog monitors → `map_alerts_batch`
+  Kibana rule payloads.
+- **Checks:** enablement safety (`enabled=False`); non-empty
+  `params.esqlQuery.esql` when `payload_status=emitted`; required payload
+  fields; empty `actions` placeholder (non-empty → `config_gap`); nested
+  dashboard ES|QL structural oracle on non-`PROMQL(...)` queries.
+- **Disposition:** `real_bug` hard-fails CI; `expected_manual` /
+  `draft_review` / `config_gap` / `ok` do not. Must not treat
+  `manual_required` or `parse_degraded` emissions as success.
+- **Corpus:** `tests/test_alert_fixture_offline_gate.py` over
+  `examples/alerting/`.
+- **Docs:** `docs/testing.md` alert offline gate section.
 
 ## PR3 — Broader Grafana surface (follow-on)
 
