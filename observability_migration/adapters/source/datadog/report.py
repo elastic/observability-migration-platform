@@ -491,6 +491,15 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
             kibana_type=getattr(pr, "kibana_type", "") or "",
         )
 
+    def _compile_attempted(dr):
+        return bool(
+            dr.compiled
+            or dr.compile_error
+            or dr.compiled_path
+            or dr.layout_checked
+            or dr.layout_error
+        )
+
     for dr in results:
         dr.recompute_counts()
 
@@ -507,8 +516,8 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         green=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Green")),
         yellow=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Yellow")),
         red=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Red")),
-        compiled_ok=sum(1 for dr in results if dr.compiled),
-        compiled_total=len(results),
+        compiled_ok=sum(1 for dr in results if _compile_attempted(dr) and dr.compiled),
+        compiled_total=sum(1 for dr in results if _compile_attempted(dr)),
         uploaded_ok=sum(1 for dr in results if dr.uploaded),
         upload_attempted=sum(1 for dr in results if dr.upload_attempted),
         native_promql=sum(

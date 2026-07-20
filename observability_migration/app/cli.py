@@ -201,9 +201,12 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument(
         "--compile", action="store_true",
         help=(
-            "Compile generated YAML to NDJSON. Grafana always compiles as part of "
-            "'obs-migrate migrate'; Datadog is now also compiled by default for "
-            "parity. The flag is kept for compatibility with the dedicated source CLIs."
+            "Also compile generated YAML to Kibana NDJSON via kb-dashboard-cli. "
+            "Off by default for both Grafana and Datadog: the native Dashboards "
+            "API upload maps YAML directly and never consumes the NDJSON, and "
+            "rejected dashboards recompile on demand during the legacy fallback. "
+            "--legacy-import auto-enables compilation because that path imports "
+            "the compiled saved objects."
         ),
     )
     migrate.add_argument("--validate", action="store_true")
@@ -905,10 +908,10 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--esql-index", args.esql_index])
     if args.logs_index:
         legacy_argv.extend(["--logs-index", args.logs_index])
-    if args.validate:
-        legacy_argv.append("--validate")
     if getattr(args, "compile", False):
         legacy_argv.append("--compile")
+    if args.validate:
+        legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
     if getattr(args, "legacy_import", False):
@@ -1010,7 +1013,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
         legacy_argv.extend(["--es-api-key", args.es_api_key])
-    legacy_argv.append("--compile")
+    if getattr(args, "compile", False):
+        legacy_argv.append("--compile")
     if args.validate:
         legacy_argv.append("--validate")
     if args.upload:

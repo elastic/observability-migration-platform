@@ -29,13 +29,17 @@ panel-derived metrics (percentages, Verification gate counts).
 from __future__ import annotations
 
 import io
+import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from observability_migration.core.reporting.report import (
     MigrationResult,
     PanelResult,
     print_report,
+    save_detailed_report,
 )
 
 
@@ -302,6 +306,46 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
         # Back-compat: callers that don't pass field_discovery print no warning.
         out = self._run(None)
         self.assertNotIn("may render empty", out)
+
+
+class PrintReportCompilationSummaryTests(unittest.TestCase):
+    """Issue #279: YAML -> NDJSON compilation is opt-in on the default native
+    upload path. When it is skipped the CLI passes an empty ``compile_results``,
+    and the report must not emit a misleading "0/0 dashboards compiled" line."""
+
+    def _result(self) -> MigrationResult:
+        result = MigrationResult(dashboard_title="d", dashboard_uid="d")
+        result.panel_results = [_panel("p", "migrated", gate="Green")]
+        result.total_panels = 1
+        result.migrated = 1
+        return result
+
+    def _capture(self, compile_results) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_report([self._result()], compile_results)
+        return buf.getvalue()
+
+    def test_empty_compile_results_omits_compilation_summary(self):
+        output = self._capture([])
+        self.assertNotIn("Compilation results:", output)
+        self.assertIn(f"{'d':<40} {1:>6} {1:>5} {0:>5} {0:>5} {0:>5} {0:>5} {0:>5} {'—':>10}", output)
+        # The rest of the summary must still render.
+        self.assertIn("Dashboards processed: 1", output)
+
+    def test_non_empty_compile_results_still_reports_summary(self):
+        output = self._capture([("d", True, "")])
+        self.assertIn("Compilation results: 1/1 dashboards compiled successfully", output)
+
+    def test_detailed_report_marks_compile_not_attempted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "migration_report.json"
+            save_detailed_report([self._result()], [], output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(payload["summary"]["compile_attempted"])
+        self.assertEqual(payload["summary"]["compiled_total"], 0)
+        self.assertEqual(payload["dashboards"][0]["runtime_summary"]["compile"]["status"], "not_run")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Re-migrate every parity fixture dashboard with --upload + --ensure-data-views
-# so they land in the target Kibana cluster's default space. Same input set
-# and CLI flags as run-all-parity.sh (this script is the rig's "deploy"
-# counterpart to that "verify" driver).
+# Re-migrate every parity fixture dashboard with --compile + --upload +
+# --ensure-data-views so they land in the target Kibana cluster's default space.
+# Same input set and CLI flags as run-all-parity.sh (this script is the rig's
+# "deploy" counterpart to that "verify" driver).
+#
+# --compile is explicit: native uploads no longer compile YAML -> NDJSON by
+# default (issue #279), but verify.py's T3 layer diffs the locally-compiled
+# NDJSON against the uploaded saved object, so the rig still needs it written.
 #
 # Usage: bash upload-all.sh
 #
@@ -65,6 +69,7 @@ for entry in "${DASHBOARDS[@]}"; do
        --es-api-key "$KEY" \
        --data-view metrics-express.prometheus-parity \
        --esql-index metrics-express.prometheus-parity \
+       --compile \
        --upload \
        --kibana-url "$KIBANA_ENDPOINT" \
        --kibana-api-key "$KEY" \

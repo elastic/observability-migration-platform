@@ -235,7 +235,7 @@ Use `scripts/audit_migrated_rules.py` (or `cluster`-level queries against `GET /
 
 ## Notes By Source
 
-- Grafana uses the full target path: emit, optional runtime validation, lint, compile, optional upload, verification artifacts, and optional smoke merge.
+- Grafana uses the full target path: emit, optional runtime validation, lint, optional compile (`--compile` or legacy import), optional upload, verification artifacts, and optional smoke merge.
 - Datadog reuses shared YAML emission, optional compile (`--compile`), first-class dedicated upload (`--upload`), shared smoke validation (`--smoke`), manifest/rollout artifacts, and verification packets. Preflight is first-class (`--preflight` with capability-aware field checks when `--es-url` is provided), while source-aware query validation remains Datadog-located because it can rewrite emitted queries safely before compile/upload.
 
 ## Elastic Serverless Compatibility

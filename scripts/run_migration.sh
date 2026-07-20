@@ -79,13 +79,16 @@ echo ""
 echo "============================================================"
 echo "  Step 1: Migrate Grafana → Kibana YAML (native PROMQL)"
 echo "============================================================"
+# --compile is explicit: native uploads no longer compile YAML -> NDJSON by
+# default (issue #279), but Step 3 below imports the compiled NDJSON directly.
 $VENV -m observability_migration.adapters.source.grafana.cli \
   --source files \
   --assets dashboards \
   --input-dir "$INPUT_DIR" \
   --output-dir "$OUTPUT_DIR" \
   --data-view "$DATA_VIEW" \
-  --esql-index "$ESQL_INDEX"
+  --esql-index "$ESQL_INDEX" \
+  --compile
 
 if [ "$SKIP_DATA" = false ]; then
   echo ""

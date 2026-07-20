@@ -59,8 +59,9 @@ Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
 install the Kibana tools in-venv with `.venv/bin/pip install ".[kibana]"`
 (requires Python 3.12+), otherwise the runtime falls back to a pinned `uvx`,
 which requires `uv` on `PATH`. The default typed Dashboards API upload path
-does **not** need `kb-dashboard-cli`; YAML lint and compiled-layout validation
-run in-process. Run `obs-migrate doctor` to see which path is active.
+does **not** need `kb-dashboard-cli`; YAML lint runs in-process, and
+compiled-layout validation runs in-process only when compilation is requested.
+Run `obs-migrate doctor` to see which path is active.
 
 Datadog live API extraction (`--input-mode api` on either the unified or
 dedicated CLI; legacy dedicated spelling `--source api` also works) requires
@@ -1483,8 +1484,10 @@ Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
 Dashboards API bundle while the API remains technical preview, because the
 standard Kibana bundle may contain redirect-only shells.
 
-Dashboard YAML lint and compiled-layout validation run automatically inside
-`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+Dashboard YAML lint runs automatically inside every `obs-migrate migrate` run.
+Compiled-layout validation only runs when YAML-to-NDJSON compilation runs
+(`obs-migrate compile`, `migrate --compile`, or `migrate --upload
+--legacy-import`). To run either check ad hoc, call the in-process modules:
 
 ```python
 from observability_migration.targets.kibana.lint import lint_dashboard_yaml
