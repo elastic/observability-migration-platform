@@ -1548,7 +1548,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
 
-    def test_filtered_ts_stats_inline_case_inside_timeseries_aggregate(self):
+    def test_filtered_ts_stats_wraps_case_around_timeseries_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM_OVER_TIME(machine_cpu_cores, 5m)",
             ['resource == "cpu"'],
@@ -1556,7 +1556,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
+            'CASE((resource == "cpu"), SUM_OVER_TIME(machine_cpu_cores, 5m), NULL)',
         )
 
     def test_filtered_outer_counter_agg_wraps_case_around_nested_ts_function(self):
@@ -1785,6 +1785,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             "SUM(IRATE(node_cpu_seconds_total, 1m))",
             translated.esql_query,
         )
+        self.assertNotIn("IRATE(CASE(", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
         self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")

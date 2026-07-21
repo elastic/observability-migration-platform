@@ -4088,7 +4088,11 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
     ) and ts_match:
         field = ts_match.group("field").strip()
         window = ts_match.group("window").strip()
-        return f"{agg}(CASE({condition}, {field}, NULL), {window})"
+        # CASE must wrap the time-series call, not the metric field inside it.
+        # ``IRATE(CASE(cond, field, NULL), window)`` ClassCasts
+        # (ReferenceAttribute → Bucket) on current ES; ``CASE(cond, IRATE(field,
+        # window), NULL)`` is legal.
+        return f"CASE({condition}, {agg}({field}, {window}), NULL)"
     nested_ts = re.fullmatch(
         r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
         inner,
@@ -4222,22 +4226,54 @@ _BARE_TS_VALUE_ARG = re.compile(
 )
 
 
+# CASE(cond, field, NULL) nested as the *value* arg of a TS range/window func.
+# ``cond`` is typically ``true`` or a parenthesized comparison like
+# ``(mode == "user")``. Only RATE/IRATE/INCREASE/DELTA/DERIV are rewritten to
+# outer CASE — OVER_TIME keeps the inner-CASE shape used by the translator.
+_TS_INNER_CASE_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV)"
+    rf"\(\s*CASE\((?P<cond>\([^)]*\)|true|false|[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"
+    rf"(?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*NULL\)\s*,\s*(?P<window>[^)]+)\)",
+    re.IGNORECASE,
+)
+
 _OUTER_CASE_TS_FUNC = re.compile(
     r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
 )
 
 
+def _rewrite_ts_inner_case_to_outer_case(assignments: list[str]) -> list[str]:
+    """Rewrite ``FUNC(CASE(cond, field, NULL), window)`` → ``CASE(cond, FUNC(...), NULL)``.
+
+    Inner-CASE value args ClassCast on current Elasticsearch (``ReferenceAttribute``
+    → ``Bucket``) for RATE/IRATE/INCREASE. Outer CASE around the time-series call
+    is legal and preserves the filter semantics used for join-ratio / per-operand
+    label filters.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"CASE({match.group('cond')}, "
+            f"{match.group('func')}({match.group('field')}, {match.group('window')}), "
+            f"NULL)"
+        )
+
+    return [_TS_INNER_CASE_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+
+
 def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
     """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
 
-    Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
-    ``TS ... | STATS`` measure uses a CASE-shaped time-series aggregate and
-    another uses a bare ``IRATE(other_metric, …)``.
+    1. Rewrite illegal ``IRATE(CASE(cond, field, NULL), w)`` shapes to
+       ``CASE(cond, IRATE(field, w), NULL)``.
+    2. Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
+       ``TS ... | STATS`` measure uses a CASE-shaped time-series aggregate and
+       another uses a bare ``IRATE(other_metric, …)``.
 
     Two CASE shapes appear in the translator:
 
-    * Inner (``IRATE(CASE(cond, metric, NULL), …)``): wrap bare siblings as
-      ``IRATE(CASE(true, other_metric, NULL), …)``.
+    * Inner (``IRATE(CASE(cond, metric, NULL), …)`` / OVER_TIME): wrap bare
+      siblings as ``IRATE(CASE(true, other_metric, NULL), …)``.
     * Outer (``CASE(cond, IRATE(metric, …), NULL)`` — required so ES 9.5 does
       not Bucket-cast when filtering the counter argument of RATE/IRATE): wrap
       bare siblings as ``CASE(true, IRATE(other_metric, …), NULL)`` and leave
@@ -4247,6 +4283,7 @@ def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[
     Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
     pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
     """
+    assignments = _rewrite_ts_inner_case_to_outer_case(assignments)
     if not any("CASE(" in assignment for assignment in assignments):
         return assignments
 

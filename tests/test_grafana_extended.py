@@ -632,6 +632,7 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertIn('CASE((status RLIKE "5..")', query)
         self.assertIn("CASE(true, RATE(http_requests_total, 5m), NULL)", query)
         self.assertNotIn("SUM(RATE(http_requests_total, 5m))", query)
+        self.assertNotIn("RATE(CASE(", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
         # Final percentage EVAL composes the two stats columns.

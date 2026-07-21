@@ -407,10 +407,12 @@ class TestHunt4CoreEngine(unittest.TestCase):
             'rate(a_total{code="200"}[5m]) + rate(b_total{code="500"}[5m])',
             esql_index="metrics-*", panel_type="timeseries", rule_pack=rp, resolver=res,
         )
-        # the malformed shape RATE(CASE(cond, field, 5m, NULL)) must not appear
+        # Outer CASE around RATE — never RATE(CASE(...)) which ClassCasts on ES.
+        # Window stays the 2nd arg of RATE, not folded into CASE.
         self.assertNotIn("5m, NULL", r.esql_query)
-        self.assertIn("RATE(CASE((code == \"200\"), a_total, NULL), 5m)", r.esql_query)
-        self.assertIn("RATE(CASE((code == \"500\"), b_total, NULL), 5m)", r.esql_query)
+        self.assertNotIn("RATE(CASE(", r.esql_query)
+        self.assertIn('CASE((code == "200"), RATE(a_total, 5m), NULL)', r.esql_query)
+        self.assertIn('CASE((code == "500"), RATE(b_total, 5m), NULL)', r.esql_query)
 
     def test_topk_bare_counter_uses_ts_source(self):
         # #10: topk on a bare counter auto-rates the metric, so it must run under

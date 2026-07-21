@@ -11,6 +11,7 @@ All code lives in the `observability_migration/` package.
 | `QueryIR`, `build_query_ir` | `observability_migration.core.assets.query` |
 | `AssetStatus` | `observability_migration.core.assets.status` |
 | `ComparisonResult`, `ComparisonWindow` | `observability_migration.core.verification.comparators` |
+| `check_esql_structure`, `StructuralFinding` | `observability_migration.core.verification.translation_oracle` |
 | `MigrationResult`, `PanelResult` | `observability_migration.core.reporting.report` |
 | `SourceAdapter`, `TargetAdapter` | `observability_migration.core.interfaces` |
 
