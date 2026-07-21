@@ -226,6 +226,14 @@ def parse_args(argv: list[str] | None = None):
         help="Elasticsearch URL for schema discovery and query validation",
     )
     parser.add_argument(
+        "--control-schema",
+        default="",
+        help=(
+            "Optional JSON control-schema fixture (field_cache/cooccurrence_cache) "
+            "merged into schema discovery after --es-url probing"
+        ),
+    )
+    parser.add_argument(
         "--es-api-key",
         default=os.getenv("ES_API_KEY", os.getenv("KEY", "")),
         help="API key for Elasticsearch (defaults to ES_API_KEY or KEY env var)",
@@ -2113,12 +2121,28 @@ def main(argv: list[str] | None = None):
     if args.es_url:
         print(f"\n  Schema discovery: {args.es_url}")
         resolver._discover_fields()
+        control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
+        if control_schema_path:
+            schema_file = Path(control_schema_path)
+            if not schema_file.is_file():
+                raise FileNotFoundError(f"control schema not found: {schema_file}")
+            schema_payload = json.loads(schema_file.read_text(encoding="utf-8"))
+            resolver.merge_control_schema(schema_payload)
+            print(f"  Merged control schema: {schema_file}")
         _print_schema_discovery_status(
             resolver,
             field_profile=args.field_profile,
         )
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
+        control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
+        if control_schema_path:
+            schema_file = Path(control_schema_path)
+            if not schema_file.is_file():
+                raise FileNotFoundError(f"control schema not found: {schema_file}")
+            schema_payload = json.loads(schema_file.read_text(encoding="utf-8"))
+            resolver.merge_control_schema(schema_payload)
+            print(f"  Merged offline control schema: {schema_file}")
 
     print(f"\n[1/7] Extracting dashboards (source={args.source})...")
     grafana_url, grafana_user, grafana_pass = _grafana_conn(args)

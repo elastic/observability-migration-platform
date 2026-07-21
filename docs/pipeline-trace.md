@@ -139,6 +139,10 @@ Source dashboard files (Grafana JSON / Datadog JSON)
   │
   ▼
 [12] SMOKE (optional) — validate uploaded dashboards in Kibana
+  │
+  ▼
+[13] INTERACTION AUDIT (optional, local/nightly) — Playwright control selection
+       against seeded data; proves affected panel ES|QL changes (9.5+)
 ```
 
 ---
@@ -220,6 +224,7 @@ reports, verification, and downstream analysis.
 | 10. Report | `migration_report.json` | Persistent audit trail |
 | 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
 | 12. Smoke | Saved-object check | Validates dashboards are loadable |
+| 13. Interaction audit (optional) | `targets/kibana/interaction_*.py` + Playwright | Control selection rewrites affected panel queries; see `docs/testing.md` |
 
 ---
 
@@ -239,6 +244,7 @@ reports, verification, and downstream analysis.
 | **Upload** | Typed API from native IR (default) | Dashboard not in Kibana; legacy fallback may still succeed |
 | **Verification** | Semantic gates | All panels look equally trustworthy |
 | **Report** | Persistent audit trail | No post-run analysis |
+| **Interaction audit** | Control → query evidence | False confidence that filters "work" |
 
 ---
 

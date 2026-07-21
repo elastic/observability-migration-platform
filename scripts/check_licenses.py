@@ -66,6 +66,7 @@ ALLOWED_LICENSES = {
     "Apache Software License",
     "Apache Software License; BSD License",
     "Apache-2.0 OR BSD-2-Clause",
+    "MIT AND PSF-2.0",  # greenlet (Playwright dependency) dual-licensed metadata
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSD License",

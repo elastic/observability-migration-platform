@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 import requests
 
@@ -175,11 +176,15 @@ class SchemaResolver:
         if self._discovery_attempted:
             return
         self._discovery_attempted = True
-        self._field_cache = {}
         if not self._es_url:
-            self._discovery_status = "offline"
+            # Preserve fields already supplied by merge_control_schema().
+            if self._field_cache is None:
+                self._field_cache = {}
+            if not self._field_cache:
+                self._discovery_status = "offline"
             self._discovery_error = ""
             return
+        self._field_cache = {}
         try:
             resp = requests.get(
                 f"{self._es_url}/{self._index_pattern}/_field_caps",
@@ -964,6 +969,63 @@ class SchemaResolver:
     def concrete_index_candidates(self):
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
+
+    def merge_control_schema(self, payload: Mapping[str, object] | None) -> None:
+        """Merge offline control-schema field/co-occurrence hints into discovery.
+
+        Scenario manifests ship curated ``control_schemas/*.json`` fixtures so
+        live migrations preserve Grafana variable semantics even when the target
+        cluster has not yet materialized every label field.
+        """
+        if not isinstance(payload, Mapping):
+            return
+        keyword = {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}}
+        if self._field_cache is None:
+            self._field_cache = {}
+        for field_name, spec in (payload.get("field_cache") or {}).items():
+            cleaned = str(field_name or "").strip()
+            if not cleaned:
+                continue
+            if cleaned not in self._field_cache:
+                self._field_cache[cleaned] = spec if isinstance(spec, dict) and spec else keyword
+        for item in payload.get("cooccurrence_cache") or []:
+            if not isinstance(item, Mapping):
+                continue
+            metric = str(item.get("metric") or "").strip()
+            field = str(item.get("field") or item.get("label") or "").strip()
+            if metric and field:
+                self._cooccurrence_cache[(metric, field)] = bool(item.get("cooccurs"))
+        positive_alternatives: dict[str, list[str]] = {}
+        negative_fields: set[str] = set()
+        for item in payload.get("cooccurrence_cache") or []:
+            if not isinstance(item, Mapping):
+                continue
+            metric = str(item.get("metric") or "").strip()
+            field = str(item.get("field") or item.get("label") or "").strip()
+            if not metric or not field:
+                continue
+            if item.get("cooccurs"):
+                positive_alternatives.setdefault(metric, []).append(field)
+            else:
+                negative_fields.add(field)
+        for field_name in negative_fields:
+            if field_name not in self._field_cache:
+                continue
+            if any(
+                field_name != alternative and alternative in self._field_cache
+                for alternatives in positive_alternatives.values()
+                for alternative in alternatives
+            ):
+                self._field_cache.pop(field_name, None)
+        if self._field_cache:
+            self._discovery_status = "ok"
+            self._discovery_error = ""
+            # Offline merges happen before the first resolve_label() call. Mark
+            # discovery as attempted so _discover_fields() does not wipe the
+            # curated field_cache when es_url is empty.
+            self._discovery_attempted = True
+            self._build_discovered_mappings()
+            self._schema_profile_cache_id = None
 
 
 __all__ = ["SchemaResolver"]

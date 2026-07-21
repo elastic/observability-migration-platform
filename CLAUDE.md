@@ -47,7 +47,9 @@ this repo as the single source of truth for it. (See the Naming note in
   `obs-migrate compare` plus `verifier.corpus_gate` for semantic parity,
   `verifier.benchmark_gate` for PM benchmark-history regressions,
   `verifier.scorecard` for the Layer-9 fidelity ratchet, and
-  `render_audit_driver` for whether panels actually render in Kibana. Do not rely
+  `render_audit_driver` for whether panels actually render in Kibana, and the
+  interaction audit (`scripts/run_interaction_audit_local.sh`) for whether
+  control selection rewrites affected panel queries. Do not rely
   on a single migrated/clean percentage; also watch denominator drops
   (`panels_total`, `dashboards`, `verification_total`) and filtered datasource
   slices.
@@ -57,6 +59,9 @@ this repo as the single source of truth for it. (See the Naming note in
   `field_gap`/`data_gap`/`unexpected_empty` (data-readiness, warn). A breakdown
   panel that errors because its label is absent from target data is a field/data
   gap, NOT a translator bug — confirm via seeded data before filing a bug.
+  Interaction correctness additionally requires control-selection evidence plus
+  affected-query correlation; do not infer filter behavior from a green default-
+  state render alone.
 - Coverage of supported panel/widget types is machine-enforced
   (`tests/core/coverage/`, the panel matrices, and the kitchen-sink canary). Add
   a type → update `core/coverage/supported_types.py` + a matrix cell, or CI fails.

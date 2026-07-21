@@ -117,6 +117,8 @@ def _is_literal_dimension_value(value: str) -> bool:
     """
     if not value:
         return False
+    if value in {".*", ".+"}:
+        return False
     return _NON_LITERAL_VALUE_RE.match(value) is None
 
 _SKIP_FIELDS = {
@@ -196,6 +198,49 @@ def build_telemetry_contract(
     artifact_path = Path(artifact_dir)
     streams: dict[str, dict[str, Any]] = {}
     for query, source in _iter_artifact_queries(artifact_path):
+        if query.startswith("RANGE "):
+            index = _query_index(query)
+            if not index:
+                continue
+            stream = streams.setdefault(
+                index,
+                {
+                    "fields": {},
+                    "control_fields": [],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                    "requires_native_promql": False,
+                    "minimum_lookback": "",
+                    "query_sources": [],
+                    "requirements": [],
+                },
+            )
+            _append_unique(stream["query_sources"], source)
+            field_match = re.search(r"\bfield=([^\s]+)", query)
+            min_match = re.search(r"\bmin=([^\s]+)", query)
+            max_match = re.search(r"\bmax=([^\s]+)", query)
+            if not (field_match and min_match and max_match):
+                continue
+            field_name = _normalize_field(field_match.group(1))
+            try:
+                low = float(min_match.group(1))
+                high = float(max_match.group(1))
+            except ValueError:
+                continue
+            if low > high:
+                low, high = high, low
+            _merge_field(
+                stream["fields"],
+                field_name,
+                role="metric",
+                type_family="numeric",
+                metric_kind="gauge",
+                source=source,
+            )
+            info = stream["fields"][field_name]
+            info["seed_range"] = [low, high]
+            continue
         index = _query_index(query)
         if not index:
             continue
@@ -275,6 +320,7 @@ def build_telemetry_contract(
 
     _propagate_control_fields(streams)
     _apply_dimension_evidence(streams)
+    _apply_seed_range_metric_precedence(streams)
     _apply_metric_kind_overrides(streams, metric_kind_overrides)
 
     for stream in streams.values():
@@ -460,6 +506,7 @@ def build_combined_telemetry_contract(
 
     _propagate_control_fields(combined["streams"])
     _apply_dimension_evidence(combined["streams"])
+    _apply_seed_range_metric_precedence(combined["streams"])
     _apply_metric_kind_overrides(combined["streams"], metric_kind_overrides)
     for stream in combined["streams"].values():
         stream["fields"] = dict(sorted(stream["fields"].items()))
@@ -605,6 +652,22 @@ def _propagate_control_fields(streams: dict[str, dict[str, Any]]) -> None:
             )
 
 
+def _apply_seed_range_metric_precedence(streams: dict[str, dict[str, Any]]) -> None:
+    """Keep range-slider seed targets as numeric metrics even when also controls.
+
+    Range handles bind to a numeric field that may also appear in dashboard
+    ``control_fields``. Dimension evidence must not demote those fields to
+    keyword columns when the contract carries an explicit ``seed_range``.
+    """
+    for stream in streams.values():
+        for info in (stream.get("fields") or {}).values():
+            if not info.get("seed_range"):
+                continue
+            info["role"] = "metric"
+            info["type_family"] = "numeric"
+            info.setdefault("metric_kind", "gauge")
+
+
 def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
     """Resolve metric/dimension collisions in favour of explicit label evidence.
 
@@ -707,6 +770,125 @@ def _iter_packet_source_promql_queries(packet: dict[str, Any], source: str):
 
 
 _ESQL_IDENTIFIER_PARAM_RE = re.compile(r"\?\?([A-Za-z_][A-Za-z0-9_]*)")
+_CLASSIC_OPTIONS_CONTROL_TYPES = frozenset(
+    {"options", "option", "options_list", "options_list_control"}
+)
+_CLASSIC_RANGE_CONTROL_TYPES = frozenset({"range", "range_slider", "range_slider_control"})
+_ESQL_NON_FIELD_VARIABLE_TYPES = frozenset({"functions", "time_literal"})
+_ESQL_CONTROL_BY_FIELD_RE = re.compile(rf"BY\s+({_IDENT_RE})", re.IGNORECASE)
+
+
+def _extract_esql_values_bound_field(query: str) -> str:
+    if not query:
+        return ""
+    match = _ESQL_CONTROL_BY_FIELD_RE.search(query)
+    if not match:
+        return ""
+    field_name = _normalize_field(match.group(1))
+    if not field_name or _should_skip_field(field_name):
+        return ""
+    return field_name
+
+
+def _control_bound_field(control: Mapping[str, Any]) -> str:
+    metadata = control.get("metadata")
+    if isinstance(metadata, Mapping):
+        bound = str(metadata.get("bound_field") or "").strip()
+        if bound:
+            return _normalize_field(bound)
+    resolved = str(control.get("_resolved_field_name") or "").strip()
+    if resolved:
+        return _normalize_field(resolved)
+    direct = _normalize_field(str(control.get("field_name") or control.get("field") or ""))
+    if direct:
+        return direct
+    return _extract_esql_values_bound_field(str(control.get("query") or ""))
+
+
+def _control_choice_values(control: Mapping[str, Any]) -> list[str]:
+    collected: list[str] = []
+    for key in (
+        "defaults",
+        "default",
+        "selected_options",
+        "available_options",
+        "choices",
+        "options",
+    ):
+        raw = control.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, list):
+            for item in raw:
+                text = str(item or "").strip()
+                if text and _is_literal_dimension_value(text):
+                    _append_unique(collected, text)
+        else:
+            text = str(raw or "").strip()
+            if text and _is_literal_dimension_value(text):
+                _append_unique(collected, text)
+    return collected
+
+
+def _collect_non_field_param_defaults(controls: Any) -> dict[str, str]:
+    defaults: dict[str, str] = {}
+    if not isinstance(controls, list):
+        return defaults
+    for control in controls:
+        if not isinstance(control, Mapping):
+            continue
+        variable_type = str(control.get("variable_type") or "").strip()
+        if variable_type not in _ESQL_NON_FIELD_VARIABLE_TYPES:
+            continue
+        variable_name = str(control.get("variable_name") or "").strip()
+        if not variable_name:
+            continue
+        choices = _control_choice_values(control)
+        if choices:
+            defaults[variable_name] = choices[0]
+    return defaults
+
+
+def _collect_non_field_param_names(controls: Any) -> set[str]:
+    names: set[str] = set()
+    if not isinstance(controls, list):
+        return names
+    for control in controls:
+        if not isinstance(control, Mapping):
+            continue
+        variable_type = str(control.get("variable_type") or "").strip()
+        if variable_type in _ESQL_NON_FIELD_VARIABLE_TYPES:
+            variable_name = str(control.get("variable_name") or "").strip()
+            if variable_name:
+                names.add(variable_name)
+    return names
+
+
+def _collect_control_value_requirements(controls: Any) -> dict[str, list[str]]:
+    requirements: dict[str, list[str]] = {}
+    if not isinstance(controls, list):
+        return requirements
+    for control in controls:
+        if not isinstance(control, Mapping):
+            continue
+        control_type = str(control.get("type") or "").lower()
+        variable_type = str(control.get("variable_type") or "").strip()
+        if variable_type in {"fields", *_ESQL_NON_FIELD_VARIABLE_TYPES}:
+            continue
+        if control_type in _CLASSIC_OPTIONS_CONTROL_TYPES | _CLASSIC_RANGE_CONTROL_TYPES:
+            bound = _control_bound_field(control)
+            if not bound or control_type in _CLASSIC_RANGE_CONTROL_TYPES:
+                continue
+            for value in _control_choice_values(control):
+                _append_required(requirements, bound, value)
+            continue
+        if control.get("query") or variable_type in {"values", "multi_values"}:
+            bound = _control_bound_field(control)
+            if not bound:
+                continue
+            for value in _control_choice_values(control):
+                _append_required(requirements, bound, value)
+    return requirements
 
 
 def _field_control_choices(controls: Any) -> dict[str, list[str]]:
@@ -740,6 +922,8 @@ def _field_control_choices(controls: Any) -> dict[str, list[str]]:
 def _expand_identifier_control_queries(
     query: str,
     choices_by_name: Mapping[str, Sequence[str]],
+    *,
+    skip_params: set[str] | None = None,
 ):
     names = [
         name
@@ -764,34 +948,61 @@ def _iter_yaml_queries(
     node: Any,
     source: str,
     identifier_choices: Mapping[str, Sequence[str]] | None = None,
+    skip_params: set[str] | None = None,
+    param_defaults: Mapping[str, str] | None = None,
 ):
     if isinstance(node, dict):
+        controls = node.get("controls")
         scoped_choices = dict(identifier_choices or {})
-        scoped_choices.update(_field_control_choices(node.get("controls")))
+        scoped_choices.update(_field_control_choices(controls))
+        scoped_skip = set(skip_params or ())
+        scoped_skip.update(_collect_non_field_param_names(controls))
+        scoped_defaults = dict(param_defaults or {})
+        scoped_defaults.update(_collect_non_field_param_defaults(controls))
         yield from _iter_dashboard_filter_queries(node, source)
         esql = node.get("esql")
         if isinstance(esql, dict) and isinstance(esql.get("query"), str):
             for query in _expand_identifier_control_queries(
                 esql["query"],
                 scoped_choices,
+                skip_params=scoped_skip,
             ):
-                yield query, source
+                yield _substitute_non_field_esql_params(query, scoped_defaults), source
         elif isinstance(esql, str):
-            for query in _expand_identifier_control_queries(esql, scoped_choices):
-                yield query, source
+            for query in _expand_identifier_control_queries(
+                esql,
+                scoped_choices,
+                skip_params=scoped_skip,
+            ):
+                yield _substitute_non_field_esql_params(query, scoped_defaults), source
         lens_query = _lens_to_contract_query(node.get("lens"))
         if lens_query:
-            yield lens_query, source
+            yield _substitute_non_field_esql_params(lens_query, scoped_defaults), source
         for value in node.values():
-            yield from _iter_yaml_queries(value, source, scoped_choices)
+            yield from _iter_yaml_queries(
+                value,
+                source,
+                scoped_choices,
+                scoped_skip,
+                scoped_defaults,
+            )
     elif isinstance(node, list):
         for item in node:
-            yield from _iter_yaml_queries(item, source, identifier_choices)
+            yield from _iter_yaml_queries(
+                item,
+                source,
+                identifier_choices,
+                skip_params,
+                param_defaults,
+            )
 
 
 def _query_index(query: str) -> str:
     first_line = next((line.strip() for line in query.splitlines() if line.strip()), "")
     if first_line.startswith("CONTROL ") or first_line.startswith("FILTER "):
+        match = re.search(r"\bindex=(\S+)", first_line)
+        return match.group(1) if match else "metrics-*"
+    if first_line.startswith("RANGE "):
         match = re.search(r"\bindex=(\S+)", first_line)
         return match.group(1) if match else "metrics-*"
     if first_line.startswith("LENS "):
@@ -914,8 +1125,9 @@ def _extract_metrics(query: str) -> dict[str, str]:
     # the field in this query; explicit label evidence later flips genuine
     # dimensions back via ``_apply_dimension_evidence``.
     derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
+    by_fields = set(_extract_group_fields(query))
     for field_name in _extract_is_not_null_fields(query):
-        if field_name not in derived_aliases:
+        if field_name not in derived_aliases and field_name not in by_fields:
             metrics.setdefault(field_name, "gauge")
 
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
@@ -1137,7 +1349,7 @@ def _extract_group_fields(query: str) -> list[str]:
             if not _should_skip_field(label):
                 _append_unique(fields, label)
         return fields
-    by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\|$|$)", re.IGNORECASE | re.DOTALL)
+    by_pattern = re.compile(r"\bBY\b\s+(.+?)(?=\n\s*\||\s\|\s|$)", re.IGNORECASE | re.DOTALL)
     for match in by_pattern.finditer(query):
         for part in _split_top_level(match.group(1)):
             field_name = part.split("=", 1)[-1].strip() if "=" in part else part.strip()
@@ -1172,6 +1384,30 @@ def _grok_timeseries_labels(query: str) -> list[str]:
         if match:
             _append_unique(labels, _normalize_field(match.group(1)))
     return labels
+
+
+def _substitute_non_field_esql_params(
+    query: str,
+    param_defaults: Mapping[str, str],
+) -> str:
+    if not param_defaults:
+        return query
+    rendered = query
+    for name, default in sorted(param_defaults.items()):
+        replacement = str(default or "").strip()
+        if not replacement:
+            continue
+        rendered = re.sub(
+            rf"\?\?{re.escape(name)}\b",
+            replacement,
+            rendered,
+        )
+        rendered = re.sub(
+            rf"(?<!\?)\?{re.escape(name)}\b",
+            replacement,
+            rendered,
+        )
+    return rendered
 
 
 def _extract_control_fields(query: str) -> list[str]:
@@ -1678,17 +1914,49 @@ def _iter_dashboard_filter_queries(node: dict[str, Any], source: str):
                     or control.get("options")
                     or []
                 )
-                index = control.get("data_view") or default_index
+                index = control.get("data_view") or control.get("data_view_id") or default_index
                 for choice in choices:
                     field_name = str(choice or "").strip()
                     if field_name:
                         yield f"CONTROL index={index} field={field_name}", source
                 continue
-            field_name = control.get("field")
-            if not field_name:
+            control_type = str(control.get("type") or "").lower()
+            if control_type in _CLASSIC_OPTIONS_CONTROL_TYPES | _CLASSIC_RANGE_CONTROL_TYPES:
+                field_name = _control_bound_field(control)
+                if not field_name:
+                    continue
+                index = control.get("data_view") or control.get("data_view_id") or default_index
+                yield f"CONTROL index={index} field={field_name}", source
+                if control_type in _CLASSIC_RANGE_CONTROL_TYPES:
+                    numeric_values: list[float] = []
+                    for raw in _control_choice_values(control):
+                        try:
+                            numeric_values.append(float(raw))
+                        except ValueError:
+                            continue
+                    if len(numeric_values) >= 2:
+                        low = min(numeric_values)
+                        high = max(numeric_values)
+                        yield (
+                            f"RANGE index={index} field={field_name} min={low} max={high}",
+                            source,
+                        )
                 continue
-            index = control.get("data_view") or default_index
-            yield f"CONTROL index={index} field={field_name}", source
+            field_name = control.get("field")
+            bound = _control_bound_field(control) if not field_name else str(field_name)
+            if bound:
+                index = control.get("data_view") or control.get("data_view_id") or default_index
+                yield f"CONTROL index={index} field={bound}", source
+            query_text = str(control.get("query") or "").strip()
+            if query_text:
+                yield query_text, source
+        for field_name, values in _collect_control_value_requirements(controls).items():
+            for value in values:
+                yield (
+                    f"FILTER index={default_index} field={field_name} "
+                    f"value={_encode_pseudo_value(value)}",
+                    source,
+                )
     if isinstance(filters, list):
         for dashboard_filter in filters:
             if not isinstance(dashboard_filter, dict):

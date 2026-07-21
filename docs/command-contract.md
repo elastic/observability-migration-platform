@@ -1031,6 +1031,7 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
 | `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
+| `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
@@ -1148,6 +1149,34 @@ STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-
 bash scripts/run_render_audit_local.sh
 docker compose -f parity-rig/docker-compose.render-audit.yml down -v
 ```
+
+Dashboard interaction audit (control selection → affected queries). Requires
+Stack 9.5+. Offline unit coverage is `make test-interactions`; the live suite
+is nightly/manual only (`.github/workflows/dashboard-interaction-audit.yml`).
+
+```bash
+# One-time Chromium install for Playwright (optional; not part of default unit tests).
+make setup-browser
+
+# Offline interaction contracts / scenario planning / fake-browser tests.
+make test-interactions
+
+# Live local suite (caller starts the stack). Default scenarios:
+# synthetic-controls,redis-11835,k8s-views-global
+STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+STACK_VERSION=9.5.0-SNAPSHOT make interaction-audit-local
+# Or scope one dashboard:
+SCENARIOS=redis-11835 bash scripts/run_interaction_audit_local.sh
+docker compose -f parity-rig/docker-compose.render-audit.yml down -v
+```
+
+Artifacts land under `ARTIFACT_ROOT` (default
+`./interaction-audit-artifacts/<scenario>/<run-id>/`), including `report.json`
+and optional Playwright traces/screenshots. Exit code is `1` only when the
+report status is `fail`; expected `migration_gap` / decorative controls warn
+with exit `0`. Useful env knobs: `FULL=1` (denser nightly seed),
+`SKIP_MIGRATE=1` + `KEEP_WORK=1` + `WORK_DIR=...` (browser-only re-run),
+`SCREENSHOTS=on-fail|always|never`, `LIVE_VALIDATE=0` (lint only after seed).
 
 `benchmark_gate` exits non-zero when no comparison was made (empty history, no
 compatible baseline, or a datasource/source filter matching no current/baseline

@@ -333,57 +333,8 @@ def test_diff_allows_new_panels():
 # --- Interaction (controls/filters) audit (#6) -----------------------------
 
 from observability_migration.targets.kibana.render_audit import (  # noqa: E402
-    build_interaction_plan,
-    extract_controls,
     interaction_regression,
 )
-
-
-def _report_with_controls():
-    return {"dashboards": [{"controls": [
-        {"type": "esql", "label": "cluster", "variable_name": "cluster", "default": ".*"},
-        {"type": "esql", "label": "job", "variable_name": "job", "multiple": True},
-        {"type": "esql", "label": "", "variable_name": ""},  # skipped (no name)
-    ]}]}
-
-
-def test_extract_controls_skips_nameless():
-    controls = extract_controls(_report_with_controls())
-    assert [c.variable_name for c in controls] == ["cluster", "job"]
-    assert controls[1].multiple is True
-
-
-def test_build_interaction_plan_one_step_per_control():
-    plan = build_interaction_plan(extract_controls(_report_with_controls()))
-    assert [s["variable_name"] for s in plan] == ["cluster", "job"]
-    assert all(s["action"] == "select_nondefault" for s in plan)
-
-
-def _report_with_options_controls():
-    """Options/range controls (Grafana query variables, Datadog template
-    variables) have no ``variable_name`` — they're keyed by ``field``."""
-    return {"dashboards": [{"controls": [
-        {"type": "options", "label": "Host", "field": "host.name", "data_view": "metrics-*"},
-        {"type": "options", "label": "Queue", "field": "queue", "data_view": "metrics-*", "multiple": True},
-        {"type": "options", "label": "", "field": "", "data_view": "metrics-*"},  # skipped (no name)
-    ]}]}
-
-
-def test_extract_controls_includes_options_controls_keyed_by_field():
-    controls = extract_controls(_report_with_options_controls())
-    assert [c.variable_name for c in controls] == ["host.name", "queue"]
-    assert [c.label for c in controls] == ["Host", "Queue"]
-    assert [c.control_type for c in controls] == ["options", "options"]
-    assert controls[1].multiple is True
-
-
-def test_extract_controls_handles_mixed_esql_and_options_controls():
-    report = {"dashboards": [{"controls": [
-        {"type": "esql", "label": "cluster", "variable_name": "cluster"},
-        {"type": "options", "label": "Host", "field": "host.name", "data_view": "metrics-*"},
-    ]}]}
-    controls = extract_controls(report)
-    assert [c.variable_name for c in controls] == ["cluster", "host.name"]
 
 
 def test_interaction_regression_attributes_to_control():
