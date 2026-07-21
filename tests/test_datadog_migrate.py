@@ -3582,14 +3582,9 @@ class TestYAMLGeneration(unittest.TestCase):
     def test_free_board_placeholder_column_does_not_inherit_chart_baselines(self):
         # ActiveMQ-style: a left-column check_status placeholder must not jump
         # down to align with mid-board chart rows (``_dd_type`` still says
-        # metric, but the tile renders as markdown).
-        header = NormalizedWidget(
-            id="h1",
-            widget_type="note",
-            title="",
-            layout={"x": 0, "y": 0, "width": 18, "height": 8},
-            raw_definition={"type": "note", "content": "## Activemq"},
-        )
+        # metric, but the tile renders as markdown). Prose/section headers in
+        # the same band omit filler placeholders — here the placeholder alone
+        # anchors the left column.
         placeholder = NormalizedWidget(
             id="p1",
             widget_type="check_status",
@@ -3609,14 +3604,17 @@ class TestYAMLGeneration(unittest.TestCase):
             "c3", "Expired count", "timeseries",
             {"x": 40, "y": 48, "width": 40, "height": 14},
         )
-        dash = self._render_dashboard([header, placeholder, chart_a, chart_b, chart_c])
-        left = sorted(
-            (p for p in dash["panels"] if int(p["position"]["x"]) < 12),
-            key=lambda p: p["position"]["y"],
+        dash = self._render_dashboard([placeholder, chart_a, chart_b, chart_c])
+        by_title = {p["title"]: p for p in dash["panels"]}
+        ph = by_title["Queue Status"]
+        self.assertLessEqual(ph["size"]["h"], 4, ph["size"])
+        self.assertEqual(ph["position"]["y"], 0)
+        charts = [by_title["Queue size"], by_title["Enqueue count"], by_title["Expired count"]]
+        self.assertLess(
+            ph["position"]["y"] + ph["size"]["h"],
+            charts[0]["position"]["y"],
+            "placeholder must not inherit chart-row vertical anchors",
         )
-        self.assertGreaterEqual(len(left), 2)
-        gap = left[1]["position"]["y"] - (left[0]["position"]["y"] + left[0]["size"]["h"])
-        self.assertLessEqual(gap, 2, f"placeholder gutter too large: {[ (p.get('title'), p['position'], p['size']) for p in left ]}")
 
     def test_free_board_section_headers_stay_compact(self):
         # ActiveMQ-style vertical free_text labels ("Broker", "Queue") are tall
@@ -3722,6 +3720,43 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(len(dash["panels"]), 2)
         desc = dash.get("description") or ""
         self.assertIn("omitted", desc.lower())
+
+    def test_free_board_omits_filler_placeholder_when_band_has_viz(self):
+        placeholder = NormalizedWidget(
+            id="ph",
+            widget_type="check_status",
+            title="HAProxy instances",
+            layout={"x": 25, "y": 7, "width": 16, "height": 10},
+            raw_definition={"type": "check_status"},
+        )
+        kpi = self._make_metric_widget(
+            "kpi", "Memory", "query_value", {"x": 25, "y": 20, "width": 34, "height": 10}
+        )
+        chart = self._make_metric_widget(
+            "c1", "Frontend", "timeseries", {"x": 61, "y": 20, "width": 34, "height": 14}
+        )
+        dash = self._render_dashboard([placeholder, kpi, chart])
+        titles = [p.get("title") for p in dash["panels"]]
+        self.assertNotIn("HAProxy instances", titles)
+        self.assertIn("Memory", titles)
+        desc = (dash.get("description") or "").lower()
+        self.assertIn("placeholder", desc)
+
+    def test_free_board_keeps_placeholder_when_it_alone_holds_band(self):
+        placeholder = NormalizedWidget(
+            id="ph",
+            widget_type="check_status",
+            title="Lone status",
+            layout={"x": 0, "y": 0, "width": 40, "height": 10},
+            raw_definition={"type": "check_status"},
+        )
+        chart = self._make_metric_widget(
+            "c1", "Right", "timeseries", {"x": 80, "y": 0, "width": 40, "height": 14}
+        )
+        dash = self._render_dashboard([placeholder, chart])
+        by_title = {p.get("title"): p for p in dash["panels"]}
+        self.assertIn("Lone status", by_title)
+        self.assertLessEqual(by_title["Lone status"]["size"]["h"], 4)
 
     def test_free_board_header_gutters_join_next_content_column(self):
         # Topics labels at x=100 with tables at x=113 must not open a 4-col

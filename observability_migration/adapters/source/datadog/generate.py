@@ -1261,9 +1261,10 @@ def _apply_row_layout(panels: list[dict[str, Any]]) -> None:
         _apply_free_board_layout(panels)
         # Free boards: only height floors/caps. Type min-widths (8/12) blow up
         # dense HAProxy/Apache columns and force horizontal reshuffles.
-        _normalize_free_board_tile_sizes(panels)
-        _pack_free_board_vertically([p for p in panels if "section" not in p])
-        _repair_free_board_vertical_overlaps([p for p in panels if "section" not in p])
+        active = [p for p in panels if not p.get("_chrome_omit")]
+        _normalize_free_board_tile_sizes(active)
+        _pack_free_board_vertically([p for p in active if "section" not in p])
+        _repair_free_board_vertical_overlaps([p for p in active if "section" not in p])
         return
 
     source_rows = _collect_source_rows(panels)
@@ -1533,6 +1534,45 @@ def _promote_or_omit_section_headers(
         reasons.append(reason)
 
 
+def _omit_filler_free_board_placeholders(
+    panels: list[dict[str, Any]],
+    band_starts: list[int],
+    board_w: int,
+    reasons: list[str],
+) -> None:
+    for panel in panels:
+        if panel.get("_chrome_omit"):
+            continue
+        if _classify_free_board_chrome(panel) != "placeholder":
+            continue
+        dd_x = int(panel.get("_dd_x", 0) or 0)
+        left_i, _ = _free_board_covered_band_range(
+            band_starts, board_w, dd_x, int(panel.get("_dd_w", 1) or 1)
+        )
+        b0, b1 = _free_board_band_dd_range(band_starts, board_w, left_i)
+        has_other = False
+        for other in panels:
+            if other is panel or other.get("_chrome_omit"):
+                continue
+            ox = int(other.get("_dd_x", 0) or 0)
+            if not (b0 <= ox < b1):
+                continue
+            if _panel_family(other) in {"chart", "metric", "table"}:
+                has_other = True
+                break
+            if _classify_free_board_chrome(other) == "prose":
+                has_other = True
+                break
+        if has_other:
+            title = str(panel.get("title") or panel.get("_dd_type") or "placeholder")
+            panel["_chrome_omit"] = True
+            panel["_chrome_reason"] = (
+                f"omitted filler free-board placeholder {title!r} "
+                "(band still has keepable panels)"
+            )
+            reasons.append(panel["_chrome_reason"])
+
+
 def _apply_free_board_chrome_polish(panels: list[dict[str, Any]]) -> list[str]:
     leaf = [p for p in panels if "section" not in p]
     if not leaf:
@@ -1550,6 +1590,11 @@ def _apply_free_board_chrome_polish(panels: list[dict[str, Any]]) -> list[str]:
             panel["_chrome_omit"] = True
             panel["_chrome_reason"] = "omitted empty/decorative free-board note"
             reasons.append(panel["_chrome_reason"])
+
+    active = [p for p in leaf if not p.get("_chrome_omit")]
+    band_starts = _cluster_free_board_band_starts(active)
+    board_w = max(_board_max_extent(active), 1)
+    _omit_filler_free_board_placeholders(active, band_starts, board_w, reasons)
     return reasons
 
 
