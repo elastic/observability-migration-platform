@@ -89,29 +89,28 @@ def _row_has_overlapping_x_neighbours(
     row: list[dict[str, Any]],
     all_panels: list[dict[str, Any]],
 ) -> bool:
-    """Detect when a row is the top stripe of a 2D grid.
+    """Detect when a row is part of a 2D grid (do not stretch-fill).
 
     ``_fill_simple_row`` stretches a row's panels to span the full 48
-    columns. That's correct for true 1D rows but **wrong** when panels
-    below the row share x-ranges with it — stretching pushes the row's
-    right-edge panels further right, breaking vertical alignment with
-    the panels below.
+    columns. That's correct for true 1D rows but **wrong** when:
 
-    Only panels **strictly below** (y > row_y) are checked.  Panels
-    above (full-width headers, earlier rows) are intentionally ignored:
-    their presence does not indicate a 2D grid, and checking them caused
-    false positives where a full-width chart above a simple row
-    suppressed the fill.
+    - Panels **below** share x-ranges (node-exporter Quick CPU): stretching
+      pushes the row's right-edge panels further right and breaks column
+      alignment with the tiles underneath.
+    - Taller panels **above** still occupy this row's y-band (Istio GC
+      toplist at y=26 h=8 over a y=28 metric stripe): stretching slides
+      lower-stripe tiles sideways into that span and creates overlaps.
 
-    Top-stripes of 2D grids are exactly this pattern: the right-edge
-    stat tiles in ``node-exporter-full``'s "Quick CPU" section sit at
-    x=36..48 at both y=0 and y=3, so the y=0 row has below-neighbours
-    at overlapping x and should NOT be stretched.
+    Full-width headers that end exactly at ``row_y`` do **not** suppress
+    fill — they share no vertical band with the row.
     """
     if not row:
         return False
     row_ids = {id(p) for p in row}
     row_y = int((row[0].get("position") or {}).get("y", 0) or 0)
+    row_bottom = max(
+        row_y + int((p.get("size") or {}).get("h", 0) or 0) for p in row
+    )
     row_min_x = min(int((p.get("position") or {}).get("x", 0) or 0) for p in row)
     row_max_x = max(
         int((p.get("position") or {}).get("x", 0) or 0)
@@ -122,12 +121,17 @@ def _row_has_overlapping_x_neighbours(
         if id(other) in row_ids:
             continue
         oy = int((other.get("position") or {}).get("y", 0) or 0)
-        if oy <= row_y:
-            continue  # above or same row — not a 2D-grid signal
+        oh = int((other.get("size") or {}).get("h", 0) or 0)
         ox = int((other.get("position") or {}).get("x", 0) or 0)
         ow = int((other.get("size") or {}).get("w", 0) or 0)
-        # Strict x-overlap (touching is fine)
-        if ox < row_max_x and ox + ow > row_min_x:
+        shares_x = ox < row_max_x and ox + ow > row_min_x
+        if not shares_x:
+            continue
+        if oy > row_y:
+            # Any tile below (even edge-adjacent) signals a 2D column stack.
+            return True
+        # Above: only when the taller tile still covers this row's y-band.
+        if oy + oh > row_y and oy < row_bottom:
             return True
     return False
 

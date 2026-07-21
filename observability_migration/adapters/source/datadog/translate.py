@@ -407,7 +407,7 @@ def _translate_single_metric(
             rank_expr = _series_reducer_expr(top_config.reducer or "avg", "value")
             lines = [
                 f"FROM {spec.index}",
-                f"| WHERE {spec.where_str}",
+                f"| WHERE {_where_excluding_null_groups(spec.where_str, spec.group_fields)}",
                 f"| STATS value = {spec.agg_expr} BY {group_clause}",
             ]
             if spec.group_fields:
@@ -711,7 +711,7 @@ def _translate_formula_metric_widget(
             by_clause += ", " + ", ".join(spec.group_fields)
         ts_lines = [
             f"TS {spec.index}",
-            f"| WHERE {spec.where_str}",
+            f"| WHERE {_where_excluding_null_groups(spec.where_str, spec.group_fields)}",
             f"| STATS {alias} = {es_agg}({spec.es_metric}, {window}) BY {by_clause}",
             "| KEEP time_bucket, " + ", ".join(spec.group_fields + [alias])
             if spec.group_fields
@@ -771,6 +771,8 @@ def _translate_formula_metric_widget(
         outer_where = " AND ".join(outer_filters)
     else:
         outer_where = used_specs[0].where_str
+
+    outer_where = _where_excluding_null_groups(outer_where, used_specs[0].group_fields)
 
     lines = [
         f"FROM {used_specs[0].index}",
@@ -2012,10 +2014,21 @@ def _build_timeseries_esql(
 
     return (
         f"FROM {index}\n"
-        f"| WHERE {where}\n"
+        f"| WHERE {_where_excluding_null_groups(where, group_fields)}\n"
         f"| STATS value = {agg_expr} BY {group_clause}\n"
         f"| SORT time_bucket"
     )
+
+
+def _where_excluding_null_groups(where: str, group_fields: list[str]) -> str:
+    """Drop rows with null breakdown tags so Kibana legends don't show ``(null)``."""
+    where = (where or "").strip() or "true"
+    if not group_fields:
+        return where
+    guards = [f"{field} IS NOT NULL" for field in group_fields if field]
+    if not guards:
+        return where
+    return f"{where} AND " + " AND ".join(guards)
 
 
 def _build_distribution_percentile_esql(
@@ -2051,7 +2064,7 @@ def _build_distribution_percentile_esql(
     )
     return (
         f"FROM {index}\n"
-        f"| WHERE {where}\n"
+        f"| WHERE {_where_excluding_null_groups(where, group_fields)}\n"
         f"| STATS " + ", ".join(stats_terms) + f" BY {group_clause}\n"
         f"| SORT time_bucket"
     )
@@ -2138,7 +2151,7 @@ def _build_categorical_esql(
 ) -> str:
     lines = [
         f"FROM {index}",
-        f"| WHERE {where}",
+        f"| WHERE {_where_excluding_null_groups(where, group_fields)}",
     ]
     if reducer:
         group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"

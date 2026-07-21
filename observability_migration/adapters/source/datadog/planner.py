@@ -46,11 +46,10 @@ TEXT_WIDGET_TYPES = {"note", "free_text", "image", "iframe"}
 
 _ABSOLUTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
-# Widget types that represent a Datadog-side status/check view rather than
-# a queryable metric. These have no direct Kibana equivalent (Elastic uses
-# Synthetics for synthetic checks and Alerts for monitor status), so we
-# emit them as informative markdown placeholders rather than blocking.
-STATUS_PLACEHOLDER_WIDGET_TYPES = {"check_status", "manage_status"}
+# Widget types that represent a Datadog-side status/topology view rather than
+# a queryable metric. These have no direct Kibana Lens equivalent, so we emit
+# informative markdown placeholders rather than blocking the dashboard.
+STATUS_PLACEHOLDER_WIDGET_TYPES = {"check_status", "manage_status", "hostmap"}
 GROUP_WIDGET_TYPES = {"group", "powerpack"}
 
 
@@ -152,9 +151,9 @@ def group_widget_rule(context: PlanContext) -> str | None:
 @PLANNER_PRECHECKS.register(
     "datadog.plan.status_placeholder",
     priority=25,
-    summary="Emit Datadog status/check widgets (check_status, manage_status) "
-            "as informative markdown placeholders rather than blocking — "
-            "Elastic uses Synthetics / Alerts instead.",
+    summary="Emit Datadog status/topology widgets (check_status, manage_status, "
+            "hostmap) as informative markdown placeholders rather than blocking — "
+            "Elastic uses Synthetics / Alerts / Infrastructure inventory instead.",
 )
 def status_placeholder_rule(context: PlanContext) -> str | None:
     if context.widget.widget_type not in STATUS_PLACEHOLDER_WIDGET_TYPES:

@@ -133,7 +133,7 @@ def _normalize_widget(
         title=defn.get("title", defn.get("title_text", "")),
         queries=queries,
         formulas=formulas,
-        display_type=defn.get("display_type", ""),
+        display_type=_widget_display_type(defn),
         yaxis=defn.get("yaxis", {}),
         legend=_extract_legend(defn),
         layout=normalized_layout,
@@ -150,6 +150,24 @@ def _normalize_widget(
         events=defn.get("events", []) or [],
         markers=defn.get("markers", []) or [],
     )
+
+
+def _widget_display_type(defn: dict[str, Any]) -> str:
+    """Widget-level display_type, falling back to the first request's type.
+
+    Datadog timeseries often set ``display_type`` on each request (``bars`` /
+    ``area`` / ``line``) rather than on the widget definition itself.
+    """
+    top = str(defn.get("display_type") or "").strip()
+    if top:
+        return top
+    for req in defn.get("requests") or []:
+        if not isinstance(req, dict):
+            continue
+        dt = str(req.get("display_type") or "").strip()
+        if dt:
+            return dt
+    return ""
 
 
 def _extract_queries_and_formulas(

@@ -9,6 +9,7 @@ import re
 
 import requests
 
+from observability_migration.core.kibana_safe_fields import KIBANA_UNSAFE_FIELD_NAMES
 from observability_migration.core.verification.field_capabilities import (
     field_capability_from_es_field_caps,
     has_conflicting_types,
@@ -79,8 +80,14 @@ class SchemaResolver:
         "statefulset": ["k8s.statefulset.name"],
         "cronjob": ["k8s.cronjob.name"],
         "job_name": ["k8s.job.name", "service.name"],
+        # Bare ``host`` (Envoy and many exporter dashboards) must land on the
+        # ECS host object — leaving it unmapped creates a keyword ``host`` that
+        # conflicts with ``host.name`` when multiple dashboards share metrics-*.
+        "host": ["host.name"],
         "hostname": ["host.name", "nodename"],
         "nodename": ["nodename", "host.name"],
+        # Bare ``key`` breaks Kibana Options List field lookup; prefer dotted.
+        "key": ["labels.key"],
         "device": ["device"],
         "interface": ["device"],
         "mountpoint": ["mountpoint"],
@@ -493,6 +500,10 @@ class SchemaResolver:
             return None
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
+        # Kibana Options List cannot resolve the bare field name ``key`` even
+        # when it exists on the data view — always emit the dotted form.
+        if label in KIBANA_UNSAFE_FIELD_NAMES:
+            return KIBANA_UNSAFE_FIELD_NAMES[label]
         # Passthrough profile: emit the source label verbatim, skipping live
         # discovery and OTel/Prometheus normalization. Explicit rule-pack
         # overrides above still win.
@@ -522,11 +533,19 @@ class SchemaResolver:
         # When a named Prometheus plan is active, the operator-selected layout
         # wins over bare caps (e.g. OTel-shaped targets that also carry bare
         # source labels) — skip this shortcut so emit follows the plan.
+        #
+        # Exception: when a known ECS/OTel candidate (host → host.name) is also
+        # present, prefer the candidate. Leaving bare ``host`` mapped as a
+        # keyword conflicts with the ``host.name`` object layout once multiple
+        # dashboards share ``metrics-*``.
         if (
             self._field_cache
             and label in self._field_cache
             and planned not in self._NAMED_PROMETHEUS_PLANS
         ):
+            for candidate in self._candidate_fields(label):
+                if candidate != label and candidate in self._field_cache:
+                    return candidate
             return label
         # Fleet `prometheus.remote_write` data streams store the original
         # Prometheus label `<name>` under `prometheus.labels.<name>`. When that

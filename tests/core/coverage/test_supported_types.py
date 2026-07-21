@@ -35,7 +35,7 @@ def test_datadog_introspect_discovers_status_placeholder_widgets():
     from observability_migration.core.coverage import datadog_introspect as di
 
     referenced = di.collect_planner_widget_types()
-    assert {"check_status", "manage_status"} <= referenced
+    assert {"check_status", "manage_status", "hostmap"} <= referenced
 
 
 def test_datadog_registry_covers_all_planner_widget_types():
@@ -55,7 +55,7 @@ _DATADOG_MATRIX_EXEMPT = {
     "note", "free_text", "image", "iframe",  # non-query content widgets
     "group", "powerpack",                       # containers
     "log_stream", "list_stream",                # log/event streams (dedicated tests)
-    "check_status", "manage_status",            # status widgets -> markdown placeholders
+    "check_status", "manage_status", "hostmap",  # status/topology -> markdown placeholders
 }
 # Chart-bearing Datadog types not yet in the combinatorial matrix. Tracked
 # explicitly so coverage loss is visible, not silent (spec: "no silent caps").

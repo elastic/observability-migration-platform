@@ -15,7 +15,15 @@ import re
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
+from observability_migration.core.kibana_safe_fields import KIBANA_UNSAFE_FIELD_NAMES
+
 RequestFn = Callable[[str, str, Any | None, str], dict[str, Any]]
+
+# Kibana Options List controls fail with "Could not locate field" on almost all
+# ``time_series_dimension`` keywords (``host.name`` is a rare exception). Sample
+# seed therefore routes TSDB identity through one synthetic dimension and maps
+# real label fields as plain keywords so dashboard controls work.
+SEED_SERIES_DIMENSION = "_seed_series"
 
 
 def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = None) -> str:
@@ -40,6 +48,7 @@ def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = Non
 
 def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
     """Build an index template for one stream contract."""
+    stream = _canonicalize_dotted_dimension_conflicts(stream)
     concrete_name = concrete_stream_name(index_pattern, stream)
     stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
     is_metrics = stream_type == "metrics"
@@ -69,8 +78,9 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
                     "counter" if info.get("metric_kind") == "counter" else "gauge"
                 )
         elif is_metrics:
-            props[field_name] = {"type": "keyword", "time_series_dimension": True}
-            routing_path.append(field_name)
+            # Plain keyword — Options List controls can resolve these. TSDB
+            # series identity is carried by SEED_SERIES_DIMENSION below.
+            props[field_name] = {"type": "keyword"}
         else:
             props[field_name] = {"type": "keyword"}
         if info.get("keyword_multifield") and props.get(field_name, {}).get("type") == "keyword":
@@ -87,10 +97,16 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
         if "." not in field_name and field_name in _dotted_prefixes:
             continue  # skip flat field that conflicts with dotted children
         if is_metrics:
-            props[field_name] = {"type": "keyword", "time_series_dimension": True}
-            routing_path.append(field_name)
+            props[field_name] = {"type": "keyword"}
         else:
             props[field_name] = {"type": "keyword"}
+
+    if is_metrics:
+        props[SEED_SERIES_DIMENSION] = {
+            "type": "keyword",
+            "time_series_dimension": True,
+        }
+        routing_path.append(SEED_SERIES_DIMENSION)
 
     template: dict[str, Any] = {
         "index_patterns": [concrete_name],
@@ -230,6 +246,7 @@ def generate_documents(
     counter_state: dict[tuple[str, str, int], float] = {}
 
     for index_pattern, stream in sorted((contract.get("streams") or {}).items()):
+        stream = _canonicalize_dotted_dimension_conflicts(stream)
         concrete_name = concrete_stream_name(index_pattern, stream)
         stream_type = _stream_type_for_contract(index_pattern, concrete_name, stream)
         is_metrics = stream_type == "metrics"
@@ -269,6 +286,8 @@ def generate_documents(
                         "data_stream.namespace": namespace,
                         **dimensions,
                     }
+                    if is_metrics:
+                        doc[SEED_SERIES_DIMENSION] = _seed_series_id(dimensions)
                     _seed_metric_fields(
                         doc,
                         metric_fields,
@@ -284,6 +303,11 @@ def generate_documents(
                         counter_state=counter_state,
                     )
                     if not is_metrics:
+                        # Log panels commonly KEEP log.level even without a
+                        # WHERE filter on it; seed a default so those columns
+                        # exist after ingest (contract extraction also pulls
+                        # KEEP fields, but a default covers sparse contracts).
+                        doc.setdefault("log.level", "info")
                         doc.setdefault("message", _log_message(doc, combo_idx))
                     yield concrete_name, doc
             previous_ts = ts
@@ -424,6 +448,108 @@ def _dotted_field_prefixes(field_names: Iterable[str]) -> set[str]:
     }
 
 
+def _preferred_dotted_child(bare: str, field_names: set[str]) -> str | None:
+    """Pick the ECS-style child to replace a bare prefix that also has children.
+
+    Prefers ``{bare}.name`` (host → host.name, container → container.name) when
+    present, otherwise the lexicographically first dotted child.
+    """
+    preferred = f"{bare}.name"
+    if preferred in field_names:
+        return preferred
+    children = sorted(
+        name
+        for name in field_names
+        if name.startswith(f"{bare}.") and not name.startswith("data_stream.")
+    )
+    return children[0] if children else None
+
+
+def _canonicalize_dotted_dimension_conflicts(stream: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite bare dimension names that conflict with dotted siblings.
+
+    A merged ``metrics-*`` contract often carries both ``host`` (Envoy) and
+    ``host.name`` (Postgres/OTel). Seeding them as separate metric families into
+    one data stream makes ES reject the second shape (object vs keyword). Fold
+    bare prefixes into their preferred dotted child across fields, controls,
+    groups, required maps, and per-query requirements.
+
+    Also rewrites Kibana-unsafe bare names (currently ``key`` → ``labels.key``)
+    so Options List controls can resolve the field.
+    """
+    fields = dict(stream.get("fields") or {})
+    field_names = set(fields)
+    rewrites: dict[str, str] = {}
+    for bare in sorted(_dotted_field_prefixes(field_names)):
+        if bare not in field_names:
+            continue
+        child = _preferred_dotted_child(bare, field_names)
+        if child:
+            rewrites[bare] = child
+    for unsafe, safe in KIBANA_UNSAFE_FIELD_NAMES.items():
+        if unsafe in field_names or unsafe in (stream.get("control_fields") or []):
+            rewrites.setdefault(unsafe, safe)
+    if not rewrites:
+        return stream
+
+    def _rewrite_name(name: str) -> str:
+        return rewrites.get(name, name)
+
+    def _rewrite_list(values: Iterable[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            rewritten = _rewrite_name(str(value))
+            if rewritten in seen:
+                continue
+            seen.add(rewritten)
+            out.append(rewritten)
+        return out
+
+    def _rewrite_required(required: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, values in (required or {}).items():
+            target = _rewrite_name(str(key))
+            bucket = out.setdefault(target, [])
+            for value in values or []:
+                if value not in bucket:
+                    bucket.append(value)
+        return out
+
+    new_fields: dict[str, dict[str, Any]] = {}
+    for name, info in fields.items():
+        target = _rewrite_name(name)
+        if target not in new_fields:
+            new_fields[target] = dict(info)
+            continue
+        # Keep the surviving child's metadata; merge sources if present.
+        sources = list(new_fields[target].get("sources") or [])
+        for source in info.get("sources") or []:
+            if source not in sources:
+                sources.append(source)
+        if sources:
+            new_fields[target]["sources"] = sources
+
+    rewritten = dict(stream)
+    rewritten["fields"] = new_fields
+    rewritten["control_fields"] = _rewrite_list(stream.get("control_fields") or [])
+    rewritten["group_fields"] = _rewrite_list(stream.get("group_fields") or [])
+    rewritten["required_values"] = _rewrite_required(stream.get("required_values") or {})
+    rewritten["required_patterns"] = _rewrite_required(stream.get("required_patterns") or {})
+    requirements = []
+    for requirement in stream.get("requirements") or []:
+        req = dict(requirement)
+        for key in ("dimensions", "control_fields", "group_fields", "metrics"):
+            if key in req:
+                req[key] = _rewrite_list(req.get(key) or [])
+        req["required_values"] = _rewrite_required(req.get("required_values") or {})
+        req["required_patterns"] = _rewrite_required(req.get("required_patterns") or {})
+        requirements.append(req)
+    if "requirements" in stream:
+        rewritten["requirements"] = requirements
+    return rewritten
+
+
 def _metric_families(
     stream: dict[str, Any],
     metric_fields: dict[str, dict[str, Any]],
@@ -441,6 +567,7 @@ def _metric_families(
     With no ``requirements`` (or no metrics) the whole stream is one family, so
     behaviour is unchanged for callers that do not record requirements.
     """
+    stream = _canonicalize_dotted_dimension_conflicts(stream)
     requirements = stream.get("requirements") or []
     if not requirements or not metric_fields:
         combos = _dimension_combinations(stream, max_combinations=max_combinations)
@@ -479,33 +606,41 @@ def _metric_families(
             if not dims:
                 metric_dims[metric_name] = set(identity_dims)
 
+    # Dashboard controls apply as *global* Kibana filters (use_global_filters).
+    # Fold control dimensions into every metric's signature *before* grouping
+    # families so metrics that end up with the same dimension set share one
+    # document. Attaching controls after grouping created duplicate TSDS
+    # (dimensions + @timestamp) docs and bulk version_conflict errors.
+    control_dims = frozenset(
+        dim
+        for dim in (stream.get("control_fields") or [])
+        if dim in (stream.get("fields") or {})
+    )
+    if control_dims:
+        for metric_name in list(metric_dims):
+            metric_dims[metric_name] = set(metric_dims[metric_name]) | set(control_dims)
+
     # Group metrics that share an identical dimension signature into one family.
     families_by_sig: dict[frozenset[str], list[str]] = {}
     for metric_name in sorted(metric_dims):
         sig = frozenset(metric_dims[metric_name])
         families_by_sig.setdefault(sig, []).append(metric_name)
 
-    # Control/group dimensions that co-occur with no metric (e.g. a dashboard
-    # variable like ``nodename``) would otherwise be mapped but never assigned a
-    # value, leaving the Kibana control dropdown empty. Attach them to one
-    # existing family at scope-build time so they get seeded -- WITHOUT changing
-    # any metric's dimension signature (which would split a metric out of a
-    # family it shares with a ratio sibling and break the ratio). The carrier is
-    # the family with the most metrics (ties broken by sorted signature) so the
-    # extra control values ride the largest doc set deterministically.
-    orphan_dims = frozenset(
+    # Orphan *group* fields that co-occur with no metric still ride one carrier
+    # family so they get any values at all (controls are already in every sig).
+    orphan_group_dims = frozenset(
         dim
-        for dim in (set(stream.get("control_fields") or []) | set(stream.get("group_fields") or []))
+        for dim in (stream.get("group_fields") or [])
         if dim in (stream.get("fields") or {})
     ) - {dim for dims in metric_dims.values() for dim in dims}
     carrier_sig: frozenset[str] | None = None
-    if orphan_dims and families_by_sig:
+    if orphan_group_dims and families_by_sig:
         carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
 
     families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
     for sig, names in families_by_sig.items():
         family_metrics = {name: metric_fields[name] for name in names}
-        scope_dims = sig | orphan_dims if sig == carrier_sig else sig
+        scope_dims = sig | orphan_group_dims if sig == carrier_sig else sig
         scoped = _scoped_stream(stream, scope_dims, set(names))
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
@@ -603,6 +738,14 @@ def _document_timestamps(
             dense_start + datetime.timedelta(seconds=idx * 60)
             for idx in range(dense_points)
         )
+    # Pad a short lead past ``now`` so dashboards opened minutes after seeding
+    # still have points in the latest Kibana time buckets (avoids a trailing gap).
+    lead_sec = max(interval_sec, 15 * 60)
+    lead_points = max(1, lead_sec // max(1, interval_sec))
+    timestamps.update(
+        now + datetime.timedelta(seconds=idx * interval_sec)
+        for idx in range(1, lead_points + 1)
+    )
     return sorted(timestamps)
 
 
@@ -1027,6 +1170,12 @@ def _gauge_value(
 
 def _diurnal(hour: float) -> float:
     return 0.5 + 0.5 * math.sin(math.pi * (hour - 4) / 12)
+
+
+def _seed_series_id(dimensions: dict[str, str]) -> str:
+    """Stable TSDB routing key for one synthetic series identity."""
+    parts = [f"{key}={dimensions[key]}" for key in sorted(dimensions)]
+    return "|".join(parts) or "default"
 
 
 def _log_message(doc: dict[str, Any], combo_idx: int) -> str:

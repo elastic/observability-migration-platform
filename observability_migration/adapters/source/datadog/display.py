@@ -9,6 +9,7 @@ kb-dashboard-cli.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .models import NormalizedWidget, TranslationResult
@@ -68,6 +69,14 @@ def enrich_panel_display(
         return yaml_panel
 
     unit_format = _resolve_unit(widget)
+    if not unit_format:
+        unit_format = _default_number_format(widget)
+    # Count-like KPIs (connections, reloads, …) should render as whole numbers
+    # even when Datadog left precision=2 — ``12.00`` reads as noisy in Kibana.
+    if unit_format and _looks_like_count_metric(widget):
+        unit_format = dict(unit_format)
+        unit_format["decimals"] = 0
+        unit_format["compact"] = True
     if unit_format:
         _apply_format(esql, unit_format, result.kibana_type)
 
@@ -318,7 +327,55 @@ def _resolve_unit(widget: NormalizedWidget) -> dict[str, Any] | None:
     fmt = dict(fmt)
     if widget.precision is not None and widget.precision >= 0:
         fmt["decimals"] = widget.precision
+    elif "decimals" not in fmt and fmt.get("type") in {"number", "bytes", "bits"}:
+        # Prefer compact whole numbers when Datadog didn't set precision.
+        if _looks_like_count_metric(widget):
+            fmt["decimals"] = 0
+            fmt["compact"] = True
     return fmt
+
+
+def _default_number_format(widget: NormalizedWidget) -> dict[str, Any]:
+    """Sane Kibana defaults when Datadog left unit/precision unset."""
+    if widget.precision is not None and widget.precision >= 0:
+        return {"type": "number", "decimals": widget.precision, "compact": True}
+    if _looks_like_count_metric(widget):
+        return {"type": "number", "decimals": 0, "compact": True}
+    if _looks_like_percent_metric(widget):
+        return {"type": "number", "suffix": "%", "decimals": 1}
+    return {"type": "number", "decimals": 1, "compact": True}
+
+
+def _looks_like_percent_metric(widget: NormalizedWidget) -> bool:
+    title = str(widget.title or "")
+    if "%" in title:
+        return True
+    lowered = title.lower()
+    return "percent" in lowered or "pct" in lowered or "2xx" in lowered or "5xx" in lowered
+
+
+def _looks_like_count_metric(widget: NormalizedWidget) -> bool:
+    """Heuristic: connection/request/count tiles should not show .000 decimals."""
+    if _looks_like_percent_metric(widget):
+        return False
+    title = str(widget.title or "").lower()
+    count_words = (
+        "count", "connection", "reload", "request", "error", "session",
+        "server", "client", "hit", "miss", "event", "message",
+    )
+    if any(word in title for word in count_words):
+        return True
+    for query in widget.queries or []:
+        mq = getattr(query, "metric_query", None)
+        if mq is None:
+            continue
+        agg = str(getattr(mq, "aggregation", "") or "").lower()
+        metric = str(getattr(mq, "metric", "") or getattr(mq, "name", "") or "").lower()
+        if agg in {"count", "cardinality"}:
+            return True
+        if agg == "sum" and any(tok in metric for tok in ("count", "connection", "request", "reload")):
+            return True
+    return False
 
 
 def _apply_format(
@@ -365,12 +422,14 @@ def _apply_legend(
         esql.setdefault("legend", {
             "visible": "show" if shown else "hide",
             "position": "right",
-            "truncate_labels": 1,
+            # 0 = disable truncation (schema); "1" clipped pod names to
+            # ``controller_p…`` on breakdown charts.
+            "truncate_labels": 0,
         })
     elif kibana_type in ("partition", "treemap"):
         esql.setdefault("legend", {
             "visible": "auto" if shown else "hide",
-            "truncate_labels": 1,
+            "truncate_labels": 0,
         })
     elif kibana_type == "heatmap":
         appearance = esql.setdefault("appearance", {})
@@ -450,8 +509,18 @@ def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget, result: Tr
 
 
 def _clean_template_vars(title: str) -> str:
-    """Replace Datadog template variable placeholders for Kibana."""
-    import re
-    title = re.sub(r"\$(\w+)\.value", r"{\1}", title)
-    title = re.sub(r"\$(\w+)", r"{\1}", title)
-    return title
+    """Strip Datadog ``$template`` placeholders from panel titles.
+
+    Datadog often appends ``over $host`` (and friends). Kibana already has
+    matching Options List controls, so leaving ``$host`` or ``{host}`` in the
+    chrome reads as a migration bug.
+    """
+    cleaned = re.sub(
+        r"\s+over\s+(\$[\w.]+)(\s*,\s*\$[\w.]+)*\s*$",
+        "",
+        title or "",
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\$[\w.]+", "", cleaned)
+    cleaned = re.sub(r"\{[\w.]+\}", "", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" ,-|")

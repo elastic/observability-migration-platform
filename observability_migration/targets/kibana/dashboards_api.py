@@ -351,7 +351,10 @@ def _api_column(obj: Any, role: str = "generic") -> dict[str, Any] | None:
     col = _column(obj)
     if col is None or not isinstance(obj, dict):
         return col
-    if obj.get("label"):
+    # Preserve empty labels: Lens falls back to the field name ("value") when
+    # the key is omitted, which looks broken on metric panels that intentionally
+    # blank the caption. ``obj.get("label")`` is falsy for "", so key-check.
+    if "label" in obj and obj["label"] is not None:
         col["label"] = str(obj["label"])
     fmt = _api_format(obj.get("format"))
     if fmt and role not in {"gauge_bound", "region"}:
@@ -451,8 +454,11 @@ def _legend_visibility(value: Any) -> str | None:
 def _truncate_config(value: Any) -> dict[str, Any] | None:
     if isinstance(value, bool):
         return {"enabled": value}
+    # Schema: 0 disables truncation; 1-10 is max legend lines.
+    if isinstance(value, int | float) and value == 0:
+        return {"enabled": False}
     if isinstance(value, int | float) and 1 <= value <= 10:
-        return {"enabled": True, "max_lines": value}
+        return {"enabled": True, "max_lines": int(value)}
     return None
 
 

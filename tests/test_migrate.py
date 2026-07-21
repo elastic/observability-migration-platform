@@ -16210,6 +16210,22 @@ class TestImageLabelOtelMapping(unittest.TestCase):
         self.assertIn("image", migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES)
         self.assertIn("container.image.name", migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES["image"])
 
+    def test_host_label_in_otel_candidates(self):
+        self.assertIn("host", migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES)
+        self.assertEqual(
+            migrate.SchemaResolver.PROM_TO_OTEL_CANDIDATES["host"],
+            ["host.name"],
+        )
+
+    def test_resolve_label_prefers_host_name_when_both_exist(self):
+        self.resolver._discovery_attempted = True
+        self.resolver._field_cache = {
+            "host": {"keyword": {"aggregatable": True, "searchable": True}},
+            "host.name": {"keyword": {"aggregatable": True, "searchable": True}},
+        }
+        self.resolver._build_discovered_mappings()
+        self.assertEqual(self.resolver.resolve_label("host"), "host.name")
+
     def test_image_filter_maps_to_otel_field_with_schema_discovery(self):
         """With field discovery, image!="" must become WHERE container.image.name != ""."""
         self.resolver._discovery_attempted = True
