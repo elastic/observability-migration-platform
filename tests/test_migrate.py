@@ -400,6 +400,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)',
             # subquery resolution: var preceded by the ``:`` separator
             'sum(rate(node_cpu_seconds_total{job="node"}[5m:${step}m])) by (instance)',
+            # offset modifier: templated offset duration, metric is concrete
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m] offset ${off}h)) by (instance)',
         ):
             with self.subTest(expr=expr):
                 result = self.translate(expr)

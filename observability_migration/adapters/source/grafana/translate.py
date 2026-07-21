@@ -395,6 +395,15 @@ _PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
 # caught; the ``\$\{...\}`` branch lets a braced interval var carry its own
 # braces without ending the selector early.
 _RANGE_SELECTOR_RE = re.compile(r"(?<!\[)\[(?:\$\{[^}]*\}|\[\[[^\]]*\]\]|[^\[\]{}])*\]")
+# The ``offset`` modifier's value is likewise a templated *duration*
+# (``metric offset ${off}h``), not a name; strip it (with any leading sign and
+# glued unit) for the same reason.  ``\boffset`` keeps ``offset`` inside a metric
+# name (``http_offset_total``) from matching.
+_OFFSET_MODIFIER_RE = re.compile(
+    r"\boffset\s+-?\s*"
+    r"(?:\$\{[^}]*\}|\[\[[^\]]*\]\]|\$[A-Za-z_][A-Za-z0-9_]*|\d[\d.]*)"
+    r"[A-Za-z0-9_]*"
+)
 _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 
 
@@ -931,10 +940,11 @@ def template_variable_guardrail_rule(context):
     # resolving it to a placeholder would silently query a non-existent field,
     # so block it honestly.  The prefix form uses a separate regex because the
     # plain ``$var`` alternative cannot be a glued prefix (no right delimiter).
-    # Range/subquery selectors are stripped first so a templated *interval*
-    # (``metric[${step}m]``, ``metric[5m:${step}m]``) is never mistaken for a
-    # dynamic metric/label name — the surrounding metric there is concrete.
-    glued_scan = _RANGE_SELECTOR_RE.sub(" ", expr)
+    # Range/subquery selectors and the ``offset`` modifier are stripped first so a
+    # templated *duration* (``metric[${step}m]``, ``metric[5m:${step}m]``,
+    # ``metric offset ${off}h``) is never mistaken for a dynamic metric/label
+    # name — the surrounding metric there is concrete.
+    glued_scan = _OFFSET_MODIFIER_RE.sub(" ", _RANGE_SELECTOR_RE.sub(" ", expr))
     glued_var = _GLUED_TEMPLATE_VAR_RE.search(glued_scan) or _PREFIX_GLUED_TEMPLATE_VAR_RE.search(glued_scan)
     if glued_var:
         inner = _GRAFANA_TEMPLATE_VAR_RE.search(glued_var.group(0))

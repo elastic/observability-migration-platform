@@ -323,18 +323,19 @@ Grafana's own built-in macros (`${__range_s}`, `${__rate_interval}`, …) start
 with `__` and are excluded from the prefix-glued check; they are expanded by
 `preprocess_grafana_macros` at priority 10.
 
-The prefix-glued check deliberately ignores **range / subquery selectors**: in
-`metric[${step}m]` (range) and `metric[5m:${step}m]` (subquery resolution) the
-variable is a templated *duration*, not a metric or label name, and the
-surrounding metric is concrete. Matching it here would emit a misleading "metric
-or label name is built from a Grafana template variable" diagnostic that blames
-the (concrete) metric name. Rather than special-case where the variable sits, the
-guardrail **strips range/subquery selectors first** (`_RANGE_SELECTOR_RE`) and
-then scans what remains — so a template variable anywhere in an actual
+The prefix-glued check deliberately ignores **templated durations**: in
+`metric[${step}m]` (range), `metric[5m:${step}m]` (subquery resolution), and
+`metric offset ${off}h` (offset modifier) the variable is a duration, not a
+metric or label name, and the surrounding metric is concrete. Matching it here
+would emit a misleading "metric or label name is built from a Grafana template
+variable" diagnostic that blames the (concrete) metric name. Rather than
+special-case where the variable sits, the guardrail **strips range/subquery
+selectors and offset values first** (`_RANGE_SELECTOR_RE`, `_OFFSET_MODIFIER_RE`)
+and then scans what remains — so a template variable anywhere in an actual
 identifier, including a recording-rule name (`${env}:job:rate` **or**
 `job:${env}:rate`, whose variable segment follows a colon), still degrades with
-the dynamic-name warning, while every interval variable is removed regardless of
-its position inside the selector.
+the dynamic-name warning, while every duration variable is removed regardless of
+its position.
 
 ## Command Coverage
 
