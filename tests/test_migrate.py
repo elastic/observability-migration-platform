@@ -408,15 +408,22 @@ class TranslatorRegressionTests(unittest.TestCase):
                 self.assertNotIn("dynamic metric/label name", joined)
 
     def test_prefix_glued_to_recording_rule_name_is_not_feasible(self):
-        # ``${env}:api:latency`` — a prefix glued onto a colon-led recording-rule
-        # name is still a dynamic metric name and must degrade, even though the
-        # first char after the variable is ``:`` rather than a letter.
-        result = self.translate("sum(${env}:api_request_latency_seconds) by (le)")
-
-        self.assertEqual(result.feasibility, "not_feasible")
-        joined = " ".join(result.warnings).lower()
-        self.assertIn("template variable", joined)
-        self.assertIn("manual redesign", joined)
+        # A template variable glued into a recording-rule metric name is still a
+        # dynamic metric name and must degrade — both when the variable leads the
+        # name (``${env}:api:...``, first char after it is ``:``) and when a
+        # variable *segment* follows a colon (``job:${env}:api:...``). The latter
+        # must not be swallowed as a subquery resolution interval: stripping
+        # range selectors leaves these colons in metric-name position.
+        for expr in (
+            "sum(${env}:api_request_latency_seconds) by (le)",
+            "sum(job:${env}:api_request_latency_seconds) by (le)",
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                self.assertEqual(result.feasibility, "not_feasible")
+                joined = " ".join(result.warnings).lower()
+                self.assertIn("template variable", joined)
+                self.assertIn("manual redesign", joined)
 
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"

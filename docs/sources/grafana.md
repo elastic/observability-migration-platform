@@ -325,13 +325,16 @@ with `__` and are excluded from the prefix-glued check; they are expanded by
 
 The prefix-glued check deliberately ignores **range / subquery selectors**: in
 `metric[${step}m]` (range) and `metric[5m:${step}m]` (subquery resolution) the
-variable is a templated *duration* (preceded by `[` or the subquery `:`), not a
-metric or label name, and the surrounding metric is concrete. Matching it
-here would emit a misleading "metric or label name is built from a Grafana
-template variable" diagnostic that blames the (concrete) metric name; the
-guardrail stays quiet so any degrade is attributed to its real cause. Only a
-variable glued onto an actual identifier — including a recording-rule name such
-as `${env}:job:rate` — degrades with the dynamic-name warning.
+variable is a templated *duration*, not a metric or label name, and the
+surrounding metric is concrete. Matching it here would emit a misleading "metric
+or label name is built from a Grafana template variable" diagnostic that blames
+the (concrete) metric name. Rather than special-case where the variable sits, the
+guardrail **strips range/subquery selectors first** (`_RANGE_SELECTOR_RE`) and
+then scans what remains — so a template variable anywhere in an actual
+identifier, including a recording-rule name (`${env}:job:rate` **or**
+`job:${env}:rate`, whose variable segment follows a colon), still degrades with
+the dynamic-name warning, while every interval variable is removed regardless of
+its position inside the selector.
 
 ## Command Coverage
 

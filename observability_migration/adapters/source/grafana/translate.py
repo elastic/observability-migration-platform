@@ -372,24 +372,29 @@ _GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_
 # false-positive on ``$__rate_interval`` macros and bare ``$metric[5m]``).
 # The ``(?!__)`` guards exclude Grafana built-in macros whose names start with
 # ``__`` (e.g. ``${__range_s}s``) — those are time-range selectors, not a
-# user variable prefixed onto a metric name.
-# ``(?<![\[:])`` excludes range/subquery selectors: in ``metric[${step}m]`` (range)
-# and ``metric[5m:${step}m]`` (subquery resolution) the variable is a templated
-# *duration* — preceded by ``[`` or the subquery ``:`` separator — never a
-# metric/label name, and the surrounding metric is already concrete.  Matching it
-# here would blame the concrete metric name for a dynamic-name problem it doesn't
-# have, so any degrade is left to be attributed to its real cause.  The lookahead
-# includes ``:`` so a prefix glued onto a recording-rule name (``${env}:job:rate``)
-# — whose names may lead with ``:`` — is still caught; that case has the variable
-# *first* (not preceded by ``:``), so the lookbehind leaves it alone.
+# user variable prefixed onto a metric name.  The lookahead includes ``:`` so a
+# prefix glued onto a recording-rule name (``${env}:job:rate``) — whose names may
+# use ``:`` — is still caught.  Distinguishing a templated *duration* inside a
+# range/subquery selector (``metric[${step}m]``, ``metric[5m:${step}m]``) from a
+# genuine dynamic metric/label name is *not* done here — a fixed-width lookbehind
+# cannot see the enclosing ``[...]`` context, so the guardrail strips range
+# selectors first (``_RANGE_SELECTOR_RE``) before running this pattern.
 _PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
-    r"(?<![\[:])"
     r"(?:"
     r"\$\{(?!__)" + _TV_NAME + _TV_BRACED_FMT + r"\}"
     r"|\[\[(?!__)" + _TV_NAME + _TV_BRACKET_FMT + r"\]\]"
     r")"
     r"(?=[A-Za-z_:])"
 )
+# A PromQL range/subquery selector (``[5m]``, ``[${step}m]``, ``[5m:${step}m]``,
+# ``[[[win]]m]``).  Its contents are templated *durations*, never metric/label
+# names, so it is stripped before the glued-prefix check — otherwise an interval
+# variable is misread as a dynamic metric name (a concrete metric would then be
+# wrongly blamed).  ``(?<!\[)`` plus the explicit ``[[...]]`` branch protect a
+# name-position bracket variable (``[[prefix]]metric``), which must still be
+# caught; the ``\$\{...\}`` branch lets a braced interval var carry its own
+# braces without ending the selector early.
+_RANGE_SELECTOR_RE = re.compile(r"(?<!\[)\[(?:\$\{[^}]*\}|\[\[[^\]]*\]\]|[^\[\]{}])*\]")
 _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 
 
@@ -926,7 +931,11 @@ def template_variable_guardrail_rule(context):
     # resolving it to a placeholder would silently query a non-existent field,
     # so block it honestly.  The prefix form uses a separate regex because the
     # plain ``$var`` alternative cannot be a glued prefix (no right delimiter).
-    glued_var = _GLUED_TEMPLATE_VAR_RE.search(expr) or _PREFIX_GLUED_TEMPLATE_VAR_RE.search(expr)
+    # Range/subquery selectors are stripped first so a templated *interval*
+    # (``metric[${step}m]``, ``metric[5m:${step}m]``) is never mistaken for a
+    # dynamic metric/label name — the surrounding metric there is concrete.
+    glued_scan = _RANGE_SELECTOR_RE.sub(" ", expr)
+    glued_var = _GLUED_TEMPLATE_VAR_RE.search(glued_scan) or _PREFIX_GLUED_TEMPLATE_VAR_RE.search(glued_scan)
     if glued_var:
         inner = _GRAFANA_TEMPLATE_VAR_RE.search(glued_var.group(0))
         var_name = _template_var_name(inner) if inner else "var"
