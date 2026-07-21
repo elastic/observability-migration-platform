@@ -170,10 +170,23 @@ success.
 | Unit + mutation | `tests/test_alert_offline_gate.py` | Each rule has a positive/negative case |
 | Fixture corpus gate | `tests/test_alert_fixture_offline_gate.py` | `examples/alerting/grafana/**` + `examples/alerting/monitors/datadog_monitors.json` have zero `real_bug` findings |
 
-Broader Grafana coverage (LogQL / variables / native PromQL smoke) and extracting
-a shared `translation_oracle` package remain follow-ons —
-https://github.com/elastic/observability-migration-platform/issues/301 and
-`docs/superpowers/specs/2026-07-20-translation-correctness-harness-extension-design.md`.
+### Broader Grafana surface (PR3)
+
+Closes the remaining #301 offline gap outside PromQL ES|QL fusion: LogQL
+emitters, native `PROMQL(...)` passthrough smoke, and controls/links silent-drop
+detection. Does **not** add new PromQL STATS fusion rules or browser control-click
+automation (Tier 4 render-audit stays separate).
+
+| Piece | Module / test | What it proves |
+|---|---|---|
+| Surface helpers | `observability_migration/adapters/source/grafana/broader_surface_gate.py` | LogQL `FROM` + structural clean; native `PROMQL index=`; controls/links not silently empty |
+| LogQL emitter matrix | `logql_emitters.py`, `tests/test_grafana_logql_emitter_matrix.py` | `logql_stream` + `logql_count` routes |
+| LogQL fixture gate | `tests/test_grafana_logql_fixture_gate.py` | Loki panels in `diverse-panels-test` + `multi-pattern-coverage` |
+| Native PromQL smoke | `tests/test_grafana_native_promql_smoke_gate.py` | `PROMQL index=` shape + oracle skip |
+| Dashboard surface gate | `tests/test_grafana_dashboard_surface_gate.py` | `node-exporter-full` + `prometheus-all` keep controls/links |
+
+Extracting a shared `translation_oracle` package remains optional follow-on —
+https://github.com/elastic/observability-migration-platform/issues/301.
 
 ---
 

@@ -199,14 +199,21 @@ Separate oracle from dashboard ES|QL structure:
   `examples/alerting/`.
 - **Docs:** `docs/testing.md` alert offline gate section.
 
-## PR3 — Broader Grafana surface (follow-on)
+## PR3 — Broader Grafana surface
 
-- LogQL / other claimed datasource query types: structural or smoke gate where
-  translation is claimed.
-- Dashboard variables / controls / links: extend interaction + render-audit
-  coverage; no new PromQL STATS fusion rules.
-- Native PromQL passthrough: smoke only (ES|QL structural oracle already skips
-  `PROMQL(...)`).
+**Status:** Implemented (thin v1) on the #301 branch.
+
+- **Helpers:** `observability_migration/adapters/source/grafana/broader_surface_gate.py`
+- **LogQL:** emitter registry `logql_emitters.py` (`logql_stream`, `logql_count`) +
+  matrix/fixture gates over `infra/grafana/dashboards` Loki panels.
+- **Native PromQL:** smoke gate for `PROMQL index=<esql_index>` shape; structural
+  oracle skip remains.
+- **Controls / links:** offline surface gate on `node-exporter-full` +
+  `prometheus-all` — fail if templating/links exist in source but translate to
+  zero controls / empty `links_summary`.
+- **Docs:** `docs/testing.md` PR3 section.
+- **Out of scope:** browser control-click automation, Elasticsearch-datasource
+  infra fixtures, shared `translation_oracle` extract.
 
 ## Shared package (later)
 
