@@ -373,15 +373,17 @@ _GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_
 # The ``(?!__)`` guards exclude Grafana built-in macros whose names start with
 # ``__`` (e.g. ``${__range_s}s``) — those are time-range selectors, not a
 # user variable prefixed onto a metric name.
-# ``(?<!\[)`` excludes range/subquery selectors: in ``metric[${step}m]`` the
-# variable is a templated *duration* preceded by ``[`` (never a metric/label
-# name), and the surrounding metric is already concrete — matching it here would
-# blame the concrete metric name for a dynamic-name problem it doesn't have, so
-# any degrade is left to be attributed to its real cause.  The lookahead includes
-# ``:`` so a prefix glued onto a recording-rule name (``${env}:job:rate``) — whose
-# names may lead with ``:`` — is still caught.
+# ``(?<![\[:])`` excludes range/subquery selectors: in ``metric[${step}m]`` (range)
+# and ``metric[5m:${step}m]`` (subquery resolution) the variable is a templated
+# *duration* — preceded by ``[`` or the subquery ``:`` separator — never a
+# metric/label name, and the surrounding metric is already concrete.  Matching it
+# here would blame the concrete metric name for a dynamic-name problem it doesn't
+# have, so any degrade is left to be attributed to its real cause.  The lookahead
+# includes ``:`` so a prefix glued onto a recording-rule name (``${env}:job:rate``)
+# — whose names may lead with ``:`` — is still caught; that case has the variable
+# *first* (not preceded by ``:``), so the lookbehind leaves it alone.
 _PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
-    r"(?<!\[)"
+    r"(?<![\[:])"
     r"(?:"
     r"\$\{(?!__)" + _TV_NAME + _TV_BRACED_FMT + r"\}"
     r"|\[\[(?!__)" + _TV_NAME + _TV_BRACKET_FMT + r"\]\]"

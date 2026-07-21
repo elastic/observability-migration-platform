@@ -395,13 +395,17 @@ class TranslatorRegressionTests(unittest.TestCase):
         # template variable ($step)" diagnostic that sends operators after the
         # wrong problem. Regression guard against the prefix regex matching
         # template vars inside a ``[...]`` range/subquery selector.
-        result = self.translate(
-            'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)'
-        )
-
-        joined = " ".join(result.warnings).lower()
-        self.assertNotIn("metric or label name is built from", joined)
-        self.assertNotIn("dynamic metric/label name", joined)
+        for expr in (
+            # range selector: var preceded by ``[``
+            'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)',
+            # subquery resolution: var preceded by the ``:`` separator
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m:${step}m])) by (instance)',
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                joined = " ".join(result.warnings).lower()
+                self.assertNotIn("metric or label name is built from", joined)
+                self.assertNotIn("dynamic metric/label name", joined)
 
     def test_prefix_glued_to_recording_rule_name_is_not_feasible(self):
         # ``${env}:api:latency`` — a prefix glued onto a colon-led recording-rule

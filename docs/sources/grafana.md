@@ -324,8 +324,9 @@ with `__` and are excluded from the prefix-glued check; they are expanded by
 `preprocess_grafana_macros` at priority 10.
 
 The prefix-glued check deliberately ignores **range / subquery selectors**: in
-`metric[${step}m]` the variable is a templated *duration* (preceded by `[`),
-not a metric or label name, and the surrounding metric is concrete. Matching it
+`metric[${step}m]` (range) and `metric[5m:${step}m]` (subquery resolution) the
+variable is a templated *duration* (preceded by `[` or the subquery `:`), not a
+metric or label name, and the surrounding metric is concrete. Matching it
 here would emit a misleading "metric or label name is built from a Grafana
 template variable" diagnostic that blames the (concrete) metric name; the
 guardrail stays quiet so any degrade is attributed to its real cause. Only a
