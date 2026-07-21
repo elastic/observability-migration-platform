@@ -61,16 +61,16 @@ queries because the Kibana control applies the filter at dashboard level.
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
-| grafana | Diverse Panel Types Test | 10 | 3 | 7 | 0 | 0 | 0 | 1 |
+| grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
 | grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
 | grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | Node Exporter Full | 116 | 39 | 77 | 0 | 0 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 44 | 28 | 10 | 5 | 1 | 0 | 0 |
+| grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 10 | 5 | 1 | 0 | 0 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
 
-**8 dashboards, 247 panels** audited from `infra/grafana/dashboards/`.
+**8 dashboards, 250 panels** audited from `infra/grafana/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
 
 <!-- GENERATED:VERDICT_SUMMARY -->
@@ -80,7 +80,7 @@ queries because the Kibana control applies the filter at dashboard level.
 |---------|-------|---------|
 | **CORRECT** | 11 | Translation is semantically accurate |
 | **MINOR_ISSUE** | 220 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 39 | Known unsupported feature — placeholder or skip |
+| **EXPECTED_LIMITATION** | 42 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -112,7 +112,7 @@ queries because the Kibana control applies the filter at dashboard level.
 <!-- GENERATED:PER_DASHBOARD_TRACES -->
 ### Grafana: Diverse Panel Types Test
 
-**File:** `diverse-panels-test.json` — **Panels:** 11
+**File:** `diverse-panels-test.json` — **Panels:** 12
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
@@ -127,6 +127,7 @@ queries because the Kibana control applies the filter at dashboard level.
 | Active Alerts | `table` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | ALERTS{alertstate="firing"} | TS metrics-prometheus-* \| WHERE alertstate == "firing" \| WHERE ALERTS IS NOT N... |
 | Notes | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
 | Application Logs | `logs` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | {job="app"} \|= "error" | FROM logs-* \| WHERE job == "app" \| WHERE message LIKE "*error*" \| KEEP @times... |
+| Dashboard Links | `dashboard_links` → `links` | migrated | **EXPECTED_LIMITATION** | — | — |
 
 <details>
 <summary>Detailed traces (9 panels)</summary>
@@ -4867,7 +4868,7 @@ FROM logs-*
 
 ### Grafana: Node Exporter Full
 
-**File:** `node-exporter-full.json` — **Panels:** 132
+**File:** `node-exporter-full.json` — **Panels:** 133
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
@@ -5003,6 +5004,7 @@ FROM logs-*
 | TCP Stat | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_tcp_connection_states{state="established",instance="$node",job="$job"} \|\|... | TS metrics-prometheus-* \| WHERE node_tcp_connection_states IS NOT NULL \| STATS... |
 | Node Exporter Scrape Time | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_scrape_collector_duration_seconds{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_scrape_collector_duration_seconds IS NOT N... |
 | Node Exporter Scrape | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_scrape_collector_success{instance="$node",job="$job"} \|\|\| node_textfile_... | TS metrics-prometheus-* \| WHERE node_scrape_collector_success IS NOT NULL OR no... |
+| Dashboard Links | `dashboard_links` → `links` | migrated | **EXPECTED_LIMITATION** | — | — |
 
 <details>
 <summary>Detailed traces (116 panels)</summary>
@@ -6404,7 +6406,7 @@ TS metrics-prometheus-*
 
 ### Grafana: Prometheus 2.0 (by FUSAKLA)
 
-**File:** `prometheus-all.json` — **Panels:** 44
+**File:** `prometheus-all.json` — **Panels:** 45
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
@@ -6452,6 +6454,7 @@ TS metrics-prometheus-*
 | Disk usage | `graph` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Number of free INODES | `graph` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Net errors | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(net_conntrack_dialer_conn_failed_total{instance="$instance"}[$aggre... | TS metrics-prometheus-* \| WHERE net_conntrack_dialer_conn_failed_total IS NOT N... |
+| Dashboard Links | `dashboard_links` → `links` | migrated | **EXPECTED_LIMITATION** | — | — |
 
 <details>
 <summary>Detailed traces (36 panels)</summary>
@@ -8914,10 +8917,10 @@ TS metrics-prometheus-*
 From the latest trace run:
 
 ```
-Elements:            270 total (247 panels + 23 rows)
-Renderable panels:   247
-  Migrated:              96 (38.9%)
-  With warnings:        141 (57.1%)
+Elements:            273 total (250 panels + 23 rows)
+Renderable panels:   250
+  Migrated:              99 (39.6%)
+  With warnings:        141 (56.4%)
   Requires manual:        5 (2.0%)
   Not feasible:           4 (1.6%)
   Skipped:                1 (0.4%)
@@ -8928,7 +8931,7 @@ Verdict breakdown:
 ```
   CORRECT:                   11
   MINOR_ISSUE:              220
-  EXPECTED_LIMITATION:       39
+  EXPECTED_LIMITATION:       42
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -8955,4 +8958,4 @@ Every panel marked `not_feasible` in the trace run (4 total):
 
 ---
 
-*Last generated: 2026-07-14 18:45 UTC*
+*Last generated: 2026-07-16 07:55 UTC*

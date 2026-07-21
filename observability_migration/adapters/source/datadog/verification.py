@@ -116,6 +116,11 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
         add("block", 2, "required", "Do not auto-promote this widget")
         return candidates
 
+    if widget_type == "image" and kibana_type == "image":
+        add("native_image_panel", 1, "preferred", "Image widget with an absolute URL maps to a native Kibana image panel")
+        add("markdown", 2, "fallback", "Relative/static-asset URLs still degrade to a markdown embed")
+        return candidates
+
     if widget_type in {"note", "free_text", "image", "iframe"}:
         add("markdown", 1, "preferred", "Text-style widgets map best to markdown panels")
         add("manual_redesign", 2, "review", "Complex formatting may still need manual cleanup")

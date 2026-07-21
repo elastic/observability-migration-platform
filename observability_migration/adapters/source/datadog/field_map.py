@@ -48,6 +48,7 @@ class FieldMapProfile:
 
     metric_map: dict[str, str] = field(default_factory=dict)
     tag_map: dict[str, str] = field(default_factory=dict)
+    log_tag_map: dict[str, str] = field(default_factory=dict)
     field_caps: dict[str, FieldCapability] = field(default_factory=dict)
     metric_field_caps: dict[str, FieldCapability] = field(default_factory=dict)
     log_field_caps: dict[str, FieldCapability] = field(default_factory=dict)
@@ -73,11 +74,14 @@ class FieldMapProfile:
             context: "metric" or "log" — used to avoid mapping tags like
                      "status" to log-only fields (log.level) in metric queries.
         """
-        if dd_tag in self.tag_map:
-            mapped = self.tag_map[dd_tag]
+        tag_map = self.log_tag_map if context == "log" and self.log_tag_map else self.tag_map
+        if dd_tag in tag_map:
+            mapped = tag_map[dd_tag]
             if context == "metric" and mapped in _LOG_ONLY_FIELDS:
                 return dd_tag
             return self._prefer_aggregatable_keyword_subfield(mapped, context=context)
+        if context == "log" and self.log_tag_map:
+            return self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
         if self.tag_prefix:
             return self._prefer_aggregatable_keyword_subfield(f"{self.tag_prefix}{dd_tag}", context=context)
         return self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
@@ -97,9 +101,7 @@ class FieldMapProfile:
 
     def map_log_field(self, dd_field: str) -> str:
         """Map a Datadog log attribute (@field) to an ES field."""
-        if dd_field in self.tag_map:
-            return self.tag_map[dd_field]
-        return dd_field
+        return self.map_tag(dd_field, context="log")
 
     def map_log_index(self, dd_index: str) -> str:
         """Map a Datadog log index name to an ES index pattern."""
@@ -255,18 +257,76 @@ OTEL_PROFILE = FieldMapProfile(
     metric_suffix="",
 )
 
+def _prometheus_metricbeat_tag_map() -> dict[str, str]:
+    """Tags for Metricbeat / integration Prometheus remote_write layout.
+
+    Official Metricbeat stores labels under ``prometheus.labels.*`` (not ECS
+    ``host.name`` / ``kubernetes.*``). ``host`` maps to the common Prometheus
+    ``instance`` label name under that prefix.
+    """
+    return {
+        "host": "prometheus.labels.instance",
+        "instance": "prometheus.labels.instance",
+        "job": "prometheus.labels.job",
+        "env": "prometheus.labels.env",
+        "service": "prometheus.labels.service",
+        "version": "prometheus.labels.version",
+        "pod_name": "prometheus.labels.pod_name",
+        "kube_namespace": "prometheus.labels.kube_namespace",
+        "kube_cluster_name": "prometheus.labels.kube_cluster_name",
+        "kube_deployment": "prometheus.labels.kube_deployment",
+        "container_name": "prometheus.labels.container_name",
+        "container_id": "prometheus.labels.container_id",
+    }
+
+
+def _prometheus_native_tag_map() -> dict[str, str]:
+    """Tags for Elasticsearch native ``/_prometheus`` remote-write layout."""
+    return {
+        "host": "labels.instance",
+        "instance": "labels.instance",
+        "job": "labels.job",
+        "env": "labels.env",
+        "service": "labels.service",
+        "version": "labels.version",
+        "pod_name": "labels.pod_name",
+        "kube_namespace": "labels.kube_namespace",
+        "kube_cluster_name": "labels.kube_cluster_name",
+        "kube_deployment": "labels.kube_deployment",
+        "container_name": "labels.container_name",
+        "container_id": "labels.container_id",
+    }
+
+
+# Metricbeat / Elastic Agent Prometheus remote_write integration layout:
+# metrics under ``prometheus.metrics.*``, labels under ``prometheus.labels.*``.
 PROMETHEUS_PROFILE = FieldMapProfile(
     name="prometheus",
     metric_index="metrics-prometheus-*",
     logs_index="logs-*",
     timestamp_field="@timestamp",
     metrics_dataset_filter="prometheus",
-    tag_map={
-        **_default_tag_map(),
-        "host": "instance",
-    },
+    tag_map=_prometheus_metricbeat_tag_map(),
+    log_tag_map=_otel_tag_map(),
     metric_prefix="prometheus.metrics.",
     metric_suffix="",
+    tag_prefix="prometheus.labels.",
+)
+
+# Elasticsearch native Prometheus remote-write endpoint
+# (``/_prometheus/api/v1/write``): metrics under ``metrics.*``, labels under
+# ``labels.*`` on ``metrics-*.prometheus-*`` data streams.
+PROMETHEUS_NATIVE_PROFILE = FieldMapProfile(
+    name="prometheus_native",
+    metric_index="metrics-*.prometheus-*",
+    logs_index="logs-*",
+    timestamp_field="@timestamp",
+    metrics_dataset_filter="",
+    tag_map=_prometheus_native_tag_map(),
+    log_tag_map=_otel_tag_map(),
+    metric_prefix="metrics.",
+    metric_suffix="",
+    tag_prefix="labels.",
 )
 
 ELASTIC_AGENT_PROFILE = FieldMapProfile(
@@ -310,6 +370,7 @@ BUILTIN_PROFILES: dict[str, FieldMapProfile] = {
     "default": OTEL_PROFILE,
     "otel": OTEL_PROFILE,
     "prometheus": PROMETHEUS_PROFILE,
+    "prometheus_native": PROMETHEUS_NATIVE_PROFILE,
     "elastic_agent": ELASTIC_AGENT_PROFILE,
     "passthrough": PASSTHROUGH_PROFILE,
 }
@@ -348,6 +409,7 @@ def _profile_from_model(model: FieldMapProfileModel) -> FieldMapProfile:
         logs_dataset_filter=logs_ds,
         metric_map=dict(model.metric_map),
         tag_map=dict(model.tag_map),
+        log_tag_map=dict(model.log_tag_map),
         metric_prefix=model.metric_prefix,
         metric_suffix=model.metric_suffix,
         tag_prefix=model.tag_prefix,
@@ -365,6 +427,7 @@ def _clone_profile(profile: FieldMapProfile) -> FieldMapProfile:
         logs_dataset_filter=profile.logs_dataset_filter,
         metric_map=deepcopy(profile.metric_map),
         tag_map=deepcopy(profile.tag_map),
+        log_tag_map=deepcopy(profile.log_tag_map),
         field_caps=deepcopy(profile.field_caps),
         metric_field_caps=deepcopy(profile.metric_field_caps),
         log_field_caps=deepcopy(profile.log_field_caps),

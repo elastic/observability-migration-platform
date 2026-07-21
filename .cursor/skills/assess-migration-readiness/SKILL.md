@@ -24,19 +24,34 @@ Always tell the user which level their run achieved. A clean-looking verdict at 
 
 Readiness comes from a **preflight** run (`--preflight`): it translates and analyzes, optionally validates against live systems, and writes a customer-facing readiness report. It does not upload.
 
-Assume the user **installed the package** (`grafana-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. The readiness artifacts below are written by the CLI, so they exist for package users without any `scripts/`/`infra/` directory.
+Assume the user **installed the package** (`obs-migrate` / `grafana-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. The readiness artifacts below are written by the CLI, so they exist for package users without any `scripts/`/`infra/` directory.
 
-Highest-evidence Grafana run (export the endpoints/keys you actually have):
+Prefer the unified CLI; dedicated `grafana-migrate` still exposes `--prometheus-url` / `--loki-url` for source-side validation:
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
 export ELASTICSEARCH_ENDPOINT="https://...es..." KEY="<api-key>"
 
+# Canonical package entry (target-aware preflight):
+obs-migrate migrate \
+  --source grafana --input-mode api \
+  --output-dir readiness_out \
+  --assets all \
+  --preflight \
+  --field-profile otel \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY"
+
+# Highest evidence (also validate against live Prometheus/Loki) — dedicated CLI:
 grafana-migrate \
   --source api \
   --output-dir readiness_out \
   --assets all \
   --preflight \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --es-api-key "$KEY" \
   --prometheus-url "https://prometheus.example.com" \
@@ -44,8 +59,9 @@ grafana-migrate \
 ```
 
 - `--prometheus-url` / `--loki-url` take **literal URLs** — there are no standard `$PROMETHEUS_URL`/`$LOKI_URL` repo env vars; substitute the user's real endpoints or omit them.
+- **Populated targets:** Grafana may use `--field-profile auto --es-url ...` when telemetry already exists (ambiguous caps → `otel` + warn); otherwise choose an explicit planned profile (`prepare-target-telemetry`). Datadog always requires an explicit profile — no `auto`.
+- Set `--esql-index` for Prometheus query/discovery even when `--data-view` differs as the Kibana UI bind.
 - Drop `--es-url`/source URLs to run a faster `static_analysis` pass (state the lower confidence).
-- `obs-migrate migrate --source grafana --input-mode api --preflight ...` also works, but the `--prometheus-url` / `--loki-url` source-validation flags are exposed on the dedicated `grafana-migrate` CLI.
 
 ## Where to read the verdict
 
@@ -57,15 +73,15 @@ Primary artifact: `readiness_out/dashboards/preflight_report.json`.
 | Clean vs. rework buckets | `summary.readiness`: `ready` (clean) · `needs_metrics_mapping` / `needs_log_fielding` (mapping rework) · `manual_only` (redesign) |
 | Quality gates | `summary.semantic_gates`: `green` / `yellow` / `red` |
 | Hard stops | `blockers` (Red-gated panels, missing required fields, non-migratable datasources, RED cluster health, missing metrics) |
-| Prep work (not blocking) | `actions` (field mapping needed, unconfirmed counters, missing labels, high-complexity dashboards, YELLOW cluster) |
+| Prep work (not blocking) | `actions` (field mapping needed, unconfirmed counters, missing labels, high-complexity dashboards, YELLOW cluster). Grafana `profile_mismatch` on `required_target_contract.json` is operator visibility — check planned vs detected layout there; it is not a separate preflight blocker. |
 | One-paragraph readout | `customer_action_summary` |
 
 Human-readable: `readiness_out/dashboards/migration_summary.md` (verdict, scorecard, must-fix worklist).
-Per-panel drill-down: `readiness_out/dashboards/migration_manifest.json` → `panels[].readiness`, `panels[].status`, `panels[].verification_packet.semantic_gate`, `panels[].reasons`.
+Per-panel drill-down: `readiness_out/dashboards/migration_manifest.json` → `panels[].readiness`, `panels[].status`, `panels[].verification_packet.semantic_gate`, `panels[].reasons`. Expect `migrated_with_warnings` for accepted approximations — triage with `explain-migration-gaps`, not as automatic blockers.
 
 ## How to judge confidence (tell the user)
 
-High confidence requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional. Yellow/Red gates, `metrics_missing`, or `datasource_audit.non_migratable_panels` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully).
+High confidence requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional. Yellow/Red gates, `metrics_missing`, or `datasource_audit.non_migratable_panels` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully). Preflight does **not** prove Lens UI render; for that, use render audit / `validate-side-by-side` after a try-one upload (`docs/testing.md`).
 
 ## Do NOT
 
@@ -77,5 +93,9 @@ High confidence requires **all** of: `evidence_level: full`, `blockers` empty, G
 ## See also
 
 - `scan-o11y-environment` skill — the descriptive inventory layer beneath this.
-- `grafana-migrate --help` — confirm `--preflight`, `--es-url`, `--prometheus-url`, `--loki-url` for the installed version.
+- `prepare-target-telemetry` skill — field profile / `--esql-index` before readiness claims.
+- `explain-migration-gaps` skill — warned vs blocked panel triage.
+- `prepare-production-cutover` skill — final go/no-go after validation gates.
+- `obs-migrate migrate --help` / `grafana-migrate --help` — confirm `--preflight`, `--es-url`, `--prometheus-url`, `--loki-url` for the installed version.
 - `docs/command-contract.md` — preflight/validation flags and artifacts (online docs / repo).
+- `docs/testing.md` — layered verifier / render-audit gates beyond preflight.

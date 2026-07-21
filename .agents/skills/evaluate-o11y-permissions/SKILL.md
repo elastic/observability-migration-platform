@@ -15,11 +15,13 @@ Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `o
 
 - **The source (Grafana/Datadog) is read-only.** The tool never writes back to the source. So the only source permission that matters is **read/search/export of dashboards** (and, for Datadog, monitors). If `connect-to-o11y-source` succeeded, source read is already proven.
 - **The target (Elastic/Kibana) is where write permission matters.** The migration needs an API key that can:
-  - **import** saved objects — `POST /api/saved_objects/_import` (dashboards)
-  - **read** saved objects — `POST /api/saved_objects/_export` (listing)
+  - **create/update dashboards** via the typed Dashboards API — `PUT /api/dashboards/{id}` (default `obs-migrate upload` / `migrate --upload` path)
+  - **legacy import** saved objects — `POST /api/saved_objects/_import` only when using `--legacy-import` / compile+import flows
+  - **read** saved objects / list dashboards — `obs-migrate cluster list-dashboards` (Serverless uses `_export`)
   - **manage data views** — `GET/POST/DELETE /api/data_views/...`
   - **create alert rules** (only if migrating alerts) — `POST /api/alerting/rule`
   - **read** target indices for field validation — ES `_field_caps`
+  - **delete migrated alert rules** — `obs-migrate delete-rules` (dry-run by default; `--confirm` to delete)
 
 ## Source permission check (non-mutating)
 
@@ -78,10 +80,10 @@ obs-migrate cluster ensure-data-views \
 Only run these when the user accepts that they create objects. State this explicitly before running.
 
 ```bash
-# Dashboard import proof (creates a dashboard in Kibana; does not self-clean).
-# Use the user's OWN migrated YAML from a prior `obs-migrate migrate` run.
+# Dashboard write proof (creates/updates a dashboard via typed Dashboards API; does not self-clean).
+# Prefer reviewing <their-output-dir>/dashboards/native/*.native.json, then:
 obs-migrate upload \
-  --yaml-dir <their-output-dir>/dashboards \
+  --artifact-dir <their-output-dir>/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
 # Alert-rule write proof — SELF-CLEANING round trip (package-native).
@@ -95,8 +97,7 @@ obs-migrate verify-alert-rules \
   --limit 1
 ```
 
-`verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward, audit and disable/remove them with `obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled` and delete in the Kibana UI. The dashboard import proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test.
-
+`verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward: `obs-migrate audit-rules ... --disable-enabled` to disable, then `obs-migrate delete-rules --kibana-url ... --kibana-api-key ...` (dry-run) and `... --confirm` to delete. The dashboard upload proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test. `--yaml-dir` remains a compatibility alias for YAML mapping; prefer `--artifact-dir` with native artifacts.
 ## Serverless caveats (call these out)
 
 - Saved-object `GET`/`_find`/direct `DELETE` are blocked on Serverless. Listing uses `_export`; "delete" rewrites objects to `[DELETED]` placeholders via re-import. So a user can lack nothing and still be unable to hard-delete — that is the platform, not a permission gap.

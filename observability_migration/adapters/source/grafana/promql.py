@@ -4061,6 +4061,12 @@ def _build_shared_measure_pipeline(index, specs):
         if not scoped_expr:
             return None
         stats_terms.append(f"{_esql_identifier(spec.alias)} = {scoped_expr}")
+    # Same CASE-shape / mixed-TS invariants as ``_merge_pretranslated_xy_queries``.
+    stats_terms = _finalize_fused_stats_assignments(
+        stats_terms,
+        group_fields=base.group_fields,
+        source_type=base.source_type,
+    )
     parts = [
         f"{base.source_type} {index}",
         f"| WHERE {base.time_filter}",
@@ -4094,6 +4100,112 @@ def _timeseries_stats_window(specs):
         if match:
             return match.group(1).strip()
     return "5m"
+
+
+_ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)"
+
+
+_BARE_TS_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+)
+
+
+def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
+    """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
+
+    Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
+    ``TS ... | STATS`` measure uses ``IRATE(CASE(cond, metric, NULL), …)`` and
+    another uses bare ``IRATE(other_metric, …)``. Wrapping the bare value arg
+    as ``CASE(true, other_metric, NULL)`` keeps semantics (always true) while
+    giving every time-series aggregate a CASE-shaped value expression.
+
+    Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
+    pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
+    """
+    if not any("CASE(" in assignment for assignment in assignments):
+        return assignments
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
+            f"{match.group('window')})"
+        )
+
+    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+
+
+def _infer_stats_metric_field(expr: str) -> str:
+    """Best-effort metric field from a STATS RHS for mixed-TS normalization."""
+    text = (expr or "").strip()
+    wrapped = re.fullmatch(
+        rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*(?:{_TS_AGG_FUNC_PATTERN})\(\s*"
+        rf"({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)\s*\)",
+        text,
+    )
+    if wrapped:
+        return wrapped.group(1)
+    bare_ts = re.fullmatch(
+        rf"(?:{_TS_AGG_FUNC_PATTERN})\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)",
+        text,
+    )
+    if bare_ts:
+        return bare_ts.group(1)
+    bare_regular = re.fullmatch(
+        rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*\)",
+        text,
+    )
+    if bare_regular:
+        return bare_regular.group(1)
+    return ""
+
+
+def _finalize_fused_stats_assignments(
+    assignments: list[str],
+    *,
+    group_fields: list[str] | None = None,
+    source_type: str = "TS",
+) -> list[str]:
+    """Apply mixed-TS normalize then CASE-shape wrap to fused STATS assignments.
+
+    Used by pretranslated multi-target merge and single-query join-ratio emission
+    so both stay aligned with ``_build_shared_measure_pipeline``.
+    """
+    if not assignments:
+        return assignments
+    if source_type == "TS":
+        dims = [g for g in (group_fields or []) if g and g != "time_bucket"]
+        specs = []
+        alias_order: list[str] = []
+        for assignment in assignments:
+            if "=" not in assignment:
+                continue
+            left, right = assignment.split("=", 1)
+            alias = left.strip()
+            expr = right.strip()
+            alias_order.append(alias)
+            bare_alias = alias.strip("`")
+            specs.append(
+                MeasureSpec(
+                    source_type="TS",
+                    time_filter="",
+                    bucket_expr="time_bucket = TBUCKET(5 minute)",
+                    group_fields=list(dims),
+                    filters=[],
+                    alias=bare_alias,
+                    stats_expr=expr,
+                    final_alias=bare_alias,
+                    metric_field=_infer_stats_metric_field(expr),
+                )
+            )
+        if specs:
+            specs = _normalize_mixed_ts_stats_exprs(specs)
+            assignments = [
+                f"{alias} = {spec.stats_expr}"
+                for alias, spec in zip(alias_order, specs)
+            ]
+    return _wrap_bare_ts_value_args_when_case_siblings(assignments)
 
 
 _OUTER_TO_TS_AGG = {
@@ -5408,6 +5520,7 @@ __all__ = [
     "_detect_outer_agg",
     "_expand_late_bound_group_by_terms",
     "_extract_group_labels",
+    "_finalize_fused_stats_assignments",
     "_format_scalar_value",
     "_frag_eval_line",
     "_frag_filters",
@@ -5429,6 +5542,7 @@ __all__ = [
     "_strip_grafana_substitutions",
     "_summary_mode_from_metadata",
     "_unique_safe_alias",
+    "_wrap_bare_ts_value_args_when_case_siblings",
     "classify_promql_complexity",
     "grafana_template_var_name",
     "preprocess_grafana_macros",

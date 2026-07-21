@@ -36,9 +36,15 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "alert_graph": "markdown",
     "alert_value": "markdown",
     "check_status": "markdown",
-    "hostmap": "markdown",
+    # Kibana has no hostmap visual; grouped hostmap metrics degrade to a
+    # data-preserving datatable with an explicit visual-fidelity warning.
+    "hostmap": "table",
     "free_text": "markdown",
     "note": "markdown",
+    # Overridden per-widget to "image" by ``image_widget_rule`` when the
+    # widget carries a real absolute http(s) URL; this default only applies
+    # when that rule declines (relative/static URL) and the widget falls
+    # through to the generic text-widget markdown placeholder.
     "image": "markdown",
     "iframe": "markdown",
     "group": "group",
@@ -59,7 +65,7 @@ WIDGET_TYPE_MAP: dict[str, str] = {
 SUPPORTED_WIDGET_TYPES: set[str] = {
     "timeseries", "query_value", "toplist", "bar_chart", "table", "query_table",
     "heatmap", "distribution", "change", "scatterplot", "treemap",
-    "sunburst", "pie", "geomap", "log_stream", "list_stream",
+    "sunburst", "pie", "geomap", "hostmap", "log_stream", "list_stream",
     "note", "free_text", "image", "iframe", "group",
 }
 
@@ -121,6 +127,8 @@ class FunctionCall:
 class MetricQuery:
     raw: str = ""
     space_agg: str = ""
+    value_filter_op: str = ""
+    value_filter_threshold: float | None = None
     metric: str = ""
     scope: list[Any] = field(default_factory=list)
     group_by: list[str] = field(default_factory=list)

@@ -189,8 +189,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="otel",
         help=(
             "Target field mapping profile. Defaults to 'otel' for all sources; "
-            "Grafana currently supports 'otel' only, while Datadog also supports "
-            "Datadog-specific built-ins and YAML profile files."
+            "Grafana supports 'otel', 'prometheus_remote_write' (Fleet "
+            "use_types), 'prometheus_metrics' (classic Metricbeat "
+            "prometheus.metrics.*), 'prometheus_native', 'passthrough', and "
+            "'auto' (requires --es-url); Datadog supports 'otel'/'default', "
+            "'elastic_agent', 'prometheus' (Metricbeat remote_write), "
+            "'prometheus_native' (ES /_prometheus), 'passthrough', and YAML "
+            "profile files (no auto)."
         ),
     )
     migrate.add_argument(

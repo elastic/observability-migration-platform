@@ -185,7 +185,9 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         panels = _panels_by_title(yaml_doc)
         controls = yaml_doc["dashboards"][0].get("controls") or []
 
-        self.assertEqual(result.total_panels, 11)
+        # 11 source panels plus one rendered links panel synthesized from
+        # dashboard-level external-link metadata.
+        self.assertEqual(result.total_panels, 12)
         self.assertEqual(len(controls), 1)
 
         # A Grafana heatmap now emits a native Kibana heatmap (x=time bucket,
@@ -232,7 +234,9 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
 
         panels = _panels_by_title(yaml_doc)
 
-        self.assertEqual(result.total_panels, 44)
+        # 44 source panels plus one rendered links panel synthesized from
+        # dashboard-level external-link metadata.
+        self.assertEqual(result.total_panels, 45)
         self.assertEqual(len(yaml_doc["dashboards"][0].get("controls") or []), 1)
         self.assertEqual(panels["Uptime"]["esql"]["type"], "metric")
         self.assertEqual(panels["Query elapsed time"]["esql"]["type"], "area")

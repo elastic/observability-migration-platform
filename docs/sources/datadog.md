@@ -125,6 +125,22 @@ setup all produce different field paths. Field profiles bridge this gap:
 a profile tells the translator how to rename every Datadog metric name and
 tag key into the correct Elasticsearch field.
 
+### Alignment with Grafana
+
+Grafana and Datadog share the same operator mental model for `--field-profile`:
+
+1. **Choose a planned profile** — assets-first migration works before telemetry
+   exists; emitted queries follow that profile's mapping rules.
+2. **Emit field names for the plan** — offline runs do not require `--es-url`.
+3. **With `--es-url`, verify against live `_field_caps`** — readiness uses
+   `confirmed` / `missing` / `unknown` on `target_readiness_contract.json`;
+   live caps do not silently remap to a different layout.
+
+Datadog differs in one important way: there is **no `--field-profile auto`**.
+Always pick an explicit built-in profile or YAML path. Wrong profile →
+missing-field warnings in preflight; emitted queries still follow the chosen
+plan.
+
 ### How Field Profiles Work
 
 A profile supplies:
@@ -132,7 +148,8 @@ A profile supplies:
 | Property | Purpose |
 |---|---|
 | `metric_map` | Explicit Datadog metric name → ES field overrides (e.g. `system.cpu.user` → `system.cpu.user.pct`) |
-| `tag_map` | Datadog tag / log attribute → ES field name (e.g. `host` → `host.name`) |
+| `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
+| `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
 | `tag_prefix` | Default prefix applied to unmapped tags |
 | `metric_index` / `logs_index` | Default Elasticsearch index patterns for metrics and logs |
@@ -144,26 +161,48 @@ the translator first checks `metric_map` for an explicit override. If none
 exists, it converts dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
-**Translation behavior for tags:** When a Datadog tag key is encountered, the
-translator checks `tag_map` for an explicit mapping. If none exists, it applies
-`tag_prefix` (if set) or keeps the original tag name.
+**Translation behavior for tags:** Metric queries check `tag_map`, then apply
+`tag_prefix` (if set) or keep the original tag name. Log queries use
+`log_tag_map` when the profile provides one; unmapped log attributes then stay
+unchanged instead of inheriting the metric `tag_prefix`. The built-in
+Prometheus profiles therefore keep ECS / OTel log fields rather than emitting
+`prometheus.labels.*` or `labels.*` paths against `logs-*`.
 
 ### Built-in Profiles
 
-| Profile | Default metric index | Metric prefix | Description |
-|---|---|---|---|
-| `otel` (default) | `metrics-*` | _(none)_ | OpenTelemetry Collector field names |
-| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | Prometheus remote-write field names |
-| `elastic_agent` | `metrics-*` | _(none)_ | Elastic Agent / Metricbeat integration field names |
-| `passthrough` | `metrics-*` | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+| Profile | Default metric index | Metric prefix | Tag prefix / notes | Description |
+|---|---|---|---|---|
+| `otel` (default) | `metrics-*` | _(none)_ | ECS / OTel semantic maps | OpenTelemetry Collector field names |
+| `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | `prometheus.labels.*` (`host` → `prometheus.labels.instance`) | Metricbeat / Agent Prometheus **remote_write** integration layout |
+| `prometheus_native` | `metrics-*.prometheus-*` | `metrics.` | `labels.*` (`host` → `labels.instance`) | Elasticsearch native `/_prometheus` remote-write layout |
+| `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
+| `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+
+> **Breaking change:** `--field-profile prometheus` now maps metric-query tags
+> to `prometheus.labels.*` (including `host` → `prometheus.labels.instance`)
+> instead of ECS/bare fields. Use `prometheus_native` for `labels.*` on native
+> `/_prometheus` data streams. Log queries continue to use ECS / OTel fields.
 
 ### Tag Mapping (Shared Baseline)
 
-All profiles except `passthrough` share a common tag mapping baseline:
+`otel` and `elastic_agent` share a common ECS-oriented tag baseline (with
+`elastic_agent` preferring `kubernetes.*` and `otel` preferring `k8s.*` for
+several Kubernetes keys). Prometheus profiles use their label paths for metric
+queries, but their log queries use the OTel baseline:
+
+| Datadog tag | `otel` / `elastic_agent` | `prometheus` metric query | `prometheus_native` metric query | Prometheus-profile log query |
+|---|---|---|---|---|
+| `host` | `host.name` | `prometheus.labels.instance` | `labels.instance` | `host.name` |
+| `env` | `deployment.environment` | `prometheus.labels.env` | `labels.env` | `deployment.environment` |
+| `service` | `service.name` | `prometheus.labels.service` | `labels.service` | `service.name` |
+| `kube_namespace` | `k8s.namespace.name` / `kubernetes.namespace` | `prometheus.labels.kube_namespace` | `labels.kube_namespace` | `k8s.namespace.name` |
+| other tags | profile-specific maps | `prometheus.labels.<tag>` | `labels.<tag>` | Original tag (or custom `log_tag_map`) |
+
+Shared `otel` / `elastic_agent` baseline details:
 
 | Datadog tag | Elasticsearch field |
 |---|---|
-| `host` | `host.name` (`instance` for `prometheus` profile) |
+| `host` | `host.name` |
 | `env` | `deployment.environment` |
 | `service` | `service.name` |
 | `version` | `service.version` |
@@ -171,10 +210,10 @@ All profiles except `passthrough` share a common tag mapping baseline:
 | `status` | `log.level` (only in log context; kept as `status` in metric queries) |
 | `container_name` | `container.name` |
 | `container_id` | `container.id` |
-| `pod_name` | `kubernetes.pod.name` |
-| `kube_namespace` | `kubernetes.namespace` |
-| `kube_cluster_name` | `kubernetes.cluster.name` |
-| `kube_deployment` | `kubernetes.deployment.name` |
+| `pod_name` | `kubernetes.pod.name` (`otel`: `k8s.pod.name`) |
+| `kube_namespace` | `kubernetes.namespace` (`otel`: `k8s.namespace.name`) |
+| `kube_cluster_name` | `kubernetes.cluster.name` (`otel`: `k8s.cluster.name`) |
+| `kube_deployment` | `kubernetes.deployment.name` (`otel`: `k8s.deployment.name`) |
 | `image_name` | `container.image.name` |
 | `image_tag` | `container.image.tag` |
 
@@ -200,8 +239,9 @@ common system metrics:
 | Your ingestion pipeline | Recommended profile |
 |---|---|
 | OTel Collector → Elasticsearch | `otel` (default) |
-| Prometheus → remote_write → Elasticsearch | `prometheus` |
-| Elastic Agent / Metricbeat → Elasticsearch | `elastic_agent` |
+| Metricbeat / Agent Prometheus remote_write → Elasticsearch | `prometheus` |
+| Elasticsearch native `/_prometheus` remote write | `prometheus_native` |
+| Elastic Agent / Metricbeat system integrations → Elasticsearch | `elastic_agent` |
 | Custom pipeline or unknown | Start with `passthrough`, then iterate |
 
 ### Using a Built-in Profile
@@ -315,6 +355,9 @@ Use that doc for:
   rollout evidence; alert artifacts are written under `<output-dir>/alerts`;
   Datadog also writes a root `run_summary.json`.
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
+  There is no `auto` profile — pick the plan that matches your ingest route,
+  then verify with `--es-url` (`confirmed` / `missing` / `unknown` on
+  `target_readiness_contract.json`).
 - `--env-file` loads Datadog API credentials for API extraction and live metric
   source execution during verification.
 - `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) and `--insecure` (env
@@ -338,17 +381,67 @@ Use that doc for:
   validated starter field-profile template, and
   `examples/cue/datadog-field-profile.cue` remains the optional CUE authoring
   example.
+- `image` widgets with a real absolute `http(s)` URL map to a native Kibana
+  `image` panel (see `docs/targets/kibana.md#links-and-image-panels`) via
+  `planner.py::image_widget_rule`. Relative/internal Datadog asset URLs (e.g.
+  `/static/...`) would 404 in Kibana and still degrade to the previous
+  markdown-embed placeholder. CSS-compatible `sizing` values map to Kibana
+  `fit`; deprecated Datadog aliases map as `fit` → `contain`, `zoom` →
+  `cover`, and `center` → `none` (`scale-down` degrades to `contain` with a
+  warning because Kibana has no exact equivalent).
 
 ## Per-Widget Planning And Translation
 
 The Datadog path is now organized around executable stages:
 
 1. `normalize.py`: turn raw Datadog dashboards into `NormalizedDashboard` and `NormalizedWidget`.
-2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked`.
+2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `image`, `group`, or `blocked`.
 3. `preflight.py`: resolve mapped target fields and surface capability risks before translation.
 4. `translate.py`: run registry-backed metric, log, and Lens translation rules.
 5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload
    and kb-dashboard YAML, then hand off to review-artifact/report/compile steps.
+
+### Hostmap Fallback
+
+Datadog hostmaps store their metric requests under keyed `fill`/`size`
+objects rather than the standard request array. Those queries are normalized
+and, when they include a host/category grouping, emitted as a grouped Kibana
+datatable. This preserves the target dimension and metric values while
+explicitly warning that Datadog's tile layout and value-based coloring are not
+available. An ungrouped hostmap still requires manual redesign because no
+host/value table can be constructed.
+
+### Template-Variable Filter Limitations
+
+Tag-backed metric template variables can become Kibana options-list controls,
+but Datadog also supports variable shapes that do not have a faithful direct
+equivalent:
+
+- A variable referenced only by log widgets binds to the logs data view and
+  uses log-field mapping. Metric-only and unreferenced variables bind to the
+  metrics data view. A variable shared by metric and log widgets still needs
+  review because one Kibana options-list control cannot target two data views.
+- Source `available_values` and preselected defaults are retained in the typed
+  `ControlIR`. Kibana options-list controls populate from target field values,
+  so `available_values` is provenance rather than an enforced static
+  allow-list in generated YAML.
+- `$scope` represents an entire Datadog scope expression rather than one tag
+  field. It is omitted with an explicit manual-recreation warning; the
+  migration does not claim that a nonexistent single control replaces it.
+- Template variables inside Datadog log filters are removed from executable
+  ES|QL because the substitution cannot be bound exactly. The panel is marked
+  with a warning and the filter must be recreated in Kibana rather than being
+  silently reported as a clean translation.
+
+### Dynamic Group-By Template Variables
+
+A metric grouping such as `by {host}` maps to the corresponding target field
+(`host.name` in the OTel profile). A grouping that is itself a Datadog
+template variable, such as `by {$grouping}`, cannot be resolved to a stable
+target field during migration. It is therefore emitted as
+`requires_manual` with no executable ES|QL rather than querying a literal
+`` `$grouping` `` field that does not exist. Choose a fixed Datadog tag before
+migration or recreate the selector as a Kibana field control.
 
 ### Formula Translation Specifics
 
@@ -359,6 +452,16 @@ The translator handles Datadog formulas at three layers:
   - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric, 5 minute) BY TBUCKET(5 minute)` (or `INCREASE(...)` for `diff`/`monotonic_diff`). This is the native ES|QL time-series aggregation — same pattern the Grafana adapter uses for PromQL `rate()`. Mirrors Datadog counter-rate semantics directly.
   - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
 - **Multi-query formulas with different filters** (e.g. `count:x{direction:in} / count:x{direction:out}`) translate via per-aggregation `WHERE` clauses inside `STATS`: each query's tag filters are attached to its own aggregation expression. The outer `WHERE` becomes the `TIME_FILTER` plus an `OR` of the spec filters. Different groupings are still surfaced as `requires_manual` because the resolution between divergent group sets is semantically ambiguous.
+- **Direct-reference table formulas with different request reducers** apply
+  each reducer independently (for example `AVG` for message-rate columns and
+  `LAST` for a lag column) after the shared time-bucket stage. Composite
+  formulas that mix queries with incompatible reducers remain blocked because
+  reducer ordering would be ambiguous.
+- **Value-filtered count aggregators** such as
+  `count(v: v>=0):metric{scope} by {service}` retain the numeric predicate as
+  an ES|QL metric filter before `COUNT(*)`. Function-chain behavior such as
+  `.as_rate()` and `.rollup(10)` then follows the existing warned rate/rollup
+  approximation path instead of forcing manual review.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 
 ### Parity Harness

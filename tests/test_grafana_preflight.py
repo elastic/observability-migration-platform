@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from observability_migration.adapters.source.grafana import cli, manifest, preflight
+from observability_migration.adapters.source.grafana.rules import RulePackConfig
+from observability_migration.adapters.source.grafana.schema import SchemaResolver
 
 
 class GrafanaPreflightReportTests(unittest.TestCase):
@@ -50,6 +52,47 @@ class GrafanaPreflightReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["readiness"]["ready"], 0)
         self.assertIn("Panels: 1 (1 Green by static analysis)", summary)
         self.assertNotIn("ready for deployment", summary)
+
+    def test_preflight_report_includes_dashboard_control_warnings(self):
+        panel = SimpleNamespace(
+            readiness="",
+            verification_packet={
+                "semantic_gate": "Green",
+                "source_execution": {"status": "not_configured"},
+            },
+        )
+        result = SimpleNamespace(
+            dashboard_title="Chained controls",
+            total_panels=1,
+            panel_results=[panel],
+            control_warnings=["variable 'id' is broader than its Grafana scope"],
+        )
+
+        report = preflight.build_preflight_report(
+            [result],
+            validation_summary={},
+            validation_records=[],
+            verification_payload={},
+            schema_contract={
+                "required_indexes": {},
+                "required_fields": {},
+                "counter_expectations": {},
+                "totals": {},
+            },
+        )
+
+        self.assertEqual(report["summary"]["control_warnings"], 1)
+        self.assertEqual(
+            report["control_warnings"],
+            [{
+                "dashboard": "Chained controls",
+                "warnings": ["variable 'id' is broader than its Grafana scope"],
+            }],
+        )
+        self.assertTrue(
+            any("1 dashboard control warning" in action for action in report["actions"]),
+            report["actions"],
+        )
 
     def test_serverless_action_summary_does_not_report_zero_data_nodes(self):
         panel = SimpleNamespace(
@@ -252,6 +295,41 @@ class GrafanaPreflightReportTests(unittest.TestCase):
         self.assertTrue(
             contract["counter_expectations"]["metrics.http_requests_total"]["confirmed_counter"],
         )
+
+    def test_schema_contract_reports_planned_profile_mismatch_from_resolver_summary(self):
+        resolver = SchemaResolver(
+            RulePackConfig(),
+            es_url="https://es.example",
+            index_pattern="metrics-*",
+            field_profile="prometheus_remote_write",
+        )
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "metrics.http_requests_total": {"double": {"type": "double"}},
+            "labels.instance": {"keyword": {"type": "keyword"}},
+            "instance": {"keyword": {"type": "keyword"}},
+            "http_requests_total": {"long": {"type": "long"}},
+        }
+        panel = SimpleNamespace(
+            query_ir={
+                "target_index": "metrics-*",
+                "source_type": "TS",
+                "metric": "http_requests_total",
+                "group_labels": ["instance"],
+                "semantic_losses": [],
+            },
+            reasons=[],
+        )
+        result = SimpleNamespace(inventory={}, panel_results=[panel])
+
+        contract = preflight.build_target_schema_contract([result], resolver)
+
+        self.assertEqual(contract["field_profile"], "prometheus_remote_write")
+        self.assertEqual(contract["planned_schema_profile"], "prometheus_remote_write")
+        self.assertEqual(contract["detected_schema_profile"], "prometheus_native")
+        self.assertTrue(contract["profile_mismatch"])
+        self.assertEqual(contract["schema_profile"], "prometheus_native")
 
     def test_schema_contract_checks_remote_write_profile_resolved_target_fields(self):
         class RemoteWriteResolver:

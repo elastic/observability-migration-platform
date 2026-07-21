@@ -50,6 +50,7 @@ from .promql import (
     _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
     _expand_late_bound_group_by_terms,
+    _finalize_fused_stats_assignments,
     _format_scalar_value,
     _frag_eval_line,
     _frag_filters,
@@ -189,8 +190,15 @@ def _counter_refuted(resolver, metric: str) -> bool:
     return bool(refutes(metric)) if callable(refutes) else False
 
 
-def _default_instance_field(rp):
-    return "instance" if rp.native_promql else "service.instance.id"
+def _default_instance_field(rp, resolver=None):
+    """Return the series-identity field used when collapsing ``count()`` rows.
+
+    Strict passthrough and native PROMQL keep the source label ``instance``.
+    Otherwise fall back to the OTel default used by the ES|QL path.
+    """
+    if getattr(resolver, "_passthrough", False) or getattr(rp, "native_promql", False):
+        return "instance"
+    return "service.instance.id"
 
 
 def _keep(*field_lists) -> str:
@@ -1472,6 +1480,19 @@ def join_family_rule(context):
                     right_stats_call = inlined
                 else:
                     _append_unique(context.warnings, f"Denominator-only filter(s) could not be inlined and were dropped: {right_only}")
+
+            # Keep CASE-shaped and bare TS value args from mixing in one STATS
+            # (same ClassCast class as multi-target merge).
+            stats_assignments = _finalize_fused_stats_assignments(
+                [
+                    f"numerator = {left_stats_call}",
+                    f"denominator = {right_stats_call}",
+                ],
+                group_fields=output_group,
+                source_type="TS",
+            )
+            left_stats_call = stats_assignments[0].split("=", 1)[1].strip()
+            right_stats_call = stats_assignments[1].split("=", 1)[1].strip()
 
             context.parser_backend = "fragment"
             context.source_type = "TS"
@@ -2815,7 +2836,7 @@ def simple_agg_family_rule(context):
         # if neither can be determined we cannot honestly name the targets, so flag
         # for manual review instead of emitting a wrong number.
         if frag.outer_agg == "count":
-            instance_field = _default_instance_field(rp)
+            instance_field = _default_instance_field(rp, resolver)
             series_dims = [d for d in [*group_fields, instance_field] if d]
             series_dims = list(dict.fromkeys(series_dims))
             if not series_dims:
@@ -2938,7 +2959,7 @@ def simple_agg_family_rule(context):
         metric_like = context.panel_type in {"stat", "singlestat", "gauge", "bargauge"}
         if metric_like:
             context.output_group_fields = []
-            by_clause = ", ".join(group_fields) if group_fields else _default_instance_field(rp)
+            by_clause = ", ".join(group_fields) if group_fields else _default_instance_field(rp, resolver)
             context.esql_query = "\n".join(
                 [
                     f"FROM {context.index}",
@@ -2951,7 +2972,7 @@ def simple_agg_family_rule(context):
             )
         else:
             context.output_group_fields = ["time_bucket"]
-            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp))
+            by_clause = f"{rp.from_bucket}, " + (", ".join(group_fields) if group_fields else _default_instance_field(rp, resolver))
             context.esql_query = "\n".join(
                 [
                     f"FROM {context.index}",

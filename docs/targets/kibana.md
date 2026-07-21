@@ -88,8 +88,9 @@ The native API path is the **default** on `obs-migrate upload`,
 below); standalone `obs-migrate upload --artifact-dir …` prefers that
 persisted native artifact when present, else maps YAML through
 `native_dashboard_from_yaml`. All three produce the same typed API panels
-(sections, controls/`pinned_panels`, markdown, and all 11 ES\|QL visualization
-families) and use `PUT /api/dashboards/{id}` for idempotent deploys. When
+(sections, controls/`pinned_panels`, markdown, `links`, `image`, and all 11
+ES\|QL visualization families) and use `PUT /api/dashboards/{id}` for
+idempotent deploys. When
 mapping from YAML, a dashboard that is rejected or contains no API-mappable
 content falls back to the legacy `kb-dashboard-cli` import path; a rejected
 *native* artifact does not, since there is no YAML to silently re-derive it
@@ -168,6 +169,35 @@ Source template variables become Kibana `pinned_panels` controls via
   control — a same-named `values` control does **not** satisfy it, because a
   value is not a valid identifier for `STATS ... BY`. The converse is also
   enforced: a `fields` control does not bind a `?var` value parameter.
+
+### `links` And `image` Panels
+
+Beyond markdown and the 11 ES\|QL visualization families, the native mapper
+(`map_yaml_panel` / `map_panel` in `targets/kibana/dashboards_api.py`) also
+maps two non-query panel types, driven by the kb-dashboard-core YAML keys of
+the same name:
+
+- **`links`** -- a YAML `links: {layout, items: [...]}` block (each item
+  either `url`-keyed or `dashboard`-keyed) maps to the native `type: "links"`
+  panel, with `url` items becoming `externalLink`s and `dashboard` items
+  becoming `dashboardLink`s (`new_tab`/`encode`/`with_filters`/`with_time` map
+  onto the native `options` bag; `open_in_new_tab` is always emitted for URL
+  links because the YAML and native API defaults differ). Grafana synthesizes
+  one of these panels per dashboard from `dashboard.links[]` entries of type
+  `"link"` with an absolute HTTP(S) URL and no inline Grafana variables -- see
+  `adapters/source/grafana/links.py::build_links_panel`.
+  Tag-driven `type: "dashboards"` links, relative URLs, and variable-bearing
+  URLs have no safely resolvable destination at translation time and stay
+  manual-navigation notes instead. Grafana `includeVars`/`keepTime` requests
+  are preserved as explicit migration warnings because native external links
+  cannot forward that context.
+- **`image`** -- a YAML `image: {from_url, fit, background_color,
+  description}` block maps to the native `type: "image"` panel
+  (`image_config.src` as a `url` source; `fit` maps 1:1 onto
+  `object_fit`). Datadog `image` widgets with a real absolute `http(s)` URL
+  use this path (`adapters/source/datadog/planner.py::image_widget_rule`);
+  relative/internal Datadog asset URLs still degrade to a markdown embed
+  (link only, since Kibana cannot resolve them).
 
 ## Command Coverage
 

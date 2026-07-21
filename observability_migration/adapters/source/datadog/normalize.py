@@ -164,7 +164,37 @@ def _extract_queries_and_formulas(
     formulas: list[WidgetFormula] = []
     seen_names: set[str] = set()
 
-    for req in defn.get("requests", []):
+    raw_requests = defn.get("requests", [])
+    if isinstance(raw_requests, dict):
+        # Hostmap widgets use a keyed request object
+        # (``{"fill": {"q": ...}, "size": {"q": ...}}``) instead of the
+        # request array used by standard metric widgets. Normalize each keyed
+        # metric as a named query so the regular planner/translator can preserve
+        # the grouped values in a fallback visualization.
+        for request_name, request in raw_requests.items():
+            if not isinstance(request, dict):
+                continue
+            query_text = str(request.get("q") or "").strip()
+            if not query_text:
+                continue
+            _extract_from_request(
+                {
+                    "queries": [
+                        {
+                            "name": str(request_name),
+                            "data_source": "metrics",
+                            "query": query_text,
+                            "aggregator": request.get("aggregator", ""),
+                        }
+                    ]
+                },
+                queries,
+                formulas,
+                seen_names,
+                defn.get("type", ""),
+            )
+
+    for req in raw_requests if isinstance(raw_requests, list) else []:
         if isinstance(req, dict):
             _extract_from_request(req, queries, formulas, seen_names, defn.get("type", ""))
         elif isinstance(req, list):

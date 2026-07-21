@@ -159,6 +159,59 @@ def translate_widget(
         trace=list(plan.trace),
     )
 
+    template_group_fields = sorted(
+        {
+            str(group_field)
+            for query in widget.queries
+            if query.metric_query
+            for group_field in query.metric_query.group_by
+            if _has_template_vars(str(group_field))
+        }
+    )
+    if template_group_fields:
+        variable_label = (
+            "group-by template variable"
+            if len(template_group_fields) == 1
+            else "group-by template variables"
+        )
+        variables = ", ".join(repr(field) for field in template_group_fields)
+        detail = (
+            f"{variable_label} {variables} cannot be bound to a target field "
+            "during migration; choose a fixed Datadog tag or recreate the "
+            "dynamic grouping as a Kibana field control"
+        )
+        result.status = "requires_manual"
+        result.warnings.append(f"manual review needed: {detail}")
+        result.semantic_losses.append(detail)
+        return result
+
+    log_template_vars = sorted(
+        {
+            match.group(0)
+            for query in widget.queries
+            if query.log_query
+            for match in _TEMPLATE_VAR_RE.finditer(query.raw_query or "")
+        }
+    )
+    if log_template_vars:
+        variable_label = (
+            "template variable"
+            if len(log_template_vars) == 1
+            else "template variables"
+        )
+        variables = ", ".join(repr(variable) for variable in log_template_vars)
+        detail = (
+            f"Log filter with {variable_label} {variables} was omitted because "
+            "Datadog log template substitutions cannot be bound exactly in the "
+            "translated query; recreate the filter in Kibana"
+        )
+        result.warnings.append(detail)
+        result.semantic_losses.append(detail)
+
+    if plan.backend == "image":
+        result.status = "ok"
+        return result
+
     if plan.backend in ("markdown", "blocked"):
         is_text_widget = widget.widget_type in (
             "note", "free_text", "image", "iframe",
@@ -300,7 +353,7 @@ def _translate_single_metric(
     is_heatmap = plan.kibana_type == "heatmap"
     # bar_chart shares the toplist grouped-aggregation shape (ranked groups).
     is_toplist = widget.widget_type in ("toplist", "bar_chart")
-    is_table = widget.widget_type in ("table", "query_table") and not is_toplist
+    is_table = plan.kibana_type == "table" and not is_toplist
     is_partition = plan.kibana_type in ("partition", "treemap")
     reducer = None if is_timeseries or is_heatmap else _request_reducer_for_queries(
         [wq],
@@ -569,14 +622,46 @@ def _translate_formula_metric_widget(
         top_params = _extract_top_params(formulas[0].ast)
 
     reducer = None
+    output_reducers: dict[str, str] = {}
     if plan.kibana_type not in ("xy", "heatmap"):
         used_names = {spec.query_name for spec in used_specs}
-        reducer = _request_reducer_for_queries(
-            [q for q in metric_queries if q.name in used_names],
-            default="last" if plan.kibana_type == "metric" else None,
+        used_queries = [q for q in metric_queries if q.name in used_names]
+        query_by_name = {query.name: query for query in used_queries}
+        direct_ref_formulas = all(
+            isinstance(formula.ast, FormulaRef)
+            and formula.ast.name in query_by_name
+            for formula in formulas
         )
+        if direct_ref_formulas:
+            candidate_reducers = {
+                formula.alias: _normalize_request_reducer(
+                    query_by_name[formula.ast.name].aggregator,
+                    _query_space_agg(query_by_name[formula.ast.name]),
+                )
+                for formula in formulas
+                if isinstance(formula.ast, FormulaRef)
+            }
+            if (
+                candidate_reducers
+                and all(candidate_reducers.values())
+                and len(set(candidate_reducers.values())) > 1
+            ):
+                output_reducers = {
+                    field_name: reducer_name
+                    for field_name, reducer_name in candidate_reducers.items()
+                    if reducer_name
+                }
+        if not output_reducers:
+            reducer = _request_reducer_for_queries(
+                used_queries,
+                default="last" if plan.kibana_type == "metric" else None,
+            )
 
-    include_time_bucket = plan.kibana_type in ("xy", "heatmap") or reducer is not None
+    include_time_bucket = (
+        plan.kibana_type in ("xy", "heatmap")
+        or reducer is not None
+        or bool(output_reducers)
+    )
     dim_exprs, dim_aliases = _metric_dimension_exprs(
         used_specs[0].group_fields,
         include_time_bucket=include_time_bucket,
@@ -712,7 +797,18 @@ def _translate_formula_metric_widget(
     if eval_parts:
         lines.append(f"| EVAL {', '.join(eval_parts)}")
 
-    if reducer:
+    if output_reducers:
+        group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
+        reduced_parts = [
+            f"{field} = {_series_reducer_expr(output_reducers[field], field)}"
+            for field in output_fields
+        ]
+        if group_aliases:
+            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
+        else:
+            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        keep_fields = group_aliases + output_fields
+    elif reducer:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
         reduced_parts = [
             f"{field} = {_series_reducer_expr(reducer, field)}"
@@ -822,12 +918,21 @@ def _build_metric_query_spec(
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
-        if _scope_item_has_template_vars(filt):
-            _append_unique_warning(
-                result,
-                "Scope filter with template variable could not be bound exactly; "
-                "apply specific values via Kibana dashboard controls",
-            )
+        template_vars = _scope_item_template_vars(filt)
+        if template_vars:
+            if any(variable.lower() == "$scope" for variable in template_vars):
+                _append_unique_warning(
+                    result,
+                    "Datadog $scope template variable cannot be represented by a "
+                    "single Kibana control and was omitted; recreate the scope "
+                    "filters manually in Kibana",
+                )
+            else:
+                _append_unique_warning(
+                    result,
+                    "Scope filter with template variable could not be bound exactly; "
+                    "apply specific values via Kibana dashboard controls",
+                )
         if isinstance(filt, TagFilter):
             if _has_template_vars(filt.value):
                 _append_unique_warning(
@@ -846,6 +951,12 @@ def _build_metric_query_spec(
                 )
                 for warning in filter_assessment.warnings:
                     _append_unique_warning(result, warning)
+
+    if mq.value_filter_op and mq.value_filter_threshold is not None:
+        where_clauses.append(
+            f"{_esql_identifier(es_metric)} {mq.value_filter_op} "
+            f"{_formula_number_literal(mq.value_filter_threshold)}"
+        )
 
     if mq.as_rate or _needs_rate(mq):
         _append_unique_warning(
@@ -1483,11 +1594,22 @@ def _metric_scope_to_esql(scope_item: Any, field_map: FieldMapProfile, context: 
 
 
 def _scope_item_has_template_vars(scope_item: Any) -> bool:
+    return bool(_scope_item_template_vars(scope_item))
+
+
+def _scope_item_template_vars(scope_item: Any) -> set[str]:
     if isinstance(scope_item, TagFilter):
-        return _has_template_vars(scope_item.key) or _has_template_vars(scope_item.value)
+        return {
+            match.group(0)
+            for text in (scope_item.key, scope_item.value)
+            for match in _TEMPLATE_VAR_RE.finditer(text or "")
+        }
     if isinstance(scope_item, ScopeBoolOp):
-        return any(_scope_item_has_template_vars(child) for child in scope_item.children)
-    return False
+        variables: set[str] = set()
+        for child in scope_item.children:
+            variables.update(_scope_item_template_vars(child))
+        return variables
+    return set()
 
 
 def _append_unique_warning(result: TranslationResult, message: str) -> None:

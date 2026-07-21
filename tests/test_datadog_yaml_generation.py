@@ -209,8 +209,8 @@ class TestDatadogYAMLStructure(unittest.TestCase):
         failures: list[str] = []
         for panel in _iter_leaf_panels(rendered.get("panels") or []):
             title = panel.get("title", "<untitled>")
-            if not any(key in panel for key in ("esql", "lens", "markdown")):
-                failures.append(f"  {title!r}: missing esql/lens/markdown block")
+            if not any(key in panel for key in ("esql", "lens", "markdown", "image")):
+                failures.append(f"  {title!r}: missing esql/lens/markdown/image block")
                 continue
             if "esql" in panel:
                 block = panel["esql"]

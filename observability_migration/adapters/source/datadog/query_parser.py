@@ -52,6 +52,11 @@ class ParseError(Exception):
 VALID_AGGREGATORS = {"avg", "sum", "min", "max", "count", "last", "p50", "p75", "p90", "p95", "p99"}
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
+_VALUE_FILTERED_COUNT_RE = re.compile(
+    r"^count\s*\(\s*v\s*:\s*v\s*(>=|<=|==|!=|>|<)\s*"
+    r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*\)\s*:(.+)$",
+    re.IGNORECASE,
+)
 
 
 def parse_metric_query(raw: str) -> MetricQuery:
@@ -65,6 +70,14 @@ def parse_metric_query(raw: str) -> MetricQuery:
     raw = raw.strip()
     if not raw:
         raise ParseError("empty metric query")
+    source_raw = raw
+    value_filter_op = ""
+    value_filter_threshold: float | None = None
+    value_filter_match = _VALUE_FILTERED_COUNT_RE.match(raw)
+    if value_filter_match:
+        value_filter_op = value_filter_match.group(1)
+        value_filter_threshold = float(value_filter_match.group(2))
+        raw = f"count:{value_filter_match.group(3).strip()}"
 
     colon_pos = _find_aggregator_colon(raw)
     if colon_pos < 0:
@@ -78,7 +91,11 @@ def parse_metric_query(raw: str) -> MetricQuery:
     brace_pos = rest.find("{")
     if brace_pos < 0:
         return MetricQuery(
-            raw=raw, space_agg=space_agg, metric=rest.strip(),
+            raw=source_raw,
+            space_agg=space_agg,
+            value_filter_op=value_filter_op,
+            value_filter_threshold=value_filter_threshold,
+            metric=rest.strip(),
         )
 
     metric = rest[:brace_pos].strip()
@@ -110,8 +127,10 @@ def parse_metric_query(raw: str) -> MetricQuery:
         raise ParseError(f"unexpected trailing tokens in metric query: {remainder}")
 
     return MetricQuery(
-        raw=raw,
+        raw=source_raw,
         space_agg=space_agg,
+        value_filter_op=value_filter_op,
+        value_filter_threshold=value_filter_threshold,
         metric=metric,
         scope=scope,
         group_by=group_by,

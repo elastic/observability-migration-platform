@@ -115,26 +115,56 @@ field names in the target cluster. The Grafana adapter uses `SchemaResolver`
 and rule packs to bridge this gap — this is the Grafana equivalent of Datadog's
 field profiles.
 
+`--field-profile` selects the **planned** target layout. Translation emits field
+names for that plan immediately (including offline runs with no `--es-url`).
+With `--es-url`, live `_field_caps` **verify** the plan — they do not silently
+remap queries to a different detected layout.
+
+> **Breaking change (plan→emit→verify):** Default **`otel`** no longer picks a
+> Prometheus namespaced layout from live caps alone. Use **`--field-profile auto
+> --es-url`** to infer Fleet typed remote-write, classic Metricbeat nested, or
+> native `/_prometheus` layouts, or set **`prometheus_remote_write`** /
+> **`prometheus_metrics`** / **`prometheus_native`** explicitly when you know the
+> ingest route. Under **`otel`**, `resolve_metric_field()` still field-selects
+> `metrics.<name>` when caps advertise that field but not the bare PromQL name
+> (OTel Collector / issue #270) — that is not profile remapping. When live caps
+> clearly look like a named Prometheus layout while the plan is still `otel`,
+> migrate records a warning; emit stays on `otel` (no silent remap).
+
+| Profile | Offline emit | With `--es-url` |
+|---|---|---|
+| **`otel`** (default) | Bare / OTel-candidate mapping | Verify fields; warn on missing |
+| **`prometheus_remote_write`** | `prometheus.<metric>.{counter,value,rate}`, `prometheus.labels.*` | Verify; `profile_mismatch` if caps look like another named layout |
+| **`prometheus_metrics`** | `prometheus.metrics.<metric>`, `prometheus.labels.*` | Same mismatch rule (classic Metricbeat `use_types=false`) |
+| **`prometheus_native`** | `metrics.<metric>`, `labels.*` | Same mismatch rule |
+| **`passthrough`** | Source names verbatim (rule-pack overrides still apply) | Validate bare names when possible; no automatic remapping |
+| **`auto`** (Grafana-only) | Rejected without `--es-url` | Detect clear typed / nested / native layout; ambiguous or empty caps → emit as **`otel`** + warn |
+
+Example planned layouts:
+
+| Profile | Metric `http_requests_total` → | Label `service` → |
+|---|---|---|
+| `prometheus_remote_write` | `prometheus.http_requests_total.counter` / `.value` / `.rate` | `prometheus.labels.service` |
+| `prometheus_metrics` | `prometheus.metrics.http_requests_total` | `prometheus.labels.service` |
+| `prometheus_native` | `metrics.http_requests_total` | `labels.service` |
+| `otel` (default) | `http_requests_total` (pass-through) | exact match → OTel candidate → as-is |
+| `passthrough` | `http_requests_total` | `service` |
+
+When `profile_mismatch` is true (planned profile ≠ detected named layout),
+translation **keeps the plan**. The flag is recorded on
+`required_target_contract.json` for operator visibility; it is not a separate
+preflight gate beyond existing missing-field severity.
+
 ### How Schema Resolution Works
 
-`SchemaResolver` first **auto-detects the target layout** (schema profile) from
-live `_field_caps`, then resolves Prometheus metric names, labels, and metric
-types to match it. Three profiles are recognized:
-
-| Schema profile | How the data was ingested | Metric `http_requests_total` → | Label `service` → |
-|---|---|---|---|
-| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration | `prometheus.http_requests_total.counter` / `.value` / `.rate` | `prometheus.labels.service` |
-| `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
-| generic / OTel (none detected) | OTel collector, custom mapping, or no data found | `http_requests_total` (pass-through) | exact match → OTel candidate → as-is |
-
-Within the detected profile, **labels** resolve through this order:
+Within the chosen profile, **labels** resolve through this order:
 
 | Priority | Source | How to configure |
 |---|---|---|
 | 1 (highest) | Rule-pack `label_rewrites` | `--rules-file custom-pack.yaml` |
 | 2 | Exact field match (source-faithful) | target advertises the label as a real field |
-| 3 | Profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) | detected from `_field_caps` |
-| 4 | Live ES `_field_caps` OTel discovery | `--es-url` flag |
+| 3 | Profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) | chosen `--field-profile` |
+| 4 | Live ES `_field_caps` OTel discovery | `--es-url` flag (verify only) |
 | 5 | Built-in Prometheus → OTel candidate mappings | always available offline |
 | 6 (lowest) | Pass-through (use label as-is) | default fallback |
 
@@ -143,13 +173,12 @@ only for the generic/OTel layout), and `is_counter()` resolves counter-vs-gauge
 (rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric`
 capability → the profile's counter field) so `rate()`/`irate()` stay correct.
 
-> **Profile detection requires live data.** If `--es-url` is unreachable or the
-> target has not ingested the Prometheus data yet, no profile is detected and
-> the resolver falls back to OTel candidates + pass-through — dashboards look
-> migrated but may query the wrong fields. Ingest first, then migrate with a
-> reachable `--es-url`, and confirm `schema_profile`,
-> `field_capabilities_discovery`, and resolved target-field `status` in
-> `required_target_contract.json`.
+> **Verify requires live data.** Without `--es-url`, or before telemetry lands,
+> per-field status may be `unknown` — the planned layout still drives emitted
+> queries. After ingest, rerun with a reachable `--es-url` and confirm
+> `field_profile`, `planned_schema_profile`, `detected_schema_profile`,
+> `profile_mismatch`, `field_capabilities_discovery`, and resolved target-field
+> `status` in `required_target_contract.json`.
 
 Dashboard migration writes `schema_change_report.md` and
 `telemetry_contract.json` under `<output-dir>/dashboards/` automatically. Use
@@ -227,11 +256,13 @@ To emit a validated starter rule-pack template:
 
 | Aspect | Grafana (SchemaResolver + rule packs) | Datadog (FieldMapProfile) |
 |---|---|---|
-| Metric name mapping | Profile-dependent and automatic — pass-through for OTel/generic targets, rewritten to `prometheus.<metric>.{counter,value,rate}` (Fleet remote_write) or `metrics.<metric>` (native endpoint); native `PROMQL` panels query the metric name directly | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
-| Tag / label mapping | `SchemaResolver` with multi-level priority and live discovery | `tag_map` dictionary with optional `tag_prefix` fallback |
+| Operator model | Plan with `--field-profile`, then verify with `--es-url` | Same plan→verify model; **no `auto`** |
+| Metric name mapping | Planned profile rewrites (`otel`, Fleet remote_write, Metricbeat nested, native, passthrough) | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
+| Tag / label mapping | `SchemaResolver` with multi-level priority and live verification | `tag_map` dictionary with optional `tag_prefix` fallback |
 | Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
-| Live field discovery | `--es-url` feeds `SchemaResolver` | `--es-url` loads `_field_caps` into the profile |
+| Live field discovery | `--es-url` verifies the plan; does not silently remap | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
+| Named profiles | `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto` (Grafana-only) | `otel`, `elastic_agent`, `prometheus` (Metricbeat), `prometheus_native` (ES `/_prometheus`), `passthrough`, or YAML path |
 
 ### Grouping Template Variables (Late-Bound `by ($var)`)
 
@@ -272,6 +303,37 @@ at migration time.
 This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
+
+### Chained/Label-Filtered Query Variables And Control Warnings (Issue #269)
+
+Grafana query variables can chain: `label_values(metric{instance="$instance"},
+id)` scopes `$id`'s option list to whichever `$instance` is currently
+selected. Two things follow from Kibana ES|QL controls having no
+cross-control dependency mechanism (a control's populate-query cannot read
+another control's live selection):
+
+- **The chained scope itself degrades, not silently.** The migrated `$id`
+  control still works and still lists real values, but it lists *every* `id`
+  rather than only the ones under the selected `$instance` — the control is
+  broader than the Grafana source, not broken. This degradation is recorded
+  as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
+  $instance in Grafana ... Kibana ES|QL controls cannot express that
+  inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
+  CLI summary, included in the Markdown summary warning worklist, and recorded
+  per-dashboard in the JSON report, migration manifest, and preflight report
+  (`control_warnings`), rather than only being discoverable by reading the
+  emitted ES|QL. Unsupported visible `query_result()` variables, textbox
+  variables, unresolved fields, incompatible field types, and non-aggregatable
+  fields use the same surfaced warning path.
+- **A control whose target field is absent is kept with a data-readiness
+  warning.** When live schema discovery (`--es-url`) positively confirms a
+  variable's resolved field doesn't exist on the target, the control remains
+  in the dashboard so offline and live migrations have the same structure,
+  any panel `?var` binding remains valid, and the dropdown can self-heal once
+  telemetry containing the field arrives. Its option list may be empty until
+  then, so a matching `control_warnings` entry explains the data-readiness
+  gap. Controls have no `PanelResult`-style per-item tracking of their own, so
+  `control_warnings` is dashboard-scoped rather than per-control.
 
 ## Command Coverage
 
@@ -328,6 +390,17 @@ Use that doc for:
 - `--preflight`, `--polish-metadata`, and `--review-explanations` remain
   Grafana-specific workflow helpers; use the canonical command doc for the
   audited CLI surfaces around upload, smoke, and shared target management.
+- Dashboard-level `links[]` of type `"link"` (a concrete external URL) are
+  synthesized into a real native Kibana `links` panel appended at the end of
+  the dashboard (see `docs/targets/kibana.md#links-and-image-panels`).
+  Tag-driven `type: "dashboards"` links, relative URLs, and URLs containing
+  inline Grafana variables have no safely resolvable destination at translation
+  time and are only surfaced as manual-navigation notes in the migration
+  report. External links that request `includeVars` or `keepTime` are emitted
+  with a migration warning because Kibana links panels cannot append Grafana
+  variables or inherit the dashboard time range automatically. The `dashlist`
+  *panel* type (a dynamic, search-driven widget with no fixed link list) is
+  unaffected and still skipped -- see `GRAFANA_SKIPPED_PANEL_TYPES`.
 
 For overlay-driven authoring before exporting YAML, a matching starter CUE file
 is available at `examples/cue/grafana-rule-pack.cue`.

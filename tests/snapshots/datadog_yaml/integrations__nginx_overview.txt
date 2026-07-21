@@ -4,7 +4,7 @@ widgets: 27
 panels: 21
 controls: 1
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 12, 'requires_manual': 2, 'skipped': 6, 'warning': 5}
+statuses: {'not_feasible': 1, 'ok': 12, 'requires_manual': 2, 'skipped': 6, 'warning': 6}
 - title='Datadog note 7370311124819436'; kind=markdown
 - title='Datadog note 5476438101081174'; kind=markdown
 - title='Dropped connections, last 15m'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
@@ -17,7 +17,7 @@ statuses: {'not_feasible': 2, 'ok': 12, 'requires_manual': 2, 'skipped': 6, 'war
 - title='Datadog note 518123602946722'; kind=markdown
 - title='NGINX Error logs'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
 - title='Requests per second'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
-- title='Requests per second by host'; kind=markdown
+- title='Requests per second by host'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['host.name']; primary=; metric=
 - title='Datadog note 8663159993822306'; kind=markdown
 - title='Datadog note 183855449379928'; kind=markdown
 - title='Requests: reading, writing, waiting'; kind=esql; type=line; dimension=time_bucket; metrics=['requests_reading', 'requests_writing', 'requests_waiting']; breakdowns=[]; primary=; metric=

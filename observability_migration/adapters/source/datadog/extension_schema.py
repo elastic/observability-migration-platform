@@ -22,11 +22,12 @@ class FieldMapProfileModel(BaseModel):
     logs_dataset_filter: str = ""
     metric_map: dict[str, str] = Field(default_factory=dict)
     tag_map: dict[str, str] = Field(default_factory=dict)
+    log_tag_map: dict[str, str] = Field(default_factory=dict)
     metric_prefix: str = ""
     metric_suffix: str = ""
     tag_prefix: str = ""
 
-    @field_validator("metric_map", "tag_map", "log_index_map")
+    @field_validator("metric_map", "tag_map", "log_tag_map", "log_index_map")
     @classmethod
     def validate_string_mapping(cls, value: dict[str, str]) -> dict[str, str]:
         normalized: dict[str, str] = {}

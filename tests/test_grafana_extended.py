@@ -623,9 +623,12 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate(expr)
         self.assertEqual(ctx.feasibility, "feasible")
         query = ctx.esql_query or ""
-        # Numerator scoped via CASE on the extra filter; denominator unscoped.
+        # Numerator scoped via CASE on the extra filter. When any STATS sibling
+        # already uses CASE, the unscoped denominator is also CASE-shaped
+        # (``CASE(true, …)``) so ES does not ClassCast mixed value-arg forms.
         self.assertIn('CASE((status RLIKE "5..")', query)
-        self.assertIn("RATE(http_requests_total, 5m)", query)
+        self.assertIn("RATE(CASE(true, http_requests_total, NULL), 5m)", query)
+        self.assertNotIn("RATE(http_requests_total, 5m)", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
         # Final percentage EVAL composes the two stats columns.

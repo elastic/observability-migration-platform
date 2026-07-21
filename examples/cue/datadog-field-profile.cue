@@ -28,6 +28,13 @@ profile: {
 		kube_namespace: "kubernetes.namespace"
 	}
 
+	// Optional: when set, log queries use this map and do not inherit tag_prefix.
+	log_tag_map: {
+		host:    "host.name"
+		service: "service.name"
+		status:  "log.level"
+	}
+
 	metric_prefix: ""
 	metric_suffix: ""
 	tag_prefix:    ""

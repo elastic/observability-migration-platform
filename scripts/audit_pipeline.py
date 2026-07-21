@@ -423,7 +423,17 @@ def _verdict(panel: PanelAudit) -> str:
         return "MINOR_ISSUE"
     if panel.warnings:
         for w in panel.warnings:
-            if any(k in w.lower() for k in ("collapsed", "approximated", "dropped", "meta-metric")):
+            if any(
+                keyword in w.lower()
+                for keyword in (
+                    "collapsed",
+                    "approximated",
+                    "dropped",
+                    "meta-metric",
+                    "could not be bound",
+                    "omitted",
+                )
+            ):
                 return "MINOR_ISSUE"
     if not panel.translated_query and panel.status != "skipped":
         return "EXPECTED_LIMITATION"
@@ -1217,9 +1227,8 @@ def main():
     )
     parser.add_argument(
         "--update-docs", action="store_true",
-        help="Fill template-based docs: shared pipeline-trace.md plus "
-             "per-source grafana-trace.md and datadog-trace.md.  "
-             "Respects --source to limit which per-source doc is updated.",
+        help="Fill template-based docs. The shared pipeline-trace.md is updated "
+             "only with --source all; per-source trace updates respect --source.",
     )
     args = parser.parse_args()
 
@@ -1229,12 +1238,13 @@ def main():
         grafana_audits = [a for a in audits if a.source == "grafana"]
         datadog_audits = [a for a in audits if a.source == "datadog"]
 
-        # --- shared doc (always written when --update-docs) ---
-        if TEMPLATE_PATH.exists():
+        # The shared trace is cross-source by contract. A partial source audit
+        # must not replace its combined rows and verdict totals.
+        if args.source == "all" and TEMPLATE_PATH.exists():
             filled = _fill_template(TEMPLATE_PATH.read_text(), audits, source="all")
             DOCS_OUTPUT_PATH.write_text(filled)
             print(f"\nDocs updated: {DOCS_OUTPUT_PATH}")
-        else:
+        elif args.source == "all":
             print(f"WARNING: shared template not found at {TEMPLATE_PATH}")
 
         # --- grafana trace ---

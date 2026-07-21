@@ -1,0 +1,5 @@
+title: Dashboard Links
+grafana_type: dashboard_links
+status: migrated
+chart_type: none
+warning: synthesized from 1 Grafana dashboard-level link(s)

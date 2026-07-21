@@ -63,7 +63,8 @@ class PanelIR:
         Inverse of :meth:`from_yaml_panel_entry`. A section panel becomes a
         ``{"title": ..., "section": {...}}`` block; a leaf panel is rendered
         from its embedded :class:`VisualIR` (``VisualIR.to_yaml_panel``),
-        which already round-trips ``size``/``position``/``esql``/``markdown``.
+        which already round-trips ``size``/``position`` and all supported
+        presentation blocks (``esql``/``lens``/``markdown``/``links``/``image``).
         """
         if self.kind == "section":
             return {

@@ -86,6 +86,12 @@ class VisualIR:
         elif isinstance(yaml_panel.get("markdown"), dict):
             kind = "markdown"
             config = dict(yaml_panel["markdown"])
+        elif isinstance(yaml_panel.get("links"), dict):
+            kind = "links"
+            config = dict(yaml_panel["links"])
+        elif isinstance(yaml_panel.get("image"), dict):
+            kind = "image"
+            config = dict(yaml_panel["image"])
 
         resolved_kibana_type = kibana_type or str(config.get("type") or "")
         return cls(

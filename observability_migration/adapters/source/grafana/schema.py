@@ -30,7 +30,28 @@ class SchemaResolver:
     2. Online discovery via ES _field_caps API (when available)
     3. Built-in Prometheus→OTel candidate mappings (offline fallback)
     4. Pass-through (use label as-is)
+
+    When ``passthrough=True`` (the ``passthrough`` field profile), automatic
+    mapping is disabled: explicit rule-pack overrides (``label_rewrites``,
+    ``ignored_labels``, ``control_field_overrides``) still apply, but every
+    other label and metric name is emitted verbatim. Live ``_field_caps``
+    discovery may still run for validation, but OTel/Prometheus candidate
+    remapping and auto-detected namespacing (``labels.``/
+    ``prometheus.labels.``/``metrics.``/``prometheus.<m>.<suffix>``) are
+    skipped. This mirrors the Datadog ``passthrough`` profile and keeps source
+    names source-faithful.
     """
+
+    FIELD_PROFILES = frozenset(
+        {
+            "otel",
+            "prometheus_remote_write",
+            "prometheus_metrics",
+            "prometheus_native",
+            "passthrough",
+            "auto",
+        }
+    )
 
     PROM_TO_OTEL_CANDIDATES = {
         "instance": ["service.instance.id", "host.name", "host.ip"],
@@ -70,18 +91,49 @@ class SchemaResolver:
     }
 
     _PROMETHEUS_LABEL_RE = re.compile(r"^prometheus\.labels\.[A-Za-z_][A-Za-z0-9_]*$")
+    # Fleet / Metricbeat ``use_types`` layout: typed leaves under prometheus.<metric>.
     _PROMETHEUS_METRIC_LEAF_RE = re.compile(r"^prometheus\.[A-Za-z_][A-Za-z0-9_]*\.(counter|value)$")
+    # Classic Metricbeat remote_write (use_types=false): prometheus.metrics.<name>.
+    _PROMETHEUS_NESTED_METRIC_RE = re.compile(r"^prometheus\.metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     # Native Elastic /_prometheus/api/v1/write endpoint: metrics land under
     # `metrics.<name>` and Prometheus labels land under `labels.<name>`.
     _NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_][A-Za-z0-9_]*$")
     _NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
+    _NAMED_PROMETHEUS_PLANS = frozenset(
+        {
+            "prometheus_remote_write",
+            "prometheus_metrics",
+            "prometheus_native",
+        }
+    )
 
-    def __init__(self, rule_pack, es_url=None, index_pattern=None, es_api_key=None, verify: bool | str = True):
+    def __init__(
+        self,
+        rule_pack,
+        es_url=None,
+        index_pattern=None,
+        es_api_key=None,
+        verify: bool | str = True,
+        passthrough: bool = False,
+        field_profile: str | None = None,
+    ):
+        if field_profile is None:
+            field_profile = "passthrough" if passthrough else "otel"
+        if field_profile not in self.FIELD_PROFILES:
+            raise ValueError(f"unsupported Grafana field profile: {field_profile}")
+        if passthrough:
+            field_profile = "passthrough"
         self._rule_pack = rule_pack
         self._es_url = es_url
         self._index_pattern = index_pattern or "metrics-*"
         self._es_api_key = es_api_key
         self._verify = verify
+        self._field_profile = field_profile
+        self._passthrough = field_profile == "passthrough"
+        self._auto_fallback_warned = False
+        self._auto_resolved_profile = None
+        self._profile_warnings = []
+        self._otel_plan_warning_profiles = set()
         self._field_cache = None
         self._discovered_mappings = {}
         self._discovery_attempted = False
@@ -98,6 +150,10 @@ class SchemaResolver:
         # whether fields actually fell back depends on the labels in play
         # (issue #256).
         self._emitted_unverified_otel_default = False
+        # Set True when passthrough emits a bare source name that live caps do
+        # not advertise. Drives the run-summary empty-panel warning so a live
+        # OTel-shaped target is not silently treated as verified.
+        self._emitted_unverified_passthrough_field = False
 
     def _candidate_fields(self, label):
         candidates = []
@@ -141,7 +197,9 @@ class SchemaResolver:
                 self._field_cache = resp.json().get("fields", {})
                 self._discovery_status = "ok" if self._field_cache else "empty"
                 self._discovery_error = ""
-                self._build_discovered_mappings()
+                self._ensure_auto_profile_resolved()
+                if not self._passthrough:
+                    self._build_discovered_mappings()
             else:
                 self._discovery_status = "error"
                 self._discovery_error = f"_field_caps returned HTTP {resp.status_code}: {getattr(resp, 'text', '')}"
@@ -169,19 +227,22 @@ class SchemaResolver:
     def _compute_schema_profile(cls, field_cache):
         """Identify well-known target layouts from `field_cache`.
 
-        Recognises two layouts:
+        Recognises three layouts (first match wins):
 
-        ``prometheus_remote_write`` — Elastic Fleet integration: labels under
-        ``prometheus.labels.<name>``, metrics under
-        ``prometheus.<metric>.{counter,value}``.  Fleet takes priority and
-        short-circuits the loop as soon as both signals are found.
+        ``prometheus_remote_write`` — Fleet / Metricbeat ``use_types`` layout:
+        labels under ``prometheus.labels.<name>``, metrics under
+        ``prometheus.<metric>.{counter,value}``.
+
+        ``prometheus_metrics`` — classic Metricbeat remote_write
+        (``use_types=false``): labels under ``prometheus.labels.<name>``,
+        metrics under ``prometheus.metrics.<name>``.
 
         ``prometheus_native`` — native ``/_prometheus/api/v1/write`` endpoint:
         metrics under ``metrics.<name>``, labels under ``labels.<name>``.
-        Detected after a full scan when Fleet patterns are absent.
         """
         has_prom_label = False
         has_prom_metric_leaf = False
+        has_prom_nested_metric = False
         has_native_metric = False
         has_native_label = False
         for field_name in field_cache:
@@ -189,14 +250,106 @@ class SchemaResolver:
                 has_prom_label = True
             if not has_prom_metric_leaf and cls._PROMETHEUS_METRIC_LEAF_RE.match(field_name):
                 has_prom_metric_leaf = True
+            if not has_prom_nested_metric and cls._PROMETHEUS_NESTED_METRIC_RE.match(field_name):
+                has_prom_nested_metric = True
             if not has_native_metric and cls._NATIVE_METRIC_RE.match(field_name):
                 has_native_metric = True
             if not has_native_label and cls._NATIVE_LABEL_RE.match(field_name):
                 has_native_label = True
             if has_prom_label and has_prom_metric_leaf:
                 return "prometheus_remote_write"
+        if has_prom_label and has_prom_nested_metric:
+            return "prometheus_metrics"
         if has_native_metric and has_native_label:
             return "prometheus_native"
+        return None
+
+    def _ensure_auto_profile_resolved(self):
+        if self._field_profile != "auto" or self._auto_resolved_profile is not None:
+            return
+        # Offline ``auto`` (no discovery yet): behave like otel silently.
+        # CLI rejects ``auto`` without ``--es-url``; after discovery runs
+        # (including empty/errored caps) we always resolve so operators get the
+        # same ambiguous → otel + warn signal.
+        if not self._discovery_attempted and not self._field_cache:
+            return
+        self.resolve_auto_profile()
+
+    def resolve_auto_profile(self):
+        """Resolve ``field_profile=auto`` from live caps after discovery.
+
+        When caps clearly match a named Prometheus layout, the effective emit
+        plan follows that layout. Otherwise the effective plan is ``otel`` and a
+        warning is recorded once (including empty or unrecognized caps).
+        """
+        if self._field_profile != "auto":
+            return self._field_profile
+        if self._auto_resolved_profile is not None:
+            return self._auto_resolved_profile
+        detected = self._compute_schema_profile(self._field_cache or {})
+        if detected in self._NAMED_PROMETHEUS_PLANS:
+            self._auto_resolved_profile = detected
+        else:
+            self._auto_resolved_profile = "otel"
+            if not self._auto_fallback_warned:
+                self._auto_fallback_warned = True
+                self._profile_warnings.append(
+                    "field profile auto could not detect a named Prometheus layout; "
+                    "falling back to otel"
+                )
+        return self._auto_resolved_profile
+
+    def _maybe_warn_otel_plan_vs_named_layout(self, detected):
+        """Warn when default ``otel`` plan meets a clearly named live layout.
+
+        Emit still follows ``otel`` (plan→verify; no silent remap). The warning
+        steers operators toward ``--field-profile auto`` or an explicit
+        Prometheus profile when Fleet/native caps are present.
+        """
+        if self._field_profile != "otel":
+            return
+        if detected not in self._NAMED_PROMETHEUS_PLANS:
+            return
+        if detected in self._otel_plan_warning_profiles:
+            return
+        self._otel_plan_warning_profiles.add(detected)
+        self._profile_warnings.append(
+            f"field profile otel emits bare/OTel candidate names, but live caps "
+            f"look like {detected}; use --field-profile {detected} or auto "
+            f"with --es-url if panels query empty"
+        )
+
+    def _effective_schema_profile(self):
+        """Return the planned schema profile used for emit, if any.
+
+        Named Prometheus layouts emit under their plan. ``otel`` and
+        ``passthrough`` emit through the OTel/candidate path (``None``).
+        ``auto`` uses live detection when caps are available; offline or
+        ambiguous caps behave like ``otel``.
+        """
+        if self._passthrough:
+            return None
+        plan = self._field_profile
+        if plan == "auto":
+            self._ensure_auto_profile_resolved()
+            if self._auto_resolved_profile in self._NAMED_PROMETHEUS_PLANS:
+                return self._auto_resolved_profile
+            return None
+        if plan in self._NAMED_PROMETHEUS_PLANS:
+            return plan
+        return None
+
+    def _namespacing_schema_profile(self):
+        """Schema profile that governs label/metric namespacing during emit.
+
+        The operator-selected plan wins over live discovery so caps cannot
+        silently remap a dashboard to a different layout.
+        """
+        if self._passthrough:
+            return None
+        planned = self._effective_schema_profile()
+        if planned is not None:
+            return planned
         return None
 
     def schema_profile(self):
@@ -250,26 +403,56 @@ class SchemaResolver:
         every dashboard label exists in the target, and a label missing from a
         recognized profile still falls through to a blind OTel candidate
         (e.g. ``prometheus_remote_write`` without ``prometheus.labels.namespace``
-        resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262."""
+        resolves ``namespace`` to ``k8s.namespace.name``) — issue #256, PR #262.
+
+        ``automatic_mapping`` retains its compatibility meaning (all profiles
+        except strict ``passthrough``); ``automatic_profile_selection`` reports
+        the separate ``field_profile=auto`` layout-selection behavior."""
         self._discover_fields()
-        profile = self._current_schema_profile()
+        self._ensure_auto_profile_resolved()
+        detected = None if self._passthrough else self._current_schema_profile()
+        planned = self._effective_schema_profile()
+        self._maybe_warn_otel_plan_vs_named_layout(detected)
+        profile_mismatch = (
+            planned is not None
+            and detected is not None
+            and planned != detected
+        )
         has_capabilities = bool(self._field_cache)
-        if not has_capabilities:
+        if self._passthrough:
+            # Offline/empty discovery is always unverified. Live discovery is
+            # unverified when a bare source name was emitted but absent from
+            # the target caps.
+            otel_fallback = (not has_capabilities) or self._emitted_unverified_passthrough_field
+        elif not has_capabilities:
             otel_fallback = True
         else:
             otel_fallback = self._emitted_unverified_otel_default
-        return {
+        summary = {
             "status": self._discovery_status,
-            "schema_profile": profile,
+            "field_profile": self._field_profile,
+            "planned_schema_profile": planned,
+            "detected_schema_profile": detected,
+            "profile_mismatch": profile_mismatch,
+            "automatic_mapping": not self._passthrough,
+            "automatic_profile_selection": self._field_profile == "auto",
+            "schema_profile": detected,
             "index_pattern": self._index_pattern,
             "field_count": len(self._field_cache or {}),
             "label_mappings": len(self._discovered_mappings),
             "otel_fallback": otel_fallback,
             "error": self._discovery_error,
         }
+        if self._field_profile == "auto" and self._auto_resolved_profile == "otel":
+            summary["auto_fallback"] = "otel"
+        if self._profile_warnings:
+            summary["profile_warnings"] = list(self._profile_warnings)
+        return summary
 
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.
+        if self._effective_schema_profile() == "prometheus_native":
+            return
         if self._compute_schema_profile(self._field_cache or {}) == "prometheus_native":
             return
         known_fields = set((self._field_cache or {}).keys())
@@ -315,7 +498,15 @@ class SchemaResolver:
             return None
         if label in self._rule_pack.label_rewrites:
             return self._rule_pack.label_rewrites[label]
+        # Passthrough profile: emit the source label verbatim, skipping live
+        # discovery and OTel/Prometheus normalization. Explicit rule-pack
+        # overrides above still win.
+        if self._passthrough:
+            if self._field_cache and label not in self._field_cache:
+                self._emitted_unverified_passthrough_field = True
+            return label
         self._discover_fields()
+        planned = self._effective_schema_profile()
         # Metric-aware: when the label is scoped to a metric (a
         # `label_values(metric, label)` control, or a panel selector/group-by on
         # `metric{label=...}`), prefer the candidate field that co-occurs with
@@ -323,25 +514,33 @@ class SchemaResolver:
         # would pick any field that merely *exists* in the index — even one
         # written by unrelated sources — and select a disjoint document set from
         # the metric scope, emptying the control/panel (issue #163).
-        if metric_field:
+        # When a named Prometheus plan is active, scoped/co-occurrence must not
+        # prefer bare caps over the planned namespaced emit (same constraint as
+        # the bare `_field_cache` short-circuit below).
+        if metric_field and planned not in self._NAMED_PROMETHEUS_PLANS:
             scoped = self._resolve_label_scoped_to_metric(label, metric_field)
             if scoped is not None:
                 return scoped
         # Source-faithful: if the target advertises the original label as a real
         # field, use it as-is. This keeps PromQL semantics intact when the target
         # has both Prometheus and OTEL aliases (common on dual-shipping clusters).
-        if self._field_cache and label in self._field_cache:
+        # When a named Prometheus plan is active, the operator-selected layout
+        # wins over bare caps (e.g. OTel-shaped targets that also carry bare
+        # source labels) — skip this shortcut so emit follows the plan.
+        if (
+            self._field_cache
+            and label in self._field_cache
+            and planned not in self._NAMED_PROMETHEUS_PLANS
+        ):
             return label
         # Fleet `prometheus.remote_write` data streams store the original
         # Prometheus label `<name>` under `prometheus.labels.<name>`. When that
-        # profile is active and the namespaced field exists, prefer it over
-        # the OTEL candidates below — the namespaced form is the actual stored
-        # field and OTEL fields are not present at all in this layout.
-        profile = self._current_schema_profile()
-        if profile == "prometheus_remote_write":
-            namespaced = f"prometheus.labels.{label}"
-            if self._field_cache and namespaced in self._field_cache:
-                return namespaced
+        # profile is active, prefer it over the OTEL candidates below — the
+        # namespaced form is the actual stored field and OTEL fields are not
+        # present at all in this layout.
+        profile = planned or self._namespacing_schema_profile()
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
+            return f"prometheus.labels.{label}"
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist
         # in this layout, so falling through to them would emit wrong field names.
@@ -400,8 +599,8 @@ class SchemaResolver:
         column would 400 (→ wasted query, None result).
         """
         candidates = [label]
-        profile = self._current_schema_profile()
-        if profile == "prometheus_remote_write":
+        profile = self._namespacing_schema_profile()
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
             candidates.append(f"prometheus.labels.{label}")
         elif profile == "prometheus_native":
             candidates.append(f"labels.{label}")
@@ -430,6 +629,10 @@ class SchemaResolver:
         cache pre-fill — it changes nothing about which field a label resolves
         to, only how many probes that resolution costs.
         """
+        # Passthrough resolution never probes, so priming would only waste
+        # round-trips.
+        if self._passthrough:
+            return
         if not metric_field or not self.has_field_capabilities():
             return
         candidates = []
@@ -568,31 +771,37 @@ class SchemaResolver:
         returns the expected default-layout name `prometheus.<metric>.value`
         so the contract layer can surface the missing field via preflight.
         """
+        # Passthrough profile: emit the source metric name verbatim, skipping
+        # discovery and any layout-specific prefixing/suffixing.
+        if self._passthrough:
+            if self._field_cache and metric_name not in self._field_cache:
+                self._emitted_unverified_passthrough_field = True
+            return metric_name
         self._discover_fields()
-        profile = self._current_schema_profile()
+        profile = self._namespacing_schema_profile()
         if profile == "prometheus_native":
             # Native endpoint stores metrics as `metrics.<name>` directly — no
             # suffix variants.  Return the prefixed form unconditionally so the
             # contract layer can surface missing fields via preflight.
             return f"metrics.{metric_name}"
+        if profile == "prometheus_metrics":
+            # Classic Metricbeat remote_write (use_types=false): nested under
+            # prometheus.metrics.<name> with labels under prometheus.labels.*.
+            return f"prometheus.metrics.{metric_name}"
         if profile != "prometheus_remote_write":
-            # OTel Collector (`prometheusreceiver`) indices store metrics under
-            # `metrics.<name>` but ship OTel-shaped labels (resource/data-point
-            # attributes) rather than `labels.<name>`, so they never satisfy the
-            # `prometheus_native` profile's dual-signal guard above. When the
-            # live target actually advertises the prefixed field — and not the
-            # bare name — emit it; otherwise this is unchanged passthrough.
-            # Without this, panels error with "Invalid input types for IS NOT
-            # NULL" because the bare field doesn't exist (issue #270).
-            if (
-                self._field_cache
-                and metric_name not in self._field_cache
-                and f"metrics.{metric_name}" in self._field_cache
-            ):
-                return f"metrics.{metric_name}"
+            # OTel plan (and auto when resolved to otel): field-level candidate
+            # selection only — do not switch the planned layout to
+            # prometheus_native when caps advertise metrics.* (issue #270).
+            cache = self._field_cache or {}
+            if metric_name in cache:
+                return metric_name
+            prefixed = f"metrics.{metric_name}"
+            if prefixed in cache:
+                return prefixed
             return metric_name
-        if self._field_cache and metric_name in self._field_cache:
-            return metric_name
+        # Bare metric names in caps must not override the remote_write plan —
+        # emit `prometheus.<metric>.<suffix>` even when OTel-shaped targets
+        # advertise the logical PromQL name as a field.
         if prefer == "counter":
             suffixes = (".counter", ".rate", ".value")
         elif prefer == "rate":
@@ -687,12 +896,20 @@ class SchemaResolver:
             return True
         if has_component_suffix:
             return True
-        profile = self._current_schema_profile()
+        # Strict passthrough queries the bare source field. Do not classify it
+        # from a namespaced field that will not appear in the emitted query.
+        if self._passthrough:
+            return False
+        profile = self._namespacing_schema_profile() or self._current_schema_profile()
         # Fleet layout: metric leaf is `prometheus.<metric>.counter`.
         if profile == "prometheus_remote_write":
             counter_field = f"prometheus.{metric_name}.counter"
             if self._field_cache and counter_field in self._field_cache:
                 return is_counter_metric_field(self.field_capability(counter_field))
+        if profile == "prometheus_metrics":
+            nested = f"prometheus.metrics.{metric_name}"
+            if is_counter_metric_field(self.field_capability(nested)):
+                return True
         # Native endpoint layout: metric is stored as `metrics.<name>` with
         # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
         if profile == "prometheus_native":

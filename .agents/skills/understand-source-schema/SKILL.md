@@ -9,25 +9,30 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 ## How the mapping works (Grafana)
 
-`SchemaResolver` (`adapters/source/grafana/schema.py`) first **auto-detects how your Prometheus data actually landed in Elastic** by reading `_field_caps` from `--es-url`, then rewrites metric names, labels, and metric types to match that layout. There are three layouts (schema profiles):
+`SchemaResolver` (`adapters/source/grafana/schema.py`) normally uses an explicit `--field-profile` as the **planned future Elastic layout**, then rewrites metric names, labels, and metric types to match it. This works before any target data exists. `auto` is an optional mode for populated targets that requires `--es-url` and infers the layout from `_field_caps`.
 
 | Schema profile | How the data got into Elastic | Metric `http_requests_total` → | Label `service` → |
 |---|---|---|---|
-| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration | `prometheus.http_requests_total.counter` / `.value` / `.rate` (suffix by role) | `prometheus.labels.service` |
+| `prometheus_remote_write` | Elastic Fleet/Agent Prometheus integration (`use_types`) | `prometheus.http_requests_total.counter` / `.value` / `.rate` (suffix by role) | `prometheus.labels.service` |
+| `prometheus_metrics` | Classic Metricbeat remote_write (`use_types=false`) | `prometheus.metrics.http_requests_total` | `prometheus.labels.service` |
 | `prometheus_native` | Native ES `/_prometheus/api/v1/write` endpoint | `metrics.http_requests_total` | `labels.service` |
-| generic / OTel (none detected) | OTel collector, custom mapping, or no data found | `http_requests_total` (pass-through) | exact field → OTel candidate (`service.name`) → as-is |
+| `otel` (default) | OTel collector / generic normalized layout | `http_requests_total` (pass-through) | exact field → OTel candidate (`service.name`) → as-is |
+| `passthrough` | Keep source metric/label names as-is | `http_requests_total` | `service` |
+| `auto` (populated targets only; requires `--es-url`) | Infer from live `_field_caps` | typed / nested / native when caps are clear; otherwise bare / OTel candidate + warn | same |
 
 **Label resolution order** (`resolve_label`): ignored labels → rule-pack `label_rewrites` → exact field match (source-faithful) → profile-namespaced field (`prometheus.labels.<l>` / `labels.<l>`) → discovered OTel mapping from `_field_caps` → built-in candidate (e.g. `instance` → `service.instance.id`/`host.name`, `job` → `service.name`) → pass-through.
 
 **Metric type matters too:** `rate()`/`irate()` only work if the metric is stored as a counter. `is_counter()` decides from rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric` capability → the profile's counter field. A counter ingested as a gauge breaks rate math even when the field name is right.
 
-**Hard dependency — ingest first, then migrate with `--es-url` and `--preflight`.** Profile detection only works when the data is already in Elastic *and* `--es-url` is reachable. If it is not (wrong/missing key, TLS failure, or **migrating before pointing Prometheus at Elastic**), detection finds nothing, the profile is `none`, and the resolver falls back to OTel candidates + pass-through — dashboards look migrated but query the wrong fields. Confirm the profile via Grafana `required_target_contract.json` (`schema_profile`, `field_capabilities_discovery`, field `status`) from a preflight run before trusting any mapping.
+**Histogram field type matters for `histogram_quantile`:** when field caps show `exponential_histogram` / `histogram`, translation uses `PERCENTILE()` (with `TO_TDIGEST()` for classic histograms). When the type is **unknown** (offline / no caps), the engine **assumes exponential_histogram and warns**. Known-wrong types such as `aggregate_metric_double` stay `not_feasible`. Prefer ES ≥ 9.5 native `histogram_quantile` when the runtime probe supports it.
 
-**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (tag → ES field), plus `metric_prefix`/`tag_prefix` for unmapped names. Built-ins: `otel` (default), `prometheus`, `elastic_agent`, `passthrough`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
+**Assets first is supported.** Choose `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, or `passthrough` from the intended ingest route, migrate the assets, ingest first, then rerun with `--es-url` and `--preflight`; `_field_caps` verifies the planned fields rather than defining the plan. Before that, `unknown` field status means verification is pending. Live `--es-url` also probes `esql_named_param_binding` and native `PROMQL` support (`--translation-mode`).
+
+**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (metric tag → ES field), optional `log_tag_map` (log attribute → ES field), plus `metric_prefix`/`tag_prefix` for unmapped metric names/tags. Built-ins: `otel` (default), `prometheus` (Metricbeat `prometheus.metrics.*` — Grafana twin `prometheus_metrics`), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. The Prometheus profiles apply their label prefixes to metric queries but keep ECS/OTel fields for log queries. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
 
 ## Get the mapping for the user's own dashboards
 
-Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Run a migration to an artifact dir with a live `--es-url` so the resolver can confirm which target fields actually exist:
+Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. First run with the planned profile; add a live `--es-url` after telemetry starts so the resolver can confirm which target fields actually exist:
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
@@ -36,12 +41,15 @@ export ELASTICSEARCH_ENDPOINT="https://...es..." KEY="<api-key>"
 obs-migrate migrate \
   --source grafana --input-mode api \
   --output-dir migration_output \
-  --assets dashboards --preflight \
+  --assets dashboards \
+  --field-profile prometheus_remote_write \
+  --data-view "metrics-*" \
+  --esql-index "metrics-*" \
+  --preflight \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
 ```
 
-(Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below.
-
+(Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below. For Prometheus, set `--esql-index` to the metrics query/discovery stream even when `--data-view` differs as the Kibana UI bind (`docs/command-contract.md` → Target index flags).
 ## Get the purpose-built per-panel mapping table (start here)
 
 The most direct answer to "how do my fields map?" is the **schema-change report**, a per-panel `dashboard │ panel │ source_fields │ target_stream │ target_fields` table. Dashboard migration writes it automatically at `<output-dir>/dashboards/schema_change_report.md`, alongside `<output-dir>/dashboards/telemetry_contract.json`.
@@ -62,7 +70,7 @@ These artifacts are also written by the migration run itself, under `migration_o
 
 | What | File | Notes |
 |---|---|---|
-| **Grafana required target fields + whether they exist** | `required_target_contract.json` | includes `schema_profile`, `field_capabilities_discovery`, and each resolved target field's `status` (e.g. `confirmed`/`missing`/`unknown`) when `--es-url` was used. |
+| **Grafana required target fields + whether they exist** | `required_target_contract.json` | includes `field_profile`, `planned_schema_profile`, `detected_schema_profile`, `profile_mismatch`, backward-compatible `schema_profile` (detected layout), `field_capabilities_discovery`, and each resolved target field's `status` (e.g. `confirmed`/`missing`/`unknown`) when `--es-url` was used. |
 | **Datadog required target fields + whether they exist** | `target_readiness_contract.json` | includes the active `field_profile`, metric/log index patterns, source fields, resolved target fields, and `status`. |
 | Per-panel translation detail (source vs. translated query) | `verification_packets.json` | **Open the file to read the exact key names** rather than assuming them — packet shape varies. |
 | Must-fix worklist | `migration_summary.md` | human-readable verdict + actions |
@@ -94,19 +102,21 @@ obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
 
 The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates). `extensions` and `--suggest-rule-pack-out` are shipped in the package.
 
-**Datadog** — pick a built-in `--field-profile {otel,prometheus,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
+**Datadog** — pick a built-in `--field-profile {otel,prometheus,prometheus_native,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
 
 ## Do NOT
 
 - Do **not** assert `verification_packets.json` field/key names from memory — open the file and read them. Packet keys are easy to get subtly wrong.
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
-- Do **not** trust field mappings from a run where `--es-url` was unreachable or the target had no data yet — with no detected schema profile the resolver guesses OTel candidates and passes names through. Ingest first, then re-run with a reachable `--es-url`.
+- Do **not** use Grafana `auto` before telemetry exists. Use an explicit planned profile, then rerun validation with a reachable `--es-url` after ingest begins.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
 - Do **not** reach for repo-only scripts for the schema report: migration writes `schema_change_report.md` automatically, and `obs-migrate schema-report` is the package-native regeneration/merge command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
 
 ## See also
 
 - `obs-migrate schema-report --help` — the per-panel source→target table command (shipped in the package).
-- `docs/sources/grafana.md` (SchemaResolver + rule packs) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
+- `docs/sources/grafana.md` (SchemaResolver + rule packs + Current Boundaries) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
+- `prepare-target-telemetry` skill — choose ingest route / `--esql-index` before data exists.
 - `assess-migration-readiness` skill — `missing` fields/metrics show up there as blockers/actions.
+- `explain-migration-gaps` skill — approximation warnings (e.g. histogram assume+warn) vs mapping bugs.
 - `obs-migrate extensions --help` and `grafana-migrate --help` — rule-pack and `--rules-file` options for the installed version.
