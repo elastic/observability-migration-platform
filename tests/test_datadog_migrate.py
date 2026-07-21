@@ -3618,6 +3618,130 @@ class TestYAMLGeneration(unittest.TestCase):
         gap = left[1]["position"]["y"] - (left[0]["position"]["y"] + left[0]["size"]["h"])
         self.assertLessEqual(gap, 2, f"placeholder gutter too large: {[ (p.get('title'), p['position'], p['size']) for p in left ]}")
 
+    def test_free_board_section_headers_stay_compact(self):
+        # ActiveMQ-style vertical free_text labels ("Broker", "Queue") are tall
+        # on Datadog's canvas but must not become empty Kibana slabs.
+        widgets = [
+            NormalizedWidget(
+                id="h1",
+                widget_type="free_text",
+                title="",
+                layout={"x": 0, "y": 0, "width": 20, "height": 40},
+                raw_definition={"type": "free_text", "text": "Broker"},
+            ),
+            NormalizedWidget(
+                id="h2",
+                widget_type="free_text",
+                title="",
+                layout={"x": 0, "y": 50, "width": 12, "height": 55},
+                raw_definition={"type": "free_text", "text": "Queue"},
+            ),
+            self._make_metric_widget(
+                "c1", "Enqueue count", "timeseries",
+                {"x": 40, "y": 0, "width": 40, "height": 14},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        headers = [
+            p
+            for p in dash["panels"]
+            if str((p.get("markdown") or {}).get("content") or "").strip()
+            in {"Broker", "Queue"}
+        ]
+        self.assertEqual(len(headers), 2, [p.get("title") for p in dash["panels"]])
+        for panel in headers:
+            self.assertLessEqual(
+                panel["size"]["h"],
+                2,
+                f"section header too tall: {panel.get('title')} {panel['size']}",
+            )
+
+    def test_free_board_header_gutters_join_next_content_column(self):
+        # Topics labels at x=100 with tables at x=113 must not open a 4-col
+        # empty gutter — headers ride on the tables column instead.
+        widgets = [
+            self._make_metric_widget(
+                "left", "Dequeue count", "timeseries",
+                {"x": 56, "y": 0, "width": 40, "height": 14},
+            ),
+            NormalizedWidget(
+                id="topics",
+                widget_type="note",
+                title="",
+                layout={"x": 100, "y": 0, "width": 12, "height": 40},
+                raw_definition={"type": "note", "content": "Topics"},
+            ),
+            self._make_metric_widget(
+                "tbl", "Number of topics", "query_value",
+                {"x": 113, "y": 0, "width": 20, "height": 10},
+            ),
+            self._make_metric_widget(
+                "chart", "Avg enqueue", "timeseries",
+                {"x": 113, "y": 20, "width": 40, "height": 14},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        by_title = {p["title"]: p for p in dash["panels"]}
+        topics = next(
+            p
+            for p in dash["panels"]
+            if str((p.get("markdown") or {}).get("content") or "").strip() == "Topics"
+        )
+        self.assertEqual(topics["position"]["x"], by_title["Avg enqueue"]["position"]["x"])
+        self.assertEqual(topics["size"]["w"], by_title["Avg enqueue"]["size"]["w"])
+        self.assertGreaterEqual(topics["size"]["w"], 8)
+        self.assertLessEqual(topics["position"]["x"], by_title["Number of topics"]["position"]["x"])
+        self.assertGreaterEqual(
+            topics["position"]["x"] + topics["size"]["w"],
+            by_title["Number of topics"]["position"]["x"] + by_title["Number of topics"]["size"]["w"],
+        )
+        self.assertGreaterEqual(by_title["Avg enqueue"]["size"]["w"], 8)
+        # No skinny gutter column left of the topic tables.
+        self.assertGreater(
+            by_title["Number of topics"]["position"]["x"],
+            by_title["Dequeue count"]["position"]["x"],
+        )
+
+    def test_free_board_placeholders_stay_compact(self):
+        widget = NormalizedWidget(
+            id="p1",
+            widget_type="check_status",
+            title="HAProxy instances",
+            layout={"x": 25, "y": 7, "width": 16, "height": 20},
+            raw_definition={"type": "check_status", "check": "haproxy.can_connect"},
+        )
+        chart = self._make_metric_widget(
+            "c1", "Sessions", "timeseries",
+            {"x": 61, "y": 7, "width": 34, "height": 14},
+        )
+        dash = self._render_dashboard([widget, chart])
+        placeholder = next(p for p in dash["panels"] if p.get("title") == "HAProxy instances")
+        content = str((placeholder.get("markdown") or {}).get("content") or "")
+        self.assertLessEqual(placeholder["size"]["h"], 4, placeholder["size"])
+        self.assertNotIn("Source query:", content)
+        self.assertIn("check_status", content)
+
+    def test_free_board_metrics_do_not_shrink_below_readable_width(self):
+        # HAProxy KPI siblings: prefer stacking over 4-col postage stamps.
+        widgets = [
+            self._make_metric_widget(
+                "kpi_l", "Instances", "query_value",
+                {"x": 25, "y": 7, "width": 16, "height": 10},
+            ),
+            self._make_metric_widget(
+                "kpi_r", "Memory", "query_value",
+                {"x": 43, "y": 7, "width": 16, "height": 10},
+            ),
+            self._make_metric_widget(
+                "chart", "Frontend A", "timeseries",
+                {"x": 61, "y": 22, "width": 34, "height": 14},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        by_title = {p["title"]: p for p in dash["panels"]}
+        for title in ("Instances", "Memory"):
+            self.assertGreaterEqual(by_title[title]["size"]["w"], 6, title)
+
     def test_free_board_repairs_spanning_tile_vertical_overlaps(self):
         # Istio-style: a taller upper stripe (GC/threads) shares vertical band
         # with a lower contiguous metric row. Style-guide fill must not stretch

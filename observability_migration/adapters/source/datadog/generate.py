@@ -986,13 +986,13 @@ def _placeholder_markdown_content(
 ) -> str:
     """Compact operator-facing body for unsupported / manual widgets.
 
-    Keep guidance visible; keep migration debug fields out of the Kibana tile
-    (status still lives on ``TranslationResult`` for reports).
+    Keep the rebuild hint on the tile; omit source-query dumps that balloon
+    height into empty slabs. Full query text stays on ``TranslationResult``.
     """
     kind = str(widget.widget_type or "widget").replace("_", " ")
     hint = _STATUS_PLACEHOLDER_HINTS.get(widget.widget_type)
     lines = [
-        f"_Needs follow-up_ — Datadog `{widget.widget_type or kind}`",
+        f"_Needs follow-up_ — `{widget.widget_type or kind}`",
         "",
     ]
     if hint:
@@ -1002,12 +1002,34 @@ def _placeholder_markdown_content(
             f"This **{kind}** widget has no automated Kibana translation yet. "
             "Leave as a reminder or rebuild with a Lens panel."
         )
-    # Source queries are useful for rebuilds but keep them short.
-    if result.source_queries:
-        lines.append("")
-        lines.append("Source query:")
-        lines.append(f"```\n{result.source_queries[0][:400]}\n```")
     return "\n".join(lines)
+
+
+def _is_section_header_markdown(content: str) -> bool:
+    """True for short Datadog free_text/note labels used as section titles.
+
+    ActiveMQ ``Broker`` / ``Queue`` / ``Topics`` are tall on the free canvas
+    but are labels, not essays - they must stay 1-2 Kibana rows high.
+    """
+    text = str(content or "").strip()
+    if not text or "```" in text or "http://" in text.lower() or "https://" in text.lower():
+        return False
+    # Brand / logo tiles use ``## Label``; keep them as normal notes so they
+    # stay in their source column instead of jumping to the next band.
+    if text.lstrip().startswith("#"):
+        return False
+    plain = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE).strip()
+    lines = [line.strip() for line in plain.splitlines() if line.strip()]
+    if not lines or len(lines) > 2:
+        return False
+    joined = " ".join(lines)
+    # Prose notes often end with a period; section labels do not.
+    if joined.endswith((".", "!", "?")):
+        return False
+    words = joined.split()
+    if len(words) > 4 or len(joined) > 32:
+        return False
+    return True
 
 
 def _build_markdown_panel(
@@ -1047,6 +1069,8 @@ def _build_markdown_panel(
     # Static integration logos behave like notes (chrome-less), not red warning tiles.
     if widget.widget_type == "image":
         panel["_markdown_role"] = "text"
+    elif is_text_widget and _is_section_header_markdown(content):
+        panel["_markdown_role"] = "header"
     else:
         panel["_markdown_role"] = "text" if is_text_widget else "placeholder"
     return panel
@@ -1288,14 +1312,35 @@ def _apply_free_board_layout(panels: list[dict[str, Any]]) -> None:
         left_i, right_i = _free_board_covered_band_range(
             band_starts, board_w, dd_x, dd_w
         )
+        # Section headers that lived in a dropped gutter start should sit on the
+        # next content band to their right (Topics → topic tables), not the
+        # previous chart column.
+        if _is_free_board_section_header_panel(panel):
+            for i, start in enumerate(band_starts):
+                if start > dd_x:
+                    left_i = right_i = i
+                    break
         x = band_x[left_i]
         w = sum(band_widths[left_i : right_i + 1])
         h = max(1, round(dd_h * scale_y))
-        if (
-            _kibana_panel_type(panel) == "markdown"
-            and _markdown_role(panel) == "placeholder"
-        ):
-            h = max(h, _preferred_panel_height(panel, w))
+        if _kibana_panel_type(panel) == "markdown":
+            # Free-canvas notes/labels often have huge Datadog heights (vertical
+            # section titles). Size from content role, not the decorative dd_h.
+            role = _markdown_role(panel)
+            if role == "header":
+                h = 2
+            elif role == "placeholder":
+                dd_type = str(panel.get("_dd_type") or "")
+                if dd_type in {"check_status", "manage_status"}:
+                    # Status chips — never grow into essay slabs.
+                    h = 3
+                elif dd_type in {"log_stream", "list_stream"}:
+                    h = max(8, min(round(dd_h * scale_y), 28))
+                else:
+                    # hostmap and other large unsupported tiles.
+                    h = max(4, min(round(dd_h * scale_y), 10))
+            else:
+                h = _preferred_panel_height(panel, w)
         y = max(0, round(dd_y * scale_y))
         panel["size"] = {"w": w, "h": h}
         panel["position"] = {"x": x, "y": y}
@@ -1304,6 +1349,14 @@ def _apply_free_board_layout(panels: list[dict[str, Any]]) -> None:
         panel["_free_band_right"] = right_i
 
     _apply_free_board_band_subslots(leaf, band_starts, band_widths, band_x, board_w)
+    # Sub-slots may have narrowed headers; stretch section titles back to the
+    # full content band so they don't leave a 4-col gutter label.
+    for panel in leaf:
+        if not _is_free_board_section_header_panel(panel):
+            continue
+        bi = int(panel.get("_free_band_left", 0) or 0)
+        panel["position"]["x"] = band_x[bi]
+        panel["size"]["w"] = band_widths[bi]
     _repair_free_board_horizontal_overlaps(leaf)
     _pack_free_board_vertically(leaf)
     _repair_free_board_vertical_overlaps(leaf)
@@ -1352,7 +1405,26 @@ def _cluster_free_board_band_starts(panels: list[dict[str, Any]]) -> list[int]:
         if delta <= gap and max_w_at.get(x, 1) <= narrow_cap:
             continue
         bands.append(x)
-    return bands
+
+    # Section-title free_text (ActiveMQ Topics / Broker) must not become its own
+    # skinny gutter column — drop those starts; headers reattach to the next
+    # content band during placement.
+    content_bands: list[int] = []
+    for start in bands:
+        at_start = [
+            p for p in panels if int(p.get("_dd_x", 0) or 0) == start
+        ]
+        if at_start and all(_is_free_board_section_header_panel(p) for p in at_start):
+            continue
+        content_bands.append(start)
+    return content_bands or bands
+
+
+def _is_free_board_section_header_panel(panel: dict[str, Any]) -> bool:
+    return (
+        _kibana_panel_type(panel) == "markdown"
+        and _markdown_role(panel) == "header"
+    )
 
 
 def _free_board_family_min_width(panel: dict[str, Any]) -> int:
@@ -1363,6 +1435,11 @@ def _free_board_family_min_width(panel: dict[str, Any]) -> int:
         return 8
     # Long notes need a readable column; short headers can stay compact.
     if family == "markdown":
+        role = _markdown_role(panel)
+        if role == "header":
+            return 4
+        if role == "placeholder":
+            return 4
         content = ""
         md = panel.get("markdown")
         if isinstance(md, dict):
@@ -1371,6 +1448,26 @@ def _free_board_family_min_width(panel: dict[str, Any]) -> int:
             return 8
         return 4
     return 4
+
+
+def _free_board_subslot_min_width(panel: dict[str, Any]) -> int:
+    """Readable floors when splitting one band among siblings.
+
+    Prefer stacking over postage-stamp KPIs: metric/chart floors match the
+    primary band mins so a dense overview band stacks rather than emitting
+    4-col tiles.
+    """
+    family = _panel_family(panel)
+    if family == "metric":
+        return 6
+    if family in {"chart", "table"}:
+        return 8
+    if family == "markdown":
+        # Placeholders / short headers share KPI rows; don't block the split.
+        if _markdown_role(panel) in {"placeholder", "header"}:
+            return 4
+        return min(6, _free_board_family_min_width(panel))
+    return _free_board_family_min_width(panel)
 
 
 def _free_board_band_dd_range(
@@ -1576,21 +1673,6 @@ def _apply_free_board_band_subslots(
                 panel["size"]["w"] = slot_ws[slot]
 
 
-def _free_board_subslot_min_width(panel: dict[str, Any]) -> int:
-    """Slightly softer floors when splitting one band among siblings."""
-    family = _panel_family(panel)
-    if family == "metric":
-        return 4
-    if family in {"chart", "table"}:
-        return 6
-    if family == "markdown":
-        # Placeholders / short headers share KPI rows; don't block the split.
-        if _markdown_role(panel) in {"placeholder", "header"}:
-            return 4
-        return min(6, _free_board_family_min_width(panel))
-    return _free_board_family_min_width(panel)
-
-
 def _even_split_by_weight(total: int, weights: list[int]) -> list[int]:
     """Split ``total`` columns across weights; each slot ≥ 1 when possible."""
     n = len(weights)
@@ -1625,6 +1707,9 @@ def _repair_free_board_horizontal_overlaps(panels: list[dict[str, Any]]) -> None
 
     ordered = sorted(panels, key=lambda p: (p["position"]["x"], p["position"]["y"]))
     for i, panel in enumerate(ordered):
+        if _is_free_board_section_header_panel(panel):
+            # Section titles intentionally span the content band above sub-slots.
+            continue
         x = int(panel["position"]["x"])
         y = int(panel["position"]["y"])
         w = int(panel["size"]["w"])
@@ -2177,11 +2262,11 @@ def _preferred_panel_height(panel: dict[str, Any], width: int | None = None) -> 
     if panel_type == "markdown":
         content = (panel.get("markdown") or {}).get("content") or ""
         role = _markdown_role(panel)
-        estimated_lines = _estimate_markdown_lines(content, width or 24)
+        if role == "header":
+            return 2
         if role == "placeholder":
-            if estimated_lines > 10 and (width or 24) <= 16:
-                return 8
-            return 6
+            return 3
+        estimated_lines = _estimate_markdown_lines(content, width or 24)
         # Real Datadog notes are body-led (often hide_title); keep them compact.
         if estimated_lines <= 4:
             return 3
