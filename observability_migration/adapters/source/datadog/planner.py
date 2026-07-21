@@ -338,6 +338,39 @@ def metric_toplist_rule(context: PlanContext) -> str | None:
 
 
 @METRIC_PLANNERS.register(
+    "datadog.plan.metric_hostmap",
+    priority=35,
+    summary="Preserve grouped Datadog hostmap values as an ES|QL table.",
+)
+def metric_hostmap_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type != "hostmap":
+        return None
+    has_grouping = any(
+        query.metric_query and query.metric_query.group_by
+        for query in context.metric_queries
+    )
+    if not has_grouping:
+        context.plan.backend = "markdown"
+        context.plan.kibana_type = "markdown"
+        context.plan.warnings.append(
+            "hostmap has no grouping dimension; a host/value table cannot be "
+            "constructed automatically"
+        )
+        context.plan.reasons.append("ungrouped hostmap needs manual redesign")
+        context.plan.confidence = 0.0
+        return "selected manual placeholder for ungrouped hostmap"
+    context.plan.backend = "esql"
+    context.plan.kibana_type = "table"
+    context.plan.warnings.append(
+        "hostmap visual approximated as a grouped table; host dimensions and "
+        "metric values are preserved, but Datadog tile coloring is not"
+    )
+    context.plan.reasons.append("grouped hostmap → data-preserving ES|QL table")
+    context.plan.confidence *= 0.8
+    return "selected ES|QL table for grouped hostmap"
+
+
+@METRIC_PLANNERS.register(
     "datadog.plan.metric_table",
     priority=40,
     summary="Plan Datadog tables as Lens or ES|QL tables.",

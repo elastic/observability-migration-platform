@@ -1,0 +1,224 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+version: 1
+id: synthetic-controls
+title: Synthetic Kibana interaction controls
+source:
+  kind: synthetic
+  path: observability_migration/core/coverage/interaction_canary.py
+dashboard:
+  title: obs-migrate interaction canary (synthetic controls)
+  time_from: now-3h
+  time_to: now
+controls:
+  - label: environment
+    key: environment
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [environment]
+      affected_panels: [interaction-value]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: ["?environment", "service.environment"]
+      required_columns: [value]
+      minimum_rows: 1
+      expect_data_change: true
+  - label: services
+    key: services
+    adapter: esql_value
+    capability: kibana_only
+    multiple: true
+    expected_gap: Grafana multi-value ES|QL controls are not emitted by obs-migrate yet
+    options:
+      strategy: every
+    assertions:
+      selection: [services]
+      affected_panels: [interaction-multi]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: ["MV_CONTAINS(?services", "service.name"]
+      required_columns: [value]
+      minimum_rows: 1
+  - label: grouping
+    key: grouping
+    adapter: esql_field
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [grouping]
+      affected_panels: [interaction-field]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: ["??grouping"]
+      query_not_contains: ["?grouping"]
+      stable_alias: grouping
+      required_columns: [value, grouping]
+      minimum_rows: 1
+  - label: aggregate
+    key: aggregate
+    adapter: esql_function
+    capability: kibana_only
+    expected_gap: Grafana function-parameter controls are not emitted by obs-migrate yet
+    options:
+      strategy: every
+    assertions:
+      selection: [aggregate]
+      affected_panels: [interaction-function]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: ["??aggregate("]
+      required_columns: [value]
+      minimum_rows: 1
+  - label: interval
+    key: interval
+    adapter: esql_interval
+    capability: kibana_only
+    expected_gap: Grafana interval/time-literal controls are not emitted by obs-migrate yet
+    options:
+      strategy: every
+    assertions:
+      selection: [interval]
+      affected_panels: [interaction-interval]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: ["TBUCKET(?interval)"]
+      required_columns: [value, bucket]
+      minimum_rows: 1
+      expect_data_change: false
+  - label: host.name
+    key: host.name
+    adapter: options_list
+    capability: migrated_live
+    options:
+      strategy: every
+      exclude: [Exists]
+    assertions:
+      affected_panels: [interaction-options]
+      unaffected_panels: [interaction-unaffected]
+      required_columns: [value, host.name]
+      minimum_rows: 1
+      expect_data_change: false
+  - label: latency_ms
+    key: latency_ms
+    adapter: range_slider
+    capability: migrated_live
+    options:
+      strategy: declared
+      include: ["40..60"]
+    assertions:
+      affected_panels: [interaction-range]
+      unaffected_panels: [interaction-unaffected]
+      query_contains: [latency_ms]
+      required_columns: [value]
+      minimum_rows: 1
+      expect_data_change: false
+  - label: query bar
+    key: query_bar
+    adapter: query_bar
+    capability: kibana_only
+    expected_gap: Query-bar filtering is a native Kibana capability outside migrated controls
+    options:
+      strategy: declared
+      include: ['service.environment:"prod"']
+    assertions:
+      affected_panels: query_dependency
+      unaffected_panels: [interaction-unaffected]
+      minimum_rows: 1
+      expect_data_change: false
+  - label: gap grafana any variable
+    key: gap_grafana_any
+    adapter: esql_value
+    capability: migration_gap
+    expected_gap: Grafana template variables with type any/custom wildcard semantics
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+  - label: gap like parameterization
+    key: gap_like_param
+    adapter: esql_value
+    capability: migration_gap
+    expected_gap: ES|QL LIKE parameterization for control values is unsupported in migration
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+  - label: gap datasource replacement
+    key: gap_datasource_replacement
+    adapter: esql_field
+    capability: migration_gap
+    expected_gap: Replacing datasource index patterns via controls is unsupported
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+  - label: gap chained controls
+    key: gap_chained_controls
+    adapter: esql_value
+    capability: migration_gap
+    expected_gap: Chained/dependent control option scoping is not translated faithfully
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      allow_incompatible_selections: true
+      expect_data_change: false
+  - label: gap invalid unbound params
+    key: gap_invalid_unbound_params
+    adapter: esql_value
+    capability: source_only
+    expected_gap: Source dashboards may ship unbound ES|QL parameters without controls
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+  - label: gap disallowed function names
+    key: gap_disallowed_function_names
+    adapter: esql_function
+    capability: migration_gap
+    expected_gap: Disallowed ES|QL function names in static function controls are rejected
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+  - label: gap control query timeout
+    key: gap_control_query_timeout
+    adapter: esql_value
+    capability: source_only
+    expected_gap: Slow or timed-out control value queries are a source/runtime concern
+    options:
+      strategy: declared
+      include: [catalog-only]
+    assertions:
+      affected_panels: query_dependency
+      expect_data_change: false
+combinations:
+  - id: multi-and-field
+    selections:
+      services: api,worker
+      grouping: host.name
+  - id: function-and-interval
+    selections:
+      aggregate: MAX
+      interval: 5 minutes
+  - id: options-range-and-query
+    selections:
+      host.name: host-2
+      latency_ms: 40..60
+      query_bar: 'service.environment:"prod"'
+noise_allowances:
+  - endpoint: /internal/security/user_profile
+    method: GET
+    status: 404
+    rationale: Security is disabled in the local test stack.

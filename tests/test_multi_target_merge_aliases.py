@@ -30,6 +30,7 @@ from observability_migration.adapters.source.grafana.panels import (
     translate_panel,
 )
 from observability_migration.adapters.source.grafana.promql import (
+    _ESQL_FIELD_REFERENCE_PATTERN,
     MeasureSpec,
     _build_shared_measure_pipeline,
     _wrap_bare_ts_value_args_when_case_siblings,
@@ -79,12 +80,31 @@ def _stats_assignments(query: str) -> list[str]:
 
 
 def _assert_no_inner_case_ts_value_args(query: str) -> None:
-    """TS funcs must not take CASE(...) as their value argument."""
+    """TS RATE-family funcs must not take CASE(...) as their value argument."""
     assert re.search(
         r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)\(\s*CASE\(",
         query,
         flags=re.IGNORECASE,
     ) is None, query
+
+
+def _assert_no_bare_ts_alongside_case(query: str) -> None:
+    assignments = _stats_assignments(query)
+    if not any("CASE(" in a for a in assignments):
+        return
+    for assignment in assignments:
+        # Bare IRATE(field) is OK only when already nested in an outer CASE(...).
+        if re.search(
+            rf"\b(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
+            assignment,
+        ):
+            assert "CASE(" in assignment, assignment
+        # Reject truly bare measures: SUM(IRATE(field, w)) with no CASE at all.
+        if re.search(
+            rf"=\s*(?:SUM|AVG|MIN|MAX)?\(?\s*(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
+            assignment,
+        ) and "CASE(" not in assignment:
+            raise AssertionError(f"bare TS alongside CASE siblings: {assignment}")
 
 
 def _assert_eval_rhs_defined_after_stats(query: str) -> None:
@@ -271,8 +291,10 @@ def test_merge_rewrites_inner_case_irate_to_outer_case():
     query = merged["query"]
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
     assert 'CASE((mode == "nice"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-    assert "IRATE(node_cpu_seconds_total, 1m)" in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
     _assert_no_inner_case_ts_value_args(query)
+    _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
 
 
@@ -284,7 +306,7 @@ def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
     ]
     wrapped = _wrap_bare_ts_value_args_when_case_siblings(assignments)
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in wrapped[0]
-    assert "IRATE(node_cpu_seconds_total, 1m)" in wrapped[1]
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in wrapped[1]
     assert "IRATE(CASE(" not in wrapped[0]
     assert "IRATE(CASE(" not in wrapped[1]
 
@@ -317,7 +339,8 @@ def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
     parts, _, _ = result
     stats_line = next(line for line in parts if line.startswith("| STATS"))
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in stats_line
-    assert "IRATE(node_cpu_seconds_total, 1m)" in stats_line
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in stats_line
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in stats_line
     assert "IRATE(CASE(" not in stats_line
 
 
@@ -332,7 +355,12 @@ def test_shared_helper_rewrites_backtick_quoted_recording_rule_field():
     assert wrapped[0] == (
         'numerator = SUM(CASE((mode == "user"), IRATE(`node:cpu:guest`, 1m), NULL))'
     )
-    assert wrapped[1] == "denominator = SUM(IRATE(`node:cpu:total`, 1m))"
+    assert wrapped[1] == (
+        "denominator = SUM(CASE(true, IRATE(`node:cpu:total`, 1m), NULL))"
+    )
+    assert "IRATE(`node:cpu:total`, 1m)" not in wrapped[1].replace(
+        "CASE(true, IRATE(`node:cpu:total`, 1m), NULL)", ""
+    )
 
 
 def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():
@@ -389,8 +417,10 @@ def test_join_family_emits_outer_case_irate_for_filtered_numerator():
     assert ctx.feasibility == "feasible"
     query = ctx.esql_query or ""
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-    assert "IRATE(node_cpu_seconds_total, 1m)" in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
     _assert_no_inner_case_ts_value_args(query)
+    _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
 
 
@@ -434,6 +464,8 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             _assert_eval_rhs_defined_after_stats(query)
         else:
             assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-            assert "IRATE(node_cpu_seconds_total, 1m)" in query
+            assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+            assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
             _assert_no_inner_case_ts_value_args(query)
+            _assert_no_bare_ts_alongside_case(query)
         assert structural_errors(check_esql_structure(query)) == []

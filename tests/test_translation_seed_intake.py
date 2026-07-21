@@ -35,7 +35,7 @@ _GOOD_ALIAS_QUERY = (
 _GOOD_CASE_WRAP_QUERY = (
     "TS metrics-*\n"
     '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
-    "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    "b = SUM(CASE(true, IRATE(other, 1m), NULL)) BY time_bucket = TBUCKET(5 minute)\n"
 )
 
 _DATADOG_GOOD_QUERY = (

@@ -205,9 +205,11 @@ def _seed_metric_fields(
                 or _static_invariant_denominator(field_name, metric_fields)
             )
             ceiling = gauge_values.get(denominator) if denominator else None
+            seed_range = info.get("seed_range")
             value = _gauge_value(
                 field_name, hour, combo_idx, rng,
                 ceiling=ceiling, now_epoch=now_epoch,
+                seed_range=seed_range if isinstance(seed_range, list) else None,
             )
             gauge_values[field_name] = value
         doc[field_name] = round(value, 4)
@@ -502,11 +504,22 @@ def _metric_families(
     if orphan_dims and families_by_sig:
         carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
 
+    # Numeric fields used by global range controls must be present on every
+    # metric-family document the control can filter. Keeping such a field in
+    # only its own query-derived family makes dashboard-wide filtering erase
+    # otherwise valid panel data even though both fields were seeded.
+    control_metrics = {
+        field_name
+        for field_name in (stream.get("control_fields") or [])
+        if field_name in metric_fields
+    }
+
     families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
     for sig, names in families_by_sig.items():
-        family_metrics = {name: metric_fields[name] for name in names}
+        family_names = set(names) | control_metrics
+        family_metrics = {name: metric_fields[name] for name in family_names}
         scope_dims = sig | orphan_dims if sig == carrier_sig else sig
-        scoped = _scoped_stream(stream, scope_dims, set(names))
+        scoped = _scoped_stream(stream, scope_dims, family_names)
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
     return families
@@ -1004,7 +1017,18 @@ def _gauge_value(
     *,
     ceiling: float | None = None,
     now_epoch: float | None = None,
+    seed_range: list[float] | None = None,
 ) -> float:
+    if seed_range and len(seed_range) >= 2:
+        low = float(min(seed_range[0], seed_range[1]))
+        high = float(max(seed_range[0], seed_range[1]))
+        span = max(high - low, 1.0)
+        anchors = (0.0, 1.0, 0.5, 0.25, 0.75)
+        value = low + span * anchors[combo_idx % len(anchors)]
+        value = min(high, max(low, value))
+        if ceiling is not None:
+            value = min(value, ceiling)
+        return round(value, 4)
     profile = _value_profile(field_name)
     if profile.unit == "epoch_seconds":
         # Anchor near the document timestamp so sibling differences (now - boot)
@@ -1199,6 +1223,9 @@ def _flush_into_summary(
         operation = item.get("create") or item.get("index") or {}
         error = operation.get("error") if isinstance(operation, dict) else None
         if error:
+            if isinstance(error, dict) and error.get("type") == "version_conflict_engine_exception":
+                ok += 1
+                continue
             errors += 1
             if len(summary.error_samples) < 3:
                 if isinstance(error, dict):

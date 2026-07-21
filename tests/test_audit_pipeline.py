@@ -1,13 +1,19 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from scripts import audit_pipeline
 from scripts.audit_pipeline import (
     DashboardAudit,
     PanelAudit,
     _section_dashboard_summary,
     _section_per_dashboard_traces,
+    _verdict,
     generate_pipeline_trace_md,
 )
 
@@ -55,6 +61,47 @@ class PipelineTraceSummaryTests(unittest.TestCase):
 
         self.assertIn("| datadog | Nested widgets | 4 | 1 | 1 | 1 | 1 | 0 |", trace_doc)
         self.assertIn("**File:** `nested.json` — **Panels:** 4", trace_doc)
+
+    def test_omitted_or_unbound_template_filter_is_not_classified_correct(self):
+        for warning in (
+            "Scope filter with template variable could not be bound exactly",
+            "Datadog $scope template variable was omitted",
+        ):
+            with self.subTest(warning=warning):
+                panel = PanelAudit(
+                    status="warning",
+                    translated_query="FROM metrics-* | STATS value = AVG(cpu)",
+                    warnings=[warning],
+                )
+                self.assertEqual(_verdict(panel), "MINOR_ISSUE")
+
+    def test_partial_source_update_does_not_overwrite_shared_trace(self):
+        audit = self._nested_datadog_audit()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "pipeline-trace.md"
+            output_path.write_text("combined cross-source trace", encoding="utf-8")
+            missing_datadog_template = Path(tmpdir) / "missing-datadog-template.md"
+            with (
+                mock.patch.object(audit_pipeline, "_run_audit", return_value=[audit]),
+                mock.patch.object(audit_pipeline, "DOCS_OUTPUT_PATH", output_path),
+                mock.patch.object(
+                    audit_pipeline,
+                    "DATADOG_TEMPLATE_PATH",
+                    missing_datadog_template,
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["audit_pipeline.py", "--source", "datadog", "--update-docs"],
+                ),
+            ):
+                audit_pipeline.main()
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "combined cross-source trace",
+            )
 
 
 if __name__ == "__main__":

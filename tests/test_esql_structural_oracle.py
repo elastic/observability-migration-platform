@@ -8,7 +8,7 @@ from observability_migration.adapters.source.grafana.esql_structural_oracle impo
 )
 
 
-def test_case_bare_irate_mix_is_error():
+def test_inner_case_value_arg_is_error():
     q = (
         "TS metrics-*\n"
         '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
@@ -16,13 +16,24 @@ def test_case_bare_irate_mix_is_error():
     )
     errs = structural_errors(check_esql_structure(q))
     assert any(f.rule_id == StructuralRuleId.STATS_TS_CASE_VALUE_ARG for f in errs)
+    assert any(f.rule_id == StructuralRuleId.STATS_CASE_BARE_TS_MIX for f in errs)
 
 
-def test_case_true_wrap_is_clean():
+def test_outer_case_bare_sibling_mix_is_error():
     q = (
         "TS metrics-*\n"
         '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
         "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    )
+    errs = structural_errors(check_esql_structure(q))
+    assert any(f.rule_id == StructuralRuleId.STATS_CASE_BARE_TS_MIX for f in errs)
+
+
+def test_outer_case_true_sibling_wrap_is_clean():
+    q = (
+        "TS metrics-*\n"
+        '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
+        "b = SUM(CASE(true, IRATE(other, 1m), NULL)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     assert structural_errors(check_esql_structure(q)) == []
 

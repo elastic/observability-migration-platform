@@ -9,7 +9,7 @@ ES|QL form depends on the target field type of the *base* histogram metric:
 
 - ``exponential_histogram`` / tdigest -> ``PERCENTILE(field, phi*100)``
 - ``histogram``                       -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
-- unknown / schema unavailable        -> not_feasible (field type can't be verified)
+- unknown / schema unavailable        -> assume exponential_histogram + warn
 """
 
 from __future__ import annotations
@@ -202,16 +202,16 @@ class HistogramQuantilePhiRangeTests(unittest.TestCase):
 
 
 class HistogramQuantileUnknownFieldTests(unittest.TestCase):
-    def test_offline_unknown_field_type_is_not_feasible(self):
+    def test_offline_unknown_field_type_assumes_exponential_histogram(self):
         resolver = SchemaResolver(RulePackConfig())  # no field cache -> field type unknown
         result = _translate(
             "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
             resolver,
         )
-        self.assertEqual(result.feasibility, "not_feasible")
-        self.assertFalse(result.esql_query)
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)
         self.assertTrue(
-            any("field type could not be determined" in w for w in result.warnings),
+            any("assumed exponential_histogram" in w for w in result.warnings),
             result.warnings,
         )
 

@@ -29,9 +29,14 @@ _RATE_IRATE_INCREASE = re.compile(r"\b(RATE|IRATE|INCREASE)\(", re.IGNORECASE)
 _ASSIGNMENT_LHS = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$", re.DOTALL)
 _EVAL_SIMPLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 _EVAL_BODY = re.compile(r"^EVAL\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$", re.IGNORECASE | re.DOTALL)
-_TS_INNER_CASE_VALUE = re.compile(
-    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+_ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)"
+_BARE_TS_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
     r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+)
+_TS_INNER_CASE_VALUE = re.compile(
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)"
     r"\(\s*CASE\(",
     re.IGNORECASE,
 )
@@ -100,6 +105,44 @@ def check_esql_structure(
     return findings
 
 
+def _case_expression_spans(text: str) -> list[tuple[int, int]]:
+    """Return inclusive-exclusive spans of top-level ``CASE(...)`` expressions."""
+    spans: list[tuple[int, int]] = []
+    upper = text.upper()
+    i = 0
+    while i < len(text):
+        start = upper.find("CASE(", i)
+        if start < 0:
+            break
+        depth = 0
+        j = start + len("CASE")
+        while j < len(text):
+            ch = text[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    spans.append((start, j + 1))
+                    i = j + 1
+                    break
+            j += 1
+        else:
+            break
+        continue
+    return spans
+
+
+def _has_unprotected_bare_ts_value_arg(assignment: str) -> bool:
+    """True when a bare TS value-arg sits outside any ``CASE(...)`` wrapper."""
+    case_spans = _case_expression_spans(assignment)
+    for match in _BARE_TS_VALUE_ARG.finditer(assignment):
+        if any(start < match.start() < end for start, end in case_spans):
+            continue
+        return True
+    return False
+
+
 def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
     if not assignments:
         return []
@@ -119,6 +162,26 @@ def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
                     "(CASE(cond, IRATE(field, window), NULL))"
                 ),
                 evidence={"assignments": inner_case_assignments},
+            )
+        )
+
+    has_case = any("CASE(" in assignment for assignment in assignments)
+    bare_ts_assignments = [
+        assignment
+        for assignment in assignments
+        if _has_unprotected_bare_ts_value_arg(assignment)
+    ]
+    if has_case and bare_ts_assignments:
+        findings.append(
+            StructuralFinding(
+                rule_id=StructuralRuleId.STATS_CASE_BARE_TS_MIX,
+                severity=StructuralSeverity.error,
+                message=(
+                    "STATS mixes CASE-wrapped and bare time-series value arguments; "
+                    "wrap bare metrics as CASE(true, field, NULL) or "
+                    "CASE(true, IRATE(field, window), NULL)"
+                ),
+                evidence={"bare_assignments": bare_ts_assignments},
             )
         )
 

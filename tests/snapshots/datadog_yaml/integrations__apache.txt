@@ -4,7 +4,7 @@ widgets: 22
 panels: 22
 controls: 1
 filters: 0
-statuses: {'not_feasible': 1, 'ok': 12, 'requires_manual': 1, 'warning': 8}
+statuses: {'ok': 12, 'requires_manual': 1, 'warning': 9}
 - title='Datadog image 0'; kind=markdown
 - title='Datadog note 1'; kind=markdown
 - title='Rate of requests'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
@@ -13,7 +13,7 @@ statuses: {'not_feasible': 1, 'ok': 12, 'requires_manual': 1, 'warning': 8}
 - title='Status of worker threads'; kind=esql; type=line; dimension=time_bucket; metrics=['query0', 'query1', 'query2', 'query3', 'query4', 'query5', 'query6', 'query7', 'query8', 'query9', 'query10']; breakdowns=[]; primary=; metric=
 - title='Datadog note 6'; kind=markdown
 - title='Async connections'; kind=esql; type=line; dimension=time_bucket; metrics=['query0', 'query1', 'query2']; breakdowns=[]; primary=; metric=
-- title='Requests per second per host'; kind=markdown
+- title='Requests per second per host'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['host.name']; primary=; metric=
 - title='Total async connections'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Datadog note 10'; kind=markdown
 - title='Datadog note 11'; kind=markdown

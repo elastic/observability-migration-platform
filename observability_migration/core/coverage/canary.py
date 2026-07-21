@@ -169,3 +169,71 @@ def build_late_bound_grouping_canary(default_grouping: str = "transport") -> dic
         "templating": {"list": [variable]},
         "time": {"from": "now-3h", "to": "now"},
     }
+
+
+LABEL_MATCHER_PARAM_CANARY_UID = "obs-migrate-canary-label-matcher-param"
+LABEL_MATCHER_PARAM_CANARY_TITLE = "obs-migrate canary (label-matcher param)"
+
+# Instance values that exist in seeded telemetry (setup_telemetry_data.py) so the
+# render audit can prove a bound ``?instance`` filter still returns rows.
+_LABEL_MATCHER_PARAM_CHOICES = ("localhost:8888", "remote:9100")
+_LABEL_MATCHER_PARAM_METRIC = "http_requests_total"
+
+
+def build_label_matcher_param_canary(default_instance: str = "localhost:8888") -> dict[str, Any]:
+    """Return a Grafana dashboard exercising ``metric{instance="$instance"}`` → ``?instance``.
+
+    Gap A / issue #132 path: with dashboard templating present, migration emits
+    ES|QL named parameters bound by an ES|QL values control instead of dropping
+    the variable-driven label matcher. ``default_instance`` lets the live render
+    gate upload one dashboard per selectable value without brittle browser
+    control clicking.
+    """
+    if default_instance not in _LABEL_MATCHER_PARAM_CHOICES:
+        raise ValueError(
+            f"default_instance must be one of {_LABEL_MATCHER_PARAM_CHOICES}, "
+            f"got {default_instance!r}"
+        )
+    variant_suffix = "" if default_instance == "localhost:8888" else f"-{default_instance.replace(':', '_')}"
+    title_suffix = "" if default_instance == "localhost:8888" else f": {default_instance}"
+    variable = {
+        "name": "instance",
+        "type": "custom",
+        "label": "Instance",
+        "query": ",".join(_LABEL_MATCHER_PARAM_CHOICES),
+        "current": {"text": default_instance, "value": default_instance},
+        "options": [
+            {
+                "text": choice,
+                "value": choice,
+                "selected": choice == default_instance,
+            }
+            for choice in _LABEL_MATCHER_PARAM_CHOICES
+        ],
+    }
+    panel = {
+        "id": 1,
+        "type": "timeseries",
+        "title": "requests by instance filter",
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        "fieldConfig": {"defaults": {}, "overrides": []},
+        "targets": [
+            {
+                "expr": (
+                    f'sum(rate({_LABEL_MATCHER_PARAM_METRIC}'
+                    f'{{instance="$instance"}}[5m]))'
+                ),
+                "refId": "A",
+                "datasource": {"type": "prometheus"},
+            }
+        ],
+    }
+    return {
+        "uid": f"{LABEL_MATCHER_PARAM_CANARY_UID}{variant_suffix}",
+        "title": f"{LABEL_MATCHER_PARAM_CANARY_TITLE}{title_suffix}",
+        "description": "Label-matcher Grafana $var → ES|QL ?param canary (gap A).",
+        "schemaVersion": 39,
+        "panels": [panel],
+        "templating": {"list": [variable]},
+        "time": {"from": "now-3h", "to": "now"},
+    }

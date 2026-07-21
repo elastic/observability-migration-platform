@@ -1,2 +1,3 @@
-control: type=options field=job multiple=False
-control: type=options field=instance multiple=False
+control: type=esql field=None multiple=False
+control: type=esql field=None multiple=False
+control: type=esql field=None multiple=False

@@ -25,6 +25,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `filelock` | 3.29.0 | MIT | <https://github.com/tox-dev/py-filelock> |
 | `fqdn` | 1.5.1 | Mozilla Public License 2.0 (MPL 2.0) | <https://github.com/ypcrts/fqdn> |
 | `grafana-client` | 5.0.2 | MIT License | <https://github.com/grafana-toolbox/grafana-client> |
+| `greenlet` | 3.5.3 | MIT AND PSF-2.0 | <https://greenlet.readthedocs.io> |
 | `h11` | 0.16.0 | MIT License | <https://github.com/python-hyper/h11> |
 | `hypothesis` | 6.152.1 | MPL-2.0 | <https://hypothesis.works> |
 | `identify` | 2.6.19 | MIT | <https://github.com/pre-commit/identify> |
@@ -49,6 +50,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `pip-licenses` | 5.5.5 | MIT | <https://github.com/raimon49/pip-licenses> |
 | `pip-requirements-parser` | 32.0.1 | MIT | <https://github.com/nexB/pip-requirements-parser> |
 | `platformdirs` | 4.9.6 | MIT | <https://github.com/tox-dev/platformdirs> |
+| `playwright` | 1.61.0 | Apache-2.0 | <https://github.com/Microsoft/playwright-python> |
 | `pluggy` | 1.6.0 | MIT License |  |
 | `pre_commit` | 4.5.1 | MIT | <https://github.com/pre-commit/pre-commit> |
 | `prettytable` | 3.17.0 | BSD-3-Clause | <https://github.com/prettytable/prettytable> |
@@ -56,6 +58,7 @@ it after adding or bumping dependencies in `pyproject.toml` or `uv.lock`.
 | `py-serializable` | 2.1.0 | Apache Software License | <https://github.com/madpah/serializable#readme> |
 | `pydantic` | 2.13.2 | MIT | <https://github.com/pydantic/pydantic> |
 | `pydantic_core` | 2.46.2 | MIT | <https://github.com/pydantic> |
+| `pyee` | 13.0.1 | MIT License | <https://github.com/jfhbrook/pyee> |
 | `Pygments` | 2.20.0 | BSD-2-Clause | <https://pygments.org> |
 | `pyparsing` | 3.3.2 | MIT | <https://github.com/pyparsing/pyparsing/> |
 | `pyproject_hooks` | 1.2.0 | MIT License | <https://github.com/pypa/pyproject-hooks> |

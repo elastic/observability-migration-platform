@@ -73,6 +73,11 @@ all = [
   "obs-migrate[datadog]",
   "obs-migrate[kibana]",
 ]
+# Browser automation for contributor/CI dashboard interaction audits only.
+# Intentionally excluded from the end-user `all` extra above.
+browser = [
+  "playwright>=1.61.0",
+]
 
 [project.scripts]
 obs-migrate = "observability_migration.app.cli:main"

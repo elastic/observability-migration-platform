@@ -28,6 +28,17 @@ python3 -m venv .venv
 .venv/bin/pre-commit install
 ```
 
+Browser binaries are **not** part of the default unit-test setup. Only install
+Chromium when you run live dashboard interaction / Playwright work:
+
+```bash
+make setup-browser          # python -m playwright install chromium
+make test-interactions      # offline interaction-audit unit tests
+```
+
+Live control checks need a local no-SSO stack (9.5+) — see
+`docs/testing.md` and `docs/command-contract.md`.
+
 ## Verification
 
 ```bash
@@ -47,7 +58,8 @@ demand with:
 
 For the full picture of how migration correctness is verified — the layered
 confidence pyramid, every gate (coverage matrices, fidelity ratchets, live
-validation, render audit), and how to extend them — see `docs/testing.md`.
+validation, render audit, interaction audit), and how to extend them — see
+`docs/testing.md`.
 
 ## License Compliance And SBOM
 

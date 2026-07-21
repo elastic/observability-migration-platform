@@ -279,7 +279,10 @@ at migration time.
   identifier binds to the viewer's selection, while the aggregated column keeps
   the **stable alias** `grouping` so the Lens breakdown accessor always resolves
   the same column. The control's `choices` come from the variable's option list
-  and its current value becomes the default.
+  and its current value becomes the default. For **custom** variables, options
+  stay as control choices even when live schema discovery remaps them to a
+  profile path that is not present yet (e.g. `exporter` → missing
+  `labels.exporter`) — that is data readiness, not an empty choice set.
 - **Concrete label alongside the variable → graceful degrade (collision fix).**
   `by (exporter, $grouping)` is **not** turned into a shared field control. One
   Lens XY breakdown accessor cannot safely follow a field control whose choices
@@ -290,7 +293,8 @@ at migration time.
   Kibana if needed.
 - **Not feasible (degrade gracefully).** `without ($var)` (ES|QL grouping is
   positive), multiple variables in one clause (a single XY breakdown cannot host
-  several field controls), an unresolvable/empty choice set, no
+  several field controls), an empty choice set after resolution (e.g. query
+  variables whose options cannot be resolved), no
   `esql_named_param_binding` capability, and query shapes that cannot carry the
   identifier (e.g. two-stage counts, binary expressions) all stay
   `not_feasible`. A validator reverts to `not_feasible` if a deferred `??var`
@@ -303,6 +307,54 @@ at migration time.
 This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
+
+### Chained/Label-Filtered Query Variables And Control Warnings (Issue #269)
+
+Grafana query variables can chain: `label_values(metric{instance="$instance"},
+id)` scopes `$id`'s option list to whichever `$instance` is currently
+selected. Two things follow from Kibana ES|QL controls having no
+cross-control dependency mechanism (a control's populate-query cannot read
+another control's live selection):
+
+- **The chained scope itself degrades, not silently.** The migrated `$id`
+  control still works and still lists real values, but it lists *every* `id`
+  rather than only the ones under the selected `$instance` — the control is
+  broader than the Grafana source, not broken. This degradation is recorded
+  as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
+  $instance in Grafana ... Kibana ES|QL controls cannot express that
+  inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
+  CLI summary, included in the Markdown summary warning worklist, and recorded
+  per-dashboard in the JSON report, migration manifest, and preflight report
+  (`control_warnings`), rather than only being discoverable by reading the
+  emitted ES|QL. Unsupported visible `query_result()` variables, textbox
+  variables, unresolved fields, incompatible field types, and non-aggregatable
+  fields use the same surfaced warning path.
+- **A control whose target field is absent is kept with a data-readiness
+  warning.** When live schema discovery (`--es-url`) positively confirms a
+  variable's resolved field doesn't exist on the target, the control remains
+  in the dashboard so offline and live migrations have the same structure,
+  any panel `?var` binding remains valid, and the dropdown can self-heal once
+  telemetry containing the field arrives. Its option list may be empty until
+  then, so a matching `control_warnings` entry explains the data-readiness
+  gap. Controls have no `PanelResult`-style per-item tracking of their own, so
+  `control_warnings` is dashboard-scoped rather than per-control.
+
+### Variable Label Filters (`metric{label="$var"}` → `?var`)
+
+When a dashboard's templating list defines named variables used in PromQL label
+matchers, dashboard translation enables ES|QL named-parameter binding for that
+pass (unless a live `--es-url` probe already recorded that the cluster cannot
+bind). Matchers become `WHERE field == ?var` / `RLIKE ?var`, and
+`_ensure_param_controls` synthesizes a binding control for every emitted
+parameter (issue #131 / #132).
+
+- Offline single-panel translation without templating still drops `$var`
+  matchers and warns — that path has no controls to bind.
+- A verified-unsupported probe state is never overridden: no unbound `?var` is
+  uploaded.
+
+Exercised by `build_label_matcher_param_canary` (also uploaded by
+`scripts/run_render_audit_local.sh`).
 
 ## Command Coverage
 
@@ -376,7 +428,11 @@ is available at `examples/cue/grafana-rule-pack.cue`.
 
 ## Current Boundaries
 
-- Some PromQL families still degrade to `not_feasible` or manual review, especially subqueries, `topk`, complex quantiles, and multi-branch join/or cases.
+- Some PromQL families still degrade to `not_feasible` or manual review, especially subqueries, `bottomk`/`count_values`, bare classic `_bucket` series without `sum by (le)`, known-wrong histogram field types (for example `aggregate_metric_double`), generic `sum(A/B)` that is not a `_sum`/`_count` pair, `__name__` introspection, and multi-branch join/or cases that cannot fuse.
+- `histogram_quantile` with a standard `sum(... by (le))` shape translates to ES|QL `PERCENTILE()` when the base field is a histogram / exponential_histogram, or when the type is unknown (offline / no field caps): unknown types **assume** `exponential_histogram` and warn so operators can pin the mapping. Prefer ES ≥ 9.5 native `histogram_quantile` when available; the `PERCENTILE` path is approximate (t-digest).
+- Histogram mean idioms `sum(increase|rate(m_sum) / increase|rate(m_count))` approximate as a ratio of aggregates (`sum(m_sum)/sum(m_count)`) with an explicit warning; unrelated per-element ratios stay `not_feasible`.
+- Multi-target XY panels fuse when series share a compatible ES|QL shape. Summary panels (`stat` / `singlestat` / `gauge` / `bargauge` / table) use the same compatibility group and approximate multi-series stats as a summary table when needed. Grouping mismatches where one target's groups are a subset of another's (e.g. QoS `by (qos_class)` + ungrouped total) union the BY fields with a warning. Divergent label filters on otherwise identical measures CASE-inline into the shared `STATS` (including window-less `LAST_OVER_TIME`, used by Express-style status-class counters). `legendFormat` `{{label}}` placeholders on `rate`/`irate`/`increase` (and other TS paths covered by issue #99) are display hints — they become series aliases, not `BY` dimensions — so overlays like Redis in/out rates can share one panel. Targets that remain incompatible (Windows vs Linux metrics, complex `or`/`label_replace` trees) still keep the largest compatible group and warn; Windows-specific drop wording only applies when every dropped target is a `windows_*` metric.
+- Kibana ES|QL visualizations are still effectively single-query / single data layer. Independent Grafana queries that cannot fuse into one wide ES|QL statement cannot be overlaid the way Grafana does; that is a platform limit, not a silent drop.
 - Mixed-datasource and mixed-query-language panels are still weaker than single-source Prometheus or Loki paths.
 - Verification is strongest when live Prometheus/Loki and Elasticsearch are available, but full measured source-vs-target comparison is still partial.
 - Live API extraction is dashboard-first today; broader Grafana asset families are not first-class migration inputs, and the current search request is capped at 500 dashboards.

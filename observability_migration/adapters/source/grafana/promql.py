@@ -2085,6 +2085,56 @@ def _contains_join_frag(frag, _depth=0):
     return False
 
 
+def _histogram_summary_base(metric: str) -> str | None:
+    """Return the base name for a Prometheus histogram ``_sum`` / ``_count`` metric."""
+    name = str(metric or "").strip()
+    if name.endswith("_sum"):
+        return name[: -len("_sum")]
+    if name.endswith("_count"):
+        return name[: -len("_count")]
+    return None
+
+
+def _is_histogram_summary_ratio_pair(left_frag, right_frag) -> bool:
+    """True for ``increase|rate|irate(m_sum) / increase|rate|irate(m_count)``.
+
+    That shape is the Prometheus histogram *mean* idiom (average of per-series
+    ``sum/count``). ``sum(A/B)`` is not equal to ``sum(A)/sum(B)``, but the
+    ratio-of-aggregates form is the ES|QL-expressible approximation used for
+    panels like Prometheus Compaction duration.
+    """
+    if left_frag is None or right_frag is None:
+        return False
+    if left_frag.extra.get("not_feasible_reasons") or right_frag.extra.get("not_feasible_reasons"):
+        return False
+    left_metric = str(left_frag.metric or "")
+    right_metric = str(right_frag.metric or "")
+    if not left_metric.endswith("_sum") or not right_metric.endswith("_count"):
+        return False
+    left_base = _histogram_summary_base(left_metric)
+    right_base = _histogram_summary_base(right_metric)
+    if not left_base or left_base != right_base:
+        return False
+    left_range = str(left_frag.range_func or "").lower()
+    right_range = str(right_frag.range_func or "").lower()
+    if left_range not in {"increase", "rate", "irate"}:
+        return False
+    if left_range != right_range:
+        return False
+    # Both operands should already be range wrappers without their own outer agg
+    # (the outer sum is what we're about to push down).
+    if left_frag.outer_agg or right_frag.outer_agg:
+        return False
+    return True
+
+
+_APPROX_AGG_OVER_SUMMARY_RATIO_WARNING = (
+    "Approximated sum(increase|rate(m_sum)/increase|rate(m_count)) as a ratio of "
+    "aggregates (sum(m_sum)/sum(m_count)); per-series means are not weighted the "
+    "same as Prometheus"
+)
+
+
 def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
     """Push an outer aggregation down to a leaf fragment.
 
@@ -2478,6 +2528,22 @@ def _ast_aggregate_fragment(node, expr):
                         "dropping the joined metric would change numeric values",
                     )
                     return frag
+            # Histogram summary pair: sum(increase(m_sum)/increase(m_count)).
+            # Exact per-element mean cannot be preserved; rewrite as the ratio of
+            # aggregates so Compaction-duration style panels still migrate.
+            if (
+                child.binary_op == "/"
+                and frag.outer_agg == "sum"
+                and _is_histogram_summary_ratio_pair(inner_left, inner_right)
+            ):
+                new_left = _push_outer_agg(inner_left, "sum", frag.group_labels, frag.group_mode)
+                new_right = _push_outer_agg(inner_right, "sum", frag.group_labels, frag.group_mode)
+                if new_left is not None and new_right is not None:
+                    new_binary = _make_binary_fragment(expr, new_left, "/", new_right)
+                    new_binary.group_labels = list(frag.group_labels)
+                    new_binary.group_mode = frag.group_mode
+                    new_binary.extra["approximated_agg_over_summary_ratio"] = True
+                    return new_binary
             # Two true time-series operands — multiplication/division is not
             # linearisable: agg(A op B) ≠ agg(A) op agg(B).
             _append_not_feasible_reason(
@@ -3442,16 +3508,18 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
         # them be. Gauges must actually be able to use TS for TSID grouping.
         return (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
     if frag.family == "range_agg":
-        # Only ``*_over_time`` instant aggregations: they run on the TS source and
-        # produce one value per TSID per bucket with BY TBUCKET alone, so the
-        # spurious outer AVG is avoidable. Counter rates keep their AVG downsample.
-        #
-        # The TSID-split premise only holds when the field is an actual TSDS series
-        # (dimensions present). Gate on ``_gauge_can_use_ts`` exactly like the
-        # ``simple_metric`` branch: ``range_agg_family_rule`` forces ``source=TS``
-        # for any ``*_over_time`` regardless of field typing, so without this guard a
-        # non-TSDS field would have its only series-splitting label dropped and
-        # collapse every series into one line.
+        # ``rate`` / ``irate`` / ``increase`` always emit ``TS`` (counter-typed RATE
+        # path). BY TBUCKET alone already yields one row per TSID per bucket, so
+        # legendFormat-derived labels are redundant — and harmful when authors use
+        # placeholders like ``{{input}}`` / ``{{output}}`` that are not real series
+        # labels (they force AVG(RATE(...)) and break multi-target fusion).
+        if frag.range_func in {"rate", "irate", "increase"}:
+            return True
+        # ``*_over_time`` instant aggregations also run on TS and produce one value
+        # per TSID per bucket with BY TBUCKET alone. Gate on ``_gauge_can_use_ts``:
+        # ``range_agg_family_rule`` forces ``source=TS`` for any ``*_over_time``
+        # regardless of field typing, so without this guard a non-TSDS field would
+        # have its only series-splitting label dropped and collapse every series.
         return frag.range_func in _OVER_TIME_RANGE_FUNCS and _gauge_can_use_ts(
             frag.metric, resolver, rule_pack
         )
@@ -3933,17 +4001,38 @@ def _build_measure_spec(
     )
 
 
+def _union_group_fields(specs):
+    """Preserve first-seen order while collecting the union of group fields."""
+    ordered: list[str] = []
+    for spec in specs:
+        for group_field in spec.group_fields or []:
+            if group_field not in ordered:
+                ordered.append(group_field)
+    return ordered
+
+
+def _group_fields_nested_subsets(specs):
+    """True when every spec's groups are a subset of some single max set.
+
+    Enables broadcasting an ungrouped series into a grouped peer (e.g. QoS
+    ``by (qos_class)`` + total ``sum(...)``) without joining unrelated
+    dimensions (``qos_class`` vs ``instance``).
+    """
+    sets = [frozenset(spec.group_fields or []) for spec in specs]
+    return any(all(s <= candidate for s in sets) for candidate in sets)
+
+
 def _measure_specs_mergeable(specs):
     if not specs or any(spec is None for spec in specs):
         return False
     base = specs[0]
     base_filters = sorted(base.filters)
+    if not _group_fields_nested_subsets(specs):
+        return False
     for spec in specs[1:]:
         if spec.source_type != base.source_type:
             return False
         if spec.time_filter != base.time_filter or spec.bucket_expr != base.bucket_expr:
-            return False
-        if spec.group_fields != base.group_fields:
             return False
         if sorted(spec.filters) != base_filters:
             # Divergent per-target filters must be CASE-wrapped into the
@@ -4012,9 +4101,29 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
         func = nested_ts.group("func")
         field = nested_ts.group("field").strip()
         window = nested_ts.group("window").strip()
-        return f"{agg}(CASE({condition}, {func}({field}, {window}), NULL))"
-    if re.fullmatch(r"LAST_OVER_TIME\(.+\)", inner):
-        return None
+        if func in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
+            # Filtering the counter argument itself makes Elasticsearch 9.5
+            # crash for RATE/IRATE with a grouping Bucket cast. Apply the
+            # per-series filter to the range-function result instead; the
+            # enclosing aggregate still ignores non-matching rows via NULL.
+            return f"{agg}(CASE({condition}, {func}({field}, {window}), NULL))"
+        return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
+    # Window-less ``LAST_OVER_TIME(field)`` (and siblings) are common on the
+    # counter-without-rate summary path. CASE-wrap the field the same way as the
+    # windowed form so multi-target panels with divergent label filters (Express
+    # "Count by class") can fuse via the shared measure pipeline instead of
+    # AND-merging incompatible WHERE clauses.
+    nested_bare = re.fullmatch(
+        r"(?P<func>AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>[^,]+)\)",
+        inner,
+    )
+    if nested_bare:
+        func = nested_bare.group("func")
+        field = nested_bare.group("field").strip()
+        window = str(timeseries_window or "").strip()
+        if window:
+            return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
+        return f"{agg}({func}(CASE({condition}, {field}, NULL)))"
     if inner == "*":
         if agg == "COUNT":
             return f"SUM(CASE({condition}, 1, 0))"
@@ -4051,8 +4160,9 @@ def _build_shared_measure_pipeline(index, specs):
 
     base = specs[0]
     common_filters = _common_filters(specs)
-    group_fields = (["time_bucket"] if base.bucket_expr else []) + base.group_fields
-    by_parts = ([base.bucket_expr] if base.bucket_expr else []) + base.group_fields
+    union_groups = _union_group_fields(specs)
+    group_fields = (["time_bucket"] if base.bucket_expr else []) + union_groups
+    by_parts = ([base.bucket_expr] if base.bucket_expr else []) + union_groups
     stats_terms = []
     timeseries_window = _timeseries_stats_window(specs)
     for spec in specs:
@@ -4118,13 +4228,17 @@ _BARE_TS_VALUE_ARG = re.compile(
 
 # CASE(cond, field, NULL) nested as the *value* arg of a TS range/window func.
 # ``cond`` is typically ``true`` or a parenthesized comparison like
-# ``(mode == "user")``.
+# ``(mode == "user")``. Only RATE/IRATE/INCREASE/DELTA/DERIV are rewritten to
+# outer CASE — OVER_TIME keeps the inner-CASE shape used by the translator.
 _TS_INNER_CASE_VALUE_ARG = re.compile(
-    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
-    r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV)"
     rf"\(\s*CASE\((?P<cond>\([^)]*\)|true|false|[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"
     rf"(?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*NULL\)\s*,\s*(?P<window>[^)]+)\)",
     re.IGNORECASE,
+)
+
+_OUTER_CASE_TS_FUNC = re.compile(
+    r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
 )
 
 
@@ -4132,8 +4246,9 @@ def _rewrite_ts_inner_case_to_outer_case(assignments: list[str]) -> list[str]:
     """Rewrite ``FUNC(CASE(cond, field, NULL), window)`` → ``CASE(cond, FUNC(...), NULL)``.
 
     Inner-CASE value args ClassCast on current Elasticsearch (``ReferenceAttribute``
-    → ``Bucket``). Outer CASE around the time-series call is legal and preserves
-    the filter semantics used for join-ratio / per-operand label filters.
+    → ``Bucket``) for RATE/IRATE/INCREASE. Outer CASE around the time-series call
+    is legal and preserves the filter semantics used for join-ratio / per-operand
+    label filters.
     """
 
     def _repl(match: re.Match[str]) -> str:
@@ -4147,18 +4262,53 @@ def _rewrite_ts_inner_case_to_outer_case(assignments: list[str]) -> list[str]:
 
 
 def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
-    """Normalize fused STATS CASE placement for time-series measures.
+    """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
 
     1. Rewrite illegal ``IRATE(CASE(cond, field, NULL), w)`` shapes to
        ``CASE(cond, IRATE(field, w), NULL)``.
-    2. Bare ``IRATE(field, w)`` siblings may remain bare — they are legal next to
-       outer-CASE measures (unlike the old inner-CASE shape).
+    2. Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
+       ``TS ... | STATS`` measure uses a CASE-shaped time-series aggregate and
+       another uses a bare ``IRATE(other_metric, …)``.
+
+    Two CASE shapes appear in the translator:
+
+    * Inner (``IRATE(CASE(cond, metric, NULL), …)`` / OVER_TIME): wrap bare
+      siblings as ``IRATE(CASE(true, other_metric, NULL), …)``.
+    * Outer (``CASE(cond, IRATE(metric, …), NULL)`` — required so ES 9.5 does
+      not Bucket-cast when filtering the counter argument of RATE/IRATE): wrap
+      bare siblings as ``CASE(true, IRATE(other_metric, …), NULL)`` and leave
+      already-outer-CASE measures alone so we do not nest ``CASE(true, …)``
+      inside an outer filter CASE.
 
     Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
     pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
     """
-    rewritten = _rewrite_ts_inner_case_to_outer_case(assignments)
-    return rewritten
+    assignments = _rewrite_ts_inner_case_to_outer_case(assignments)
+    if not any("CASE(" in assignment for assignment in assignments):
+        return assignments
+
+    if any(_OUTER_CASE_TS_FUNC.search(assignment) for assignment in assignments):
+        def _wrap_outer(assignment: str) -> str:
+            if "CASE(" in assignment:
+                return assignment
+
+            def _repl(match: re.Match[str]) -> str:
+                return (
+                    f"CASE(true, {match.group('func')}({match.group('field')}, "
+                    f"{match.group('window')}), NULL)"
+                )
+
+            return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
+
+        return [_wrap_outer(assignment) for assignment in assignments]
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
+            f"{match.group('window')})"
+        )
+
+    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
 
 
 def _infer_stats_metric_field(expr: str) -> str:
