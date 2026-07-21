@@ -118,7 +118,7 @@ assert. Spec:
 
 | Piece | Module / test | What it proves |
 |---|---|---|
-| Structural oracle | `observability_migration/adapters/source/grafana/esql_structural_oracle.py` | ERROR rules on emitted ES\|QL: `STATS_TS_CASE_VALUE_ARG` (illegal `IRATE(CASE(...))` / other TS funcs with CASE value args), `STATS_BARE_WRAPPED_OVER_TIME_MIX`, `EVAL_UNDEFINED_COLUMN`, `EMPTY_FEASIBLE_QUERY`; WARNING `MIXED_IRATE_AVG_OVER_TIME`. Skips native `PROMQL(...)` passthrough. |
+| Structural oracle | `observability_migration/adapters/source/grafana/esql_structural_oracle.py` (re-exports `core.verification.translation_oracle`) | ERROR rules on emitted ES\|QL: `STATS_TS_CASE_VALUE_ARG` (illegal `IRATE(CASE(...))` / other TS funcs with CASE value args), `STATS_BARE_WRAPPED_OVER_TIME_MIX`, `EVAL_UNDEFINED_COLUMN`, `EMPTY_FEASIBLE_QUERY`; WARNING `MIXED_IRATE_AVG_OVER_TIME`. Skips native `PROMQL(...)` passthrough. |
 | Oracle unit tests | `tests/test_esql_structural_oracle.py` | Each rule has a positive/negative fixture |
 | Emitter path matrix | `observability_migration/adapters/source/grafana/esql_emitters.py`, `tests/test_grafana_esql_emitter_matrix.py` | Every registered fusion path has a minimal fixture + oracle run |
 | Fixture corpus gate | `tests/test_grafana_fixture_structural_gate.py` | All `infra/grafana/dashboards/*.json` leaf panels translate to oracle-clean ES\|QL |
@@ -185,8 +185,20 @@ automation (Tier 4 render-audit stays separate).
 | Native PromQL smoke | `tests/test_grafana_native_promql_smoke_gate.py` | `PROMQL index=` shape + oracle skip |
 | Dashboard surface gate | `tests/test_grafana_dashboard_surface_gate.py` | `node-exporter-full` + `prometheus-all` keep controls/links |
 
-Extracting a shared `translation_oracle` package remains optional follow-on —
-https://github.com/elastic/observability-migration-platform/issues/301.
+### Shared `translation_oracle` package
+
+Canonical STATS/EVAL structural checks live in
+`observability_migration.core.verification.translation_oracle`. Grafana and
+Datadog adapters are thin wrappers (Datadog adds `MISSING_FROM` / empty-feasible).
+Prefer importing the core package for new code; adapter re-exports remain for
+existing harness imports.
+
+| Piece | Module / test | What it proves |
+|---|---|---|
+| Shared oracle | `core/verification/translation_oracle/` | Types + `check_esql_structure` without source coupling |
+| Adapter wiring | `tests/core/verification/test_translation_oracle.py` | Grafana re-exports shared symbols; Datadog does not import Grafana |
+
+Issue tracker: https://github.com/elastic/observability-migration-platform/issues/301.
 
 ---
 

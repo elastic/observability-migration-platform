@@ -215,11 +215,19 @@ Separate oracle from dashboard ES|QL structure:
 - **Out of scope:** browser control-click automation, Elasticsearch-datasource
   infra fixtures, shared `translation_oracle` extract.
 
-## Shared package (later)
+## Shared package
 
-Only after PR1 Datadog harness is green in CI alongside Grafana v1: extract a
-shared `translation_oracle` API so sources plug adapters rather than
-Datadog importing Grafana’s checker. Not part of PR1.
+**Status:** Implemented on the #301 branch.
+
+Canonical module:
+`observability_migration.core.verification.translation_oracle`
+
+- Shared types + `check_esql_structure` (STATS/EVAL rules, PROMQL skip).
+- Grafana adapter re-exports the shared API.
+- Datadog adapter imports shared checks and layers `MISSING_FROM` /
+  empty-feasible for ES|QL-emitting backends — **no Grafana adapter import**.
+- Alert / broader-surface gates import the core package directly.
+- Wiring test: `tests/core/verification/test_translation_oracle.py`.
 
 ## Integration with existing pyramid
 

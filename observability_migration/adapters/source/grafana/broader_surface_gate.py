@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from observability_migration.adapters.source.grafana.esql_structural_oracle import (
+from observability_migration.core.verification.translation_oracle import (
     check_esql_structure,
     structural_errors,
 )

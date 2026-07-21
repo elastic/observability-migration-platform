@@ -1,17 +1,16 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Offline ES|QL structural oracle for Datadog-emitted queries."""
+"""Datadog adapter for the shared translation correctness oracle."""
 
 from __future__ import annotations
 
-import re
-
-from observability_migration.adapters.source.grafana.esql_structural_oracle import (
+from observability_migration.core.verification.translation_oracle import (
     StructuralFinding,
     StructuralRuleId,
     StructuralSeverity,
     check_esql_structure,
+    split_pipeline_stages,
     structural_errors,
 )
 
@@ -43,8 +42,7 @@ def check_datadog_esql_structure(
 
     if text:
         findings.extend(check_esql_structure(text))
-        stages = _split_pipeline_stages(text)
-        has_from = any(stage.upper().startswith("FROM") for stage in stages)
+        has_from = any(stage.upper().startswith("FROM") for stage in split_pipeline_stages(text))
         if not has_from:
             findings.append(
                 StructuralFinding(
@@ -56,19 +54,6 @@ def check_datadog_esql_structure(
             )
 
     return findings
-
-
-def _split_pipeline_stages(query: str) -> list[str]:
-    text = query.strip()
-    if not text:
-        return []
-    parts = re.split(r"\n\s*\|\s*", text)
-    stages: list[str] = []
-    first = parts[0].strip()
-    if first:
-        stages.append(first)
-    stages.extend(part.strip() for part in parts[1:] if part.strip())
-    return stages
 
 
 __all__ = [
