@@ -334,10 +334,16 @@ def _join_is_faithful(frag, resolver, output_group_fields):
     return bool(resolved_enrich) and all(label in out for label in resolved_enrich)
 
 
+# Shared building blocks for every template-variable regex below, so the braced
+# (``${var}``) and bracket (``[[var]]``) syntaxes are defined once and cannot
+# drift out of sync between the base matcher and the glued-prefix guardrail.
+_TV_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_TV_BRACED_FMT = r"(?::[^}]*)?"  # optional ``:format`` modifier inside ``${...}``
+_TV_BRACKET_FMT = r"(?::[^\]]+)?"  # optional ``:format`` modifier inside ``[[...]]``
 _GRAFANA_TEMPLATE_VAR_RE = re.compile(
-    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
-    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
-    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
+    r"\$\{(?P<braced>" + _TV_NAME + r")" + _TV_BRACED_FMT + r"\}"
+    r"|\$(?P<plain>" + _TV_NAME + r")"
+    r"|\[\[(?P<bracket>" + _TV_NAME + r")" + _TV_BRACKET_FMT + r"\]\]"
 )
 _RANK_TEMPLATE_LIMIT_RE = re.compile(
     r"\b(?P<func>topk|bottomk)\s*\(\s*"
@@ -367,12 +373,20 @@ _GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_
 # The ``(?!__)`` guards exclude Grafana built-in macros whose names start with
 # ``__`` (e.g. ``${__range_s}s``) — those are time-range selectors, not a
 # user variable prefixed onto a metric name.
+# ``(?<!\[)`` excludes range/subquery selectors: in ``metric[${step}m]`` the
+# variable is a templated *duration* preceded by ``[`` (never a metric/label
+# name), and the surrounding metric is already concrete — matching it here would
+# blame the concrete metric name for a dynamic-name problem it doesn't have, so
+# any degrade is left to be attributed to its real cause.  The lookahead includes
+# ``:`` so a prefix glued onto a recording-rule name (``${env}:job:rate``) — whose
+# names may lead with ``:`` — is still caught.
 _PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
+    r"(?<!\[)"
     r"(?:"
-    r"\$\{(?!__)[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}"
-    r"|\[\[(?!__)[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\]"
+    r"\$\{(?!__)" + _TV_NAME + _TV_BRACED_FMT + r"\}"
+    r"|\[\[(?!__)" + _TV_NAME + _TV_BRACKET_FMT + r"\]\]"
     r")"
-    r"(?=[A-Za-z_])"
+    r"(?=[A-Za-z_:])"
 )
 _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 

@@ -387,6 +387,33 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("unknown function", esql)
         self.assertNotIn("label_metric", esql)
 
+    def test_templated_range_interval_is_not_blamed_as_dynamic_metric_name(self):
+        # ``[${step}m]`` is a templated *range interval*, not a metric/label
+        # name — the metric ``node_cpu_seconds_total`` is fully concrete. The
+        # prefix-glued guardrail must NOT fire here: matching the interval var
+        # would emit a false "metric or label name is built from a Grafana
+        # template variable ($step)" diagnostic that sends operators after the
+        # wrong problem. Regression guard against the prefix regex matching
+        # template vars inside a ``[...]`` range/subquery selector.
+        result = self.translate(
+            'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)'
+        )
+
+        joined = " ".join(result.warnings).lower()
+        self.assertNotIn("metric or label name is built from", joined)
+        self.assertNotIn("dynamic metric/label name", joined)
+
+    def test_prefix_glued_to_recording_rule_name_is_not_feasible(self):
+        # ``${env}:api:latency`` — a prefix glued onto a colon-led recording-rule
+        # name is still a dynamic metric name and must degrade, even though the
+        # first char after the variable is ``:`` rather than a letter.
+        result = self.translate("sum(${env}:api_request_latency_seconds) by (le)")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings).lower()
+        self.assertIn("template variable", joined)
+        self.assertIn("manual redesign", joined)
+
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
         self.assertFalse(panels.can_use_native_promql(expr))

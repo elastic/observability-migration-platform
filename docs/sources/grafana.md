@@ -323,6 +323,15 @@ Grafana's own built-in macros (`${__range_s}`, `${__rate_interval}`, …) start
 with `__` and are excluded from the prefix-glued check; they are expanded by
 `preprocess_grafana_macros` at priority 10.
 
+The prefix-glued check deliberately ignores **range / subquery selectors**: in
+`metric[${step}m]` the variable is a templated *duration* (preceded by `[`),
+not a metric or label name, and the surrounding metric is concrete. Matching it
+here would emit a misleading "metric or label name is built from a Grafana
+template variable" diagnostic that blames the (concrete) metric name; the
+guardrail stays quiet so any degrade is attributed to its real cause. Only a
+variable glued onto an actual identifier — including a recording-rule name such
+as `${env}:job:rate` — degrades with the dynamic-name warning.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are
