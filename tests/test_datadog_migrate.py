@@ -3656,6 +3656,27 @@ class TestYAMLGeneration(unittest.TestCase):
                 f"section header too tall: {panel.get('title')} {panel['size']}",
             )
 
+    def test_free_board_promotes_section_header_into_next_viz_title(self):
+        header = NormalizedWidget(
+            id="h1",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 40, "height": 8},
+            raw_definition={"type": "note", "content": "Broker"},
+        )
+        chart = self._make_metric_widget(
+            "c1", "Enqueue", "timeseries", {"x": 0, "y": 10, "width": 40, "height": 14}
+        )
+        other = self._make_metric_widget(
+            "c2", "Other", "timeseries", {"x": 80, "y": 10, "width": 40, "height": 14}
+        )
+        dash = self._render_dashboard([header, chart, other])
+        titles = [p.get("title") for p in dash["panels"]]
+        self.assertNotIn("Broker", titles)
+        enqueue = next(p for p in dash["panels"] if "Enqueue" in (p.get("title") or ""))
+        self.assertIn("Broker", enqueue["title"])
+        self.assertEqual(len(dash["panels"]), 2)
+
     def test_free_board_header_gutters_join_next_content_column(self):
         # Topics labels at x=100 with tables at x=113 must not open a 4-col
         # empty gutter — headers ride on the tables column instead.

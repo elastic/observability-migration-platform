@@ -109,6 +109,9 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
     "_free_anchor_y",
     "_free_band_left",
     "_free_band_right",
+    "_chrome_omit",
+    "_chrome_reason",
+    "_chrome_reasons",
 )
 
 
@@ -152,6 +155,18 @@ def _build_dashboard_yaml_doc(
     non_section = [p for p in panels if "section" not in p]
     _apply_row_layout(non_section)
 
+    chrome_notes: list[str] = []
+    kept: list[dict[str, Any]] = []
+    for p in panels:
+        if p.get("_chrome_omit"):
+            chrome_notes.append(
+                str(p.get("_chrome_reason") or "omitted free-board chrome")
+            )
+            continue
+        kept.append(p)
+    panels[:] = kept
+    non_section = [p for p in panels if "section" not in p]
+
     for p in panels:
         if "section" in p:
             p.pop("size", None)
@@ -160,11 +175,15 @@ def _build_dashboard_yaml_doc(
     _resolve_overlaps(non_section)
     _strip_datadog_private_keys(panels)
 
+    description = dashboard.description or f"Migrated from Datadog: {dashboard.title}"
+    if chrome_notes:
+        description = description + "\n\nLayout chrome: " + "; ".join(chrome_notes)
+
     doc: dict[str, Any] = {
         "dashboards": [
             {
                 "name": dashboard.title,
-                "description": dashboard.description or f"Migrated from Datadog: {dashboard.title}",
+                "description": description,
                 "minimum_kibana_version": KIBANA_MIN_VERSION,
                 "settings": {"sync": {"cursor": True}},
                 "panels": panels,
@@ -1289,7 +1308,12 @@ def _apply_free_board_layout(panels: list[dict[str, Any]]) -> None:
     share of 48 cols (chart/metric floors), never merge/reorder bands. Dense
     KPI siblings inside one band share that band via proportional sub-slots.
     """
-    leaf = [p for p in panels if "section" not in p]
+    leaf_all = [p for p in panels if "section" not in p]
+    if not leaf_all:
+        return
+
+    _apply_free_board_chrome_polish(leaf_all)
+    leaf = [p for p in leaf_all if not p.get("_chrome_omit")]
     if not leaf:
         return
 
@@ -1425,6 +1449,99 @@ def _is_free_board_section_header_panel(panel: dict[str, Any]) -> bool:
         _kibana_panel_type(panel) == "markdown"
         and _markdown_role(panel) == "header"
     )
+
+
+def _free_board_keepable_viz(panel: dict[str, Any]) -> bool:
+    if panel.get("_chrome_omit"):
+        return False
+    if _kibana_panel_type(panel) == "markdown":
+        role = _markdown_role(panel)
+        return role == "text"  # prose notes only
+    return _panel_family(panel) in {"chart", "metric", "table"}
+
+
+def _classify_free_board_chrome(panel: dict[str, Any]) -> str:
+    if _kibana_panel_type(panel) != "markdown":
+        return "viz"
+    role = _markdown_role(panel)
+    if role == "placeholder":
+        return "placeholder"
+    if role == "header" or _is_free_board_section_header_panel(panel):
+        return "section_header"
+    content = ""
+    md = panel.get("markdown")
+    if isinstance(md, dict):
+        content = str(md.get("content") or "").strip()
+    if not content:
+        return "decorative"
+    # Query dumps / rebuild stubs already rare in note bodies; treat very long
+    # single-line dumps as decorative if needed in Task 2.
+    return "prose"
+
+
+def _promote_or_omit_section_headers(
+    panels: list[dict[str, Any]], band_starts: list[int], board_w: int, reasons: list[str]
+) -> None:
+    """Promote short headers into the next keepable viz in the same band."""
+    for panel in list(panels):
+        if _classify_free_board_chrome(panel) != "section_header":
+            continue
+        dd_x = int(panel.get("_dd_x", 0) or 0)
+        dd_y = int(panel.get("_dd_y", 0) or 0)
+        # Gutter labels (Topics at x=100 beside tables at x=113) are dropped from
+        # band_starts and reattached during placement — promote only headers that
+        # sit on a real content column origin (Broker above charts at x=0).
+        if dd_x not in band_starts:
+            continue
+        left_i, _ = _free_board_covered_band_range(
+            band_starts, board_w, dd_x, int(panel.get("_dd_w", 1) or 1)
+        )
+        b0, b1 = _free_board_band_dd_range(band_starts, board_w, left_i)
+        label = str(panel.get("title") or "").strip()
+        if not label:
+            md = panel.get("markdown") or {}
+            label = str(md.get("content") or "").strip().splitlines()[0]
+            label = re.sub(r"^#+\s*", "", label).strip()
+        target = None
+        for cand in panels:
+            if cand is panel or cand.get("_chrome_omit"):
+                continue
+            if not _free_board_keepable_viz(cand) and _kibana_panel_type(cand) != "markdown":
+                pass
+            if not (
+                _panel_family(cand) in {"chart", "metric", "table"}
+                and not cand.get("_chrome_omit")
+            ):
+                continue
+            cx = int(cand.get("_dd_x", 0) or 0)
+            cy = int(cand.get("_dd_y", 0) or 0)
+            if not (b0 <= cx < b1):
+                continue
+            if cy < dd_y:
+                continue
+            if target is None or cy < int(target.get("_dd_y", 0) or 0):
+                target = cand
+        if target is None:
+            # Spec: keep compact header markdown (do not drop the label).
+            continue
+        old = str(target.get("title") or "").strip()
+        target["title"] = f"{label} — {old}" if old and label not in old else (label or old)
+        target.pop("hide_title", None)
+        panel["_chrome_omit"] = True
+        reason = f"promoted free-board section header {label!r} into panel title"
+        panel["_chrome_reason"] = reason
+        reasons.append(reason)
+
+
+def _apply_free_board_chrome_polish(panels: list[dict[str, Any]]) -> list[str]:
+    leaf = [p for p in panels if "section" not in p]
+    if not leaf:
+        return []
+    reasons: list[str] = []
+    board_w = max(_board_max_extent(leaf), 1)
+    band_starts = _cluster_free_board_band_starts(leaf)
+    _promote_or_omit_section_headers(leaf, band_starts, board_w, reasons)
+    return reasons
 
 
 def _free_board_family_min_width(panel: dict[str, Any]) -> int:
