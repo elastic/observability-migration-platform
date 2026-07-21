@@ -87,8 +87,10 @@ DATADOG_SUPPORTED_WIDGET_TYPES: set[str] = {
     "iframe",
     "group",
     "powerpack",
-    # Status widgets — emitted as informative markdown placeholders (Elastic
-    # uses Synthetics / Alerts instead). No query, so matrix-exempt.
+    # Status / topology widgets — emitted as informative markdown placeholders
+    # (Elastic uses Synthetics / Alerts / Infrastructure inventory instead).
+    # No query translation, so matrix-exempt.
     "check_status",
     "manage_status",
+    "hostmap",
 }

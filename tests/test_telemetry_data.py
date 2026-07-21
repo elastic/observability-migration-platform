@@ -10,6 +10,7 @@ from pathlib import Path
 
 from observability_migration.core.telemetry_contract import build_telemetry_contract
 from observability_migration.core.telemetry_data import (
+    SEED_SERIES_DIMENSION,
     _contract_index_patterns,
     _expand_patterns,
     _value_profile,
@@ -37,17 +38,19 @@ class RoutingPathGapTests(unittest.TestCase):
 
     def test_gap_lists_dimensions_missing_from_existing_stream(self):
         gap = routing_path_gap("metrics-*", self._STREAM, existing_routing_path=["instance", "le"])
-        self.assertEqual(gap, ["method"])
+        self.assertEqual(gap, [SEED_SERIES_DIMENSION])
 
     def test_no_gap_when_existing_stream_covers_contract(self):
         gap = routing_path_gap(
-            "metrics-*", self._STREAM, existing_routing_path=["instance", "method", "le"]
+            "metrics-*",
+            self._STREAM,
+            existing_routing_path=[SEED_SERIES_DIMENSION, "instance", "method", "le"],
         )
         self.assertEqual(gap, [])
 
     def test_empty_existing_routing_path_is_all_dimensions(self):
         gap = routing_path_gap("metrics-*", self._STREAM, existing_routing_path=None)
-        self.assertEqual(sorted(gap), ["instance", "method"])
+        self.assertEqual(sorted(gap), [SEED_SERIES_DIMENSION])
 
     def test_non_metric_stream_has_no_routing_gap(self):
         logs = {"fields": {"message": {"role": "metric"}, "level": {"role": "dimension"}}}
@@ -128,6 +131,14 @@ class GaugeMagnitudeTests(unittest.TestCase):
         expected = round(base + 0 * 3 + 25 * _diurnal(hour) + first_draw, 4)
         self.assertEqual(got, expected)
 
+    def test_document_timestamps_pad_past_now(self):
+        from observability_migration.core.telemetry_data import _document_timestamps
+
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        stamps = _document_timestamps(now, data_hours=1, interval_sec=60)
+        self.assertGreater(stamps[-1], now)
+        self.assertGreaterEqual((stamps[-1] - now).total_seconds(), 15 * 60)
+
 
 class SiblingInvariantTests(unittest.TestCase):
     def _docs(self, fields):
@@ -198,6 +209,151 @@ class ControlOnlyDimensionSeedingTests(unittest.TestCase):
         docs = [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
         seeded = {d.get("nodename") for d in docs if d.get("nodename")}
         self.assertTrue(seeded, "nodename was never seeded with a value")
+
+    def test_control_fields_seeded_on_every_metric_family(self):
+        # Global Kibana options-list filters require every metric doc to carry
+        # control dimensions — otherwise selecting host-1 empties panels whose
+        # family never received host.name.
+        stream = {
+            "fields": {
+                "redis_hits": {"role": "metric", "metric_kind": "gauge"},
+                "redis_latency": {"role": "metric", "metric_kind": "gauge"},
+                "host.name": {"role": "dimension", "type_family": "keyword"},
+                "key": {"role": "dimension", "type_family": "keyword"},
+            },
+            "control_fields": ["host.name", "key"],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "hit_rate",
+                    "index": "metrics-*",
+                    "metrics": ["redis_hits"],
+                    "dimensions": [],
+                    "control_fields": ["host.name", "key"],
+                    "group_fields": [],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+                {
+                    "source": "latency_by_host",
+                    "index": "metrics-*",
+                    "metrics": ["redis_latency"],
+                    "dimensions": ["host.name"],
+                    "control_fields": ["host.name"],
+                    "group_fields": ["host.name"],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+            ],
+        }
+        docs = [
+            d
+            for _, d in generate_documents(
+                {"streams": {"metrics-*": stream}},
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        ]
+        hit_docs = [d for d in docs if "redis_hits" in d]
+        self.assertTrue(hit_docs)
+        self.assertTrue(all(d.get("host.name") for d in hit_docs))
+        # Bare ``key`` is rewritten to ``labels.key`` (Kibana Options List safe).
+        self.assertTrue(all(d.get("labels.key") for d in hit_docs))
+        self.assertFalse(any(d.get("key") for d in hit_docs))
+
+    def test_bare_key_dimension_canonicalized_for_kibana_controls(self):
+        stream = {
+            "fields": {
+                "redis_key_length": {"role": "metric", "metric_kind": "gauge"},
+                "key": {"role": "dimension", "type_family": "keyword"},
+            },
+            "control_fields": ["key"],
+            "group_fields": ["key"],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "redis_keys",
+                    "index": "metrics-*",
+                    "metrics": ["redis_key_length"],
+                    "dimensions": ["key"],
+                    "control_fields": ["key"],
+                    "group_fields": ["key"],
+                    "required_values": {},
+                    "required_patterns": {},
+                }
+            ],
+        }
+        docs = [
+            d
+            for _, d in generate_documents(
+                {"streams": {"metrics-*": stream}},
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        ]
+        self.assertTrue(docs)
+        for doc in docs:
+            if "redis_key_length" in doc:
+                self.assertIn("labels.key", doc)
+                self.assertNotIn("key", doc)
+
+    def test_host_and_host_name_conflict_canonicalized(self):
+        stream = {
+            "fields": {
+                "envoy_cx": {"role": "metric", "metric_kind": "gauge"},
+                "pg_rows": {"role": "metric", "metric_kind": "gauge"},
+                "host": {"role": "dimension", "type_family": "keyword"},
+                "host.name": {"role": "dimension", "type_family": "keyword"},
+            },
+            "control_fields": [],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "envoy",
+                    "index": "metrics-*",
+                    "metrics": ["envoy_cx"],
+                    "dimensions": ["host"],
+                    "control_fields": [],
+                    "group_fields": ["host"],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+                {
+                    "source": "postgres",
+                    "index": "metrics-*",
+                    "metrics": ["pg_rows"],
+                    "dimensions": ["host.name"],
+                    "control_fields": [],
+                    "group_fields": ["host.name"],
+                    "required_values": {},
+                    "required_patterns": {},
+                },
+            ],
+        }
+        docs = [
+            d
+            for _, d in generate_documents(
+                {"streams": {"metrics-*": stream}},
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+            )
+        ]
+        self.assertTrue(docs)
+        self.assertFalse(any("host" in d and not isinstance(d.get("host"), dict) for d in docs
+                             if "host" in d and "host.name" not in d))
+        # Bare host must not appear as a sibling keyword alongside host.name.
+        for doc in docs:
+            self.assertNotIn("host", doc)
+            if "envoy_cx" in doc or "pg_rows" in doc:
+                self.assertIn("host.name", doc)
 
 
 class DimensionlessMetricSeedingTests(unittest.TestCase):
@@ -370,9 +526,16 @@ class TelemetryDataTests(unittest.TestCase):
         template = plan_index_template("metrics-*", stream)
         props = template["template"]["mappings"]["properties"]
 
-        self.assertTrue(props["service.name"]["time_series_dimension"])
-        self.assertTrue(props["deployment.environment"]["time_series_dimension"])
-        self.assertTrue(props["http.route"]["time_series_dimension"])
+        # Label fields stay plain keywords so Options List controls resolve;
+        # TSDB identity is the synthetic seed-series dimension.
+        self.assertNotIn("time_series_dimension", props["service.name"])
+        self.assertNotIn("time_series_dimension", props["deployment.environment"])
+        self.assertNotIn("time_series_dimension", props["http.route"])
+        self.assertTrue(props[SEED_SERIES_DIMENSION]["time_series_dimension"])
+        self.assertEqual(
+            template["template"]["settings"]["index"]["routing_path"],
+            [SEED_SERIES_DIMENSION],
+        )
 
     def test_histogram_bucket_counter_is_cumulative_across_le(self):
         # A Prometheus cumulative histogram requires bucket(le=v) to be
@@ -499,10 +662,12 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertEqual(props["data_stream.type"]["value"], "metrics")
         self.assertIn("mode", template["template"]["settings"]["index"])
         self.assertNotIn("message", props)
-        self.assertTrue(props["host.name"]["time_series_dimension"])
+        self.assertNotIn("time_series_dimension", props["host.name"])
+        self.assertTrue(props[SEED_SERIES_DIMENSION]["time_series_dimension"])
         self.assertTrue(metric_docs)
         self.assertIsInstance(metric_docs[0]["system_cpu_user"], float)
         self.assertIsInstance(metric_docs[0]["system_net_bytes_rcvd"], float)
+        self.assertIn(SEED_SERIES_DIMENSION, metric_docs[0])
         self.assertNotIn("message", metric_docs[0])
 
     def test_generate_documents_covers_required_values_beyond_max_combinations(self):
@@ -623,11 +788,12 @@ class TelemetryDataTests(unittest.TestCase):
         self.assertEqual(template["priority"], 1000)
         self.assertEqual(props["http_requests_total"]["type"], "double")
         self.assertEqual(props["http_requests_total"]["time_series_metric"], "counter")
-        self.assertTrue(props["service.name"]["time_series_dimension"])
-        self.assertTrue(props["http.response.status_code"]["time_series_dimension"])
+        self.assertNotIn("time_series_dimension", props["service.name"])
+        self.assertNotIn("time_series_dimension", props["http.response.status_code"])
+        self.assertTrue(props[SEED_SERIES_DIMENSION]["time_series_dimension"])
         self.assertEqual(
             template["template"]["settings"]["index"]["routing_path"],
-            ["http.response.status_code", "service.name"],
+            [SEED_SERIES_DIMENSION],
         )
 
     def test_plan_index_template_tags_all_metrics_with_tsdb_type(self):
@@ -1198,10 +1364,11 @@ class KeywordMultifieldMappingTests(unittest.TestCase):
 
         env = props["deployment.environment"]
         self.assertEqual(env["type"], "keyword")
-        self.assertTrue(env.get("time_series_dimension"))
+        self.assertNotIn("time_series_dimension", env)
         self.assertEqual(env["fields"]["keyword"]["type"], "keyword")
         # A dimension without the flag gets no sub-field.
         self.assertNotIn("fields", props["host.name"])
+        self.assertTrue(props[SEED_SERIES_DIMENSION]["time_series_dimension"])
 
 
 class IngestAccountingTests(unittest.TestCase):

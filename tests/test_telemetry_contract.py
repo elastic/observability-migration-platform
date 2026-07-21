@@ -323,6 +323,45 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertEqual(logs["required_values"]["service.name"], ["redis"])
         self.assertEqual(logs["required_values"]["log.level"], ["error"])
 
+    def test_contract_extracts_keep_fields_without_where_filter(self):
+        """KEEP log.level must become a dimension even without WHERE log.level=…"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "logs.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Logs",
+                                "panels": [
+                                    {
+                                        "title": "All Logs",
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
+                                                "| SORT @timestamp DESC\n"
+                                                "| KEEP @timestamp, message, log.level, service.name, host.name\n"
+                                                "| LIMIT 100"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            contract = build_telemetry_contract(artifact_dir)
+
+        logs = contract["streams"]["logs-*"]
+        self.assertEqual(logs["fields"]["log.level"]["role"], "dimension")
+        self.assertEqual(logs["fields"]["service.name"]["role"], "dimension")
+        self.assertEqual(logs["fields"]["host.name"]["role"], "dimension")
+
     def test_contract_finds_parent_verification_packets_when_given_yaml_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_dir = Path(tmpdir) / "dashboards" / "yaml"

@@ -1093,6 +1093,14 @@ def _extract_dimensions(query: str) -> set[str]:
     for field_name in _extract_group_fields(query):
         _add_dimension(dimensions, field_name, metrics)
 
+    for field_name in _extract_keep_fields(query):
+        # KEEP projects source columns into the result (e.g. log.level on a
+        # log table). Without a WHERE/BY on those columns they would otherwise
+        # never enter the contract, so the seeder omits them and Kibana fails
+        # with "Unknown column [log.level]".
+        if field_name not in derived_aliases:
+            _add_dimension(dimensions, field_name, metrics)
+
     for match in where_pattern.finditer(query):
         field_name = _normalize_field(match.group(1))
         if field_name not in derived_aliases:
@@ -1149,6 +1157,33 @@ def _extract_group_fields(query: str) -> list[str]:
             if "(" in field_name:
                 continue
             normalized = _normalize_field(field_name)
+            if not _should_skip_field(normalized):
+                _append_unique(fields, normalized)
+    return fields
+
+
+def _extract_keep_fields(query: str) -> list[str]:
+    """Return source field names projected by ES|QL ``KEEP`` clauses.
+
+    Only simple identifiers are kept (not expressions). ``KEEP a AS b`` contributes
+    ``a`` when ``a`` is a plain field — the alias is a derived name and is ignored
+    here so the seeder materializes the physical column the panel reads.
+    """
+    fields: list[str] = []
+    if query.startswith(("PROMQL ", "LENS ", "CONTROL ", "FILTER ")):
+        return fields
+    keep_pattern = re.compile(r"\bKEEP\b\s+(.+?)(?=\n\s*\||\|$|$)", re.IGNORECASE | re.DOTALL)
+    for match in keep_pattern.finditer(query):
+        for part in _split_top_level(match.group(1)):
+            text = part.strip()
+            if not text or "(" in text:
+                continue
+            as_match = re.search(r"(?i)\s+AS\s+", text)
+            if as_match:
+                text = text[: as_match.start()].strip()
+            if not text or "(" in text or "=" in text:
+                continue
+            normalized = _normalize_field(text)
             if not _should_skip_field(normalized):
                 _append_unique(fields, normalized)
     return fields

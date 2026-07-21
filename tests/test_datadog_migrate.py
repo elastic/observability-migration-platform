@@ -19,6 +19,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -2634,27 +2635,133 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["type"], "number")
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["suffix"], "%")
 
-    def test_display_enrichment_applies_precision_to_metric_format(self):
-        query = "avg:system.cpu.user{*}"
+    def test_timeseries_grouped_query_excludes_null_breakdown_values(self):
+        # Null tag values become a literal "(null)" legend series in Kibana —
+        # Datadog typically omits them; filter them out of the ES|QL WHERE.
+        query = "avg:nginx_ingress.nginx.process.count{*} by {controller_pod}"
         mq = parse_metric_query(query)
-        wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Avg nginx process by controller pod",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+            layout={"x": 0, "y": 0, "width": 6, "height": 4},
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("IS NOT NULL", result.esql_query)
+        # Breakdown field (mapped) must be present in the null guard.
+        self.assertRegex(result.esql_query, r"controller_pod.*IS NOT NULL|IS NOT NULL.*controller_pod")
+
+    def test_multi_series_count_metrics_get_distinct_legend_labels(self):
+        # Leaf token ".count" alone becomes "Count" for every series — Lens then
+        # shows "Count" / "Count [1]". Keep enough of the metric path for unique labels.
+        q0 = "sum:haproxy.frontend.bytes.out.count{*}.as_count()"
+        q1 = "sum:haproxy.frontend.bytes.in.count{*}.as_count()"
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Frontend Network Traffic",
+            display_type="bars",
+            queries=[
+                WidgetQuery(
+                    name="query0",
+                    data_source="metrics",
+                    raw_query=q0,
+                    metric_query=parse_metric_query(q0),
+                    query_type="metric",
+                ),
+                WidgetQuery(
+                    name="query1",
+                    data_source="metrics",
+                    raw_query=q1,
+                    metric_query=parse_metric_query(q1),
+                    query_type="metric",
+                ),
+            ],
+            layout={"x": 0, "y": 0, "width": 6, "height": 3},
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        generate_dashboard_yaml(
+            NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result]
+        )
+        labels = [m["label"] for m in result.yaml_panel["esql"]["metrics"]]
+        self.assertEqual(len(set(labels)), 2, labels)
+        self.assertNotIn("Count", labels)
+        self.assertEqual(result.yaml_panel["esql"]["type"], "bar")
+
+    def test_duplicate_pretty_metric_labels_get_leaf_suffix(self):
+        # Same parent path with .sum / .count collapses to one pretty name;
+        # Lens then shows "Name" / "Name [1]". Disambiguate with the leaf.
+        q0 = "avg:istio.pilot.proxy_queue_time.sum{*}"
+        q1 = "avg:istio.pilot.proxy_queue_time.count{*}"
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Average proxy queue duration",
+            queries=[
+                WidgetQuery(
+                    name="query0",
+                    data_source="metrics",
+                    raw_query=q0,
+                    metric_query=parse_metric_query(q0),
+                    query_type="metric",
+                ),
+                WidgetQuery(
+                    name="query1",
+                    data_source="metrics",
+                    raw_query=q1,
+                    metric_query=parse_metric_query(q1),
+                    query_type="metric",
+                ),
+            ],
+            layout={"x": 0, "y": 0, "width": 6, "height": 3},
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        generate_dashboard_yaml(
+            NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result]
+        )
+        labels = [m["label"] for m in result.yaml_panel["esql"]["metrics"]]
+        self.assertEqual(len(set(labels)), 2, labels)
+        self.assertTrue(any("sum" in lab.lower() for lab in labels), labels)
+        self.assertTrue(any("count" in lab.lower() for lab in labels), labels)
+        self.assertFalse(any(lab.endswith("[1]") for lab in labels), labels)
+
+    def test_metric_panel_defaults_to_compact_zero_decimals_for_counts(self):
+        query = "sum:nginx_ingress.nginx.connections.current{*}"
+        mq = parse_metric_query(query)
         widget = NormalizedWidget(
             id="1",
             widget_type="query_value",
-            title="CPU",
-            queries=[wq],
-            custom_unit="percent",
-            precision=3,
+            title="Current connections",
+            # Datadog often sets precision=2 on integer KPIs; Kibana should still
+            # show whole numbers for count-like tiles.
+            precision=2,
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
             layout={"x": 0, "y": 0, "width": 4, "height": 2},
         )
-        plan = plan_widget(widget)
-        plan.backend = "esql"
-        result = translate_widget(widget, plan, OTEL_PROFILE)
-        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
-
-        generate_dashboard_yaml(dash, [result])
-
-        self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["decimals"], 3)
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        generate_dashboard_yaml(
+            NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result]
+        )
+        fmt = result.yaml_panel["esql"]["primary"]["format"]
+        self.assertEqual(fmt.get("decimals"), 0)
+        self.assertTrue(fmt.get("compact"))
 
     def test_query_value_conditional_format_emits_native_dynamic_color(self):
         # The YAML schema's ``primary_metric`` color is ``MetricChartColor``
@@ -2923,6 +3030,47 @@ class TestYAMLGeneration(unittest.TestCase):
             panel_title,
             "primary.label must not duplicate the panel title (metric-redundant-label)",
         )
+        self.assertNotEqual(
+            primary.get("label"),
+            "value",
+            "omitting primary.label makes Lens show the field name 'value'",
+        )
+
+    def test_metric_panel_blank_label_uses_nbsp_when_title_would_duplicate(self):
+        # When the only available label equals the panel title, emit NBSP so
+        # Lens keeps customLabel set ("" falls back to the field name "value").
+        query = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(query)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="system.cpu.user",  # matches pretty metric leaf-ish path via title fallback
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        # Force the duplicate-title path: label derived from title.
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        generate_dashboard_yaml(
+            NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result]
+        )
+        primary = result.yaml_panel["esql"]["primary"]
+        # Either a distinct meaningful label, or NBSP — never "" / "value" / title.
+        label = primary.get("label")
+        self.assertNotEqual(label, "")
+        self.assertNotEqual(label, "value")
+        self.assertNotEqual(label, widget.title)
+        if label == "\u00a0" or (label and label != widget.title):
+            pass
+        else:
+            self.fail(f"unexpected primary label {label!r}")
 
     def test_metric_panel_formula_alias_label_preserved(self):
         # When a formula has an explicit alias, that alias IS meaningful and must
@@ -3164,10 +3312,396 @@ class TestYAMLGeneration(unittest.TestCase):
         intro, first, second = dash["panels"]
         self.assertEqual(intro["markdown"]["content"], "Intro")
         self.assertEqual(intro["size"]["w"], 48)
-        self.assertEqual(first["position"]["y"], 6)
-        self.assertEqual(second["position"]["y"], 6)
+        # Short note body uses a compact height; analytics sit on the next row.
+        self.assertEqual(first["position"]["y"], intro["size"]["h"])
+        self.assertEqual(second["position"]["y"], intro["size"]["h"])
         self.assertEqual(first["size"]["w"], 24)
         self.assertEqual(second["size"]["w"], 24)
+
+    def test_interleaved_note_stays_beside_charts(self):
+        # Datadog Redis-style row: chart | note | chart — do not yank the note
+        # into a full-width intro stripe.
+        chart_a = self._make_metric_widget(
+            "1", "Connected clients", "timeseries", {"x": 0, "y": 0, "width": 6, "height": 2}
+        )
+        note = NormalizedWidget(
+            id="n1",
+            widget_type="note",
+            title="",
+            layout={"x": 6, "y": 0, "width": 3, "height": 2},
+            raw_definition={"type": "note", "content": "Redis has 10,000 client connections available by default."},
+        )
+        chart_b = self._make_metric_widget(
+            "2", "Blocked clients", "timeseries", {"x": 9, "y": 0, "width": 3, "height": 2}
+        )
+        dash = self._render_dashboard([chart_a, note, chart_b])
+        panels = dash["panels"]
+        self.assertEqual(len(panels), 3)
+        ys = {p["position"]["y"] for p in panels}
+        self.assertEqual(len(ys), 1, "note and charts must share one row")
+        widths = [p["size"]["w"] for p in panels]
+        self.assertEqual(sum(widths), 48)
+        self.assertLess(panels[1]["size"]["w"], 48, "note must not become full-width")
+
+    def test_wide_free_board_keeps_global_column_scale(self):
+        # Apache-style free canvas (≫12 units wide): panels on different source
+        # rows that share an x column must keep aligned x after migration — not
+        # each row independently stretched to 48.
+        widgets = [
+            self._make_metric_widget("1", "Left top", "timeseries", {"x": 0, "y": 0, "width": 40, "height": 10}),
+            self._make_metric_widget("2", "Right top", "timeseries", {"x": 80, "y": 0, "width": 40, "height": 10}),
+            self._make_metric_widget("3", "Left bottom", "timeseries", {"x": 0, "y": 20, "width": 40, "height": 10}),
+            self._make_metric_widget("4", "Right bottom", "timeseries", {"x": 80, "y": 20, "width": 40, "height": 10}),
+        ]
+        dash = self._render_dashboard(widgets)
+        panels = sorted(dash["panels"], key=lambda p: (p["position"]["y"], p["position"]["x"]))
+        self.assertEqual(len(panels), 4)
+        left_top, right_top, left_bot, right_bot = panels
+        self.assertEqual(left_top["position"]["x"], left_bot["position"]["x"])
+        self.assertEqual(right_top["position"]["x"], right_bot["position"]["x"])
+        # Column-band layout fills the 48-col grid across preserved L→R bands.
+        self.assertEqual(left_top["size"]["w"] + right_top["size"]["w"], 48)
+        self.assertGreater(right_top["position"]["x"], left_top["position"]["x"])
+        self.assertGreaterEqual(left_top["size"]["w"], 8)
+        self.assertGreaterEqual(right_top["size"]["w"], 8)
+        self.assertEqual(left_top["position"]["y"], right_top["position"]["y"])
+        self.assertEqual(left_bot["position"]["y"], right_bot["position"]["y"])
+        self.assertGreater(left_bot["position"]["y"], left_top["position"]["y"])
+
+    def test_haproxy_style_free_board_keeps_dense_columns(self):
+        # HAProxy Overview: dense free canvas with header KPIs, mid charts, and
+        # a tall right-hand log stream. Min-width inflation + pairwise overlap
+        # push used to shove KPIs to the bottom-right and break column x.
+        widgets = [
+            self._make_metric_widget("kpi_l", "Instances", "query_value", {"x": 25, "y": 7, "width": 16, "height": 10}),
+            self._make_metric_widget("kpi_r", "Memory", "query_value", {"x": 43, "y": 7, "width": 16, "height": 10}),
+            self._make_metric_widget("front_a", "Frontend A", "timeseries", {"x": 61, "y": 22, "width": 34, "height": 14}),
+            self._make_metric_widget("front_b", "Frontend B", "timeseries", {"x": 61, "y": 37, "width": 34, "height": 14}),
+            self._make_metric_widget("back_a", "Backend A", "timeseries", {"x": 97, "y": 18, "width": 34, "height": 14}),
+            self._make_metric_widget("back_b", "Backend B", "timeseries", {"x": 97, "y": 33, "width": 34, "height": 14}),
+            NormalizedWidget(
+                id="logs",
+                widget_type="log_stream",
+                title="Log stream",
+                layout={"x": 133, "y": 7, "width": 40, "height": 95},
+                raw_definition={"type": "log_stream", "query": "source:haproxy"},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        by_title = {p["title"]: p for p in dash["panels"]}
+        self.assertEqual(by_title["Frontend A"]["position"]["x"], by_title["Frontend B"]["position"]["x"])
+        self.assertEqual(by_title["Backend A"]["position"]["x"], by_title["Backend B"]["position"]["x"])
+        self.assertLess(by_title["Instances"]["position"]["y"], by_title["Frontend B"]["position"]["y"])
+        self.assertLess(by_title["Memory"]["position"]["y"], by_title["Backend B"]["position"]["y"])
+        # Tall log column stays on the right and roughly board-proportional height.
+        logs = by_title["Log stream"]
+        self.assertGreaterEqual(logs["position"]["x"], 30)
+        self.assertGreaterEqual(logs["size"]["h"], 20)
+        # Kibana-readable floors inside preserved columns (hybrid C).
+        # Overview KPI siblings may share a band as 4-5 col sub-slots.
+        self.assertGreaterEqual(by_title["Instances"]["size"]["w"], 4)
+        self.assertGreaterEqual(by_title["Memory"]["size"]["w"], 4)
+        self.assertGreaterEqual(by_title["Frontend A"]["size"]["w"], 8)
+        self.assertGreaterEqual(by_title["Backend A"]["size"]["w"], 8)
+        # No panel should be shoved past the log column into a 44+ junk strip.
+        for panel in dash["panels"]:
+            if panel is logs:
+                continue
+            self.assertLessEqual(panel["position"]["x"] + panel["size"]["w"], logs["position"]["x"] + logs["size"]["w"] + 1)
+
+    def test_free_board_aligns_cross_column_source_rows(self):
+        # A tall left-column stack must not leave empty gutters beside charts that
+        # sit on the same Datadog y as lower left-column tiles (HAProxy Server
+        # summary vs Frontend/Backend denials).
+        widgets = [
+            self._make_metric_widget(
+                "kpi", "KPI", "query_value", {"x": 25, "y": 7, "width": 16, "height": 10}
+            ),
+            self._make_metric_widget(
+                "sessions",
+                "Sessions",
+                "timeseries",
+                {"x": 25, "y": 51, "width": 34, "height": 14},
+            ),
+            self._make_metric_widget(
+                "front",
+                "Frontend Denials",
+                "timeseries",
+                {"x": 61, "y": 52, "width": 34, "height": 14},
+            ),
+            self._make_metric_widget(
+                "back",
+                "Backend Denials",
+                "timeseries",
+                {"x": 97, "y": 48, "width": 34, "height": 14},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        by_title = {p["title"]: p for p in dash["panels"]}
+        row_y = {
+            by_title[t]["position"]["y"]
+            for t in ("Sessions", "Frontend Denials", "Backend Denials")
+        }
+        self.assertEqual(len(row_y), 1, row_y)
+        self.assertGreater(by_title["Sessions"]["position"]["y"], by_title["KPI"]["position"]["y"])
+
+    def test_xy_legend_disables_label_truncation_by_default(self):
+        widget = self._make_metric_widget(
+            "1",
+            "Avg by pod",
+            "timeseries",
+            {"x": 0, "y": 0, "width": 6, "height": 4},
+        )
+        dash = self._render_dashboard([widget])
+        legend = dash["panels"][0]["esql"]["legend"]
+        self.assertEqual(legend.get("truncate_labels"), 0)
+
+    def test_free_board_charts_meet_readable_mins(self):
+        # Apache-style free canvas: several mid-board chart columns must stay
+        # ordered L→R and wide enough to render in Kibana.
+        widgets = [
+            self._make_metric_widget("left", "CPU", "timeseries", {"x": 0, "y": 0, "width": 40, "height": 14}),
+            self._make_metric_widget("mid", "Throughput", "timeseries", {"x": 67, "y": 0, "width": 47, "height": 14}),
+            self._make_metric_widget("right", "Requests", "timeseries", {"x": 115, "y": 0, "width": 47, "height": 14}),
+            self._make_metric_widget("kpi", "Busy workers", "query_value", {"x": 19, "y": 0, "width": 23, "height": 10}),
+        ]
+        dash = self._render_dashboard(widgets)
+        panels = dash["panels"]
+        by_title = {p["title"]: p for p in panels}
+        xs = [by_title[t]["position"]["x"] for t in ("CPU", "Busy workers", "Throughput", "Requests")]
+        self.assertEqual(xs, sorted(xs), "columns must stay left→right")
+        for title in ("CPU", "Throughput", "Requests"):
+            self.assertGreaterEqual(by_title[title]["size"]["w"], 8, title)
+        self.assertGreaterEqual(by_title["Busy workers"]["size"]["w"], 6)
+        # No overlaps.
+        for i, a in enumerate(panels):
+            ax, ay, aw, ah = a["position"]["x"], a["position"]["y"], a["size"]["w"], a["size"]["h"]
+            for b in panels[i + 1 :]:
+                bx, by, bw, bh = b["position"]["x"], b["position"]["y"], b["size"]["w"], b["size"]["h"]
+                overlap = ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+                self.assertFalse(overlap, f"{a['title']} overlaps {b['title']}")
+
+    def test_free_board_merges_near_duplicate_column_starts(self):
+        # nginx-ingress style: two wide charts start a few Datadog units apart
+        # (37 vs 41). They are one visual column, not two bands that each get
+        # half the grid and leave a ragged second column.
+        widgets = [
+            self._make_metric_widget(
+                "left", "Current connections", "timeseries",
+                {"x": 1, "y": 14, "width": 39, "height": 15},
+            ),
+            self._make_metric_widget(
+                "mid_a", "Avg CPU", "timeseries",
+                {"x": 37, "y": 64, "width": 48, "height": 15},
+            ),
+            self._make_metric_widget(
+                "mid_b", "Avg connections by state", "timeseries",
+                {"x": 41, "y": 0, "width": 46, "height": 15},
+            ),
+            self._make_metric_widget(
+                "right_a", "Avg memory", "timeseries",
+                {"x": 86, "y": 64, "width": 48, "height": 15},
+            ),
+            self._make_metric_widget(
+                "right_b", "Avg requests", "timeseries",
+                {"x": 88, "y": 0, "width": 46, "height": 15},
+            ),
+        ]
+        dash = self._render_dashboard(widgets)
+        by_title = {p["title"]: p for p in dash["panels"]}
+        self.assertEqual(
+            by_title["Avg CPU"]["position"]["x"],
+            by_title["Avg connections by state"]["position"]["x"],
+            "near-duplicate starts must share one Kibana column",
+        )
+        self.assertEqual(
+            by_title["Avg memory"]["position"]["x"],
+            by_title["Avg requests"]["position"]["x"],
+        )
+        for title in ("Avg CPU", "Avg connections by state", "Avg memory", "Avg requests"):
+            self.assertGreaterEqual(by_title[title]["size"]["w"], 8, title)
+
+    def test_free_board_note_column_does_not_inherit_chart_gutters(self):
+        # Apache-style left notes sit in their own band. Cross-column source-row
+        # packing must not yank a later note down to the mid-board chart stack
+        # and leave a huge empty gutter in the note column.
+        note_top = NormalizedWidget(
+            id="n1",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 18, "height": 20},
+            raw_definition={
+                "type": "note",
+                "content": "If you see a lot of connections in a keep-alive state.",
+            },
+        )
+        note_bot = NormalizedWidget(
+            id="n2",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 80, "width": 18, "height": 20},
+            raw_definition={
+                "type": "note",
+                "content": "If you see CPU usage continually rising.",
+            },
+        )
+        chart_a = self._make_metric_widget(
+            "c1", "Async connections", "timeseries",
+            {"x": 40, "y": 20, "width": 40, "height": 14},
+        )
+        chart_b = self._make_metric_widget(
+            "c2", "Bytes served", "timeseries",
+            {"x": 40, "y": 40, "width": 40, "height": 14},
+        )
+        chart_c = self._make_metric_widget(
+            "c3", "CPU usage", "timeseries",
+            {"x": 40, "y": 60, "width": 40, "height": 14},
+        )
+        dash = self._render_dashboard([note_top, note_bot, chart_a, chart_b, chart_c])
+        by_title = {}
+        for p in dash["panels"]:
+            title = p.get("title") or ""
+            if not title and "markdown" in p:
+                content = str((p.get("markdown") or {}).get("content") or "")
+                title = content.split(".")[0][:40]
+            by_title[title] = p
+        top = next(p for p in dash["panels"] if "keep-alive" in str((p.get("markdown") or {}).get("content") or ""))
+        bot = next(p for p in dash["panels"] if "CPU usage continually" in str((p.get("markdown") or {}).get("content") or ""))
+        gap = bot["position"]["y"] - (top["position"]["y"] + top["size"]["h"])
+        self.assertLessEqual(
+            gap,
+            2,
+            f"note column gutter too large: gap={gap} top={top['position']} bot={bot['position']}",
+        )
+        # Charts still share a column and stay ordered.
+        charts = [by_title["Async connections"], by_title["Bytes served"], by_title["CPU usage"]]
+        self.assertEqual({c["position"]["x"] for c in charts}, {charts[0]["position"]["x"]})
+        self.assertLess(charts[0]["position"]["y"], charts[1]["position"]["y"])
+        self.assertLess(charts[1]["position"]["y"], charts[2]["position"]["y"])
+
+    def test_free_board_placeholder_column_does_not_inherit_chart_baselines(self):
+        # ActiveMQ-style: a left-column check_status placeholder must not jump
+        # down to align with mid-board chart rows (``_dd_type`` still says
+        # metric, but the tile renders as markdown).
+        header = NormalizedWidget(
+            id="h1",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 18, "height": 8},
+            raw_definition={"type": "note", "content": "## Activemq"},
+        )
+        placeholder = NormalizedWidget(
+            id="p1",
+            widget_type="check_status",
+            title="Queue Status",
+            layout={"x": 0, "y": 15, "width": 20, "height": 9},
+            raw_definition={"type": "check_status", "check": "activemq.can_connect"},
+        )
+        chart_a = self._make_metric_widget(
+            "c1", "Queue size", "timeseries",
+            {"x": 40, "y": 12, "width": 40, "height": 14},
+        )
+        chart_b = self._make_metric_widget(
+            "c2", "Enqueue count", "timeseries",
+            {"x": 40, "y": 30, "width": 40, "height": 14},
+        )
+        chart_c = self._make_metric_widget(
+            "c3", "Expired count", "timeseries",
+            {"x": 40, "y": 48, "width": 40, "height": 14},
+        )
+        dash = self._render_dashboard([header, placeholder, chart_a, chart_b, chart_c])
+        left = sorted(
+            (p for p in dash["panels"] if int(p["position"]["x"]) < 12),
+            key=lambda p: p["position"]["y"],
+        )
+        self.assertGreaterEqual(len(left), 2)
+        gap = left[1]["position"]["y"] - (left[0]["position"]["y"] + left[0]["size"]["h"])
+        self.assertLessEqual(gap, 2, f"placeholder gutter too large: {[ (p.get('title'), p['position'], p['size']) for p in left ]}")
+
+    def test_free_board_repairs_spanning_tile_vertical_overlaps(self):
+        # Istio-style: a taller upper stripe (GC/threads) shares vertical band
+        # with a lower contiguous metric row. Style-guide fill must not stretch
+        # that lower row into the spanning tiles, and any residual collision
+        # must be repaired vertically.
+        path = (
+            Path(__file__).resolve().parent.parent
+            / "popular_ui_controls_20260721"
+            / "datadog_free_band"
+            / "src_wide"
+            / "istio.json"
+        )
+        if not path.is_file():
+            self.skipTest(f"missing fixture {path}")
+        raw = json.loads(path.read_text())
+        nd = normalize_dashboard(raw)
+        results = []
+        for widget in nd.widgets:
+            if widget.widget_type in ("group", "powerpack"):
+                continue
+            plan = plan_widget(widget)
+            if plan.backend == "lens":
+                plan.backend = "esql"
+            results.append(translate_widget(widget, plan, OTEL_PROFILE))
+        dash = yaml.safe_load(generate_dashboard_yaml(nd, results))["dashboards"][0]
+        panels = [
+            p
+            for p in dash["panels"]
+            if isinstance(p.get("position"), dict) and isinstance(p.get("size"), dict)
+        ]
+        for i, a in enumerate(panels):
+            ax, ay, aw, ah = a["position"]["x"], a["position"]["y"], a["size"]["w"], a["size"]["h"]
+            for b in panels[i + 1 :]:
+                bx, by, bw, bh = b["position"]["x"], b["position"]["y"], b["size"]["w"], b["size"]["h"]
+                overlap = ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+                self.assertFalse(overlap, f"{a['title']} overlaps {b['title']}")
+
+    def test_panel_titles_drop_datadog_template_vars(self):
+        widget = self._make_metric_widget(
+            "1",
+            "Frontend Network Traffic over $host",
+            "timeseries",
+            {"x": 0, "y": 0, "width": 6, "height": 2},
+        )
+        dash = self._render_dashboard([widget])
+        title = dash["panels"][0]["title"]
+        self.assertNotIn("$", title)
+        self.assertEqual(title, "Frontend Network Traffic")
+
+    def test_untitled_log_stream_defaults_to_logs(self):
+        widget = NormalizedWidget(
+            id="logs",
+            widget_type="log_stream",
+            title="",
+            layout={"x": 0, "y": 0, "width": 6, "height": 4},
+            raw_definition={"type": "log_stream", "query": "source:haproxy"},
+        )
+        dash = self._render_dashboard([widget])
+        self.assertEqual(dash["panels"][0]["title"], "Log stream")
+
+    def test_untitled_note_uses_content_title_and_hides_chrome(self):
+        # Datadog notes usually omit ``title``; inventing "Datadog note <id>" for
+        # the Kibana chrome is wrong — use the first content line and hide_title.
+        note = NormalizedWidget(
+            id="8013519185925578",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 6, "height": 2},
+            raw_definition={
+                "type": "note",
+                "content": (
+                    "This dashboard shows latency information and slow query counts "
+                    "that summarize your Redis master's performance."
+                ),
+            },
+        )
+        dash = self._render_dashboard([note])
+        panel = dash["panels"][0]
+        self.assertTrue(panel.get("hide_title"))
+        self.assertNotIn("Datadog note", panel.get("title") or "")
+        self.assertTrue(
+            str(panel.get("title") or "").startswith("This dashboard shows latency"),
+            panel.get("title"),
+        )
 
     def test_ordered_dashboard_without_layout_reflows_charts_two_up(self):
         raw = {
@@ -3405,10 +3939,86 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
         payload = yaml.safe_load(
             generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
         )
-        content = payload["dashboards"][0]["panels"][0]["markdown"]["content"]
+        panel = payload["dashboards"][0]["panels"][0]
+        self.assertEqual(panel["title"], "Server reachable")
+        content = panel["markdown"]["content"]
         self.assertIn("check_status", content)
         # Hint about the Elastic Synthetics equivalent.
         self.assertIn("Synthetics", content)
+        # Operator chrome should not dump migration debug fields into the tile.
+        self.assertNotIn("Migration status:", content)
+        self.assertNotIn("Original widget type:", content)
+
+    def test_static_datadog_image_uses_compact_brand_placeholder(self):
+        widget = NormalizedWidget(
+            id="logo",
+            widget_type="image",
+            title="",
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+            raw_definition={
+                "type": "image",
+                "url": "/static/images/logos/haproxy_large.svg",
+            },
+        )
+        plan = plan_widget(widget)
+        self.assertEqual(plan.backend, "markdown")
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
+        )
+        panel = payload["dashboards"][0]["panels"][0]
+        content = panel["markdown"]["content"]
+        self.assertIn("HAProxy", content)
+        self.assertNotIn("replace with a publicly accessible URL", content)
+        self.assertNotIn("not hosted in Kibana", content)
+        self.assertTrue(panel.get("hide_title"), "logo tiles should be chrome-less like Datadog")
+
+    def test_http_datadog_image_hides_synthetic_title(self):
+        widget = NormalizedWidget(
+            id="12",
+            widget_type="image",
+            title="",
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+            raw_definition={
+                "type": "image",
+                "url": "https://static.datadoghq.com/static/images/screenboard/integrations/kubernetes.jpg",
+                "sizing": "fit",
+            },
+        )
+        plan = plan_widget(widget)
+        self.assertEqual(plan.backend, "image")
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
+        )
+        panel = payload["dashboards"][0]["panels"][0]
+        self.assertIn("image", panel)
+        self.assertEqual(panel["title"], "Kubernetes")
+        self.assertTrue(panel.get("hide_title"))
+        self.assertNotIn("Datadog image", panel["title"])
+
+    def test_hostmap_placeholder_is_operator_friendly(self):
+        widget = NormalizedWidget(
+            id="hm",
+            widget_type="hostmap",
+            title="Hosts",
+            layout={"x": 0, "y": 0, "width": 6, "height": 4},
+            raw_definition={"type": "hostmap"},
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        payload = yaml.safe_load(
+            generate_dashboard_yaml(NormalizedDashboard(id="1", title="Dash", widgets=[widget]), [result])
+        )
+        panel = payload["dashboards"][0]["panels"][0]
+        self.assertEqual(panel["title"], "Hosts")
+        content = panel["markdown"]["content"]
+        self.assertIn("hostmap", content.lower())
+        self.assertNotIn("Migration status:", content)
+        self.assertTrue(
+            re.search(r"Maps|Elastic Maps|Infrastructure", content, re.I),
+            content,
+        )
 
     def test_mark_widget_migrated_with_missing_target_fields_keeps_visualization(self):
         panel = TranslationResult(

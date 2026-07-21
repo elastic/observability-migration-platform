@@ -66,10 +66,32 @@ def test_metric_builder():
     assert cfg["metrics"] == [{"type": "primary", "column": "up_count"}]
 
 
+def test_metric_builder_preserves_empty_primary_label():
+    # Empty label suppresses Lens's field-name fallback ("value"). Dropping it
+    # because it is falsy reintroduces the ugly caption on query_value panels.
+    panel = _map({
+        "type": "metric",
+        "query": "FROM m | STATS value = AVG(x)",
+        "primary": {"field": "value", "label": ""},
+    })
+    assert panel["config"]["metrics"][0].get("label") == ""
+
+
 def test_gauge_builder():
     cfg = _map({"type": "gauge", "query": "FROM m", "metric": {"field": "pct"}})["config"]
     assert cfg["type"] == "gauge"
     assert cfg["metric"] == {"column": "pct"}
+
+
+def test_xy_legend_truncate_zero_disables_truncation():
+    cfg = _map({
+        "type": "line",
+        "query": "FROM m",
+        "dimension": {"field": "step"},
+        "metrics": [{"field": "value"}],
+        "legend": {"visible": "show", "position": "right", "truncate_labels": 0},
+    })["config"]
+    assert cfg["legend"]["layout"]["truncate"] == {"enabled": False}
 
 
 def test_line_becomes_xy():

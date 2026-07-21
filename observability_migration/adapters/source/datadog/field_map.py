@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 
+from observability_migration.core.kibana_safe_fields import kibana_safe_field_name
 from observability_migration.core.verification.field_capabilities import (
     FieldCapability,
     fetch_field_capabilities,
@@ -78,13 +79,23 @@ class FieldMapProfile:
         if dd_tag in tag_map:
             mapped = tag_map[dd_tag]
             if context == "metric" and mapped in _LOG_ONLY_FIELDS:
-                return dd_tag
-            return self._prefer_aggregatable_keyword_subfield(mapped, context=context)
+                return kibana_safe_field_name(dd_tag)
+            return kibana_safe_field_name(
+                self._prefer_aggregatable_keyword_subfield(mapped, context=context)
+            )
         if context == "log" and self.log_tag_map:
-            return self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
+            return kibana_safe_field_name(
+                self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
+            )
         if self.tag_prefix:
-            return self._prefer_aggregatable_keyword_subfield(f"{self.tag_prefix}{dd_tag}", context=context)
-        return self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
+            return kibana_safe_field_name(
+                self._prefer_aggregatable_keyword_subfield(
+                    f"{self.tag_prefix}{dd_tag}", context=context
+                )
+            )
+        return kibana_safe_field_name(
+            self._prefer_aggregatable_keyword_subfield(dd_tag, context=context)
+        )
 
     def _prefer_aggregatable_keyword_subfield(self, field_name: str, context: str = "") -> str:
         """Prefer ``field.keyword`` when live caps show the base field is unsafe for grouping."""
@@ -204,6 +215,8 @@ def _default_tag_map() -> dict[str, str]:
         "availability_zone": "cloud.availability_zone",
         "zone": "cloud.availability_zone",
         "status": "log.level",
+        # Bare ``key`` breaks Kibana Options List field lookup; use dotted label.
+        "key": "labels.key",
         "container_name": "container.name",
         "container_id": "container.id",
         "@http.url_details.path": "http.url",
