@@ -3677,6 +3677,52 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertIn("Broker", enqueue["title"])
         self.assertEqual(len(dash["panels"]), 2)
 
+    def test_free_board_keeps_prose_notes(self):
+        note = NormalizedWidget(
+            id="n1",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 40, "height": 20},
+            raw_definition={
+                "type": "note",
+                "content": (
+                    "Runbook: check broker disk before restarting.\n\n"
+                    "- Verify consumers\n"
+                    "- Page on-call if lag grows"
+                ),
+            },
+        )
+        chart = self._make_metric_widget(
+            "c1", "Enqueue", "timeseries", {"x": 80, "y": 0, "width": 40, "height": 14}
+        )
+        dash = self._render_dashboard([note, chart])
+        self.assertEqual(len(dash["panels"]), 2)
+        bodies = [
+            (p.get("markdown") or {}).get("content", "")
+            for p in dash["panels"]
+            if "markdown" in p
+        ]
+        self.assertTrue(any("Runbook" in b for b in bodies))
+
+    def test_free_board_omits_empty_decorative_notes(self):
+        empty = NormalizedWidget(
+            id="n0",
+            widget_type="note",
+            title="",
+            layout={"x": 0, "y": 0, "width": 40, "height": 10},
+            raw_definition={"type": "note", "content": "   "},
+        )
+        chart = self._make_metric_widget(
+            "c1", "Enqueue", "timeseries", {"x": 0, "y": 12, "width": 40, "height": 14}
+        )
+        other = self._make_metric_widget(
+            "c2", "Other", "timeseries", {"x": 80, "y": 12, "width": 40, "height": 14}
+        )
+        dash = self._render_dashboard([empty, chart, other])
+        self.assertEqual(len(dash["panels"]), 2)
+        desc = dash.get("description") or ""
+        self.assertIn("omitted", desc.lower())
+
     def test_free_board_header_gutters_join_next_content_column(self):
         # Topics labels at x=100 with tables at x=113 must not open a 4-col
         # empty gutter — headers ride on the tables column instead.

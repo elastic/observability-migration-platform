@@ -1541,6 +1541,15 @@ def _apply_free_board_chrome_polish(panels: list[dict[str, Any]]) -> list[str]:
     board_w = max(_board_max_extent(leaf), 1)
     band_starts = _cluster_free_board_band_starts(leaf)
     _promote_or_omit_section_headers(leaf, band_starts, board_w, reasons)
+
+    for panel in leaf:
+        if panel.get("_chrome_omit"):
+            continue
+        kind = _classify_free_board_chrome(panel)
+        if kind == "decorative":
+            panel["_chrome_omit"] = True
+            panel["_chrome_reason"] = "omitted empty/decorative free-board note"
+            reasons.append(panel["_chrome_reason"])
     return reasons
 
 
