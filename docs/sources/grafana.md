@@ -304,6 +304,25 @@ This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
 
+### Template Variables in Metric / Label Names
+
+A Grafana template variable that forms part of the **metric or label name** is
+unresolvable at migration time and always degrades to `not_feasible` with a
+clear warning — never a silent or garbage query. Three forms are caught:
+
+| Form | Example | Guardrail |
+|------|---------|-----------|
+| Dynamic **function name** | `${metric:value}(series[5m])` | `_TEMPLATE_FUNC_VAR_RE` |
+| **Prefix**-glued to identifier | `${prefix:raw}metric_total` | `_PREFIX_GLUED_TEMPLATE_VAR_RE` |
+| **Suffix**-glued to identifier | `metric_total${suffix}` | `_GLUED_TEMPLATE_VAR_RE` |
+
+All three are caught by the priority-5 `template_variable_guardrail_rule`
+preprocessor, before any ES|QL is rendered, so the result carries an empty
+`esql_query` and a warning naming the specific variable (e.g. `$prefix`).
+Grafana's own built-in macros (`${__range_s}`, `${__rate_interval}`, …) start
+with `__` and are excluded from the prefix-glued check; they are expanded by
+`preprocess_grafana_macros` at priority 10.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are

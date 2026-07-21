@@ -347,6 +347,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("template variable", joined)
         self.assertNotIn("label_suffix", result.esql_query or "")
 
+    def test_template_variable_prefix_glued_to_metric_is_not_feasible(self):
+        # ``${prefix:raw}rpc_server_duration_bucket`` — the prefix var makes the
+        # exact metric name dynamic; it must not produce a garbled variable name
+        # (``$prefixrpc_server_duration_bucket``) or a garbage ES|QL query
+        # referencing the non-existent field ``label_prefixrpc_server_duration_bucket``.
+        result = self.translate(
+            'sum(increase(${prefix:raw}rpc_server_duration_bucket{job="$job"}[$__rate_interval])) by (le)'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("$prefix", joined)
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        # Must NOT expose the garbled concatenated name
+        self.assertNotIn("$prefixrpc_server_duration_bucket", joined)
+        # Must NOT emit a garbage query referencing the phantom field
+        self.assertNotIn("label_prefixrpc_server_duration_bucket", result.esql_query or "")
+
+    def test_otel_collector_rpc_responses_panel_is_not_feasible(self):
+        # Regression lock for issue #283 — the exact OTel Collector community
+        # dashboard panel title "RPC server responses by GRPC status code (receivers)".
+        # It uses BOTH a template-var function name (${metric:value}) AND a
+        # prefix-glued template var (${prefix:raw}); neither must leak an
+        # "unknown function" error or a label_* garbage query.
+        result = self.translate(
+            'sum by(rpc_grpc_status_code) (${metric:value}(${prefix:raw}rpc_server_responses_per_rpc_count{job="$job"}[$__rate_interval]))'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        self.assertNotIn("unknown function", joined_lower)
+        esql = result.esql_query or ""
+        self.assertNotIn("unknown function", esql)
+        self.assertNotIn("label_metric", esql)
+
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
         self.assertFalse(panels.can_use_native_promql(expr))

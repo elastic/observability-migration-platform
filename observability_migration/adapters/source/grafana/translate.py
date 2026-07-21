@@ -358,6 +358,22 @@ _TEMPLATE_FUNC_VAR_RE = re.compile(r"(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r
 # A template variable glued onto an identifier (e.g. ``metric_name${suffix}``) —
 # the exact metric/label name is only known after Grafana expands the variable.
 _GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r")")
+# A delimited template variable glued as a *prefix* onto an identifier
+# (e.g. ``${prefix:raw}metric`` / ``[[prefix]]metric``) — same dynamic-name
+# hazard as the suffix form.  The plain ``$var`` alternative is intentionally
+# excluded: it has no right delimiter, so ``$metricfoo`` is the whole variable
+# ``metricfoo``, not ``$metric`` glued to ``foo`` (and a lookahead would
+# false-positive on ``$__rate_interval`` macros and bare ``$metric[5m]``).
+# The ``(?!__)`` guards exclude Grafana built-in macros whose names start with
+# ``__`` (e.g. ``${__range_s}s``) — those are time-range selectors, not a
+# user variable prefixed onto a metric name.
+_PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
+    r"(?:"
+    r"\$\{(?!__)[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}"
+    r"|\[\[(?!__)[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\]"
+    r")"
+    r"(?=[A-Za-z_])"
+)
 _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 
 
@@ -888,10 +904,13 @@ def template_variable_guardrail_rule(context):
         )
         return "dynamic function name requires manual redesign"
 
-    # A template variable glued onto an identifier (``otelcol_..._spans${suffix}``)
-    # makes the exact metric/label name dynamic; resolving it to a placeholder
-    # would silently query a non-existent field, so block it honestly.
-    glued_var = _GLUED_TEMPLATE_VAR_RE.search(expr)
+    # A template variable glued onto an identifier — either as a suffix
+    # (``otelcol_..._spans${suffix}``) or as a delimited prefix
+    # (``${prefix:raw}metric_name``) — makes the exact metric/label name dynamic;
+    # resolving it to a placeholder would silently query a non-existent field,
+    # so block it honestly.  The prefix form uses a separate regex because the
+    # plain ``$var`` alternative cannot be a glued prefix (no right delimiter).
+    glued_var = _GLUED_TEMPLATE_VAR_RE.search(expr) or _PREFIX_GLUED_TEMPLATE_VAR_RE.search(expr)
     if glued_var:
         inner = _GRAFANA_TEMPLATE_VAR_RE.search(glued_var.group(0))
         var_name = _template_var_name(inner) if inner else "var"
