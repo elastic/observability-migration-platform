@@ -304,6 +304,37 @@ This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
 
+### Chained/Label-Filtered Query Variables And Control Warnings (Issue #269)
+
+Grafana query variables can chain: `label_values(metric{instance="$instance"},
+id)` scopes `$id`'s option list to whichever `$instance` is currently
+selected. Two things follow from Kibana ES|QL controls having no
+cross-control dependency mechanism (a control's populate-query cannot read
+another control's live selection):
+
+- **The chained scope itself degrades, not silently.** The migrated `$id`
+  control still works and still lists real values, but it lists *every* `id`
+  rather than only the ones under the selected `$instance` — the control is
+  broader than the Grafana source, not broken. This degradation is recorded
+  as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
+  $instance in Grafana ... Kibana ES|QL controls cannot express that
+  inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
+  CLI summary, included in the Markdown summary warning worklist, and recorded
+  per-dashboard in the JSON report, migration manifest, and preflight report
+  (`control_warnings`), rather than only being discoverable by reading the
+  emitted ES|QL. Unsupported visible `query_result()` variables, textbox
+  variables, unresolved fields, incompatible field types, and non-aggregatable
+  fields use the same surfaced warning path.
+- **A control whose target field is absent is kept with a data-readiness
+  warning.** When live schema discovery (`--es-url`) positively confirms a
+  variable's resolved field doesn't exist on the target, the control remains
+  in the dashboard so offline and live migrations have the same structure,
+  any panel `?var` binding remains valid, and the dropdown can self-heal once
+  telemetry containing the field arrives. Its option list may be empty until
+  then, so a matching `control_warnings` entry explains the data-readiness
+  gap. Controls have no `PanelResult`-style per-item tracking of their own, so
+  `control_warnings` is dashboard-scoped rather than per-control.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are

@@ -6981,9 +6981,35 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
-    def test_query_variable_skips_missing_control_fields(self):
+    def test_visible_query_result_variable_drop_is_surfaced_as_control_warning(self):
+        warnings = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "total",
+                "label": "total_servers",
+                "query": 'query_result(count(node_uname_info{job=~"$job"}))',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+            collect_warnings=warnings,
+        )
+
+        self.assertEqual(controls, [])
+        self.assertTrue(
+            any(
+                "query_result" in warning
+                and "no Kibana control was emitted" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
+
+    def test_query_variable_keeps_missing_control_fields_with_warning(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
         resolver.field_exists = lambda field: field != "k8s.namespace.name"
+        warnings = []
         controls = migrate.translate_variables(
             [{
                 "type": "query",
@@ -6994,8 +7020,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             datasource_index="logs-*",
             rule_pack=self.rule_pack,
             resolver=resolver,
+            collect_warnings=warnings,
         )
-        self.assertEqual(controls, [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["field"], "k8s.namespace.name")
+        self.assertTrue(
+            any(
+                "variable 'namespace' kept" in warning
+                and "k8s.namespace.name" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
 
     def test_query_variable_skips_conflicting_control_fields(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
@@ -9573,10 +9609,16 @@ class TranslatorRegressionTests(unittest.TestCase):
                 resolver=self.resolver,
             )
             migrate.annotate_results_with_verification([result], [])
+            result.control_warnings = ["variable 'job' needs manual scope review"]
             manifest_path = pathlib.Path(tmpdir) / "migration_manifest.json"
             migrate.save_migration_manifest([result], manifest_path)
             manifest = json.loads(manifest_path.read_text())
         self.assertEqual(manifest["summary"]["dashboards"], 1)
+        self.assertEqual(manifest["summary"]["control_warnings"], 1)
+        self.assertEqual(
+            manifest["dashboards"][0]["control_warnings"],
+            ["variable 'job' needs manual scope review"],
+        )
         self.assertEqual(manifest["dashboards"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["query_language"], "promql")
@@ -13041,6 +13083,167 @@ class TextboxVariableTests(unittest.TestCase):
         ]
         controls = migrate.translate_variables(variables, "metrics-*", rule_pack=self.rule_pack)
         self.assertEqual(len(controls), 0)
+
+
+class ChainedVariableControlFidelityTests(unittest.TestCase):
+    """Regression tests for issue #269: metric-scoped, label-filtered, and
+    chained Grafana query variables must not silently drop/degrade in the
+    migrated Kibana controls without a surfaced warning."""
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        self.rule_pack = migrate.RulePackConfig()
+        set_runtime_feature(
+            self.rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=True,
+            source="test",
+            confidence="assumed",
+        )
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+        # Issue #269's exact repro: `$id` is scoped to the currently selected
+        # `$instance` (`label_values(container_memory_cache{instance="$instance"}, id)`),
+        # and the panel filters on `$id` alone.
+        self.dashboard = {
+            "title": "Label-filter control repro (container_memory_cache)",
+            "uid": "label-filter-repro-01",
+            "panels": [
+                {
+                    "id": 2,
+                    "type": "timeseries",
+                    "title": "container_memory_cache",
+                    "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+                    "targets": [{"expr": 'avg(container_memory_cache{id="$id"})', "refId": "A"}],
+                }
+            ],
+            "templating": {
+                "list": [
+                    {
+                        "name": "instance",
+                        "type": "query",
+                        "definition": "label_values(container_memory_cache,instance)",
+                        "current": {"text": "cadvisor:8080", "value": "cadvisor:8080"},
+                        "options": [],
+                    },
+                    {
+                        "name": "id",
+                        "type": "query",
+                        "definition": 'label_values(container_memory_cache{instance="$instance"},id)',
+                        "current": {"text": "id_1", "value": "id_1"},
+                        "options": [],
+                    },
+                ]
+            },
+        }
+
+    def _translate(self, resolver):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                self.dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        return result, doc["dashboards"][0]
+
+    def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
+        # Defect 2: the migrated `id` control lists every `id` regardless of
+        # the selected `instance` -- Kibana ES|QL controls have no
+        # cross-control dependency mechanism. That is an accepted
+        # degradation (not a silent one): it must be reported as a
+        # dashboard-level control warning.
+        _result, doc = self._translate(self.resolver)
+        controls = {c["variable_name"]: c for c in doc["controls"]}
+        self.assertIn("id", controls)
+        self.assertNotIn("instance", controls["id"]["query"])
+        self.assertNotIn("?instance", controls["id"]["query"])
+
+        result, _doc = self._translate(self.resolver)
+        self.assertTrue(
+            any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_control_for_absent_target_field_is_kept_with_a_surfaced_warning(self):
+        # Defect 1: target-schema discovery may positively confirm that the
+        # resolved field is absent because telemetry has not arrived yet. Keep
+        # the source control so offline/live output stays deterministic and the
+        # dropdown self-heals once the field is ingested, but surface the
+        # data-readiness gap explicitly.
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertIn("instance", variable_names)
+        self.assertTrue(
+            any(
+                "variable 'instance' kept" in w and "service.instance.id" in w
+                for w in result.control_warnings
+            ),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_absent_referenced_control_is_not_reported_dropped_then_resynthesized(self):
+        # A panel that binds ?instance requires the corresponding ES|QL
+        # control. Historically query_variable_rule reported it as dropped,
+        # then _ensure_param_controls silently synthesized it again, leaving
+        # the report and artifact in direct contradiction.
+        self.dashboard["panels"][0]["targets"][0]["expr"] = (
+            'avg(container_memory_cache{instance="$instance",id="$id"})'
+        )
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        instance_controls = [
+            control
+            for control in doc["controls"]
+            if control.get("variable_name") == "instance"
+        ]
+        self.assertEqual(len(instance_controls), 1)
+        self.assertIn("?instance", doc["panels"][0]["esql"]["query"])
+        self.assertTrue(
+            any("variable 'instance' kept" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_offline_migrate_keeps_both_controls_with_only_the_scope_warning(self):
+        # Without a resolver (offline migrate, no --es-url) the source-
+        # faithful scope is kept for the `instance` control itself; only the
+        # inter-control dependency (Defect 2) is unrepresentable.
+        result, doc = self._translate(None)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertEqual(variable_names, {"instance", "id"})
+        self.assertEqual(len(result.control_warnings), 1)
+        self.assertIn("scoped by $instance", result.control_warnings[0])
 
 
 class LokiDashboardIntegrationTests(unittest.TestCase):

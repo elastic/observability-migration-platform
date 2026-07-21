@@ -778,6 +778,18 @@ def build_preflight_report(
     datasource_audit = datasource_audit or {}
     complexity_scores = complexity_scores or []
     target_contract_summary = target_contract_summary or {}
+    control_warning_entries = [
+        {
+            "dashboard": str(getattr(result, "dashboard_title", "") or ""),
+            "warnings": list(getattr(result, "control_warnings", []) or []),
+        }
+        for result in results
+        if getattr(result, "control_warnings", None)
+    ]
+    control_warning_count = sum(
+        len(entry["warnings"])
+        for entry in control_warning_entries
+    )
 
     total_panels = sum(r.total_panels for r in results)
     green = sum(
@@ -934,6 +946,15 @@ def build_preflight_report(
             f"{len(high_complexity)} dashboards scored high complexity "
             f"(>=50) and will need extra manual review: {names}"
         )
+    if control_warning_count:
+        warning_noun = (
+            "dashboard control warning"
+            if control_warning_count == 1
+            else "dashboard control warnings"
+        )
+        actions.append(
+            f"{control_warning_count} {warning_noun} require review before cutover"
+        )
 
     if not target_url_configured:
         actions.append(
@@ -976,6 +997,7 @@ def build_preflight_report(
             "target_validation": validation_summary.get("counts", {}),
             "schema_contract_totals": totals,
             "target_contract_totals": target_contract_summary.get("totals", {}),
+            "control_warnings": control_warning_count,
         },
         "source_metric_inventory": {
             "status": source_inventory.get("status", "not_configured"),
@@ -991,6 +1013,7 @@ def build_preflight_report(
         "complexity_scores": complexity_scores,
         "schema_contract": schema_contract,
         "target_contract_summary": target_contract_summary,
+        "control_warnings": control_warning_entries,
         "blockers": blockers,
         "actions": actions,
         "customer_action_summary": _build_action_summary(

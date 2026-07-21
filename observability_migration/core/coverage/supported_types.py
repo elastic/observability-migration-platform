@@ -78,6 +78,7 @@ DATADOG_SUPPORTED_WIDGET_TYPES: set[str] = {
     "sunburst",
     "scatterplot",
     "geomap",
+    "hostmap",
     "log_stream",
     "list_stream",
     "note",
