@@ -481,8 +481,14 @@ CASES: list[tuple[str, str, str]] = [
         "timeseries",
     ),
     (
-        "per_element_ratio_not_feasible",
+        "histogram_summary_ratio_approx",
         'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) / increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)',
+        "timeseries",
+    ),
+    # Unrelated per-element ratio (not a histogram _sum/_count pair) stays not_feasible.
+    (
+        "per_element_ratio_not_feasible",
+        "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),
     # --- schema and label handling ------------------------------------------

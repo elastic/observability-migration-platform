@@ -11,6 +11,7 @@ from enum import Enum
 
 from observability_migration.adapters.source.grafana.promql import (
     _BARE_TS_VALUE_ARG,
+    _OUTER_CASE_TS_FUNC,
     _split_top_level_csv,
 )
 
@@ -137,6 +138,68 @@ def _parse_stats_assignments(stage: str) -> list[str]:
     return _split_top_level_csv(match.group(1))
 
 
+_INNER_CASE_TS_FUNC = re.compile(
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)\(\s*CASE\(",
+    re.IGNORECASE,
+)
+
+
+def _case_expression_spans(text: str) -> list[tuple[int, int]]:
+    """Return ``[start, end)`` spans for top-level ``CASE(...)`` expressions."""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("CASE(", i):
+            start = i
+            depth = 0
+            j = i + 4  # at '('
+            while j < n:
+                ch = text[j]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((start, j + 1))
+                        i = j + 1
+                        break
+                j += 1
+            else:
+                break
+            continue
+        i += 1
+    return spans
+
+
+def _has_unprotected_bare_ts_value_arg(assignment: str) -> bool:
+    """True when a bare TS value-arg sits outside any ``CASE(...)`` wrapper."""
+    case_spans = _case_expression_spans(assignment)
+    for match in _BARE_TS_VALUE_ARG.finditer(assignment):
+        if any(start < match.start() < end for start, end in case_spans):
+            continue
+        return True
+    return False
+
+
+def _is_case_shaped_ts_assignment(assignment: str) -> bool:
+    """True when a STATS measure already uses a CASE-shaped TS value form.
+
+    Accepts both inner ``IRATE(CASE(...), …)`` and outer
+    ``CASE(..., IRATE(...), NULL)`` / ``CASE(..., SUM_OVER_TIME(...), NULL)``
+    shapes used by the translator.
+    """
+    return bool(
+        _OUTER_CASE_TS_FUNC.search(assignment)
+        or _INNER_CASE_TS_FUNC.search(assignment)
+        or (
+            "CASE(" in assignment
+            and _BARE_TS_VALUE_ARG.search(assignment)
+            and not _has_unprotected_bare_ts_value_arg(assignment)
+        )
+    )
+
+
 def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
     if not assignments:
         return []
@@ -144,7 +207,9 @@ def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
     findings: list[StructuralFinding] = []
     has_case = any("CASE(" in assignment for assignment in assignments)
     bare_ts_assignments = [
-        assignment for assignment in assignments if _BARE_TS_VALUE_ARG.search(assignment)
+        assignment
+        for assignment in assignments
+        if _has_unprotected_bare_ts_value_arg(assignment)
     ]
     if has_case and bare_ts_assignments:
         findings.append(
@@ -153,7 +218,8 @@ def _check_stats_assignments(assignments: list[str]) -> list[StructuralFinding]:
                 severity=StructuralSeverity.error,
                 message=(
                     "STATS mixes CASE-wrapped and bare time-series value arguments; "
-                    "wrap bare metrics as CASE(true, field, NULL)"
+                    "wrap bare metrics as CASE(true, field, NULL) or "
+                    "CASE(true, IRATE(field, window), NULL)"
                 ),
                 evidence={"bare_assignments": bare_ts_assignments},
             )

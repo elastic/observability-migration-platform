@@ -96,10 +96,13 @@ from .promql import (
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
+    ESQL_NAMED_PARAM_BINDING,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     binds_esql_named_params,
+    get_runtime_features,
     is_feature_supported,
+    set_runtime_feature,
 )
 from .schema import SchemaResolver
 from .series_labels import (
@@ -3060,7 +3063,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     fused_extra = []
     fused_series = [primary] if feasible_translations else []
     if len(feasible_translations) > 1:
-        if panel_type in {"table", "table-old", "bargauge"}:
+        if panel_type in {"table", "table-old", "bargauge", "stat", "singlestat", "gauge"}:
             fused_series = _best_compatible_translation_group(feasible_translations)
         elif kibana_type in ("line", "bar", "area"):
             fused_series = [primary]
@@ -3663,7 +3666,8 @@ def _merge_pretranslated_xy_queries(translations):
         # final series column to ``result_alias``.
         # When there are no EVAL stages the STATS output name *is* the metric —
         # remap it through alias_map so legend EVAL does not reference the
-        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss).
+        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss /
+        # fused multi-target STATS aliases such as node_network_up -> ..._A).
         metric_field = _canonical_esql_alias(item["metric_field"])
         rewritten_metric_expr = metric_field
         if rewritten_metric_expr in alias_map:
@@ -3813,6 +3817,10 @@ def _build_multi_target_series_query(translations):
         return None
 
     parts, output_group_fields, _ = shared
+    if len({tuple(spec.group_fields or []) for spec in all_specs}) > 1:
+        warnings.append(
+            "Unioned BY fields across multi-target series with mismatched grouping"
+        )
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
     target_provenance: list[dict[str, str]] = []
@@ -5436,6 +5444,31 @@ def _build_esql_param_control(
     return control
 
 
+def _build_static_esql_param_control(variable):
+    """Bind a Grafana custom variable from its literal option list.
+
+    Custom variables are values, not target fields.  Querying a field inferred
+    from the variable name (for example ``diskdevices``) is wrong when the
+    variable is used as a regex for another label (for example ``device``).
+    A static ES|QL values control preserves the source literals and guarantees
+    that the selected default is one of the options Kibana can bind.
+    """
+    name = str(variable.get("name") or "")
+    default = _variable_default_selection(variable)
+    choices = _grouping_candidate_label_names(variable)
+    if default and default not in choices:
+        choices.insert(0, default)
+    return {
+        "type": "esql",
+        "label": variable.get("label") or name,
+        "variable_name": name,
+        "variable_type": "values",
+        "choices": choices,
+        "multiple": False,
+        "default": default,
+    }
+
+
 def _grouping_candidate_label_names(variable):
     """Collect the label names a grouping template variable can select.
 
@@ -5472,18 +5505,40 @@ def _grouping_candidate_label_names(variable):
     return names
 
 
-def _resolve_group_choice_field(raw_name, resolver, rule_pack, metric_field=None):
-    """Resolve one grouping-variable option to an aggregatable target field."""
+def _resolve_group_choice_field(
+    raw_name, resolver, rule_pack, metric_field=None, *, allow_missing=False
+):
+    """Resolve one grouping-variable option to an aggregatable target field.
+
+    When live schema discovery remaps a bare Grafana option (``exporter``) to a
+    profile path that is not present yet (``labels.exporter``), treating that as
+    "unresolvable" empties the late-bound choice set and wrongly marks
+    ``by ($grouping)`` ``not_feasible``. Custom option lists are intentional
+    field names — absence is data readiness. Pass ``allow_missing=True`` for
+    those so the control still emits; the render audit / seeder can populate
+    the dimensions later.
+    """
     name = str(raw_name or "").strip()
     if not name:
         return None
     if resolver:
         field_name = resolver.resolve_control_field(name, metric_field=metric_field or None)
         if not field_name:
-            return None
-        if resolver.field_exists(field_name) is False:
-            return None
-        if resolver.field_exists(field_name) is True and not resolver.is_aggregatable_field(field_name):
+            field_name = name
+        exists = resolver.field_exists(field_name)
+        if exists is False:
+            raw_exists = resolver.field_exists(name) if field_name != name else False
+            if raw_exists is True:
+                field_name = name
+                exists = True
+            elif allow_missing:
+                # Prefer the Grafana option text: control choices and seeder
+                # contracts key off the dashboard's declared names.
+                field_name = name
+                exists = None
+            else:
+                return None
+        if exists is True and not resolver.is_aggregatable_field(field_name):
             return None
         return field_name
     return (rule_pack or RulePackConfig()).control_field_overrides.get(name, name)
@@ -5514,9 +5569,18 @@ def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
         metric_field = _resolve_control_scope_metric(
             _extract_variable_source_metric(query_text), resolver, rule_pack
         )
+        # Custom variables declare an explicit option list of field names.
+        # Missing target fields are data readiness, not an empty choice set.
+        allow_missing = variable.get("type") == "custom"
         choices: list[str] = []
         for raw in raw_names:
-            field_name = _resolve_group_choice_field(raw, resolver, rule_pack, metric_field)
+            field_name = _resolve_group_choice_field(
+                raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
             if field_name and field_name not in choices:
                 choices.append(field_name)
         if not choices:
@@ -5527,7 +5591,13 @@ def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
             default_raw = default_raw[0] if len(default_raw) == 1 else None
         default = None
         if default_raw not in (None, "", "$__all"):
-            default = _resolve_group_choice_field(default_raw, resolver, rule_pack, metric_field)
+            default = _resolve_group_choice_field(
+                default_raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
         if default not in choices:
             default = choices[0]
         choices_map[name] = {
@@ -6045,6 +6115,42 @@ def _degrade_conflicting_late_bound_group_panels(panels, panel_results):
         _sync_visual_ir(panel_result, panel)
 
 
+def _maybe_enable_dashboard_named_param_binding(rule_pack, variables):
+    """Enable ES|QL ``?var`` emission when dashboard templating can bind controls.
+
+    Grafana ``$var`` label matchers become ``field == ?var`` only when the rule
+    pack advertises named-parameter binding. Offline / library callers that skip
+    the CLI probe historically left the feature unset and dropped those matchers
+    even when the dashboard had templating that ``_ensure_param_controls`` can
+    bind. Enable the feature for this translate pass when templating defines at
+    least one named variable.
+
+    Never overrides an existing runtime feature state — a live ``--es-url`` probe
+    that marked binding unsupported must continue dropping matchers (no unbound
+    ``?var`` uploads).
+    """
+    if rule_pack is None:
+        return
+    if ESQL_NAMED_PARAM_BINDING in get_runtime_features(rule_pack):
+        return
+    has_named = any(
+        isinstance(var, dict) and str(var.get("name") or "").strip()
+        for var in (variables or [])
+    )
+    if not has_named:
+        return
+    set_runtime_feature(
+        rule_pack,
+        ESQL_NAMED_PARAM_BINDING,
+        supported=True,
+        source="dashboard_templating",
+        confidence="assumed",
+        reason=(
+            "dashboard templating present; emit ?var matchers with binding controls"
+        ),
+    )
+
+
 def _ensure_param_controls(
     controls,
     emitted_params,
@@ -6085,6 +6191,9 @@ def _ensure_param_controls(
     }
     for name in missing:
         variable = variables_by_name.get(name, {})
+        if variable.get("type") == "custom":
+            controls.append(_build_static_esql_param_control(variable))
+            continue
         label = variable.get("label") or name
         query_text = _variable_query_text(variable)
         source_field = _extract_variable_source_field(query_text) or name
@@ -7469,6 +7578,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     metric_series_labels = build_metric_series_labels(dashboard)
 
     variables = dashboard.get("templating", {}).get("list", [])
+    # Gap A: when templating can bind controls, emit ``?var`` label matchers
+    # instead of dropping them. Must run before late-bound grouping choices
+    # (those also require ``binds_esql_named_params``).
+    _maybe_enable_dashboard_named_param_binding(rule_pack, variables)
     # Record which ``?var`` params default to the regex match-all so both the
     # ES|QL and native PROMQL matcher emitters loosen equality matchers on
     # All/multi variables into regex matches and render data on first load

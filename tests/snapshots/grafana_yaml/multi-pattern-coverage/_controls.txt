@@ -1,2 +1,2 @@
-control: type=options field=service.name multiple=True
-control: type=options field=k8s.namespace.name multiple=False
+control: type=esql field=None multiple=False
+control: type=esql field=None multiple=False

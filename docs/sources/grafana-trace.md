@@ -61,14 +61,16 @@ queries because the Kibana control applies the filter at dashboard level.
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
+
 | grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
-| grafana | Express Prometheus Middleware | 23 | 1 | 20 | 0 | 2 | 0 | 1 |
+| grafana | Express Prometheus Middleware | 23 | 1 | 22 | 0 | 0 | 0 | 1 |
 | grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
 | grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
+
 | grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 10 | 5 | 1 | 0 | 0 |
-| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 7 | 5 | 0 | 0 | 0 | 0 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 11 | 5 | 0 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 8 | 4 | 0 | 0 | 0 | 0 |
 
 **8 dashboards, 250 panels** audited from `infra/grafana/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
@@ -79,8 +81,9 @@ queries because the Kibana control applies the filter at dashboard level.
 | Verdict | Count | Meaning |
 |---------|-------|---------|
 | **CORRECT** | 11 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 220 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 42 | Known unsupported feature — placeholder or skip |
+
+| **MINOR_ISSUE** | 223 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 39 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -89,20 +92,20 @@ queries because the Kibana control applies the filter at dashboard level.
 | Count | Warning |
 |------:|---------|
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
+| 35 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 35 | Grafana panel description is not carried into Kibana YAML automatically |
-| 34 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 21 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 24 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
 | 19 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
 | 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
 | 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
 | 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
+| 5 | Applied Grafana transformation 'organize' as ES\|QL rewrite |
 | 5 | Grafana panel has 20 field override(s); verify visual mappings manually |
 | 5 | Grafana panel has 17 field override(s); verify visual mappings manually |
 | 5 | Visible panel targets did not expose PromQL-compatible expressions |
 | 5 | No PromQL expression found in panel targets |
 | 4 | Approximated bargauge as bar chart |
-| 4 | Grafana panel has 2 transformation(s); manual review recommended |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -168,6 +171,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -258,6 +262,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -349,6 +354,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -436,6 +442,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -523,6 +530,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -609,6 +617,7 @@ time() - node_boot_time_seconds
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -690,6 +699,7 @@ FROM metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -783,6 +793,7 @@ ALERTS{alertstate="firing"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -866,6 +877,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -927,7 +939,7 @@ FROM logs-*
 <details>
 <summary>Controls / Variables (1)</summary>
 
-- `instance` (type: `options`)
+- `instance` (type: `esql`)
 
 </details>
 
@@ -940,11 +952,11 @@ FROM logs-*
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
 | HTTP Requests | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Count by class | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | sum(  http_requests_total{instance="$instance",status=~".{1,2}"} or  on() label_... | TS metrics-prometheus-* \| WHERE status RLIKE ".{1,2}" \| WHERE http_requests_to... |
+| Count by class | `gauge` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(  http_requests_total{instance="$instance",status=~".{1,2}"} or  on() label_... | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
 | Request duration average by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds_sum IS NOT NULL O... |
 | Request count by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance"} | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
-| Request duration 95th percentile | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu... | — |
-| Request duration 99th percentile | `timeseries` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu... | — |
+| Request duration 95th percentile | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
+| Request duration 99th percentile | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
 | Request duration up to 5ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.005"} | TS metrics-prometheus-* \| WHERE le == "0.005" \| WHERE http_request_duration_se... |
 | Request duration up to 10ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.01"} | TS metrics-prometheus-* \| WHERE le == "0.01" \| WHERE http_request_duration_sec... |
 | Request duration up to 25ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.025"} | TS metrics-prometheus-* \| WHERE le == "0.025" \| WHERE http_request_duration_se... |
@@ -1025,6 +1037,7 @@ sum(
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note` → noted or-vector zero-fill approximation
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1035,18 +1048,24 @@ sum(
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
 - `panel_translators` / `xy_panel`
-- `panel_translators` / `gauge_panel` → mapped to gauge panel
+- `panel_translators` / `gauge_panel` → approximated grouped gauge as datatable
 
-**Translated (gauge):**
+**Translated (datatable):**
 
 ```
 TS metrics-prometheus-*
-| WHERE status RLIKE ".{1,2}"
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = SUM(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(5 minute)
+| STATS http_requests_total_A = SUM(LAST_OVER_TIME(CASE((status RLIKE ".{1,2}"), http_requests_total, NULL), 5m)), http_requests_total_B = SUM(LAST_OVER_TIME(CASE((status RLIKE "1.."), http_requests_total, NULL), 5m)), http_requests_total_C = SUM(LAST_OVER_TIME(CASE((status RLIKE "2.."), http_requests_total, NULL), 5m)), http_requests_total_D = SUM(LAST_OVER_TIME(CASE((status RLIKE "3.."), http_requests_total, NULL), 5m)), http_requests_total_E = SUM(LAST_OVER_TIME(CASE((status RLIKE "4.."), http_requests_total, NULL), 5m)), http_requests_total_F = SUM(LAST_OVER_TIME(CASE((status RLIKE "5.."), http_requests_total, NULL), 5m)), http_requests_total_G = SUM(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(5 minute)
+| EVAL series_0xx = http_requests_total_A
+| EVAL series_1xx = http_requests_total_B
+| EVAL series_2xx = http_requests_total_C
+| EVAL series_3xx = http_requests_total_D
+| EVAL series_4xx = http_requests_total_E
+| EVAL series_5xx = http_requests_total_F
+| EVAL Total = http_requests_total_G
 | SORT time_bucket ASC
-| STATS time_bucket = MAX(time_bucket), http_requests_total = MAX(http_requests_total)
-| KEEP time_bucket, http_requests_total
+| STATS time_bucket = MAX(time_bucket), series_0xx = MAX(series_0xx), series_1xx = MAX(series_1xx), series_2xx = MAX(series_2xx), series_3xx = MAX(series_3xx), series_4xx = MAX(series_4xx), series_5xx = MAX(series_5xx), Total = MAX(Total)
+| KEEP time_bucket, series_0xx, series_1xx, series_2xx, series_3xx, series_4xx, series_5xx, Total
 | SORT time_bucket ASC
 ```
 
@@ -1058,15 +1077,15 @@ TS metrics-prometheus-*
 - Output shape: `single_value`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `http_requests_total`
-- Semantic losses: Dropped variable-driven label filters during migration, Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value, Panel has 7 PromQL targets but only 1 could be migrated
+- Output metric: `series_0xx`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value, Approximated grouped gauge panel as summary table
 
 **Visual IR:**
 
-- Kibana type: `gauge`
+- Kibana type: `datatable`
 - Layout: x=0, y=0, w=48, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, metric, appearance
+- Config keys: type, query, metrics, breakdowns
 
 **Operational IR:**
 
@@ -1076,9 +1095,9 @@ TS metrics-prometheus-*
 
 - targets: 7
 
-**Warnings:** Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value; Panel has 7 PromQL targets but only 1 could be migrated
+**Warnings:** Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value; Approximated grouped gauge panel as summary table
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value; Panel has 7 PromQL targets but only 1 could be migrated
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated PromQL 'or vector(N)' zero-fill fallback by dropping the constant operand; time ranges with no data appear as gaps instead of the fallback value; Approximated grouped gauge panel as summary table
 
 **Verdict:** MINOR_ISSUE
 
@@ -1112,6 +1131,7 @@ http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1206,6 +1226,7 @@ http_requests_total{instance="$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1261,7 +1282,7 @@ TS metrics-prometheus-*
 
 #### Request duration 95th percentile
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (timeseries):**
 
@@ -1288,13 +1309,31 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
 - `query_translators` / `scaled_agg_family`
-- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_translators` / `histogram_quantile_family` → translated histogram_quantile to PERCENTILE
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE http_request_duration_seconds IS NOT NULL
+| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 95) BY time_bucket = TBUCKET(5 minute), job
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
@@ -1305,14 +1344,16 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Output metric: `http_request_duration_seconds`
+- Output groups: `time_bucket, job`
+- Semantic losses: Dropped variable-driven label filters during migration, histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=0, y=24, w=24, h=12
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -1322,15 +1363,15 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 
 - targets: 1
 
-**Warnings:** histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+**Warnings:** histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### Request duration 99th percentile
 
-**Translation path:** `not_feasible` · **Query language:** `promql` · **Readiness:** `manual_only`
+**Translation path:** `rule_engine` · **Query language:** `promql` · **Readiness:** `metrics_mapping_needed`
 
 **Source (timeseries):**
 
@@ -1357,13 +1398,31 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
 - `query_translators` / `scaled_agg_family`
-- `query_translators` / `histogram_quantile_family` → histogram_quantile field type unsupported
+- `query_translators` / `histogram_quantile_family` → translated histogram_quantile to PERCENTILE
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
+- `query_validators` / `dynamic_metric_name`
+- `query_validators` / `time_filter_source_alignment`
+- `query_validators` / `live_metric_fields_exist`
+- `query_validators` / `rendered_query_required`
+- `query_validators` / `late_bound_group_control`
+- `panel_translators` / `metric_panel`
+- `panel_translators` / `bargauge_panel`
+- `panel_translators` / `xy_panel` → mapped to line panel
+
+**Translated (line):**
+
+```
+TS metrics-prometheus-*
+| WHERE http_request_duration_seconds IS NOT NULL
+| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 99) BY time_bucket = TBUCKET(5 minute), job
+| SORT time_bucket ASC
+```
 
 **Query IR:**
 
@@ -1374,14 +1433,16 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Output metric: `http_request_duration_seconds`
+- Output groups: `time_bucket, job`
+- Semantic losses: Dropped variable-driven label filters during migration, histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
 **Visual IR:**
 
-- Kibana type: `markdown`
+- Kibana type: `line`
 - Layout: x=24, y=24, w=24, h=12
-- Presentation kind: `markdown`
-- Config keys: content
+- Presentation kind: `esql`
+- Config keys: type, query, dimension, metrics, breakdown
 
 **Operational IR:**
 
@@ -1391,11 +1452,11 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 
 - targets: 1
 
-**Warnings:** histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+**Warnings:** histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
-**Verdict:** EXPECTED_LIMITATION
+**Verdict:** MINOR_ISSUE
 
 #### Request duration up to 5ms by request
 
@@ -1435,6 +1496,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1527,6 +1589,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1619,6 +1682,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1711,6 +1775,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1803,6 +1868,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1895,6 +1961,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -1987,6 +2054,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2079,6 +2147,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2171,6 +2240,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2263,6 +2333,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2322,8 +2393,8 @@ TS metrics-prometheus-*
 <details>
 <summary>Controls / Variables (2)</summary>
 
-- `Instance:` (type: `options`)
-- `Node Exporter:` (type: `options`)
+- `Instance:` (type: `esql`)
+- `Node Exporter:` (type: `esql`)
 
 </details>
 
@@ -2382,6 +2453,7 @@ count(up == 1)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2467,6 +2539,7 @@ scrape_duration_seconds
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2544,6 +2617,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2687,6 +2761,7 @@ up
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2757,7 +2832,7 @@ TS metrics-prometheus-*
 | Nodes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count by (node) (kube_node_info{cluster="$cluster"})) | FROM metrics-prometheus-* \| WHERE kube_node_info IS NOT NULL \| STATS kube_node... |
 | Kubernetes Resource Count | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_namespace_labels{cluster="$cluster"}) \|\|\| sum(kube_pod_container_sta... | TS metrics-prometheus-* \| WHERE kube_namespace_labels IS NOT NULL OR kube_pod_c... |
 | Namespaces | `stat` → `metric` | migrated | **MINOR_ISSUE** | count(kube_namespace_created{cluster="$cluster"}) | FROM metrics-prometheus-* \| WHERE kube_namespace_created IS NOT NULL \| STATS s... |
-| CPU Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_cpu_seconds_total{mode!~"idle\|iowait\|steal", cluster="$cluster",... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
+| CPU Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_cpu_seconds_total{mode!~"idle\|iowait\|steal", cluster="$cluster",... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL OR windows_c... |
 | RAM Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | Running Pods | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{phase="Running", cluster="$cluster"}) | TS metrics-prometheus-* \| WHERE phase == "Running" \| WHERE kube_pod_status_pha... |
 | Cluster CPU Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE NOT (mode RLIKE "idle\|iowait\|steal") \| WHERE... |
@@ -2768,7 +2843,7 @@ TS metrics-prometheus-*
 | Memory Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | CPU Throttled seconds by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"... | TS metrics-prometheus-* \| WHERE image != "" \| WHERE container_cpu_cfs_throttle... |
 | CPU Core Throttled by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_cpu_core_throttles_total{cluster="$cluster", job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_cpu_core_throttles_total IS NOT NULL \| ST... |
-| Kubernetes Pods QoS classes | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_status_qos_class{cluster="$cluster"}) by (qos_class) \|\|\| sum(kub... | TS metrics-prometheus-* \| WHERE kube_pod_status_qos_class IS NOT NULL \| STATS ... |
+| Kubernetes Pods QoS classes | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_status_qos_class{cluster="$cluster"}) by (qos_class) \|\|\| sum(kub... | TS metrics-prometheus-* \| WHERE kube_pod_status_qos_class IS NOT NULL OR kube_p... |
 | Kubernetes Pods Status Reason | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_reason{cluster="$cluster"}) by (reason) | TS metrics-prometheus-* \| WHERE kube_pod_status_reason IS NOT NULL \| STATS kub... |
 | OOM Events by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(container_oom_events_total{cluster="$cluster"}[$__rate_interval])) ... | TS metrics-prometheus-* \| WHERE container_oom_events_total IS NOT NULL \| STATS... |
 | Container Restarts by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(kube_pod_container_status_restarts_total{cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_restarts_total IS NOT... |
@@ -2812,6 +2887,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -2906,6 +2982,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3008,6 +3085,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3094,6 +3172,7 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3200,6 +3279,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3284,6 +3364,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3297,13 +3378,17 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 
 ```
 TS metrics-prometheus-*
-| WHERE NOT (mode RLIKE "idle|iowait|steal")
-| WHERE node_cpu_seconds_total IS NOT NULL
-| STATS node_cpu_seconds_total = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| WHERE node_cpu_seconds_total IS NOT NULL OR windows_cpu_time_total IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL OR machine_cpu_cores IS NOT NULL
+| STATS node_cpu_seconds_total_Real_Linux = SUM(CASE((NOT (mode RLIKE "idle|iowait|steal")), RATE(node_cpu_seconds_total, 5m), NULL)), windows_cpu_time_total_Real_Windows = SUM(CASE((mode != "idle"), RATE(windows_cpu_time_total, 5m), NULL)), kube_pod_container_resource_requests_Requests = SUM(SUM_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL), 5m)), kube_pod_container_resource_limits_Limits = SUM(SUM_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_limits, NULL), 5m)), machine_cpu_cores_Total = SUM(SUM_OVER_TIME(machine_cpu_cores, 5m)) BY time_bucket = TBUCKET(5 minute)
+| EVAL Real_Linux = node_cpu_seconds_total_Real_Linux
+| EVAL Real_Windows = windows_cpu_time_total_Real_Windows
+| EVAL Requests = kube_pod_container_resource_requests_Requests
+| EVAL Limits = kube_pod_container_resource_limits_Limits
+| EVAL Total = machine_cpu_cores_Total
 | SORT time_bucket ASC
-| STATS time_bucket = MAX(time_bucket), node_cpu_seconds_total = MAX(node_cpu_seconds_total)
-| KEEP time_bucket, node_cpu_seconds_total
-| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), Real_Linux = MAX(Real_Linux), Real_Windows = MAX(Real_Windows), Requests = MAX(Requests), Limits = MAX(Limits), Total = MAX(Total)
+| EVAL Real = COALESCE(Real_Linux, 0) + COALESCE(Real_Windows, 0)
+| KEEP Requests, Limits, Total, Real
 ```
 
 **Query IR:**
@@ -3316,15 +3401,15 @@ TS metrics-prometheus-*
 - Output shape: `single_value`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `node_cpu_seconds_total`
-- Semantic losses: Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific), Approximated grouped stat panel as summary table
+- Output metric: `Requests`
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
 - Kibana type: `datatable`
 - Layout: x=0, y=12, w=12, h=8
 - Presentation kind: `esql`
-- Config keys: type, query, metrics, breakdowns
+- Config keys: type, query, metrics
 
 **Operational IR:**
 
@@ -3335,9 +3420,9 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite; Approximated grouped stat panel as summary table
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3373,6 +3458,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3386,13 +3472,15 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 
 ```
 TS metrics-prometheus-*
-| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL
-| STATS node_memory_MemTotal_bytes_cluster_job_sum = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_cluster_job_sum = SUM(node_memory_MemAvailable_bytes) BY time_bucket = TBUCKET(5 minute)
-| EVAL computed_value = (node_memory_MemTotal_bytes_cluster_job_sum - node_memory_MemAvailable_bytes_cluster_job_sum)
+| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL OR machine_memory_bytes IS NOT NULL
+| STATS node_memory_MemTotal_bytes_Real_Linux_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Real_Linux_rhs = SUM(node_memory_MemAvailable_bytes), kube_pod_container_resource_requests_Requests = SUM(CASE((resource == "memory"), kube_pod_container_resource_requests, NULL)), kube_pod_container_resource_limits_Limits = SUM(CASE((resource == "memory"), kube_pod_container_resource_limits, NULL)), machine_memory_bytes_Total = SUM(machine_memory_bytes) BY time_bucket = TBUCKET(5 minute)
+| EVAL Real_Linux = (node_memory_MemTotal_bytes_Real_Linux_lhs - node_memory_MemAvailable_bytes_Real_Linux_rhs)
+| EVAL Requests = kube_pod_container_resource_requests_Requests
+| EVAL Limits = kube_pod_container_resource_limits_Limits
+| EVAL Total = machine_memory_bytes_Total
 | SORT time_bucket ASC
-| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)
-| KEEP time_bucket, computed_value
-| SORT time_bucket ASC
+| STATS time_bucket = MAX(time_bucket), Real_Linux = MAX(Real_Linux), Requests = MAX(Requests), Limits = MAX(Limits), Total = MAX(Total)
+| KEEP Requests, Limits, Total
 ```
 
 **Query IR:**
@@ -3403,15 +3491,15 @@ TS metrics-prometheus-*
 - Output shape: `single_value`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `computed_value`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific), Approximated grouped stat panel as summary table
+- Output metric: `Requests`
+- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Dropped 1 incompatible target(s); showing 4 mergeable targets (dropped targets are Windows-specific), Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
 - Kibana type: `datatable`
 - Layout: x=12, y=12, w=12, h=8
 - Presentation kind: `esql`
-- Config keys: type, query, metrics, breakdowns
+- Config keys: type, query, metrics
 
 **Operational IR:**
 
@@ -3422,9 +3510,9 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'organize' as ES|QL rewrite; Dropped 1 incompatible target(s); showing 4 mergeable targets (dropped targets are Windows-specific)
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Panel has 5 PromQL targets but only 1 could be migrated (1 of the dropped targets are Windows-specific); Approximated grouped stat panel as summary table
+**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Dropped 1 incompatible target(s); showing 4 mergeable targets (dropped targets are Windows-specific); Approximated grouped stat panel as summary table
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3467,6 +3555,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3554,6 +3643,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3644,6 +3734,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3736,6 +3827,7 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3824,6 +3916,7 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -3915,6 +4008,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4003,6 +4097,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4096,6 +4191,7 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4160,8 +4256,8 @@ TS metrics-prometheus-*
 <details>
 <summary>Controls / Variables (2)</summary>
 
-- `cluster` (type: `options`)
-- `job` (type: `options`)
+- `cluster` (type: `esql`)
+- `job` (type: `esql`)
 
 </details>
 
@@ -4224,6 +4320,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4314,6 +4411,7 @@ avg(queue_depth)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4405,6 +4503,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4493,6 +4592,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4629,6 +4729,7 @@ sum(kube_pod_info) by (pod)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4720,6 +4821,7 @@ avg(slo_burn_rate)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4798,6 +4900,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -4859,8 +4962,8 @@ FROM logs-*
 <details>
 <summary>Controls / Variables (2)</summary>
 
-- `service` (type: `options`)
-- `namespace` (type: `options`)
+- `service` (type: `esql`)
+- `namespace` (type: `esql`)
 
 </details>
 
@@ -4910,7 +5013,7 @@ FROM logs-*
 | Disk IOps | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
 | I/O Usage Read / Write | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job",device=~"$diskdevic... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
 | I/O Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL \| ... |
-| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator_A = SUM(IRATE(CASE((mode == "user"), ... |
+| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator_A = SUM(CASE((mode == "user"), IRATE(... |
 | Memory Active / Inactive | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_bytes{instance="$node",job="$job"} \|\|\| node_memory_Activ... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_bytes IS NOT NULL OR node_... |
 | Memory Committed | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Committed_AS_bytes{instance="$node",job="$job"} \|\|\| node_memory_C... | TS metrics-prometheus-* \| WHERE node_memory_Committed_AS_bytes IS NOT NULL OR n... |
 | Memory Active / Inactive Detail | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_file_bytes{instance="$node",job="$job"} \|\|\| node_memory_... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_file_bytes IS NOT NULL OR ... |
@@ -4943,7 +5046,7 @@ FROM logs-*
 | Threads Number and Limit | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_processes_threads{instance="$node",job="$job"} \|\|\| node_processes_max_th... | TS metrics-prometheus-* \| WHERE node_processes_threads IS NOT NULL OR node_proc... |
 | Context Switches / Interrupts | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_context_switches_total{instance="$node",job="$job"}[$__rate_interval]... | TS metrics-prometheus-* \| WHERE node_context_switches_total IS NOT NULL OR node... |
 | System Load | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_load1{instance="$node",job="$job"} \|\|\| node_load5{instance="$node",job="... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_load5 IS NOT NUL... |
-| CPU Frequency Scaling | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_cpu_scaling_frequency_hertz{instance="$node",job="$job"} \|\|\| avg(node_cp... | TS metrics-prometheus-* \| WHERE node_cpu_scaling_frequency_hertz IS NOT NULL \|... |
+| CPU Frequency Scaling | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_cpu_scaling_frequency_hertz{instance="$node",job="$job"} \|\|\| avg(node_cp... | TS metrics-prometheus-* \| WHERE node_cpu_scaling_frequency_hertz IS NOT NULL OR... |
 | Pressure Stall Information | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_pressure_cpu_waiting_seconds_total IS NOT ... |
 | Interrupts Detail | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_interrupts_total IS NOT NULL \| STATS node... |
 | Schedule timeslices executed by each cpu | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_schedstat_timeslices_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_schedstat_timeslices_total IS NOT NULL \| ... |
@@ -5045,6 +5148,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5141,6 +5245,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5233,6 +5338,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5324,6 +5430,7 @@ FROM metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5415,6 +5522,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5506,6 +5614,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5604,6 +5713,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5686,6 +5796,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5781,6 +5892,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5874,6 +5986,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -5965,6 +6078,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6048,6 +6162,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6064,7 +6179,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 ```
 TS metrics-prometheus-*
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS node_cpu_seconds_total_A_lhs = SUM(IRATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_B_lhs = SUM(IRATE(CASE((mode == "user"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_C_lhs = SUM(IRATE(CASE((mode == "iowait"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_D_lhs = SUM(IRATE(CASE((mode RLIKE ".*irq"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_E_lhs = SUM(IRATE(CASE((mode != "idle") and (mode != "user") and (mode != "system") and (mode != "iowait") and (mode != "irq") and (mode != "softirq"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_F_lhs = SUM(IRATE(CASE((mode == "idle"), node_cpu_seconds_total, NULL), 5m)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(5 minute)
+| STATS node_cpu_seconds_total_A_lhs = SUM(CASE((mode == "system"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((mode == "user"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((mode == "iowait"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((mode RLIKE ".*irq"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_E_lhs = SUM(CASE((mode != "idle") and (mode != "user") and (mode != "system") and (mode != "iowait") and (mode != "irq") and (mode != "softirq"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((mode == "idle"), IRATE(node_cpu_seconds_total, 5m), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(5 minute)
 | EVAL Busy_System = (node_cpu_seconds_total_A_lhs / node_cpu_seconds_total_A_rhs)
 | EVAL Busy_User = (node_cpu_seconds_total_B_lhs / node_cpu_seconds_total_B_rhs)
 | EVAL Busy_Iowait = (node_cpu_seconds_total_C_lhs / node_cpu_seconds_total_C_rhs)
@@ -6150,6 +6265,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6243,6 +6359,7 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6259,10 +6376,10 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 ```
 TS metrics-prometheus-*
 | WHERE node_network_receive_bytes_total IS NOT NULL OR node_network_transmit_bytes_total IS NOT NULL
-| STATS node_network_receive_bytes_total_A_lhs = AVG(IRATE(node_network_receive_bytes_total, 5m)), node_network_transmit_bytes_total_B_lhs = AVG(IRATE(node_network_transmit_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), device
+| STATS node_network_receive_bytes_total_A_lhs = IRATE(node_network_receive_bytes_total, 5m), node_network_transmit_bytes_total_B_lhs = IRATE(node_network_transmit_bytes_total, 5m) BY time_bucket = TBUCKET(5 minute)
 | EVAL recv = (node_network_receive_bytes_total_A_lhs * 8)
 | EVAL trans = (node_network_transmit_bytes_total_B_lhs * 8)
-| KEEP time_bucket, device, recv, trans
+| KEEP time_bucket, recv, trans
 | SORT time_bucket ASC
 ```
 
@@ -6275,7 +6392,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `recv`
-- Output groups: `time_bucket, device`
+- Output groups: `time_bucket`
 - Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
 
 **Visual IR:**
@@ -6283,7 +6400,7 @@ TS metrics-prometheus-*
 - Kibana type: `line`
 - Layout: x=0, y=11, w=24, h=10
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, legend
 
 **Operational IR:**
 
@@ -6295,7 +6412,7 @@ TS metrics-prometheus-*
 - field_overrides: 24
 - has_description: True
 
-**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math
+**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
 
@@ -6333,6 +6450,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6397,8 +6515,8 @@ TS metrics-prometheus-*
 <details>
 <summary>Controls / Variables (2)</summary>
 
-- `Job` (type: `options`)
-- `Host` (type: `options`)
+- `Job` (type: `esql`)
+- `Host` (type: `esql`)
 
 </details>
 
@@ -6440,7 +6558,7 @@ TS metrics-prometheus-*
 | Head chunks count | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(prometheus_tsdb_head_chunks{instance="$instance"}) by (instance) | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_chunks IS NOT NULL \| STAT... |
 | Length of head block | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | max(prometheus_tsdb_head_max_time{instance="$instance"}) by (instance) - min(pro... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_max_time IS NOT NULL OR pr... |
 | Head Chunks Created/Deleted per second | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(rate(prometheus_tsdb_head_chunks_created_total{instance="$instance"}[$aggreg... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_chunks_created_total IS NO... |
-| Compaction duration | `graph` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m])... | — |
+| Compaction duration | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m])... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_compaction_duration_sum IS NOT ... |
 | Go Garbage collection duration | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(prometheus_tsdb_head_gc_duration_seconds{instance="$instance"}) by (instance... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_gc_duration_seconds IS NOT... |
 | WAL truncate duration seconds | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(prometheus_tsdb_wal_truncate_duration_seconds{instance="$instance"}) by (ins... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_wal_truncate_duration_seconds I... |
 | WAL fsync duration seconds | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(tsdb_wal_fsync_duration_seconds{instance="$instance"}) by (instance, quantil... | TS metrics-prometheus-* \| WHERE tsdb_wal_fsync_duration_seconds IS NOT NULL \| ... |
@@ -6487,6 +6605,7 @@ time() - process_start_time_seconds{instance="$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6576,6 +6695,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6664,6 +6784,7 @@ prometheus_build_info{instance="$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6744,6 +6865,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6823,6 +6945,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6901,6 +7024,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -6992,6 +7116,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7086,6 +7211,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7183,6 +7309,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7276,6 +7403,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7367,6 +7495,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7458,6 +7587,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7547,6 +7677,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7643,6 +7774,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7738,6 +7870,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7798,7 +7931,7 @@ TS metrics-prometheus-*
 <details>
 <summary>Controls / Variables (1)</summary>
 
-- `Instance` (type: `options`)
+- `Instance` (type: `esql`)
 
 </details>
 
@@ -7816,7 +7949,7 @@ TS metrics-prometheus-*
 | Commands Executed / sec | `graph` → `line` | migrated | **MINOR_ISSUE** | rate(redis_commands_processed_total{instance=~"$instance"}[1m]) | TS metrics-prometheus-* \| WHERE redis_commands_processed_total IS NOT NULL \| S... |
 | Hits / Misses per Sec | `graph` → `line` | migrated | **MINOR_ISSUE** | irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) \|\|\| irate(redis_k... | TS metrics-prometheus-* \| WHERE redis_keyspace_hits_total IS NOT NULL OR redis_... |
 | Total Memory Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | redis_memory_used_bytes{instance=~"$instance"}  \|\|\| redis_memory_max_bytes{in... | TS metrics-prometheus-* \| WHERE redis_memory_used_bytes IS NOT NULL OR redis_me... |
-| Network I/O | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) \|\|\| rate(redis_n... | TS metrics-prometheus-* \| WHERE redis_net_input_bytes_total IS NOT NULL \| STAT... |
+| Network I/O | `graph` → `line` | migrated | **MINOR_ISSUE** | rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) \|\|\| rate(redis_n... | TS metrics-prometheus-* \| WHERE redis_net_input_bytes_total IS NOT NULL OR redi... |
 | Total Items per DB | `graph` → `area` | migrated | **MINOR_ISSUE** | sum (redis_db_keys{instance=~"$instance"}) by (db) | TS metrics-prometheus-* \| WHERE redis_db_keys IS NOT NULL \| STATS redis_db_key... |
 | Expiring vs Not-Expiring Keys | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc... | TS metrics-prometheus-* \| WHERE redis_db_keys IS NOT NULL OR redis_db_keys_expi... |
 | Expired / Evicted | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) \|\... | TS metrics-prometheus-* \| WHERE redis_expired_keys_total IS NOT NULL OR redis_e... |
@@ -7862,6 +7995,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -7953,6 +8087,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8033,6 +8168,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8123,6 +8259,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8211,6 +8348,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8304,6 +8442,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8393,6 +8532,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8408,8 +8548,11 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 
 ```
 TS metrics-prometheus-*
-| WHERE redis_net_input_bytes_total IS NOT NULL
-| STATS redis_net_input_bytes_total = AVG(RATE(redis_net_input_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), input
+| WHERE redis_net_input_bytes_total IS NOT NULL OR redis_net_output_bytes_total IS NOT NULL
+| STATS redis_net_input_bytes_total_A = RATE(redis_net_input_bytes_total, 5m), redis_net_output_bytes_total_B = RATE(redis_net_output_bytes_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| EVAL input = redis_net_input_bytes_total_A
+| EVAL output = redis_net_output_bytes_total_B
+| KEEP time_bucket, input, output
 | SORT time_bucket ASC
 ```
 
@@ -8422,16 +8565,16 @@ TS metrics-prometheus-*
 - Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
-- Output metric: `redis_net_input_bytes_total`
-- Output groups: `time_bucket, input`
-- Semantic losses: Dropped variable-driven label filters during migration, Panel has 2 PromQL targets but only 1 could be migrated
+- Output metric: `input`
+- Output groups: `time_bucket`
+- Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
 - Kibana type: `line`
 - Layout: x=24, y=11, w=24, h=10
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, legend
 
 **Operational IR:**
 
@@ -8441,9 +8584,7 @@ TS metrics-prometheus-*
 
 - targets: 2
 
-**Warnings:** Panel has 2 PromQL targets but only 1 could be migrated
-
-**Semantic losses:** Dropped variable-driven label filters during migration; Panel has 2 PromQL targets but only 1 could be migrated
+**Semantic losses:** Dropped variable-driven label filters during migration
 
 **Verdict:** MINOR_ISSUE
 
@@ -8484,6 +8625,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8566,6 +8708,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8658,6 +8801,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8748,6 +8892,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8844,6 +8989,7 @@ redis_connected_clients{instance="$instance"}
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
 - `query_postprocessors` / `or_vector_fallback_note`
+- `query_postprocessors` / `approx_agg_over_summary_ratio_note`
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
@@ -8899,9 +9045,9 @@ TS metrics-prometheus-*
 <details>
 <summary>Controls / Variables (3)</summary>
 
-- `Namespace` (type: `options`)
-- `Pod Name` (type: `options`)
-- `instance` (type: `options`)
+- `Namespace` (type: `esql`)
+- `Pod Name` (type: `esql`)
+- `instance` (type: `esql`)
 
 </details>
 
@@ -8917,12 +9063,13 @@ TS metrics-prometheus-*
 From the latest trace run:
 
 ```
+
 Elements:            273 total (250 panels + 23 rows)
 Renderable panels:   250
-  Migrated:              99 (39.6%)
-  With warnings:        141 (56.4%)
+  Migrated:             100 (40.0%)
+  With warnings:        143 (57.2%)
   Requires manual:        5 (2.0%)
-  Not feasible:           4 (1.6%)
+  Not feasible:           1 (0.4%)
   Skipped:                1 (0.4%)
 ```
 
@@ -8930,8 +9077,9 @@ Verdict breakdown:
 
 ```
   CORRECT:                   11
-  MINOR_ISSUE:              220
-  EXPECTED_LIMITATION:       42
+
+  MINOR_ISSUE:              223
+  EXPECTED_LIMITATION:       39
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -8940,22 +9088,18 @@ Verdict breakdown:
 ## Appendix: Not-Feasible Panel Breakdown
 
 <!-- GENERATED:NOT_FEASIBLE_BREAKDOWN -->
-Every panel marked `not_feasible` in the trace run (4 total):
+Every panel marked `not_feasible` in the trace run (1 total):
 
 | Panel Title | Dashboard | Source | Reason |
 |-------------|-----------|--------|--------|
-| Request duration 95th percentile | Express Prometheus Middleware | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
-| Request duration 99th percentile | Express Prometheus Middleware | grafana | histogram_quantile target field type could not be determined; cannot safely translate to ES\|QL PERCE... |
 | Top Metrics by Series Count | Home - Migration Test Lab | grafana | PromQL metric-name introspection via __name__ requires manual redesign |
-| Compaction duration | Prometheus 2.0 (by FUSAKLA) | grafana | Aggregating over a per-element / between two time-series (sum(A / B)) cannot be expressed accurately... |
 
 **Pattern analysis:**
 
-- **2×** histogram_quantile target field type could not be determined
 - **1×** PromQL metric-name introspection via __name__ requires manua
-- **1×** Aggregating over a per-element / between two time-series (su
 <!-- /GENERATED:NOT_FEASIBLE_BREAKDOWN -->
 
 ---
 
-*Last generated: 2026-07-16 07:55 UTC*
+
+*Last generated: 2026-07-17 06:11 UTC*

@@ -200,6 +200,12 @@ audit below.
   `by (exporter, $grouping)` collision that degrades to concrete grouping. The
   telemetry contract seeds every field-control choice and never treats
   `??grouping` itself as a physical field.
+- **Label-matcher param canaries:** `build_label_matcher_param_canary` uploads
+  variants for each `instance` choice so
+  `metric{instance="$instance"}` → `?instance` + values control is proven in
+  the same local render-audit path (gap A). Dashboard templating alone enables
+  named-param binding for offline migrate; a failed live probe still drops
+  matchers.
 
 **Auth.** Serverless is behind cloud SAML SSO, which a fresh automated browser
 can't pass. Two options:

@@ -1,5 +1,11 @@
 source: sum(rate(jvm_gc_pause_seconds_sum[1m])) by (application) / on(application) system_cpu_count
-feasibility: not_feasible
-warning: PromQL arithmetic with divergent filters/groupings cannot be translated safely yet
+feasibility: feasible
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
 ---
-
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE jvm_gc_pause_seconds_sum IS NOT NULL OR system_cpu_count IS NOT NULL
+| STATS jvm_gc_pause_seconds_sum_rate_sum = SUM(RATE(jvm_gc_pause_seconds_sum, 1m)), system_cpu_count = MAX(LAST_OVER_TIME(system_cpu_count)) BY time_bucket = TBUCKET(5 minute), application
+| EVAL computed_value = (jvm_gc_pause_seconds_sum_rate_sum / system_cpu_count)
+| KEEP time_bucket, application, computed_value
+| SORT time_bucket ASC

@@ -84,11 +84,18 @@ def _assert_no_bare_ts_alongside_case(query: str) -> None:
     if not any("CASE(" in a for a in assignments):
         return
     for assignment in assignments:
-        assert "IRATE(node_cpu_seconds_total, 1m)" not in assignment
-        assert re.search(
+        # Bare IRATE(field) is OK only when already nested in an outer CASE(...).
+        if re.search(
             rf"\b(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
             assignment,
-        ) is None or "CASE(" in assignment, assignment
+        ):
+            assert "CASE(" in assignment, assignment
+        # Reject truly bare measures: SUM(IRATE(field, w)) with no CASE at all.
+        if re.search(
+            rf"=\s*(?:SUM|AVG|MIN|MAX)?\(?\s*(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
+            assignment,
+        ) and "CASE(" not in assignment:
+            raise AssertionError(f"bare TS alongside CASE siblings: {assignment}")
 
 
 def _assert_eval_rhs_defined_after_stats(query: str) -> None:
@@ -391,9 +398,9 @@ def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
     )
     assert ctx.feasibility == "feasible"
     query = ctx.esql_query or ""
-    assert 'IRATE(CASE((mode == "user")' in query
-    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
-    assert "IRATE(node_cpu_seconds_total, 1m)" not in query
+    assert 'CASE((mode == "user"), IRATE(' in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
     assert structural_errors(check_esql_structure(query)) == []
 
 
@@ -436,7 +443,7 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             assert "EVAL CPU = node_cpu_scaling_frequency_hertz\n" not in query
             _assert_eval_rhs_defined_after_stats(query)
         else:
-            assert "IRATE(node_cpu_seconds_total, 1m)" not in query
-            assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
+            assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+            assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
             _assert_no_bare_ts_alongside_case(query)
         assert structural_errors(check_esql_structure(query)) == []
