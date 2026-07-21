@@ -6,7 +6,7 @@ warning: Dropped variable-driven label filters during migration
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE nginx_ingress_controller_requests IS NOT NULL
-| STATS nginx_ingress_controller_requests_status_4_5_rate_sum = SUM(RATE(CASE((NOT (status RLIKE "[4-5].*")), nginx_ingress_controller_requests, NULL), 5m)), nginx_ingress_controller_requests_controller_pod_rate_sum = SUM(RATE(CASE(true, nginx_ingress_controller_requests, NULL), 5m)) BY time_bucket = TBUCKET(5 minute), controller
+| STATS nginx_ingress_controller_requests_status_4_5_rate_sum = SUM(CASE((NOT (status RLIKE "[4-5].*")), RATE(nginx_ingress_controller_requests, 5m), NULL)), nginx_ingress_controller_requests_controller_pod_rate_sum = SUM(CASE(true, RATE(nginx_ingress_controller_requests, 5m), NULL)) BY time_bucket = TBUCKET(5 minute), controller
 | EVAL computed_value = (nginx_ingress_controller_requests_status_4_5_rate_sum / nginx_ingress_controller_requests_controller_pod_rate_sum)
 | KEEP time_bucket, controller, computed_value
 | SORT time_bucket ASC

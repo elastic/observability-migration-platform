@@ -4222,20 +4222,48 @@ _BARE_TS_VALUE_ARG = re.compile(
 )
 
 
+_OUTER_CASE_TS_FUNC = re.compile(
+    r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
+)
+
+
 def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
     """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
 
     Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
-    ``TS ... | STATS`` measure uses ``IRATE(CASE(cond, metric, NULL), …)`` and
-    another uses bare ``IRATE(other_metric, …)``. Wrapping the bare value arg
-    as ``CASE(true, other_metric, NULL)`` keeps semantics (always true) while
-    giving every time-series aggregate a CASE-shaped value expression.
+    ``TS ... | STATS`` measure uses a CASE-shaped time-series aggregate and
+    another uses a bare ``IRATE(other_metric, …)``.
+
+    Two CASE shapes appear in the translator:
+
+    * Inner (``IRATE(CASE(cond, metric, NULL), …)``): wrap bare siblings as
+      ``IRATE(CASE(true, other_metric, NULL), …)``.
+    * Outer (``CASE(cond, IRATE(metric, …), NULL)`` — required so ES 9.5 does
+      not Bucket-cast when filtering the counter argument of RATE/IRATE): wrap
+      bare siblings as ``CASE(true, IRATE(other_metric, …), NULL)`` and leave
+      already-outer-CASE measures alone so we do not nest ``CASE(true, …)``
+      inside an outer filter CASE.
 
     Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
     pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
     """
     if not any("CASE(" in assignment for assignment in assignments):
         return assignments
+
+    if any(_OUTER_CASE_TS_FUNC.search(assignment) for assignment in assignments):
+        def _wrap_outer(assignment: str) -> str:
+            if "CASE(" in assignment:
+                return assignment
+
+            def _repl(match: re.Match[str]) -> str:
+                return (
+                    f"CASE(true, {match.group('func')}({match.group('field')}, "
+                    f"{match.group('window')}), NULL)"
+                )
+
+            return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
+
+        return [_wrap_outer(assignment) for assignment in assignments]
 
     def _repl(match: re.Match[str]) -> str:
         return (
