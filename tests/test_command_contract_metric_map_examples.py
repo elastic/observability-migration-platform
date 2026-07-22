@@ -41,7 +41,6 @@ def test_command_contract_has_metric_map_operator_examples():
         "container_memory_working_set_bytes: container.memory.working_set",
         "container_network_receive_bytes_total:",
         "attribute_filter: { network.direction: receive }",
-        "--translation-mode esql",
         "--metric-map-file ./my-otel-metric-map.yaml",
         "#### Grafana existing-OTEL example",
         "#### Datadog existing-OTEL example",
@@ -69,6 +68,9 @@ def test_command_contract_has_metric_map_operator_examples():
     assert "grafana-migrate" not in metric_map_section
     assert "--rules-file ./my-grafana-otel-map.yaml" not in metric_map_section
     assert "--field-profile ./my-dd-otel-profile.yaml" not in metric_map_section
+    # Grafana and Datadog examples should not require an explicit translation-mode
+    # for the metric-map path; --metric-map-file auto-selects ES|QL on Grafana.
+    assert "--translation-mode esql" not in metric_map_section
 
 
 def test_command_contract_metric_map_yaml_examples_load_and_apply():

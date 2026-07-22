@@ -1928,12 +1928,13 @@ def _metric_map_bypass_note(metric_names, rule_pack):
     Native PROMQL embeds the *literal* source PromQL text and requires the
     target to already store data under those exact Prometheus metric names
     (see ``metrics_query_index`` / ``build_native_promql_query``). It never
-    calls ``resolve_metric_field``, so a rule-pack ``metric_map`` entry for
-    one of ``metric_names`` has no effect on this panel — silently keeping
-    the source name would contradict the "no silent renames/gaps" contract
+    calls ``resolve_metric_field``, so a ``metric_map`` entry for one of
+    ``metric_names`` has no effect on this panel — silently keeping the
+    source name would contradict the "no silent renames/gaps" contract
     metric_map makes elsewhere (schema.py ``resolve_metric_field``). Surface
-    it as a panel note instead so operators know to pass
-    ``--translation-mode esql`` if they need the mapped target metric here.
+    it as a panel note instead. ``--metric-map-file`` auto-selects ES|QL in
+    ``auto`` mode; this note usually means an explicit
+    ``--translation-mode native`` or a rule-pack-only map without that flag.
     """
     metric_map = getattr(rule_pack, "metric_map", None) or {}
     if not metric_map:
@@ -1943,8 +1944,8 @@ def _metric_map_bypass_note(metric_names, rule_pack):
         return None
     return (
         f"metric_map not applied for {', '.join(mapped)}: native PROMQL requires "
-        "literal target metric names; pass --translation-mode esql to apply "
-        "metric_map on this panel"
+        "literal target metric names; use ES|QL translation "
+        "(--metric-map-file auto-selects it, or pass --translation-mode esql)"
     )
 
 

@@ -184,17 +184,14 @@ per profile, and `is_counter()` resolves counter-vs-gauge
 (rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric`
 capability → the profile's counter field) so `rate()`/`irate()` stay correct.
 
-**`metric_map` and native PROMQL do not mix.** Native PROMQL (the default,
-highest-fidelity path described in [Overview](#overview) above) embeds the
-*literal* source PromQL text and requires the target to already store data
-under those exact Prometheus metric names; it never calls
-`resolve_metric_field`, so a `metric_map` entry has no effect on a panel that
-lands on that path. The migration still degrades gracefully instead of hiding
-the gap: a panel note (`metric_map not applied for <metric>: native PROMQL
-requires literal target metric names; pass --translation-mode esql to apply
-metric_map on this panel`) is attached and the panel is marked
-`migrated_with_warnings`. Pass `--translation-mode esql` to force ES|QL
-translation everywhere `metric_map` needs to apply.
+**`metric_map` and native PROMQL do not mix.** Native PROMQL embeds the
+*literal* source PromQL text and never calls `resolve_metric_field`. When you
+pass `--metric-map-file` and leave `--translation-mode` at `auto`, Grafana
+automatically uses ES|QL translation so the map applies — the same operator
+path as Datadog. If you force `--translation-mode native` while a map is
+loaded, panels that stay on the native path attach a warning
+(`metric_map not applied for <metric>: native PROMQL requires literal target
+metric names`) and are marked `migrated_with_warnings`.
 
 > **Verify requires live data.** Without `--es-url`, or before telemetry lands,
 > per-field status may be `unknown` — the planned layout still drives emitted

@@ -137,7 +137,7 @@ Datadog.
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
 | `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write` (Fleet `use_types` typed leaves), `prometheus_metrics` (classic Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. Datadog Prometheus profiles apply label paths to metric queries while log queries retain ECS / OTel fields. |
-| `--metric-map-file` | Grafana, Datadog | Source metric name → target field override file | Source-neutral YAML with top-level `metric_map`. Use this for explicit metric renames while `--field-profile` continues to select the target schema family. May be repeated; later files override earlier entries and adapter-specific maps. |
+| `--metric-map-file` | Grafana, Datadog | Source metric name → target field override file | Source-neutral YAML with top-level `metric_map`. Use this for explicit metric renames while `--field-profile` continues to select the target schema family. May be repeated; later files override earlier entries and adapter-specific maps. On Grafana, when mode is still `auto`, this also selects ES\|QL translation so the map applies (parity with Datadog). |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -498,10 +498,10 @@ accepted by `--metric-map-file`.
 
 #### Grafana existing-OTEL example
 
-Run the migration against the existing OTEL metrics stream. Use
-`--translation-mode esql` when the map must apply to PromQL panels; native
-PROMQL embeds literal source metric names and will warn instead of applying the
-map.
+Run the migration against the existing OTEL metrics stream. With
+`--metric-map-file`, Grafana automatically uses ES|QL translation so the map
+applies (same operator path as Datadog). Pass `--translation-mode native` only
+if you intentionally want literal Prometheus metric names instead.
 
 ```bash
 .venv/bin/obs-migrate migrate \
@@ -512,7 +512,6 @@ map.
   --assets dashboards \
   --field-profile otel \
   --metric-map-file ./my-otel-metric-map.yaml \
-  --translation-mode esql \
   --data-view metrics-otel-* \
   --esql-index metrics-otel-* \
   --es-url "$ELASTICSEARCH_ENDPOINT" \

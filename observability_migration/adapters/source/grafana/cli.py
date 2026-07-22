@@ -291,7 +291,8 @@ def parse_args(argv: list[str] | None = None):
         default=[],
         help=(
             "Source-neutral YAML file with top-level metric_map entries. "
-            "May be repeated; later files override earlier entries and loaded rule packs."
+            "May be repeated; later files override earlier entries and loaded rule packs. "
+            "When set with --translation-mode auto, selects ES|QL translation so the map applies."
         ),
     )
     parser.add_argument(
@@ -1296,6 +1297,10 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
     (issue #158): ``esql`` disables native PROMQL entirely, ``native`` forces it
     on (still probing only to warn when the command is confirmed absent), and
     ``auto`` keeps the probe behavior described above.
+
+    When ``--metric-map-file`` is set and mode is still ``auto``, prefer ES|QL
+    translation so exact metric renames actually apply (parity with Datadog).
+    Explicit ``--translation-mode native`` still wins.
     """
     mode = str(getattr(args, "translation_mode", "auto") or "auto").lower()
     es_url = getattr(args, "es_url", "") or ""
@@ -1304,6 +1309,13 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
         print(
             "  --translation-mode esql: native PROMQL disabled by user request; "
             "all panels use the ES|QL translator"
+        )
+        return False
+
+    if mode == "auto" and getattr(args, "metric_map_file", None):
+        print(
+            "  --metric-map-file set: using ES|QL translation so metric_map applies "
+            "(pass --translation-mode native to keep native PROMQL)"
         )
         return False
 
