@@ -443,6 +443,118 @@ if needed, hand-edit) which index it kept. This is intentional and does not
 warn, because dashboards that mix ES|QL log/metric panels with PromQL panels
 legitimately target different indexes on purpose.
 
+### Reusing existing OTEL metrics with `metric_map`
+
+Use `metric_map` when the dashboard was authored against one metric vocabulary
+but the target Elasticsearch data uses another one. This is common when a
+Grafana Kubernetes dashboard uses Prometheus/cAdvisor metric names while the
+target cluster already has OpenTelemetry semantic-convention metrics, or when a
+Datadog customer moves collection from the Datadog Agent to OTel.
+
+`metric_map` is an operator-authored override, not an auto-suggested mapping
+library. Build it from your target schema knowledge plus the migration
+artifacts (`required_target_contract.json` / `target_readiness_contract.json`
+and `schema_change_report.md`), then verify against real data with
+`--es-url --preflight`. Offline runs can validate the YAML shape, but live
+field status remains `unknown` until `_field_caps` can inspect the target
+index.
+
+#### Grafana existing-OTEL example
+
+Example `my-grafana-otel-map.yaml`:
+
+```yaml
+query:
+  metric_map:
+    # Exact same measurement/unit: v1 applies this rename.
+    container_memory_working_set_bytes: container.memory.working_set
+
+    # Class-2: v1 records this as an explicit gap because the target needs a
+    # direction filter. It is not emitted as a silent bare rename.
+    container_network_receive_bytes_total:
+      target: k8s.pod.network.io
+      attribute_filter: { network.direction: receive }
+```
+
+Run the migration against the existing OTEL metrics stream. Use
+`--translation-mode esql` when the map must apply to PromQL panels; native
+PROMQL embeds literal source metric names and will warn instead of applying the
+map.
+
+```bash
+.venv/bin/obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir ./grafana_exports \
+  --output-dir ./out_grafana_otel \
+  --assets dashboards \
+  --field-profile otel \
+  --rules-file ./my-grafana-otel-map.yaml \
+  --translation-mode esql \
+  --data-view metrics-otel-* \
+  --esql-index metrics-otel-* \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY" \
+  --preflight
+```
+
+Expected result:
+
+- Exact entries appear in emitted ES|QL and in `dashboards/native/*.native.json`.
+- `required_target_contract.json` includes `mapped_from` for renamed fields.
+- Class-2 entries (`transform`, `attribute_filter`, or non-1 `unit_scale`) stay
+  as explicit gaps in v1. The source metric remains in the query instead of a
+  green-but-wrong target rename.
+- For standard Kubernetes OTEL dashboards, first compare against the managed
+  `[OTEL] [Metrics Kubernetes]` dashboards. If adapting a migrated board, bind
+  `--data-view` / `--esql-index` to the same metrics stream those dashboards
+  use.
+
+#### Datadog metric-map profile override example
+
+Datadog uses the active field profile as the metric mapping surface. Put
+`metric_map` in a YAML profile and pass it with `--field-profile`; explicit
+`--data-view` overrides the profile's `metric_index` when both are present.
+
+Example `my-dd-otel-profile.yaml`:
+
+```yaml
+name: my-dd-otel
+metric_index: metrics-otel-*
+logs_index: logs-*
+metric_map:
+  # Exact: v1 applies this rename.
+  system.cpu.user: system.cpu.user.pct
+
+  # Class-2: v1 records a gap because rate/unit semantics are not emitted yet.
+  system.net.bytes_rcvd:
+    target: system.network.in.bytes
+    transform: to_rate
+```
+
+Run:
+
+```bash
+datadog-migrate \
+  --input-dir ./datadog_exports \
+  --output-dir ./out_dd_otel \
+  --assets dashboards \
+  --field-profile ./my-dd-otel-profile.yaml \
+  --data-view metrics-otel-* \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --es-api-key "$KEY" \
+  --preflight
+```
+
+Expected result:
+
+- Exact entries apply through the same shared core as Grafana.
+- Class-2 entries remain source-name based and show a gap reason in the report.
+- `target_readiness_contract.json` lists required target fields and includes
+  `mapped_from` for default or explicit metric renames.
+- Custom application metrics stay unmapped/missing until the operator authors
+  explicit rows or keeps collection names aligned.
+
 `--logs-index` is the log analog: it sets the index / data stream written into
 translated Loki / LogQL panels. Unlike `--esql-index`, it does **not** fall back
 to `--data-view` — when unset it defaults to the source/profile log index
