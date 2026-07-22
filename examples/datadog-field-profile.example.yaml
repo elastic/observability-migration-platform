@@ -17,6 +17,16 @@ metric_map:
   system.mem.usable: system.memory.actual.used.bytes
   trace.flask.request.hits: trace.flask.request.hits
   nginx.requests.total_count: nginx.requests.total_count
+  # Class-2 examples (Agent → OTel-style hazards) — synthetic names:
+  # source.rate_as_gauge:
+  #   target: target.pre_rated_gauge
+  #   transform: drop_rate
+  # source.cumulative_counter:
+  #   target: target.bytes_total
+  #   transform: to_rate
+  # source.nanocores:
+  #   target: target.cpu.usage
+  #   unit_scale: 1.0e-9
 
 tag_map:
   host: host.name

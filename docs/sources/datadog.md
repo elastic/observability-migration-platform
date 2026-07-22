@@ -188,6 +188,23 @@ and applies `metric_prefix` and `metric_suffix`.
 > --preflight`. `elastic_agent` is the only built-in profile with metric-name
 > overrides, and only for common `system.*` metrics.
 
+### Agent → OTel collection switch (temporality and units)
+
+When the same logical metric moves from the Datadog Agent to an OTel collector
+(or any path that changes **temporality** or **units**), Class-1 renames alone
+are not enough:
+
+| Hazard | Symptom | Remedy via `--metric-map-file` |
+|---|---|---|
+| Cumulative vs delta / rate | Rate panels too high/low or empty after switch | `transform: to_rate` when the target is a cumulative counter; `transform: drop_rate` when the target is already a pre-rated gauge |
+| Unit scale (e.g. nanocores ↔ cores, bytes ↔ KiB) | Charts off by a constant factor | `unit_scale:` (multiply the emitted aggregate) |
+| Counter typing unknown offline | Translator cannot prove `RATE()` is safe | Run with `--es-url` so `_field_caps` can confirm `time_series_metric=counter`, or set `metric_kinds` / map transform explicitly |
+
+Preflight `target_readiness_contract.json` records `counter_expectations` for
+rate-bearing widgets when live caps are available. Panel warnings also call
+out approximate delta rates and point at `--metric-map-file` for Agent→OTel
+switches.
+
 **Translation behavior for tags:** Metric queries check `tag_map`, then apply
 `tag_prefix` (if set) or keep the original tag name. Log queries use
 `log_tag_map` when the profile provides one; unmapped log attributes then stay

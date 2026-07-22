@@ -747,6 +747,27 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
                 out["styling"] = safe_styling
         return out
 
+    # Cross-data-stream XY: each YAML layer carries its own ES|QL query.
+    extra_layers = cfg.get("layers") if isinstance(cfg.get("layers"), list) else []
+    query_bearing_layers = [
+        layer for layer in extra_layers
+        if isinstance(layer, dict) and str(layer.get("query") or "").strip()
+    ]
+    if query_bearing_layers:
+        primary_layer = _xy_api_layer_from_chart_cfg(cfg, query)
+        layers = [primary_layer]
+        for layer_cfg in query_bearing_layers:
+            layer_query = str(layer_cfg.get("query") or "").strip()
+            layers.append(_xy_api_layer_from_chart_cfg(layer_cfg, layer_query))
+        out = {"type": "xy", "title": title, "layers": layers}
+        legend = _api_legend(cfg.get("legend"), kind="xy")
+        if legend:
+            out["legend"] = legend
+        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        if axis:
+            out["axis"] = axis
+        return out
+
     layer: dict[str, Any] = {
         "type": _xy_series_type(cfg),
         "data_source": {"type": "esql", "query": query},
@@ -775,6 +796,26 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         if safe_styling:
             out["styling"] = safe_styling
     return out
+
+
+def _xy_api_layer_from_chart_cfg(cfg: dict[str, Any], query: str) -> dict[str, Any]:
+    """Build one Dashboards API XY layer from a YAML chart/layer config."""
+    layer: dict[str, Any] = {
+        "type": _xy_series_type(cfg),
+        "data_source": {"type": "esql", "query": query},
+    }
+    x = _api_column(cfg.get("dimension"), role="x")
+    if x:
+        layer["x"] = x
+    y = _columns(cfg.get("metrics"), role="xy_y")
+    layer["y"] = y or [{"column": "value"}]
+    bd = (
+        _api_column(cfg.get("breakdown"), role="breakdown")
+        or _first_column(cfg.get("breakdowns"), role="breakdown")
+    )
+    if bd:
+        layer["breakdown_by"] = bd
+    return layer
 
 
 def _cfg_metric(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:

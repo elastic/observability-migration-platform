@@ -580,7 +580,16 @@ Reads `required_target_contract.json`, `target_readiness_contract.json`, and/or
 that are not already mapped, and writes source-neutral YAML with empty
 `target: ""` placeholders and `provenance: scaffold`. Those entries load safely
 but resolve as unapplied gaps until each target is filled. The scaffold never
-invents target names.
+invents target names. Prometheus recording-rule-style names (containing `:`)
+also get a scaffold hint of `transform: drop_rate` plus a header comment —
+fill `target` with the pre-rated gauge/OTel field (or recreate the rule);
+do not treat those names as exact renames to a counter.
+
+Authoring tip: start from scaffold output, fill Class-1 renames first, then add
+Class-2 fields (`attribute_filter`, `transform`, `unit_scale`, `target_index`,
+`variants`) only where the target schema needs them. Prefer
+`--metric-map-file` over embedding maps in rule packs / field profiles so the
+same file works for Grafana and Datadog.
 
 #### Advanced alternatives
 

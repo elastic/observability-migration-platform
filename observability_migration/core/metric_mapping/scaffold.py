@@ -115,14 +115,35 @@ def build_scaffold_yaml(artifact_dir: str | Path) -> str:
     Entries use empty ``target`` with ``provenance: scaffold``. They parse and
     load safely, but resolve as unapplied gaps until the operator fills each
     target (and optional Class-2 fields).
+
+    Colon-looking Prometheus recording-rule names get a commented Class-2 stub
+    hint (``transform: drop_rate``) so operators know to map to a pre-rated
+    gauge rather than treating the rule as a bare rename.
     """
     from .entries import SCAFFOLD_PROVENANCE
+    from .recording_rules import looks_like_recording_rule_metric
 
     unmapped = collect_unmapped_source_metrics(artifact_dir)
     payload: dict[str, Any] = {"metric_map": {}}
+    recording_rule_sources: list[str] = []
     for source in unmapped:
-        payload["metric_map"][source] = {
+        entry: dict[str, Any] = {
             "target": "",
             "provenance": SCAFFOLD_PROVENANCE,
         }
-    return yaml.safe_dump(payload, sort_keys=True, allow_unicode=True)
+        if looks_like_recording_rule_metric(source):
+            # Hint only: empty target still resolves as a scaffold gap.
+            entry["transform"] = "drop_rate"
+            recording_rule_sources.append(source)
+        payload["metric_map"][source] = entry
+
+    body = yaml.safe_dump(payload, sort_keys=True, allow_unicode=True)
+    if not recording_rule_sources:
+        return body
+    header = (
+        "# Recording-rule-style names (contain ':') include transform: drop_rate as a\n"
+        "# scaffold hint. Fill target with the pre-rated OTel/gauge field (or recreate\n"
+        "# the rule); do not treat these as exact renames to a counter.\n"
+        f"# Hinted sources: {', '.join(recording_rule_sources)}\n"
+    )
+    return header + body

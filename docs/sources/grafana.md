@@ -176,10 +176,15 @@ with `transform` or `attribute_filter`, or a non-1 `unit_scale`, are
 **class-2**: the target rename applies and emitters honor filter, scale, and
 rate-transform semantics in ES|QL (with warnings when counter/gauge kind is
 unknown for transform planning).
-Author maps for your environment; the tool does not auto-suggest metric
-renames. Preflight
+Author maps for your environment with `--metric-map-file` (and
+`obs-migrate metric-map scaffold` to list unmapped sources); the tool does not
+ship a dashboard-specific Prom→OTel dictionary or auto-suggest renames.
+Preflight
 `required_target_contract.json` lists required fields (a worklist, not a full
 Prom→OTEL dictionary) and may include `mapped_from` when source ≠ target.
+Unmapped Prometheus recording-rule names (colon-separated) are flagged in
+panel notes and contract gaps so empty panels are not mistaken for ordinary
+rename misses.
 
 `resolve_metric_field()` applies `metric_map` first, then rewrites metric names
 per profile, and `is_counter()` resolves counter-vs-gauge

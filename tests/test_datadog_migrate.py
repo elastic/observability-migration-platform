@@ -1420,6 +1420,16 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("MAX(", result.esql_query)
         self.assertIn("MIN(", result.esql_query)
 
+    def test_as_rate_warning_mentions_agent_to_otel_metric_map(self):
+        result = self._translate_metric_widget("sum:http.requests{*}.as_rate()")
+        self.assertTrue(
+            any(
+                "Agent→OTel" in str(w) and "--metric-map-file" in str(w)
+                for w in (result.warnings or [])
+            ),
+            result.warnings,
+        )
+
     def test_metric_template_variable_becomes_broad_match(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:$host}", force_esql=True)
         self.assertNotIn("$host", result.esql_query)
@@ -4254,6 +4264,41 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
         self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+
+    def test_target_readiness_contract_includes_counter_expectations_for_as_rate(self):
+        field_map = load_profile("otel")
+        metric_cap = FieldCapability(name="http_requests", type="double")
+        metric_cap.aggregatable = True
+        metric_cap.time_series_metric_kind = "counter"
+        field_map.metric_field_caps = {"http_requests": metric_cap}
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "sum:http.requests{*}.as_rate()"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="timeseries",
+            title="Reqs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                ),
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            field_map,
+        )
+
+        self.assertIn("http_requests", contract.get("counter_expectations") or {})
+        self.assertTrue(
+            contract["counter_expectations"]["http_requests"]["expected_counter"],
+        )
+        self.assertEqual(contract["totals"].get("counters_expected"), 1)
 
     def test_dashboard_pipeline_writes_target_readiness_contract(self):
         args = argparse.Namespace(

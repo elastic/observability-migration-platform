@@ -2689,6 +2689,31 @@ def bargauge_panel_rule(context):
     return "approximated bargauge panel"
 
 
+def _xy_layer_from_cross_index_spec(layer_spec, chart_type, mode=None, warnings=None):
+    """Build one YAML XY chart dict for a cross-index layer partition."""
+    metric_fields = list(layer_spec.get("metric_fields") or [])
+    group_fields = list(layer_spec.get("group_fields") or [])
+    query = layer_spec.get("query") or ""
+    if len(metric_fields) > 1:
+        return _build_esql_multi_series_xy(
+            query,
+            chart_type,
+            metric_fields=metric_fields,
+            by_cols=group_fields,
+            mode=mode,
+            warnings=warnings,
+        )
+    metric_col = metric_fields[0] if metric_fields else None
+    return _build_esql_xy_panel(
+        query,
+        chart_type,
+        metric_col=metric_col,
+        by_cols=group_fields,
+        mode=mode,
+        warnings=warnings,
+    )
+
+
 @PANEL_TRANSLATORS.register("xy_panel", priority=20)
 def xy_panel_rule(context):
     if context.kibana_type not in ("line", "bar", "area") or context.panel_type == "bargauge":
@@ -2699,6 +2724,28 @@ def xy_panel_rule(context):
     legend_template = primary.metadata.get("legend_format_template") or None
     legend_labels = _extract_legend_labels(legend_template) if legend_template else []
     composite_template = legend_template if len(legend_labels) >= 2 else None
+    cross_layers = primary.metadata.get("cross_index_layers") or []
+    if isinstance(cross_layers, list) and len(cross_layers) >= 2:
+        built = []
+        for layer_spec in cross_layers:
+            if not isinstance(layer_spec, dict) or not layer_spec.get("query"):
+                continue
+            layer_panel = _xy_layer_from_cross_index_spec(
+                layer_spec,
+                context.kibana_type,
+                mode=mode,
+                warnings=primary.warnings,
+            )
+            if isinstance(layer_panel, dict) and layer_panel.get("query"):
+                built.append(layer_panel)
+        if len(built) >= 2:
+            panel = dict(built[0])
+            # Additional full chart layers keep their own ES|QL query so mixed
+            # target_index panels do not collapse onto the first data stream.
+            panel["layers"] = built[1:]
+            context.yaml_panel["esql"] = panel
+            context.handled = True
+            return f"mapped to {context.kibana_type} panel (cross-index layers)"
     if series_fields:
         context.yaml_panel["esql"] = _build_esql_multi_series_xy(
             primary.esql_query,
@@ -3165,25 +3212,96 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             for et in feasible_translations[1:]:
                 if _translations_compatible(*(fused_series + [et])):
                     fused_series.append(et)
+            # Same-index-incompatible targets may still share the panel via
+            # separate Lens layers when their ES|QL indexes differ.
+            if len(fused_series) < len(feasible_translations):
+                leftover = [t for t in feasible_translations if t not in fused_series]
+                for et in leftover:
+                    if _translation_query_index(et) and (
+                        _translation_query_index(et) != _translation_query_index(primary)
+                    ):
+                        fused_series.append(et)
         primary = fused_series[0]
         fused_extra = fused_series[1:]
         if len(fused_series) > 1:
-            merged_query = _build_multi_target_series_query(fused_series)
-            if merged_query is None:
-                # Formula-plan fusion can fail on complex OR-chain targets that
-                # each translate alone (MySQL Network Traffic). Fall back to
-                # splicing the already-translated ES|QL bodies.
-                merged_query = _merge_pretranslated_xy_queries(fused_series)
-            if merged_query:
-                primary.esql_query = merged_query["query"]
-                primary.source_type = merged_query["source_type"]
-                primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
-                primary.metadata["multi_series_metric_labels"] = merged_query.get("metric_label_hints", {})
-                primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
-                primary.output_metric_field = merged_query["metric_fields"][0]
-                primary.output_group_fields = merged_query["group_fields"]
-                for warning in merged_query["warnings"]:
-                    _append_unique(primary.warnings, warning)
+            index_groups = _partition_translations_by_index(fused_series)
+            distinct_indexes = [idx for idx, _ in index_groups if idx]
+            if len(distinct_indexes) > 1:
+                cross_layers = []
+                for _index, group in index_groups:
+                    layer = _fuse_same_index_series(group)
+                    if layer is None:
+                        continue
+                    cross_layers.append(layer)
+                if len(cross_layers) >= 2:
+                    primary.esql_query = cross_layers[0]["query"]
+                    primary.source_type = cross_layers[0]["source_type"]
+                    primary.metadata["cross_index_layers"] = cross_layers
+                    primary.metadata["multi_series_metric_fields"] = list(
+                        cross_layers[0].get("metric_fields") or []
+                    )
+                    primary.metadata["multi_series_metric_labels"] = dict(
+                        cross_layers[0].get("metric_label_hints") or {}
+                    )
+                    primary.output_metric_field = (
+                        (cross_layers[0].get("metric_fields") or [None])[0]
+                        or primary.output_metric_field
+                    )
+                    primary.output_group_fields = list(
+                        cross_layers[0].get("group_fields") or primary.output_group_fields or []
+                    )
+                    collapsed = []
+                    for layer in cross_layers:
+                        collapsed.extend(layer.get("targets") or [])
+                        for warning in layer.get("warnings") or []:
+                            _append_unique(primary.warnings, warning)
+                    primary.metadata["collapsed_targets"] = collapsed
+                    # Extra single-query overlays would fight per-index layers.
+                    fused_extra = []
+                    streams = ", ".join(
+                        layer.get("index") or "(default)" for layer in cross_layers
+                    )
+                    _append_unique(
+                        primary.warnings,
+                        "Split multi-target panel across distinct data streams "
+                        f"({streams}); each stream is a separate chart layer",
+                    )
+                else:
+                    # Fall through to single-query merge with whatever fused.
+                    merged_query = _build_multi_target_series_query(fused_series)
+                    if merged_query is None:
+                        merged_query = _merge_pretranslated_xy_queries(fused_series)
+                    if merged_query:
+                        primary.esql_query = merged_query["query"]
+                        primary.source_type = merged_query["source_type"]
+                        primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
+                        primary.metadata["multi_series_metric_labels"] = merged_query.get(
+                            "metric_label_hints", {}
+                        )
+                        primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
+                        primary.output_metric_field = merged_query["metric_fields"][0]
+                        primary.output_group_fields = merged_query["group_fields"]
+                        for warning in merged_query["warnings"]:
+                            _append_unique(primary.warnings, warning)
+            else:
+                merged_query = _build_multi_target_series_query(fused_series)
+                if merged_query is None:
+                    # Formula-plan fusion can fail on complex OR-chain targets that
+                    # each translate alone (MySQL Network Traffic). Fall back to
+                    # splicing the already-translated ES|QL bodies.
+                    merged_query = _merge_pretranslated_xy_queries(fused_series)
+                if merged_query:
+                    primary.esql_query = merged_query["query"]
+                    primary.source_type = merged_query["source_type"]
+                    primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
+                    primary.metadata["multi_series_metric_labels"] = merged_query.get(
+                        "metric_label_hints", {}
+                    )
+                    primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
+                    primary.output_metric_field = merged_query["metric_fields"][0]
+                    primary.output_group_fields = merged_query["group_fields"]
+                    for warning in merged_query["warnings"]:
+                        _append_unique(primary.warnings, warning)
     if (
         len(targets_with_expr) > 1
         and len(fused_series) == 1
@@ -3365,6 +3483,31 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if yaml_panel.get("esql", {}).get("query"):
         primary.esql_query = yaml_panel["esql"]["query"]
         primary.query_ir = build_query_ir(primary)
+    # Surface unmapped Prometheus recording-rule metrics on the ES|QL path
+    # (native PROMQL already does this) so operators see the same gap notes.
+    source_metrics_for_notes: list[str] = []
+    for series in list(fused_series or []) or [primary]:
+        frag = getattr(series, "fragment", None)
+        if frag is not None:
+            source_metrics_for_notes.extend(_collect_source_metrics(frag))
+        metric_name = str(getattr(series, "metric_name", "") or "").strip()
+        if metric_name:
+            source_metrics_for_notes.append(metric_name)
+    if not source_metrics_for_notes:
+        from observability_migration.core.metric_mapping.scaffold import (
+            _PROMQL_METRIC_TOKEN_RE,
+        )
+
+        for expr in promql_exprs or []:
+            source_metrics_for_notes.extend(
+                match.group(1)
+                for match in _PROMQL_METRIC_TOKEN_RE.finditer(str(expr or ""))
+            )
+    for recording_rule_note in _recording_rule_metric_map_notes(
+        source_metrics_for_notes,
+        rule_pack,
+    ):
+        _append_unique(primary.warnings, recording_rule_note)
     panel_confidence = 0.85 if not primary.warnings else 0.6
     status = "migrated" if not primary.warnings else "migrated_with_warnings"
 
@@ -3983,9 +4126,86 @@ def _build_multi_target_series_query(translations):
 def _translations_compatible(*translations):
     """Check if translations can be fused into a single XY panel safely."""
     items = list(translations)
+    if not items:
+        return False
+    indexes = {_translation_query_index(t) for t in items}
+    indexes.discard("")
+    # Distinct non-empty indexes cannot share one ES|QL pipeline.
+    if len(indexes) > 1:
+        return False
     if _build_multi_target_series_query(items) is not None:
         return True
     return _merge_pretranslated_xy_queries(items) is not None
+
+
+def _translation_query_index(translation) -> str:
+    """Return the ES|QL index pattern for a translated target."""
+    query = getattr(translation, "esql_query", None) or ""
+    if query:
+        from observability_migration.adapters.source.grafana.esql_validate import (
+            _query_source_and_index,
+        )
+
+        _, index = _query_source_and_index(query)
+        if index:
+            return str(index).strip()
+    return str(getattr(translation, "index", "") or "").strip()
+
+
+def _partition_translations_by_index(translations):
+    """Group translations by ES|QL index; empty index buckets last."""
+    groups: dict[str, list] = {}
+    for translation in translations:
+        index = _translation_query_index(translation) or ""
+        groups.setdefault(index, []).append(translation)
+    ordered = []
+    for index in sorted(k for k in groups if k):
+        ordered.append((index, groups[index]))
+    if "" in groups:
+        ordered.append(("", groups[""]))
+    return ordered
+
+
+def _fuse_same_index_series(group):
+    """Merge one same-index translation group into a layer dict, or None."""
+    if not group:
+        return None
+    if len(group) == 1:
+        t = group[0]
+        metric_fields = list(t.metadata.get("multi_series_metric_fields") or [])
+        if not metric_fields and t.output_metric_field:
+            metric_fields = [t.output_metric_field]
+        return {
+            "query": t.esql_query,
+            "source_type": t.source_type,
+            "metric_fields": metric_fields,
+            "metric_label_hints": dict(t.metadata.get("multi_series_metric_labels") or {}),
+            "group_fields": list(t.output_group_fields or []),
+            "warnings": list(t.warnings or []),
+            "targets": [
+                {
+                    "ref_id": t.metadata.get("target_ref_id") or "",
+                    "source_expr": str(t.metadata.get("target_source_expr") or ""),
+                    "whole_translated": True,
+                }
+            ],
+            "index": _translation_query_index(t),
+        }
+    merged = _build_multi_target_series_query(group)
+    if merged is None:
+        merged = _merge_pretranslated_xy_queries(group)
+    if not merged:
+        return None
+    return {
+        "query": merged["query"],
+        "source_type": merged["source_type"],
+        "metric_fields": list(merged.get("metric_fields") or []),
+        "metric_label_hints": dict(merged.get("metric_label_hints") or {}),
+        "group_fields": list(merged.get("group_fields") or []),
+        "warnings": list(merged.get("warnings") or []),
+        "targets": list(merged.get("targets") or []),
+        "index": _translation_query_index(group[0]),
+    }
 
 
 def _best_compatible_translation_group(translations):

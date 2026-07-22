@@ -1065,7 +1065,10 @@ def _build_metric_query_spec(
     if use_rate_override is not False and (mq.as_rate or _needs_rate(mq)):
         _append_unique_warning(
             result,
-            "rate semantics approximated with delta over observed bucket span",
+            "rate semantics approximated with delta over observed bucket span; "
+            "when switching Agent→OTel collection, map counters with "
+            "--metric-map-file (transform/unit_scale) so RATE() emits against "
+            "the OTel counter field",
         )
     if mq.as_count:
         _append_unique_warning(

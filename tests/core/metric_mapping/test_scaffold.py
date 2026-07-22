@@ -67,6 +67,38 @@ class MetricMapScaffoldTests(unittest.TestCase):
             self.assertFalse(result.applied)
             self.assertIn("scaffold placeholder", result.gap_reason)
 
+    def test_recording_rule_scaffold_gets_drop_rate_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            contract = {
+                "required_fields": {
+                    "job:http_requests:rate5m": {
+                        "target_field": "job:http_requests:rate5m",
+                        "source_fields": ["job:http_requests:rate5m"],
+                        "roles": ["metric"],
+                    },
+                    "plain_metric": {
+                        "target_field": "plain_metric",
+                        "source_fields": ["plain_metric"],
+                        "roles": ["metric"],
+                    },
+                },
+            }
+            (base / "required_target_contract.json").write_text(
+                json.dumps(contract),
+                encoding="utf-8",
+            )
+
+            scaffold_text = build_scaffold_yaml(base)
+            self.assertIn("Recording-rule-style names", scaffold_text)
+            self.assertIn("job:http_requests:rate5m", scaffold_text)
+            payload = yaml.safe_load(scaffold_text)
+            self.assertEqual(
+                payload["metric_map"]["job:http_requests:rate5m"]["transform"],
+                "drop_rate",
+            )
+            self.assertNotIn("transform", payload["metric_map"]["plain_metric"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -699,6 +699,8 @@ def build_target_schema_contract(
                     unresolved_labels[str(warning)] += 1
 
     field_status: dict[str, dict[str, Any]] = {}
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
     for field_name, info in required_fields.items():
         status = "unknown"
         field_type = None
@@ -724,6 +726,16 @@ def build_target_schema_contract(
             field_status[field_name]["mapped_from"] = [
                 src for src in source_fields if src != field_name
             ]
+        recording_sources = [
+            src
+            for src in source_fields
+            if looks_like_recording_rule_metric(src) and src not in metric_map_keys
+        ]
+        if recording_sources:
+            # Unmapped colon-style sources are usually recording-rule derived.
+            field_status[field_name]["recording_rule_derived"] = True
+            if recording_sources != source_fields:
+                field_status[field_name]["recording_rule_sources"] = recording_sources
 
     counter_status: dict[str, dict[str, Any]] = {}
     for metric_name, count in sorted(
@@ -1012,6 +1024,32 @@ def build_preflight_report(
         )
         actions.append(
             f"{control_warning_count} {warning_noun} require review before cutover"
+        )
+
+    recording_rule_fields = [
+        name
+        for name, info in schema_contract.get("required_fields", {}).items()
+        if info.get("recording_rule_derived")
+    ]
+    metric_map_gaps = list((schema_contract.get("metric_map") or {}).get("gaps") or [])
+    recording_rule_gap_msgs = [
+        gap for gap in metric_map_gaps if "Recording-rule metric" in str(gap)
+    ]
+    if recording_rule_fields or recording_rule_gap_msgs:
+        sample_fields = ", ".join(recording_rule_fields[:8])
+        suffix = (
+            f" (and {len(recording_rule_fields) - 8} more)"
+            if len(recording_rule_fields) > 8
+            else ""
+        )
+        detail = (
+            f": {sample_fields}{suffix}"
+            if sample_fields
+            else f" ({len(recording_rule_gap_msgs)} gap notes)"
+        )
+        actions.append(
+            "Unmapped recording-rule metrics need a metric_map entry or "
+            f"recreation in the target{detail}"
         )
 
     if not target_url_configured:

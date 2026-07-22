@@ -316,6 +316,7 @@ def build_target_readiness_contract(
     has_metric_caps = bool(getattr(field_map, "metric_field_caps", {}) or {})
     has_log_caps = bool(getattr(field_map, "log_field_caps", {}) or {})
     required_fields: dict[str, dict[str, Any]] = {}
+    counter_expectations: dict[str, dict[str, Any]] = {}
 
     for dashboard in dashboards:
         for req in _extract_required_fields(dashboard, field_map=field_map):
@@ -363,6 +364,33 @@ def build_target_readiness_contract(
                 entry["status"] = status
                 entry["type"] = field_type
 
+            if role == "aggregate" and context == "metric" and req.get("expects_counter"):
+                from observability_migration.core.verification.field_capabilities import (
+                    is_counter_metric_field,
+                )
+
+                confirmed_counter = None
+                if capability is not None:
+                    confirmed_counter = bool(is_counter_metric_field(capability))
+                elif context_has_caps:
+                    confirmed_counter = False
+                counter_entry = counter_expectations.setdefault(
+                    target_name,
+                    {
+                        "source_field": source_name,
+                        "target_field": target_name,
+                        "expected_counter": True,
+                        "confirmed_counter": confirmed_counter,
+                        "widgets": set(),
+                    },
+                )
+                if widget_id:
+                    counter_entry["widgets"].add(widget_id)
+                if counter_entry["confirmed_counter"] is None and confirmed_counter is not None:
+                    counter_entry["confirmed_counter"] = confirmed_counter
+                elif confirmed_counter is False:
+                    counter_entry["confirmed_counter"] = False
+
     serialized_fields = {}
     for field_name, info in sorted(required_fields.items()):
         source_fields = sorted(info["source_fields"])
@@ -389,6 +417,15 @@ def build_target_readiness_contract(
     confirmed = sum(1 for v in serialized_fields.values() if v["status"] == "confirmed")
     missing = sum(1 for v in serialized_fields.values() if v["status"] == "missing")
     unknown = sum(1 for v in serialized_fields.values() if v["status"] == "unknown")
+    serialized_counters: dict[str, dict[str, Any]] = {}
+    for metric_name, info in sorted(counter_expectations.items()):
+        serialized_counters[metric_name] = {
+            "source_field": info["source_field"],
+            "target_field": info["target_field"],
+            "expected_counter": True,
+            "confirmed_counter": info.get("confirmed_counter"),
+            "widgets": sorted(info.get("widgets") or []),
+        }
     contract = {
         "source": "datadog",
         "field_profile": field_map.name,
@@ -400,11 +437,13 @@ def build_target_readiness_contract(
             "total_fields": len(getattr(field_map, "field_caps", {}) or {}),
         },
         "required_fields": serialized_fields,
+        "counter_expectations": serialized_counters,
         "totals": {
             "fields": len(serialized_fields),
             "fields_confirmed": confirmed,
             "fields_missing": missing,
             "fields_unknown": unknown,
+            "counters_expected": len(serialized_counters),
         },
     }
     from observability_migration.core.metric_mapping.reporting import attach_metric_map_to_contract
@@ -430,6 +469,11 @@ def _extract_required_fields(
         for q in widget.queries:
             if q.metric_query:
                 mq = q.metric_query
+                expects_counter = bool(
+                    getattr(mq, "as_rate", False)
+                    or str(getattr(mq, "metric", "") or "").endswith(".count")
+                    or str(getattr(mq, "metric", "") or "").endswith("_total")
+                )
                 required.append({
                     "name": (
                         field_map.map_metric(mq.metric, source_labels=mq.scope_tags)
@@ -441,6 +485,7 @@ def _extract_required_fields(
                     "widget_id": widget.id,
                     "context": "metric",
                     "type_family": "numeric",
+                    "expects_counter": expects_counter,
                 })
                 for filt in _collect_metric_scope_filters(mq.scope):
                     if _is_template_token(filt.key):
