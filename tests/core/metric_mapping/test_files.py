@@ -11,7 +11,10 @@ from pathlib import Path
 
 import yaml
 
-from observability_migration.core.metric_mapping.files import load_metric_map_files
+from observability_migration.core.metric_mapping.files import (
+    load_metric_map_files,
+    load_tag_map_files,
+)
 
 
 class MetricMapFileTests(unittest.TestCase):
@@ -75,6 +78,64 @@ class MetricMapFileTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "YAML parse error"):
                 load_metric_map_files([str(path)])
+
+
+class TagMapFileTests(unittest.TestCase):
+    def test_loads_tag_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "map.yaml"
+            path.write_text(
+                yaml.safe_dump({"tag_map": {"host": "host.name", "env": "deployment.environment"}}),
+                encoding="utf-8",
+            )
+            tags = load_tag_map_files([str(path)])
+        self.assertEqual(tags, {"host": "host.name", "env": "deployment.environment"})
+
+    def test_tag_map_only_file_is_valid_for_both_loaders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tags-only.yaml"
+            path.write_text(yaml.safe_dump({"tag_map": {"host": "host.name"}}), encoding="utf-8")
+            # metric loader tolerates a tag_map-only file (no metric_map required).
+            self.assertEqual(load_metric_map_files([str(path)]), {})
+            self.assertEqual(load_tag_map_files([str(path)]), {"host": "host.name"})
+
+    def test_metric_map_only_file_yields_empty_tag_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "metrics-only.yaml"
+            path.write_text(yaml.safe_dump({"metric_map": {"a.b": "a.b.c"}}), encoding="utf-8")
+            self.assertEqual(load_tag_map_files([str(path)]), {})
+
+    def test_later_files_override_duplicate_tag_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first.yaml"
+            second = Path(tmp) / "second.yaml"
+            first.write_text(yaml.safe_dump({"tag_map": {"host": "host.first"}}), encoding="utf-8")
+            second.write_text(yaml.safe_dump({"tag_map": {"host": "host.second"}}), encoding="utf-8")
+            self.assertEqual(load_tag_map_files([str(first), str(second)])["host"], "host.second")
+
+    def test_rejects_file_with_neither_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(yaml.safe_dump({"something_else": {"a": "b"}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "metric_map.*and/or.*tag_map|tag_map"):
+                load_tag_map_files([str(path)])
+
+    def test_rejects_non_string_tag_map_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(yaml.safe_dump({"tag_map": {"host": {"nested": "x"}}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "'tag_map' must map string"):
+                load_tag_map_files([str(path)])
+
+    def test_rejects_empty_tag_map_keys_or_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(yaml.safe_dump({"tag_map": {"": "host.name"}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "non-empty"):
+                load_tag_map_files([str(path)])
+            path.write_text(yaml.safe_dump({"tag_map": {"host": "  "}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "non-empty"):
+                load_tag_map_files([str(path)])
 
 
 if __name__ == "__main__":

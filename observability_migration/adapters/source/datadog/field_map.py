@@ -75,6 +75,11 @@ class FieldMapProfile:
         self._metric_map_entries_cache = None
         self._metric_map_gaps = []
 
+    def merge_tag_map(self, entries: dict[str, str]) -> None:
+        """Merge tag renames (source tag -> ES field) over the profile tag_map."""
+        if entries:
+            self.tag_map.update(entries)
+
     def map_metric(self, dd_metric: str) -> str:
         from observability_migration.core.metric_mapping import resolve_metric_map
 

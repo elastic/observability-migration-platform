@@ -490,11 +490,19 @@ metric_map:
   system.net.bytes_rcvd:
     target: system.network.in.bytes
     transform: to_rate
+
+# Optional: rename tag / label / attribute names to target ES fields. Datadog
+# applies these over the profile tag_map; Grafana applies them as label
+# rewrites (highest precedence). Metric queries only.
+tag_map:
+  host: host.name
+  instance: host.name
+  env: deployment.environment
 ```
 
-The file must have a top-level `metric_map:` key. Grafana rule-pack wrappers
-(`query: { metric_map: … }`) and full Datadog field-profile YAML are **not**
-accepted by `--metric-map-file`.
+The file must have a top-level `metric_map:` and/or `tag_map:` key (either or
+both). Grafana rule-pack wrappers (`query: { metric_map: … }`) and full Datadog
+field-profile YAML are **not** accepted by `--metric-map-file`.
 
 #### Grafana existing-OTEL example
 

@@ -234,9 +234,13 @@ def _clear_dashboard_artifacts(
 def _load_configured_field_map(args: argparse.Namespace) -> FieldMapProfile:
     field_map = load_profile(args.field_profile)
     if getattr(args, "metric_map_file", None):
-        from observability_migration.core.metric_mapping import load_metric_map_files
+        from observability_migration.core.metric_mapping import (
+            load_metric_map_files,
+            load_tag_map_files,
+        )
 
         field_map.merge_metric_map(load_metric_map_files(args.metric_map_file))
+        field_map.merge_tag_map(load_tag_map_files(args.metric_map_file))
     if args.data_view:
         field_map.metric_index = args.data_view
     if args.logs_index:
@@ -756,7 +760,19 @@ class _DatadogValidationResolver:
         mapped_log = self._field_map.map_log_field(label)
         if mapped_log and mapped_log not in candidates and mapped_log != label:
             candidates.append(mapped_log)
-        mapped_metric = self._field_map.metric_map.get(label, "")
+        # metric_map values may be plain strings or MetricMapEntry objects
+        # (after --metric-map-file / shared normalize_metric_map). Never append
+        # the raw entry — only its target field name.
+        raw_metric = self._field_map.metric_map.get(label)
+        mapped_metric = ""
+        if isinstance(raw_metric, str):
+            mapped_metric = raw_metric
+        elif raw_metric is not None:
+            target = getattr(raw_metric, "target", None)
+            if isinstance(target, str):
+                mapped_metric = target
+            elif isinstance(raw_metric, dict):
+                mapped_metric = str(raw_metric.get("target") or "")
         if mapped_metric and mapped_metric not in candidates and mapped_metric != label:
             candidates.append(mapped_metric)
         return candidates
@@ -1483,8 +1499,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help=(
-            "Source-neutral YAML file with top-level metric_map entries. "
-            "May be repeated; later files override earlier entries and the active field profile."
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames tag/attribute "
+            "names to ES fields, e.g. host: host.name). May be repeated; later files "
+            "override earlier entries and the active field profile."
         ),
     )
     parser.add_argument(
