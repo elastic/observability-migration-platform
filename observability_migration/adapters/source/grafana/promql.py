@@ -251,6 +251,31 @@ def _metric_map_target_index(resolver, metric_name, source_labels=None) -> str:
     return str(result.entry.target_index or "").strip()
 
 
+def _metric_map_unapplied_notes(resolver, metric_name, source_labels=None) -> list[str]:
+    """Panel notes when a map entry exists but was not applied (variant/scaffold gaps)."""
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or result.applied:
+        return []
+    note = str(result.gap_reason or "").strip()
+    if not note:
+        note = f"metric_map[{metric_name!r}] was not applied"
+    return [note]
+
+
+def _metric_map_target_is_counter(resolver, result) -> bool | None:
+    """Counter/gauge kind for the *mapped target* field (not the source name)."""
+    if resolver is None or result is None:
+        return None
+    target_field = str(result.target or "").strip()
+    if not target_field:
+        return None
+    if resolver.is_counter(target_field):
+        return True
+    if resolver.refutes_counter(target_field):
+        return False
+    return None
+
+
 def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
     """Adjust rate emission per metric_map ``transform``."""
     warnings: list[str] = []
@@ -266,12 +291,7 @@ def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
     if transform == "none":
         return esql_inner, is_counter, warnings
     source_has_rate = getattr(frag, "range_func", None) in {"rate", "irate", "increase"}
-    target_is_counter = None
-    if resolver is not None:
-        if resolver.is_counter(metric_name):
-            target_is_counter = True
-        elif resolver.refutes_counter(metric_name):
-            target_is_counter = False
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
     action, gap_reason = plan_rate_transform(
         source_has_rate=source_has_rate,
         transform=transform,
@@ -288,6 +308,51 @@ def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
             esql_inner = "RATE"
             is_counter = True
     return esql_inner, is_counter, warnings
+
+
+def _apply_metric_map_to_rate_on_simple(
+    frag,
+    resolver,
+    rule_pack,
+    *,
+    source: str,
+    time_filter: str,
+    bucket_expr: str,
+    metric_field: str,
+    stats_expr: str,
+    warnings: list[str],
+):
+    """Honor ``transform: to_rate`` on non-range PromQL (simple_metric / simple_agg)."""
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if result.entry.transform != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if getattr(frag, "range_func", None) in {"rate", "irate", "increase"}:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=False,
+        transform="to_rate",
+        target_is_counter=target_is_counter,
+    )
+    if gap_reason:
+        warnings.append(gap_reason)
+    if action != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    window = str(getattr(rule_pack, "default_rate_window", None) or "5m").strip() or "5m"
+    metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
+    source = "TS"
+    time_filter = rule_pack.ts_time_filter
+    bucket_expr = rule_pack.ts_bucket
+    outer = OUTER_AGG_MAP.get(getattr(frag, "outer_agg", None) or "", "") or "SUM"
+    stats_expr = f"{outer}(RATE({metric_field}, {window}))"
+    return source, time_filter, bucket_expr, metric_field, stats_expr
 
 
 def _frag_metric_field_raw(frag, resolver):
@@ -4155,8 +4220,25 @@ def _build_measure_spec(
     if final_alias is None:
         final_alias, eval_expr = _frag_eval_expr(alias, frag)
     labels = _frag_source_labels(frag)
+    if frag.family in {"simple_metric", "simple_agg"}:
+        source, time_filter, bucket_expr, metric_field, stats_expr = (
+            _apply_metric_map_to_rate_on_simple(
+                frag,
+                resolver,
+                rule_pack,
+                source=source,
+                time_filter=time_filter,
+                bucket_expr=bucket_expr,
+                metric_field=metric_field,
+                stats_expr=stats_expr,
+                warnings=warnings,
+            )
+        )
     unit_scale = _metric_map_unit_scale(resolver, frag.metric, source_labels=labels)
     stats_expr = _apply_unit_scale(stats_expr, unit_scale)
+    for note in _metric_map_unapplied_notes(resolver, frag.metric, source_labels=labels):
+        if note not in warnings:
+            warnings.append(note)
     return MeasureSpec(
         source_type=source,
         time_filter=time_filter,
@@ -4311,8 +4393,17 @@ def _measure_pipeline_index(index, specs) -> str:
         for spec in specs or []
         if str(getattr(spec, "target_index", "") or "").strip()
     ]
-    if overrides and len(set(overrides)) == 1:
+    unique = sorted(set(overrides))
+    if overrides and len(unique) == 1:
         return overrides[0]
+    if len(unique) > 1:
+        note = (
+            "metric_map target_index values differ across metrics in one query "
+            f"({', '.join(unique)}); using default index {index!r}"
+        )
+        for spec in specs or []:
+            if note not in getattr(spec, "warnings", []):
+                spec.warnings.append(note)
     return index
 
 

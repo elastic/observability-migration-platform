@@ -123,6 +123,118 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         self.assertIn("TS metrics-histogram-*", esql)
         self.assertIn("target.histogram", esql)
 
+    def _translate_result(self, expr: str, metric_map: dict, *, metric_kinds: dict | None = None):
+        rule_pack = RulePackConfig()
+        rule_pack.metric_map.update(normalize_metric_map(metric_map))
+        if metric_kinds:
+            rule_pack.metric_kinds.update(metric_kinds)
+        resolver = SchemaResolver(rule_pack, field_profile="otel")
+        return translate_promql_to_esql(
+            expr,
+            datasource_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+    def test_variant_mismatch_surfaces_panel_warning(self) -> None:
+        result = self._translate_result(
+            'sum(net_bytes{direction="transmit"})',
+            {
+                "net_bytes": {
+                    "variants": [
+                        {
+                            "source_filter": {"direction": "receive"},
+                            "target": "k8s.pod.network.io",
+                            "attribute_filter": {"network.direction": "receive"},
+                        }
+                    ]
+                }
+            },
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertTrue(
+            any("none matched" in str(w) for w in result.warnings),
+            result.warnings,
+        )
+        assert result.esql_query is not None
+        self.assertNotIn("k8s.pod.network.io", result.esql_query)
+
+    def test_to_rate_emits_rate_when_target_is_counter(self) -> None:
+        result = self._translate_result(
+            "sum(source_bytes)",
+            {
+                "source_bytes": {
+                    "target": "target.bytes",
+                    "transform": "to_rate",
+                }
+            },
+            metric_kinds={"target.bytes": "counter"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("RATE(", result.esql_query)
+        self.assertIn("target.bytes", result.esql_query)
+
+    def test_drop_rate_strips_rate_when_target_is_gauge(self) -> None:
+        result = self._translate_result(
+            "sum(rate(source_bytes[5m]))",
+            {
+                "source_bytes": {
+                    "target": "target.bytes",
+                    "transform": "drop_rate",
+                }
+            },
+            metric_kinds={"target.bytes": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("target.bytes", result.esql_query)
+        self.assertNotIn("RATE(", result.esql_query)
+        self.assertIn("LAST_OVER_TIME(", result.esql_query)
+
+    def test_to_rate_unknown_kind_warns_and_does_not_invent_rate(self) -> None:
+        result = self._translate_result(
+            "sum(source_bytes)",
+            {
+                "source_bytes": {
+                    "target": "target.bytes",
+                    "transform": "to_rate",
+                }
+            },
+        )
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertTrue(
+            any("to_rate requires known" in str(w) for w in result.warnings),
+            result.warnings,
+        )
+        assert result.esql_query is not None
+        self.assertNotIn("RATE(", result.esql_query)
+
+    def test_mixed_target_index_warns_and_keeps_default(self) -> None:
+        result = self._translate_result(
+            "sum(source_a) + sum(source_b)",
+            {
+                "source_a": {
+                    "target": "target.a",
+                    "target_index": "metrics-a-*",
+                },
+                "source_b": {
+                    "target": "target.b",
+                    "target_index": "metrics-b-*",
+                },
+            },
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        self.assertTrue(
+            any("target_index values differ" in str(w) for w in result.warnings),
+            result.warnings,
+        )
+        assert result.esql_query is not None
+        self.assertIn("metrics-*", result.esql_query)
+        self.assertNotIn("metrics-a-*", result.esql_query)
+        self.assertNotIn("metrics-b-*", result.esql_query)
+
 
 if __name__ == "__main__":
     unittest.main()

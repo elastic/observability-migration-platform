@@ -38,6 +38,7 @@ from .promql import (
     OUTER_AGG_MAP,
     PromQLFragment,
     _apply_fragment_to_context,
+    _apply_metric_map_to_rate_on_simple,
     _apply_unit_scale,
     _build_esql,
     _build_formula_plan,
@@ -69,6 +70,7 @@ from .promql import (
     _iter_pending_join_rhs_fragments,
     _left_operand_of_same_metric_range_fallback,
     _metric_map_target_index,
+    _metric_map_unapplied_notes,
     _metric_map_unit_scale,
     _mixed_os_or_operands,
     _or_chain_has_vector_matching,
@@ -1559,6 +1561,9 @@ def join_family_rule(context):
                         parts.append("| SORT time_bucket ASC")
                     for warning in plan.warnings:
                         _append_unique(context.warnings, warning)
+                    for spec in plan.specs:
+                        for warning in spec.warnings:
+                            _append_unique(context.warnings, warning)
                     _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
                     _append_unique(context.warnings, "Approximated PromQL arithmetic using same-bucket ES|QL math")
                     context.parser_backend = "fragment"
@@ -1898,6 +1903,9 @@ def binary_expr_family_rule(context):
         _append_unique(context.warnings, "Dropped group_left label enrichment; kept primary metric series only")
     for warning in plan.warnings:
         _append_unique(context.warnings, warning)
+    for spec in plan.specs:
+        for warning in spec.warnings:
+            _append_unique(context.warnings, warning)
     non_time_groups = [field for field in context.output_group_fields if field != "time_bucket"]
     if plan.specs and not non_time_groups:
         _append_unique(
@@ -2722,6 +2730,10 @@ def range_agg_family_rule(context):
     )
     for warning in map_rate_warnings:
         _append_unique(context.warnings, warning)
+    for note in _metric_map_unapplied_notes(
+        resolver, frag.metric, source_labels=_frag_source_labels(frag)
+    ):
+        _append_unique(context.warnings, note)
     needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
     source = "TS" if needs_ts else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
@@ -3107,6 +3119,23 @@ def simple_agg_family_rule(context):
 
     outer = OUTER_AGG_MAP.get(frag.outer_agg, rp.default_gauge_agg.upper())
     stats_expr = _agg_stats_expr(outer, inner_expr, frag, resolver)
+    source, time_filter, bucket, physical_metric, stats_expr = (
+        _apply_metric_map_to_rate_on_simple(
+            frag,
+            resolver,
+            rp,
+            source=source,
+            time_filter=time_filter,
+            bucket_expr=bucket,
+            metric_field=physical_metric,
+            stats_expr=stats_expr,
+            warnings=context.warnings,
+        )
+    )
+    for note in _metric_map_unapplied_notes(
+        resolver, frag.metric, source_labels=_frag_source_labels(frag)
+    ):
+        _append_unique(context.warnings, note)
     alias = re.sub(r"[^a-zA-Z0-9_]", "_", frag.metric)
     group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
     eval_line, final_alias = _frag_eval_line(alias, frag)

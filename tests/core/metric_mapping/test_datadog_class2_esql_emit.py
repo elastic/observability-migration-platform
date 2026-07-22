@@ -203,6 +203,151 @@ class DatadogClass2EsqlEmitTests(unittest.TestCase):
         self.assertIn("target.kbytes", result.translated_query)
         self.assertIn("* 0.001", result.translated_query)
 
+    def _widget_result(self, metric: str, raw_query: str, metric_map: dict, *, field_caps=None):
+        profile = FieldMapProfile(
+            name="test",
+            metric_index="metrics-*",
+            metric_map=normalize_metric_map(metric_map),
+            field_caps=field_caps or {},
+            metric_field_caps=field_caps or {},
+        )
+        mq = MetricQuery(metric=metric, space_agg="avg")
+        if ".as_rate()" in raw_query:
+            mq.as_rate = True
+        wq = WidgetQuery(
+            name="q1",
+            data_source="metrics",
+            raw_query=raw_query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Metric",
+            queries=[wq],
+        )
+        return translate_widget(widget, plan_widget(widget), profile)
+
+    def test_variant_mismatch_surfaces_widget_warning(self) -> None:
+        from observability_migration.adapters.source.datadog.models import TagFilter
+
+        profile = FieldMapProfile(
+            name="test",
+            metric_index="metrics-*",
+            metric_map=normalize_metric_map(
+                {
+                    "system.net.bytes": {
+                        "variants": [
+                            {
+                                "source_filter": {"direction": "in"},
+                                "target": "system.network.in.bytes",
+                            }
+                        ]
+                    }
+                }
+            ),
+        )
+        mq = MetricQuery(
+            metric="system.net.bytes",
+            space_agg="avg",
+            scope=[TagFilter(key="direction", value="out")],
+        )
+        wq = WidgetQuery(
+            name="q1",
+            data_source="metrics",
+            raw_query="avg:system.net.bytes{direction:out}",
+            metric_query=mq,
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Network",
+            queries=[wq],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertNotIn(result.status, ("not_feasible", "blocked"))
+        self.assertTrue(
+            any("none matched" in str(w) for w in result.warnings),
+            result.warnings,
+        )
+        assert result.esql_query is not None
+        self.assertNotIn("system.network.in.bytes", result.esql_query)
+
+    def test_to_rate_emits_rate_when_target_is_counter(self) -> None:
+        from observability_migration.core.verification.field_capabilities import FieldCapability
+
+        caps = {
+            "target.bytes": FieldCapability(
+                name="target.bytes",
+                type="double",
+                time_series_metric_kind="counter",
+            )
+        }
+        result = self._widget_result(
+            "source.bytes",
+            "avg:source.bytes{*}",
+            {
+                "source.bytes": {
+                    "target": "target.bytes",
+                    "transform": "to_rate",
+                }
+            },
+            field_caps=caps,
+        )
+        self.assertNotIn(result.status, ("not_feasible", "blocked"))
+        assert result.esql_query is not None
+        self.assertIn("target.bytes", result.esql_query)
+        self.assertTrue(
+            "DATE_DIFF" in result.esql_query or "RATE(" in result.esql_query,
+            result.esql_query,
+        )
+
+    def test_drop_rate_strips_as_rate_when_target_is_gauge(self) -> None:
+        from observability_migration.core.verification.field_capabilities import FieldCapability
+
+        caps = {
+            "target.bytes": FieldCapability(
+                name="target.bytes",
+                type="double",
+                time_series_metric_kind="gauge",
+            )
+        }
+        result = self._widget_result(
+            "source.bytes",
+            "avg:source.bytes{*}.as_rate()",
+            {
+                "source.bytes": {
+                    "target": "target.bytes",
+                    "transform": "drop_rate",
+                }
+            },
+            field_caps=caps,
+        )
+        self.assertNotIn(result.status, ("not_feasible", "blocked"))
+        assert result.esql_query is not None
+        self.assertIn("target.bytes", result.esql_query)
+        self.assertNotIn("DATE_DIFF", result.esql_query)
+
+    def test_to_rate_unknown_kind_warns_and_does_not_invent_rate(self) -> None:
+        result = self._widget_result(
+            "source.bytes",
+            "avg:source.bytes{*}",
+            {
+                "source.bytes": {
+                    "target": "target.bytes",
+                    "transform": "to_rate",
+                }
+            },
+        )
+        self.assertTrue(
+            any("to_rate requires known" in str(w) for w in result.warnings),
+            result.warnings,
+        )
+        assert result.esql_query is not None
+        self.assertNotIn("DATE_DIFF", result.esql_query)
+
 
 if __name__ == "__main__":
     unittest.main()

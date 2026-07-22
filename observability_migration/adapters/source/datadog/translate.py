@@ -920,7 +920,14 @@ def _metric_map_agg_options(
         unit_scale = map_result.unit_scale
         target_index = str(map_result.entry.target_index or "").strip()
     source_has_rate = bool(mq.as_rate or _needs_rate(mq))
-    target_is_counter = is_counter_metric_field(metric_cap)
+    if metric_cap is None:
+        target_is_counter: bool | None = None
+    elif is_counter_metric_field(metric_cap):
+        target_is_counter = True
+    elif str(getattr(metric_cap, "time_series_metric_kind", "") or "").strip().lower() == "gauge":
+        target_is_counter = False
+    else:
+        target_is_counter = None
     action, gap_reason = plan_rate_transform(
         source_has_rate=source_has_rate,
         transform=transform,
@@ -937,6 +944,9 @@ def _metric_map_agg_options(
         use_rate = False
     elif action in {"to_rate", "keep_source_rate"}:
         use_rate = True
+    elif action == "gap":
+        # Fail closed: do not invent rate when the transform cannot be proven.
+        use_rate = bool(source_has_rate)
     return use_rate, unit_scale, target_index, warnings
 
 
@@ -949,6 +959,12 @@ def _build_metric_query_spec(
     assert mq is not None
 
     source_labels = mq.scope_tags
+    map_result = field_map.resolve_metric_map_result(mq.metric, source_labels=source_labels)
+    if map_result is not None and not map_result.applied:
+        gap = str(map_result.gap_reason or "").strip() or (
+            f"metric_map[{mq.metric!r}] was not applied"
+        )
+        _append_unique_warning(result, gap)
     es_metric = field_map.map_metric(mq.metric, source_labels=source_labels)
     es_agg = _resolve_agg(mq.space_agg, es_metric)
     raw_group_fields = [field_map.map_tag(tag, context="metric") for tag in mq.group_by]
