@@ -695,6 +695,58 @@ def _api_partition_styling(styling: Any, kind: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------- #
 
 def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
+    metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
+    stacked_metrics = [m for m in metrics if not (isinstance(m, dict) and m.get("stack") is False)]
+    overlay_metrics = [m for m in metrics if isinstance(m, dict) and m.get("stack") is False]
+    # kubernetes-mixin style: stack usage by breakdown, overlay requests/limits unstacked.
+    if stacked_metrics and overlay_metrics and str(cfg.get("mode") or "").lower() in {"stacked", "stack", "percentage", "percent", "normalized"}:
+        layers: list[dict[str, Any]] = []
+        stacked_cfg = dict(cfg)
+        stacked_cfg["metrics"] = stacked_metrics
+        stacked_layer: dict[str, Any] = {
+            "type": _xy_series_type(stacked_cfg),
+            "data_source": {"type": "esql", "query": query},
+        }
+        x = _api_column(cfg.get("dimension"), role="x")
+        if x:
+            stacked_layer["x"] = x
+        stacked_layer["y"] = _columns(stacked_metrics, role="xy_y") or [{"column": "value"}]
+        bd = _api_column(cfg.get("breakdown"), role="breakdown") or _first_column(cfg.get("breakdowns"), role="breakdown")
+        if bd:
+            stacked_layer["breakdown_by"] = bd
+        layers.append(stacked_layer)
+
+        overlay_cfg = dict(cfg)
+        overlay_cfg["type"] = "line"
+        overlay_cfg["mode"] = "unstacked"
+        overlay_layer: dict[str, Any] = {
+            "type": "line",
+            "data_source": {"type": "esql", "query": query},
+        }
+        if x:
+            overlay_layer["x"] = x
+        overlay_layer["y"] = _columns(overlay_metrics, role="xy_y")
+        # Overlays like requests/limits are pod-level lines; applying the
+        # container breakdown stacks them per container incorrectly.
+        layers.append(overlay_layer)
+
+        out: dict[str, Any] = {"type": "xy", "title": title, "layers": layers}
+        legend = _api_legend(cfg.get("legend"), kind="xy")
+        if legend:
+            out["legend"] = legend
+        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        if axis:
+            out["axis"] = axis
+        styling_source = cfg.get("styling")
+        raw_appearance = cfg.get("appearance")
+        appearance: dict[str, Any] = raw_appearance if isinstance(raw_appearance, dict) else {}
+        styling = styling_source if isinstance(styling_source, dict) else appearance.get("styling")
+        if isinstance(styling, dict):
+            safe_styling = {key: styling[key] for key in ("areas", "bars", "fitting", "interpolation", "overlays", "points") if key in styling}
+            if safe_styling:
+                out["styling"] = safe_styling
+        return out
+
     layer: dict[str, Any] = {
         "type": _xy_series_type(cfg),
         "data_source": {"type": "esql", "query": query},
@@ -707,7 +759,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     bd = _api_column(cfg.get("breakdown"), role="breakdown") or _first_column(cfg.get("breakdowns"), role="breakdown")
     if bd:
         layer["breakdown_by"] = bd
-    out: dict[str, Any] = {"type": "xy", "title": title, "layers": [layer]}
+    out = {"type": "xy", "title": title, "layers": [layer]}
     legend = _api_legend(cfg.get("legend"), kind="xy")
     if legend:
         out["legend"] = legend
@@ -716,7 +768,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         out["axis"] = axis
     styling_source = cfg.get("styling")
     raw_appearance = cfg.get("appearance")
-    appearance: dict[str, Any] = raw_appearance if isinstance(raw_appearance, dict) else {}
+    appearance = raw_appearance if isinstance(raw_appearance, dict) else {}
     styling = styling_source if isinstance(styling_source, dict) else appearance.get("styling")
     if isinstance(styling, dict):
         safe_styling = {key: styling[key] for key in ("areas", "bars", "fitting", "interpolation", "overlays", "points") if key in styling}

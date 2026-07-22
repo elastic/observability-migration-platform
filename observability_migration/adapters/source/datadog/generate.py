@@ -318,6 +318,23 @@ def _strip_datadog_private_keys(panels: list[dict[str, Any]]) -> None:
             panel.pop(key, None)
 
 
+def _options_list_field_name(es_field: str) -> str:
+    """Normalize a mapped tag to a field name options-list controls can resolve.
+
+    Kibana options-list looks fields up on the data view. Multi-fields such as
+    ``k8s.node.name.keyword`` often appear in ``_field_caps`` (and may be what
+    ``map_tag`` prefers for aggregations when the base field looked unsafe at
+    migrate time), but they are registered as ``subType.multi`` children.
+    Options-list then fails with ``Could not locate field: ….keyword`` even
+    when the parent keyword / TSDS dimension works. Prefer the parent name for
+    dashboard controls so filters load.
+    """
+    field = str(es_field or "").strip()
+    if field.endswith(".keyword"):
+        return field[: -len(".keyword")]
+    return field
+
+
 def _build_controls_from_template_vars(
     template_vars: list[TemplateVariable],
     data_view: str,
@@ -352,18 +369,36 @@ def _build_controls_from_template_vars(
         context = _template_variable_query_context(tv.name, widgets or [])
         control_data_view = logs_data_view if context == "log" else data_view
         es_field = field_map.map_tag(tag, context=context) if field_map else tag
+        control_field = _options_list_field_name(es_field)
         control: dict[str, Any] = {
             "type": "options",
             "label": tv.name,
             "data_view": control_data_view,
-            "field": es_field,
+            "field": control_field,
             "multiple": len(tv.defaults) > 1 or tv.default == "*",
         }
         preselected = _template_var_preselected(tv)
+        # Datadog template defaults are source vocabulary. When the tag was
+        # remapped onto a different target field (env → deployment.environment),
+        # those defaults often do not exist as field values (e.g. "prod" vs
+        # OTel "production"). Options-list applies them as filters and empties
+        # every panel with "selection returns no results". Skip preselect in
+        # that remapped case; operators pick live field values instead.
+        if preselected and _tag_was_remapped(tag, control_field):
+            preselected = []
         if preselected:
             control["preselected"] = preselected
         controls.append(control)
     return controls
+
+
+def _tag_was_remapped(source_tag: str, control_field: str) -> bool:
+    """True when the options-list field is not the source tag (or its .keyword)."""
+    source = str(source_tag or "").strip()
+    field = str(control_field or "").strip()
+    if not source or not field:
+        return False
+    return field not in {source, f"{source}.keyword"}
 
 
 def _template_variable_query_context(

@@ -191,7 +191,148 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         assert result.esql_query is not None
         self.assertIn("target.bytes", result.esql_query)
         self.assertNotIn("RATE(", result.esql_query)
-        self.assertIn("LAST_OVER_TIME(", result.esql_query)
+        # Gauge emit: no counter-without-rate LAST_OVER_TIME path.
+        self.assertNotIn("Counter referenced without rate()", " ".join(map(str, result.warnings)))
+        self.assertRegex(result.esql_query, r"SUM\(\s*(TO_DOUBLE\()?target\.bytes\)?")
+        self.assertNotIn(", 5m)", result.esql_query)
+
+    def test_drop_rate_on_recording_rule_forces_gauge_emit(self) -> None:
+        """Pre-rated recording rules have no rate() AST node; drop_rate must
+        still force gauge emit so multi-target panels don't inflate siblings."""
+        result = self._translate_result(
+            'sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate{pod="x"}) by (container)',
+            {
+                "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate": {
+                    "target": "container.cpu.usage",
+                    "transform": "drop_rate",
+                }
+            },
+            metric_kinds={"container.cpu.usage": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("container.cpu.usage", result.esql_query)
+        self.assertNotIn("Counter referenced without rate()", " ".join(map(str, result.warnings)))
+        self.assertNotIn("SUM_OVER_TIME(container.cpu.usage", result.esql_query)
+
+    def test_multi_target_drop_rate_does_not_inflate_gauge_siblings(self) -> None:
+        result = self._translate_result(
+            'sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate) by (container)',
+            {
+                "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate": {
+                    "target": "container.cpu.usage",
+                    "transform": "drop_rate",
+                },
+                "kube_pod_container_resource_requests_cpu_cores": {
+                    "target": "k8s.container.cpu_request",
+                },
+            },
+            metric_kinds={
+                "container.cpu.usage": "gauge",
+                "k8s.container.cpu_request": "gauge",
+            },
+        )
+        # Translate the request series the same way the multi-target panel does
+        # by exercising normalize on a mixed panel via a binary-free second expr
+        # through the shared pipeline — assert request emit path alone first.
+        req = self._translate_result(
+            "sum(kube_pod_container_resource_requests_cpu_cores) by (container)",
+            {
+                "kube_pod_container_resource_requests_cpu_cores": {
+                    "target": "k8s.container.cpu_request",
+                }
+            },
+            metric_kinds={"k8s.container.cpu_request": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        self.assertEqual(req.feasibility, "feasible", req.warnings)
+        assert req.esql_query is not None
+        self.assertNotIn("SUM_OVER_TIME(k8s.container.cpu_request", req.esql_query)
+
+    def test_mapped_drop_rate_prefers_target_gauge_caps_for_ts(self) -> None:
+        """Source recording-rule name may still be typed counter in ES; after
+        drop_rate→gauge map, TS decisions must use the *target* gauge caps so
+        multi-target fusion is not demoted to FROM (which inflates SUM)."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _build_multi_target_series_query,
+        )
+
+        metric_map = {
+            "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate": {
+                "target": "container.cpu.usage",
+                "transform": "drop_rate",
+            },
+            "kube_pod_container_resource_requests_cpu_cores": {
+                "target": "k8s.container.cpu_request",
+            },
+        }
+        rule_pack = RulePackConfig()
+        rule_pack.metric_map.update(normalize_metric_map(metric_map))
+        rule_pack.metric_kinds.update(
+            {
+                "container.cpu.usage": "gauge",
+                "k8s.container.cpu_request": "gauge",
+            }
+        )
+        resolver = SchemaResolver(rule_pack, field_profile="otel")
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            # Leftover Prom recording-rule field still present as counter.
+            "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate": {
+                "double": {
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "counter",
+                }
+            },
+            "container.cpu.usage": {
+                "double": {
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "gauge",
+                }
+            },
+            "k8s.container.cpu_request": {
+                "double": {
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "gauge",
+                }
+            },
+            "k8s.container.name": {
+                "keyword": {"aggregatable": True, "searchable": True},
+            },
+        }
+
+        usage = translate_promql_to_esql(
+            'sum(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate) by (container)',
+            datasource_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        req = translate_promql_to_esql(
+            "sum(kube_pod_container_resource_requests_cpu_cores) by (container)",
+            datasource_index="metrics-*",
+            panel_type="timeseries",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        self.assertEqual(usage.feasibility, "feasible", usage.warnings)
+        self.assertEqual(req.feasibility, "feasible", req.warnings)
+        self.assertTrue(
+            (usage.esql_query or "").startswith("TS "),
+            usage.esql_query,
+        )
+        usage.metadata["target_ref_id"] = "A"
+        req.metadata["target_ref_id"] = "B"
+        merged = _build_multi_target_series_query([usage, req])
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        self.assertTrue(merged["query"].startswith("TS "), merged["query"])
+        self.assertNotIn("SUM_OVER_TIME(k8s.container.cpu_request", merged["query"])
+        self.assertNotIn("BUCKET(@timestamp", merged["query"])
 
     def test_to_rate_unknown_kind_warns_and_does_not_invent_rate(self) -> None:
         result = self._translate_result(

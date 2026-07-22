@@ -300,9 +300,11 @@ def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
     if gap_reason:
         warnings.append(gap_reason)
     if action == "drop_rate" and source_has_rate:
-        if (esql_inner or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
-            esql_inner = "LAST_OVER_TIME"
-            is_counter = False
+        # Target is a gauge (or pre-rated equivalent): emit the bare field under
+        # the outer aggregate instead of LAST_OVER_TIME, which forces multi-target
+        # normalize to wrap sibling gauges as SUM(SUM_OVER_TIME(...)).
+        esql_inner = ""
+        is_counter = False
     elif action == "to_rate" and not source_has_rate:
         if (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
             esql_inner = "RATE"
@@ -3171,7 +3173,7 @@ def _build_stats_call(
     *, is_counter=False, resolver=None,
 ):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
-    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
+    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper()) if inner_func else ""
     # Keep the counter-safe cast on composed (join-ratio) operands: a degraded
     # increase()/rate() over an unknown-caps counter must still wrap the metric
     # in TO_DOUBLE, exactly like the standalone/measure-spec paths (PR #234).
@@ -3185,7 +3187,10 @@ def _build_stats_call(
         counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
         force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
-    inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    if esql_inner:
+        inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    else:
+        inner_expr = metric_arg
     return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
@@ -3634,6 +3639,26 @@ def _matcher_alias_suffix(frag):
     return "_".join(part for part in parts if part)
 
 
+def _capability_for_gauge_ts_decision(metric_name, resolver):
+    """Field capability used for gauge ``TS`` vs ``FROM`` decisions.
+
+    Prefer the *physical* target after metric_map / profile resolve. When a
+    source name (e.g. a Prometheus recording rule) still exists in the index as
+    a counter while ``metric_map`` remaps it to an OTel gauge, consulting the
+    source capability first wrongly "disproves" TSDS-gauge and demotes the
+    whole multi-target panel to ``FROM`` (inflating SUM by sample multiplicity).
+    If the resolved target differs from the source name, only the target's
+    capability counts — an unknown target stays unknown rather than inheriting
+    the source kind.
+    """
+    if not metric_name or not resolver:
+        return None
+    resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+    if resolved and resolved != metric_name:
+        return resolver.field_capability(resolved)
+    return resolver.field_capability(metric_name)
+
+
 def _field_is_proven_tsds_gauge(metric_name, resolver):
     """Return True iff resolver proves the metric field is a TSDS gauge.
 
@@ -3644,13 +3669,7 @@ def _field_is_proven_tsds_gauge(metric_name, resolver):
     instead of ``FROM`` (which sums every per-sample doc) for the field — see
     issue #8.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -3671,13 +3690,7 @@ def _field_disproven_tsds_gauge(metric_name, resolver):
     not a disproof. This lets ``assume_tsds_gauges`` apply only when we lack evidence and
     never override evidence we do have.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -4025,7 +4038,11 @@ def _build_measure_spec(
             and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        if esql_inner:
+            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            # drop_rate → gauge: outer agg operates on the bare field.
+            inner_expr = inner_arg
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -4065,7 +4082,10 @@ def _build_measure_spec(
             and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-        inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        if esql_inner:
+            inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            inner_windowed = inner_arg
         stats_expr = _apply_outer_agg(esql_outer, inner_windowed, frag)
     elif frag.family == "nested_agg":
         raw_inner_groups = list(frag.extra.get("inner_group", []) or [])
@@ -4666,7 +4686,21 @@ _OUTER_TO_TS_AGG = {
     "MAX": "MAX_OVER_TIME",
     "COUNT": "COUNT_OVER_TIME",
 }
+# When wrapping a bare cross-series aggregate into a time-series form so it can
+# share a STATS with OVER_TIME siblings, SUM must NOT become SUM_OVER_TIME —
+# that sums every sample in the window and inflates gauges (requests/limits).
+# LAST_OVER_TIME keeps one value per series per bucket, matching PromQL's
+# instant-vector sum across series.
+_OUTER_TO_SAFE_TS_INNER = {
+    "AVG": "AVG_OVER_TIME",
+    "SUM": "LAST_OVER_TIME",
+    "MIN": "MIN_OVER_TIME",
+    "MAX": "MAX_OVER_TIME",
+    "COUNT": "COUNT_OVER_TIME",
+}
 _TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+# LAST_OVER_TIME is used as the safe SUM wrap; map it back to SUM for wrapping.
+_TS_TO_OUTER_AGG.setdefault("LAST_OVER_TIME", "SUM")
 _TS_AGG_FUNC_PATTERN = r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
 
 
@@ -4749,7 +4783,7 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 )
             elif bare_regular:
                 outer = bare_regular.group(1)
-                ts_func = _OUTER_TO_TS_AGG[outer]
+                ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
                 new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
                 warning = (
                     f"Converted {outer}({metric_field}) to "
@@ -4766,10 +4800,11 @@ def _normalize_mixed_ts_stats_exprs(specs):
             if not bare_regular:
                 normalized.append(spec)
                 continue
-            ts_func = _OUTER_TO_TS_AGG[bare_regular.group(1)]
+            outer = bare_regular.group(1)
+            ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
             new_expr = f"{ts_func}({metric_field}, {window})"
             warning = (
-                f"Converted {bare_regular.group(1)}({metric_field}) to "
+                f"Converted {outer}({metric_field}) to "
                 f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
             )
 

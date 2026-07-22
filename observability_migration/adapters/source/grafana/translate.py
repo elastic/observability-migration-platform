@@ -2240,7 +2240,11 @@ def scaled_agg_family_rule(context):
         counter_refuted=_counter_refuted(resolver, frag.metric),
         force_cast=cast_needed,
     )
-    inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+    if esql_inner:
+        inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+    else:
+        # drop_rate → gauge: outer agg operates on the bare field.
+        inner_windowed = inner_arg
 
     context.parser_backend = "fragment"
     context.source_type = "TS"
@@ -2756,7 +2760,11 @@ def range_agg_family_rule(context):
         counter_refuted=_counter_refuted(resolver, frag.metric),
         force_cast=cast_needed,
     )
-    inner_expr = f"{esql_inner_name}({inner_arg}, {frag.range_window})"
+    if esql_inner_name:
+        inner_expr = f"{esql_inner_name}({inner_arg}, {frag.range_window})"
+    else:
+        # drop_rate → gauge: outer agg operates on the bare field.
+        inner_expr = inner_arg
     outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
     if not outer and source == "TS" and group_fields:
         stats_expr = _apply_unit_scale(

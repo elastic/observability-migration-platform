@@ -910,6 +910,27 @@ class SchemaResolver:
             return True
         if kind == "gauge":
             return False
+        # metric_map drop_rate targets a pre-rated / gauge equivalent (including
+        # Prometheus recording rules with no rate() AST node). Never treat those
+        # as bare counters — that selects LAST_OVER_TIME and forces sibling
+        # gauges into SUM(SUM_OVER_TIME(...)), which inflates values.
+        mapped = self.resolve_metric_map_result(metric_name)
+        if (
+            mapped is not None
+            and mapped.applied
+            and mapped.entry is not None
+            and mapped.entry.transform == "drop_rate"
+        ):
+            target = str(mapped.target or "").strip()
+            target_kind = str(self._rule_pack.metric_kinds.get(target, "")).strip().lower()
+            if target_kind == "gauge":
+                return False
+            target_cap = self.field_capability(target) if target else None
+            if getattr(target_cap, "time_series_metric_kind", "") == "gauge":
+                return False
+            # Unknown kind but explicit drop_rate: prefer gauge emit.
+            if target_kind != "counter":
+                return False
         capability = self.field_capability(metric_name)
         counter_metric = self.resolve_metric_field(metric_name, prefer="counter")
         counter_capability = (

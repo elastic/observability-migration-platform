@@ -5072,9 +5072,13 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
 
     right_format = _grafana_yaxis_metric_format(grafana_panel, "right")
     for override in overrides:
-        if not isinstance(override, dict) or _grafana_override_axis(override.get("yaxis")) != "right":
+        if not isinstance(override, dict):
             continue
         alias = str(override.get("alias") or "").strip()
+        axis = _grafana_override_axis(override.get("yaxis"))
+        stack_override = override.get("stack")
+        if axis != "right" and stack_override is not False:
+            continue
         matched = False
         for metric in metrics:
             if not isinstance(metric, dict):
@@ -5083,11 +5087,15 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
                 str(metric.get("field") or ""),
                 str(metric.get("label") or ""),
             }
-            if _series_override_alias_matches(alias, candidates):
+            if not _series_override_alias_matches(alias, candidates):
+                continue
+            matched = True
+            if axis == "right":
                 metric["axis"] = "right"
                 if right_format:
                     metric["format"] = dict(right_format)
-                matched = True
+            if stack_override is False:
+                metric["stack"] = False
         if alias and not matched:
             _append_unique(
                 warnings,
@@ -5411,7 +5419,7 @@ def _field_has_ts_metadata_conflict(field_name, resolver):
     return has_dimension and has_metric
 
 
-def _esql_values_control_query(field_name, data_view, metric_field=None):
+def _esql_values_control_query(field_name, data_view, metric_field=None, *, include_match_all=False):
     """Build an ES|QL query that enumerates a control's selectable values.
 
     Mirrors Grafana's ``label_values()`` query variable: return the field's
@@ -5423,6 +5431,10 @@ def _esql_values_control_query(field_name, data_view, metric_field=None):
     presence field) is added as ``WHERE <metric_field> IS NOT NULL`` to list only
     values coming from that metric instead of every value of the field in the
     index (issue #152).
+
+    When ``include_match_all`` is true (includeAll / All default), prepend the
+    regex match-all token ``.*`` via ``MV_APPEND`` so Kibana's selected default
+    is a valid options-list value instead of an incompatible selection.
     """
     field = _esql_identifier(field_name)
     index = data_view or "metrics-*"
@@ -5431,6 +5443,17 @@ def _esql_values_control_query(field_name, data_view, metric_field=None):
         where = f"WHERE {metric} IS NOT NULL AND {field} IS NOT NULL"
     else:
         where = f"WHERE {field} IS NOT NULL"
+    if include_match_all:
+        return (
+            f"FROM {index} | {where}"
+            f" | STATS count = COUNT(*) BY {field}"
+            f' | EVAL options = MV_APPEND(".*", {field})'
+            f" | MV_EXPAND options"
+            f" | STATS count = COUNT(*) BY options"
+            f" | KEEP options"
+            f" | RENAME options AS {field}"
+            f" | SORT {field} ASC | LIMIT 1000"
+        )
     return (
         f"FROM {index} | {where}"
         f" | STATS count = COUNT(*) BY {field}"
@@ -5522,12 +5545,18 @@ def _build_esql_param_control(
     A ``default`` selection is emitted so the parameter is bound on first load
     instead of leaving the control empty (issue #131).
     """
+    include_match_all = default == _MATCH_ALL_SELECTION
     control = {
         "type": "esql",
         "label": label,
         "variable_name": variable_name,
         "variable_type": "values",
-        "query": _esql_values_control_query(field_name, data_view, metric_field=metric_field),
+        "query": _esql_values_control_query(
+            field_name,
+            data_view,
+            metric_field=metric_field,
+            include_match_all=include_match_all,
+        ),
         "multiple": False,
     }
     if include_internal_metadata:

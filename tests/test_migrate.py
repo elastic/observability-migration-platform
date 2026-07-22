@@ -5302,6 +5302,58 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(metrics_by_field["transmit"].get("format"), {"type": "bytes", "suffix": "/s"})
         self.assertNotIn("Merged compatible panel targets into a single ES|QL query", result.reasons)
 
+    def test_series_override_stack_false_marks_overlay_metrics(self):
+        """kubernetes-mixin CPU/Memory Usage: stack containers but not requests/limits."""
+        panel = {
+            "id": 912,
+            "type": "graph",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "stack": True,
+            "lines": True,
+            "seriesOverrides": [
+                {"alias": "requests", "stack": False, "fill": 0},
+                {"alias": "limits", "stack": False, "fill": 0},
+            ],
+            "targets": [
+                {
+                    "expr": "sum(rate(container_cpu_usage_seconds_total[1m])) by (container)",
+                    "refId": "A",
+                    "legendFormat": "{{container}}",
+                },
+                {
+                    "expr": "sum(kube_pod_container_resource_requests_cpu_cores)",
+                    "refId": "B",
+                    "legendFormat": "requests",
+                },
+                {
+                    "expr": "sum(kube_pod_container_resource_limits_cpu_cores)",
+                    "refId": "C",
+                    "legendFormat": "limits",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql.get("mode"), "stacked")
+        metrics_by_label = {
+            str(m.get("label") or m.get("field")): m for m in esql.get("metrics") or []
+        }
+        self.assertTrue(metrics_by_label.get("requests", {}).get("stack") is False)
+        self.assertTrue(metrics_by_label.get("limits", {}).get("stack") is False)
+
+        from observability_migration.targets.kibana.dashboards_api import _cfg_xy
+
+        native = _cfg_xy("CPU Usage", esql, esql["query"])
+        layer_types = [layer.get("type") for layer in native.get("layers") or []]
+        self.assertIn("area_stacked", layer_types)
+        self.assertTrue(
+            any(t in {"line", "area"} for t in layer_types),
+            f"expected unstacked overlay layer, got {layer_types}",
+        )
+
     def test_regex_series_override_yaxis_preserved_on_merged_metric(self):
         panel = {
             "id": 910,
@@ -7401,6 +7453,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["default"], ".*")
+        # Match-all must appear in the VALUES_FROM_QUERY result set so Kibana
+        # does not mark the selection as incompatible.
+        self.assertIn('MV_APPEND(".*"', controls[0]["query"])
 
     def test_query_variable_control_default_mirrors_current_value(self):
         """A concrete Grafana ``current`` selection is mirrored as the control's
@@ -7427,6 +7482,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["default"], "host-01")
+        self.assertNotIn("MV_APPEND", controls[0]["query"])
 
     def test_esql_path_preserves_template_matcher_as_param_when_capability_on(self):
         """Issue #64: when the target binds ``?var`` params, the ES|QL path must
