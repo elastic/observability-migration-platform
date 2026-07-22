@@ -431,6 +431,18 @@ Without `--es-url`, schema discovery is skipped entirely, so `--esql-index`
 still sets the query `FROM`/`PROMQL index` target, but the run falls back to
 OTel field defaults and cannot warn you that the index does not match your data.
 
+**Exception — Grafana panels already written as raw ES|QL.** If a source
+Grafana panel's `datasource.type` is `elasticsearch` and its query text is
+already `FROM …` / `TS …` (Grafana's native Elasticsearch query editor, not
+PromQL), the migration passes that query through **verbatim** and does not
+retarget its index with `--esql-index` / `--data-view` — rewriting hand-authored
+ES|QL text risks breaking the operator's exact `STATS`/`WHERE` syntax, so the
+tool leaves it alone rather than guess. `migration_report.json` still shows
+`query_language: esql` and `target_index` for that panel so you can see (and,
+if needed, hand-edit) which index it kept. This is intentional and does not
+warn, because dashboards that mix ES|QL log/metric panels with PromQL panels
+legitimately target different indexes on purpose.
+
 `--logs-index` is the log analog: it sets the index / data stream written into
 translated Loki / LogQL panels. Unlike `--esql-index`, it does **not** fall back
 to `--data-view` — when unset it defaults to the source/profile log index

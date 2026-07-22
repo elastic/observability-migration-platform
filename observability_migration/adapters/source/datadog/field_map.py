@@ -46,7 +46,7 @@ class FieldMapProfile:
     metrics_dataset_filter: str = ""
     logs_dataset_filter: str = ""
 
-    metric_map: dict[str, str] = field(default_factory=dict)
+    metric_map: dict[str, Any] = field(default_factory=dict)
     tag_map: dict[str, str] = field(default_factory=dict)
     log_tag_map: dict[str, str] = field(default_factory=dict)
     field_caps: dict[str, FieldCapability] = field(default_factory=dict)
@@ -56,10 +56,29 @@ class FieldMapProfile:
     metric_prefix: str = ""
     metric_suffix: str = ""
     tag_prefix: str = ""
+    _metric_map_gaps: list[str] = field(default_factory=list, repr=False)
+    _metric_map_entries_cache: dict | None = field(default=None, repr=False)
+
+    def _metric_map_entries(self):
+        from observability_migration.core.metric_mapping import normalize_metric_map
+
+        if self._metric_map_entries_cache is None:
+            self._metric_map_entries_cache = normalize_metric_map(self.metric_map)
+        return self._metric_map_entries_cache
+
+    def metric_map_gaps(self) -> list[str]:
+        return list(self._metric_map_gaps)
 
     def map_metric(self, dd_metric: str) -> str:
-        if dd_metric in self.metric_map:
-            return self.metric_map[dd_metric]
+        from observability_migration.core.metric_mapping import resolve_metric_map
+
+        mapped = resolve_metric_map(dd_metric, self._metric_map_entries())
+        if mapped is not None:
+            if mapped.gap_reason and mapped.gap_reason not in self._metric_map_gaps:
+                self._metric_map_gaps.append(mapped.gap_reason)
+            if mapped.applied:
+                return mapped.target
+            # Class-2: do not silently rename; fall through with source name.
         es_name = dd_metric.replace(".", "_")
         if self.metric_prefix:
             es_name = f"{self.metric_prefix}{es_name}"
@@ -397,6 +416,8 @@ def _profile_from_dict(raw: dict[str, Any]) -> FieldMapProfile:
 
 
 def _profile_from_model(model: FieldMapProfileModel) -> FieldMapProfile:
+    from observability_migration.core.metric_mapping import normalize_metric_map
+
     metrics_ds = model.metrics_dataset_filter or derive_dataset_from_index(model.metric_index)
     logs_ds = model.logs_dataset_filter or derive_dataset_from_index(model.logs_index)
     return FieldMapProfile(
@@ -407,7 +428,7 @@ def _profile_from_model(model: FieldMapProfileModel) -> FieldMapProfile:
         timestamp_field=model.timestamp_field,
         metrics_dataset_filter=metrics_ds,
         logs_dataset_filter=logs_ds,
-        metric_map=dict(model.metric_map),
+        metric_map=normalize_metric_map(model.metric_map),
         tag_map=dict(model.tag_map),
         log_tag_map=dict(model.log_tag_map),
         metric_prefix=model.metric_prefix,
@@ -417,6 +438,8 @@ def _profile_from_model(model: FieldMapProfileModel) -> FieldMapProfile:
 
 
 def _clone_profile(profile: FieldMapProfile) -> FieldMapProfile:
+    from observability_migration.core.metric_mapping import normalize_metric_map
+
     return FieldMapProfile(
         name=profile.name,
         metric_index=profile.metric_index,
@@ -425,7 +448,7 @@ def _clone_profile(profile: FieldMapProfile) -> FieldMapProfile:
         timestamp_field=profile.timestamp_field,
         metrics_dataset_filter=profile.metrics_dataset_filter,
         logs_dataset_filter=profile.logs_dataset_filter,
-        metric_map=deepcopy(profile.metric_map),
+        metric_map=normalize_metric_map(profile.metric_map),
         tag_map=deepcopy(profile.tag_map),
         log_tag_map=deepcopy(profile.log_tag_map),
         field_caps=deepcopy(profile.field_caps),

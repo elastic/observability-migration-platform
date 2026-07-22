@@ -16,6 +16,12 @@ this repo as the single source of truth for it. (See the Naming note in
 
 ## Project Conventions
 
+- **Operator-first feature design.** Design and document for the operator who
+  only runs the installable CLI and follows public docs — not for agents or
+  engineers who can run helper scripts, dated harness folders, env-gated
+  rewrites, or sample-data generators. Lab tooling is fine for CI and
+  investigation; it must not be the user journey or a required step for the
+  feature to work. Full rule: `AGENTS.md` (Repo-Specific Working Rules).
 - Architecture overview: `docs/architecture.md`
 - Canonical CLI commands: `docs/command-contract.md`
 - Build / test / lint: see `AGENTS.md` (use `make test`, `make lint`, `make typecheck`).

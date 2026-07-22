@@ -39,6 +39,19 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 
 ## Repo-Specific Working Rules
 
+- **Operator-first feature design.** Design and document features for the
+  person who only has the installable CLI (`obs-migrate` /
+  `grafana-migrate` / `datadog-migrate`), public docs, and their real source
+  + Elastic/Kibana environment. A feature is not "done" if the happy path
+  depends on eng-only helper scripts, ad-hoc Python one-offs, env-gated
+  prototypes, repo harness folders, or `seed-sample-data` / other lab
+  tooling. Those may exist for CI and local investigation, but they must
+  not be the documented operator journey, a required step in user-facing
+  skills/docs, or the only way to make the feature work. Ask: "If a user
+  never clones this repo and never runs anything under `scripts/` or a
+  dated `*_test_*/` harness, can they still succeed with the CLI + docs
+  alone?" If not, redesign the product surface (flags, rule packs,
+  artifacts, messages) until they can.
 - Keep `README.md` short and public-facing.
 - Keep `docs/` canonical for narrative and reference docs.
 - Keep `examples/` and `infra/` focused on assets plus local landing READMEs.

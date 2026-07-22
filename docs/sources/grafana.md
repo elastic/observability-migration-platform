@@ -168,10 +168,31 @@ Within the chosen profile, **labels** resolve through this order:
 | 5 | Built-in Prometheus → OTel candidate mappings | always available offline |
 | 6 (lowest) | Pass-through (use label as-is) | default fallback |
 
-`resolve_metric_field()` rewrites metric names the same way per profile (a no-op
-only for the generic/OTel layout), and `is_counter()` resolves counter-vs-gauge
+**Metrics** may also use an optional rule-pack `query.metric_map` (shared
+building block with Datadog). Exact renames (`source: target` or
+`{target: ...}`) win over profile/passthrough. Entries with `transform` or
+`attribute_filter`, or a non-1 `unit_scale`, are **class-2**: recorded as gaps
+in v1 (never applied as a silent bare rename). Author maps for your environment;
+the tool does not auto-suggest metric renames. Preflight
+`required_target_contract.json` lists required fields (a worklist, not a full
+Prom→OTEL dictionary) and may include `mapped_from` when source ≠ target.
+
+`resolve_metric_field()` applies `metric_map` first, then rewrites metric names
+per profile, and `is_counter()` resolves counter-vs-gauge
 (rule-pack `metric_kinds` → `counter_suffixes` → the field's `time_series_metric`
 capability → the profile's counter field) so `rate()`/`irate()` stay correct.
+
+**`metric_map` and native PROMQL do not mix.** Native PROMQL (the default,
+highest-fidelity path described in [Overview](#overview) above) embeds the
+*literal* source PromQL text and requires the target to already store data
+under those exact Prometheus metric names; it never calls
+`resolve_metric_field`, so a `metric_map` entry has no effect on a panel that
+lands on that path. The migration still degrades gracefully instead of hiding
+the gap: a panel note (`metric_map not applied for <metric>: native PROMQL
+requires literal target metric names; pass --translation-mode esql to apply
+metric_map on this panel`) is attached and the panel is marked
+`migrated_with_warnings`. Pass `--translation-mode esql` to force ES|QL
+translation everywhere `metric_map` needs to apply.
 
 > **Verify requires live data.** Without `--es-url`, or before telemetry lands,
 > per-field status may be `unknown` — the planned layout still drives emitted

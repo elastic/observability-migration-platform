@@ -1922,6 +1922,32 @@ def _native_promql_query_survives_validation(rule_pack, query) -> bool:
     return False
 
 
+def _metric_map_bypass_note(metric_names, rule_pack):
+    """Warn when native PROMQL will skip a configured ``metric_map`` rename.
+
+    Native PROMQL embeds the *literal* source PromQL text and requires the
+    target to already store data under those exact Prometheus metric names
+    (see ``metrics_query_index`` / ``build_native_promql_query``). It never
+    calls ``resolve_metric_field``, so a rule-pack ``metric_map`` entry for
+    one of ``metric_names`` has no effect on this panel — silently keeping
+    the source name would contradict the "no silent renames/gaps" contract
+    metric_map makes elsewhere (schema.py ``resolve_metric_field``). Surface
+    it as a panel note instead so operators know to pass
+    ``--translation-mode esql`` if they need the mapped target metric here.
+    """
+    metric_map = getattr(rule_pack, "metric_map", None) or {}
+    if not metric_map:
+        return None
+    mapped = sorted({name for name in metric_names if name in metric_map})
+    if not mapped:
+        return None
+    return (
+        f"metric_map not applied for {', '.join(mapped)}: native PROMQL requires "
+        "literal target metric names; pass --translation-mode esql to apply "
+        "metric_map on this panel"
+    )
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
@@ -2148,6 +2174,11 @@ def _translate_panel_native_promql(
     _apply_series_override_axes(yaml_panel, panel, [])
 
     notes = list(panel_notes) + ["Native PROMQL: original PromQL reused via ES|QL PROMQL command"]
+    metric_map_note = _metric_map_bypass_note(
+        _collect_source_metrics(native_fragment), rule_pack
+    )
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -2174,12 +2205,12 @@ def _translate_panel_native_promql(
     query_ir.target_index = index
     query_ir.target_query = promql_query
 
-    confidence = 0.90
+    confidence = 0.90 if not metric_map_note else 0.7
     panel_result = PanelResult(
         title,
         panel_type,
         kibana_type,
-        "migrated",
+        "migrated_with_warnings" if metric_map_note else "migrated",
         confidence,
         promql_expr=expr,
         # Record the *emitted* panel query, not the bare ``PROMQL …`` command.
@@ -2191,6 +2222,7 @@ def _translate_panel_native_promql(
         # accessors (issue #109). ``query_ir.target_query`` stays bare for the
         # parity oracle.
         esql_query=native_panel.get("query", promql_query),
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
@@ -2321,6 +2353,12 @@ def _translate_multi_target_native_promql(
     notes = list(panel_notes) + [
         "Native PROMQL: multi-target combined via label_replace + or",
     ]
+    all_source_metrics = []
+    for frag in target_fragments:
+        all_source_metrics.extend(_collect_source_metrics(frag))
+    metric_map_note = _metric_map_bypass_note(all_source_metrics, rule_pack)
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -2385,8 +2423,14 @@ def _translate_multi_target_native_promql(
     query_ir.target_query = promql_query
 
     panel_result = PanelResult(
-        title, panel_type, kibana_type, "migrated", 0.80,
-        promql_expr=combined_expr, esql_query=promql_query,
+        title,
+        panel_type,
+        kibana_type,
+        "migrated_with_warnings" if metric_map_note else "migrated",
+        0.70 if metric_map_note else 0.80,
+        promql_expr=combined_expr,
+        esql_query=promql_query,
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
