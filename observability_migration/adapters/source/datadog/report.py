@@ -313,6 +313,7 @@ def save_detailed_report(
     validation_records: list[dict[str, Any]] | None = None,
     smoke_payload: dict[str, Any] | None = None,
     verification_payload: dict[str, Any] | None = None,
+    metric_map_summary: dict[str, Any] | None = None,
 ) -> None:
     """Save a detailed JSON report."""
     report: dict[str, Any] = {
@@ -340,6 +341,8 @@ def save_detailed_report(
         }
     if verification_payload:
         report["verification"] = verification_payload
+    if metric_map_summary is not None:
+        report["metric_map_summary"] = metric_map_summary
 
     total_widgets = 0
     total_ok = 0

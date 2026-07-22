@@ -675,6 +675,36 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(compare_cmd)
 
+    metric_map_cmd = sub.add_parser(
+        "metric-map",
+        help="Metric map utilities for migration artifacts.",
+        description=(
+            "Source-neutral helpers for authoring metric_map YAML from migration "
+            "artifact contracts."
+        ),
+    )
+    metric_map_sub = metric_map_cmd.add_subparsers(dest="metric_map_action", required=True)
+    scaffold_cmd = metric_map_sub.add_parser(
+        "scaffold",
+        help="Scaffold metric_map YAML from unmapped source metrics in artifacts.",
+        description=(
+            "Read required_target_contract.json, target_readiness_contract.json, "
+            "and/or migration_manifest.json under --artifact-dir and write a "
+            "source-neutral metric_map YAML skeleton for metrics that still need "
+            "operator-authored target names."
+        ),
+    )
+    scaffold_cmd.add_argument(
+        "--artifact-dir",
+        required=True,
+        help="Migration artifact directory (for example migration_output/dashboards).",
+    )
+    scaffold_cmd.add_argument(
+        "--output",
+        required=True,
+        help="Path for the scaffold YAML file to write.",
+    )
+
     verify_unified_cmd = sub.add_parser(
         "verify",
         help="One command + one scorecard for the package-native correctness "
@@ -770,6 +800,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_remove_sample_data(args))
     elif args.command == "compare":
         sys.exit(_run_compare(args))
+    elif args.command == "metric-map":
+        if args.metric_map_action == "scaffold":
+            sys.exit(_run_metric_map_scaffold(args))
+        sys.exit(2)
     elif args.command == "verify":
         sys.exit(_run_verify(args))
     elif args.command == "doctor":
@@ -1763,6 +1797,24 @@ def _run_remove_sample_data(args: Any) -> int:
         "errors": summary.errors,
     }, indent=2))
     return 0 if not summary.errors else 1
+
+
+def _run_metric_map_scaffold(args: Any) -> int:
+    """Write a metric_map scaffold YAML from migration artifact contracts."""
+    from observability_migration.core.metric_mapping.scaffold import build_scaffold_yaml
+
+    artifact_dir = Path(args.artifact_dir)
+    if not artifact_dir.is_dir():
+        print(
+            json.dumps({"error": "missing_artifact_dir", "path": str(artifact_dir)}),
+            file=sys.stderr,
+        )
+        return 2
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(build_scaffold_yaml(artifact_dir), encoding="utf-8")
+    print(f"Wrote metric_map scaffold: {output_path}")
+    return 0
 
 
 def _run_list_samples(args: Any) -> int:

@@ -173,7 +173,9 @@ Datadog). The file uses a source-neutral top-level `metric_map` mapping. Exact
 renames (`source: target` or `{target: ...}`) win over profile/passthrough and
 over rule-pack `query.metric_map` entries with the same source metric. Entries
 with `transform` or `attribute_filter`, or a non-1 `unit_scale`, are
-**class-2**: recorded as gaps in v1 (never applied as a silent bare rename).
+**class-2**: the target rename applies and emitters honor filter, scale, and
+rate-transform semantics in ES|QL (with warnings when counter/gauge kind is
+unknown for transform planning).
 Author maps for your environment; the tool does not auto-suggest metric
 renames. Preflight
 `required_target_contract.json` lists required fields (a worklist, not a full

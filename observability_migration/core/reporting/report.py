@@ -525,7 +525,7 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None):
+def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
     runtime_features = {}
     for result in results:
         runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
@@ -562,6 +562,8 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
     }
     if field_discovery is not None:
         report["field_discovery"] = field_discovery
+    if metric_map_summary is not None:
+        report["metric_map_summary"] = metric_map_summary
     if validation_summary or validation_records:
         report["validation"] = {
             "summary": validation_summary or {},

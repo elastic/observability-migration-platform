@@ -167,6 +167,16 @@ class SchemaResolver:
     def metric_map_applied(self) -> dict[str, str]:
         return dict(self._metric_map_applied)
 
+    def resolve_metric_map_result(self, metric_name: str, source_labels=None):
+        """Return the resolved metric_map result for ``metric_name``, if any."""
+        from observability_migration.core.metric_mapping import resolve_metric_map
+
+        return resolve_metric_map(
+            metric_name,
+            getattr(self._rule_pack, "metric_map", None),
+            source_labels=source_labels,
+        )
+
     def _candidate_fields(self, label):
         candidates = []
         for source in (
@@ -766,7 +776,7 @@ class SchemaResolver:
         except Exception:
             return None
 
-    def resolve_metric_field(self, metric_name, *, prefer=None):
+    def resolve_metric_field(self, metric_name, *, prefer=None, source_labels=None):
         """Resolve a PromQL metric name to its actual stored field.
 
         For most layouts this is a passthrough (the metric name is the field
@@ -784,12 +794,19 @@ class SchemaResolver:
         so the contract layer can surface the missing field via preflight.
 
         Explicit rule-pack ``metric_map`` wins over profile/passthrough when the
-        entry is an exact (class-1) rename. Class-2 entries (transform /
-        attribute_filter) are recorded as gaps and do not silently rename.
+        entry is applied (class-1 exact or class-2 with emitter obligations).
+        Unapplied variant mismatches and other gaps are recorded explicitly.
+
+        ``source_labels`` selects among ``variants`` when the map entry uses
+        attribute-split source filters.
         """
         from observability_migration.core.metric_mapping import resolve_metric_map
 
-        mapped = resolve_metric_map(metric_name, getattr(self._rule_pack, "metric_map", None))
+        mapped = resolve_metric_map(
+            metric_name,
+            getattr(self._rule_pack, "metric_map", None),
+            source_labels=source_labels,
+        )
         if mapped is not None:
             for warning in mapped.warnings:
                 if warning not in self._metric_map_warnings:
@@ -799,7 +816,7 @@ class SchemaResolver:
             if mapped.applied:
                 self._metric_map_applied[metric_name] = mapped.target
                 return mapped.target
-            # Class-2: do not apply a bare rename; continue with source name.
+            # Unapplied mapping: continue with source name.
         # Passthrough profile: emit the source metric name verbatim, skipping
         # discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:

@@ -1382,6 +1382,41 @@ def _record_passthrough_native_labels(expr, resolver):
         resolve(label)
 
 
+def _native_metric_map_binding(resolver, metric_name: str):
+    """Return a native-PromQL-compatible metric_map binding, if any."""
+    resolve = getattr(resolver, "resolve_metric_map_result", None)
+    if not callable(resolve):
+        return None
+    try:
+        result = resolve(metric_name)
+    except Exception:
+        return None
+    if result is None:
+        return None
+    from observability_migration.core.metric_mapping import binding_from_result
+
+    binding = binding_from_result(result)
+    return binding if binding.native_promql_compatible else None
+
+
+def _recording_rule_metric_map_notes(metric_names, rule_pack) -> list[str]:
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
+    metric_map = getattr(rule_pack, "metric_map", None) or {}
+    notes: list[str] = []
+    for metric_name in sorted(set(metric_names)):
+        if not looks_like_recording_rule_metric(metric_name):
+            continue
+        if metric_name in metric_map:
+            continue
+        notes.append(
+            "Recording-rule metric "
+            f"{metric_name!r} has no metric_map entry; add a mapping or "
+            "recreate the rule in the target"
+        )
+    return notes
+
+
 def _prefix_native_metric_fields(expr, resolver):
     """Rewrite bare metric selectors in a native PROMQL expression to their
     resolved ``metrics.<name>`` field (issue #270).
@@ -1445,6 +1480,9 @@ def _prefix_native_metric_fields(expr, resolver):
             return None
         if name in _PROMQL_RESERVED_WORDS:
             return None
+        binding = _native_metric_map_binding(resolver, name)
+        if binding is not None:
+            return binding.target_field
         try:
             resolved = resolve(name)
         except Exception:
@@ -1923,28 +1961,33 @@ def _native_promql_query_survives_validation(rule_pack, query) -> bool:
 
 
 def _metric_map_bypass_note(metric_names, rule_pack):
-    """Warn when native PROMQL will skip a configured ``metric_map`` rename.
+    """Warn when native PROMQL cannot apply a class-2 ``metric_map`` entry.
 
-    Native PROMQL embeds the *literal* source PromQL text and requires the
-    target to already store data under those exact Prometheus metric names
-    (see ``metrics_query_index`` / ``build_native_promql_query``). It never
-    calls ``resolve_metric_field``, so a ``metric_map`` entry for one of
-    ``metric_names`` has no effect on this panel — silently keeping the
-    source name would contradict the "no silent renames/gaps" contract
-    metric_map makes elsewhere (schema.py ``resolve_metric_field``). Surface
-    it as a panel note instead. ``--metric-map-file`` auto-selects ES|QL in
-    ``auto`` mode; this note usually means an explicit
-    ``--translation-mode native`` or a rule-pack-only map without that flag.
+    Class-1 exact mappings are rewritten in native PromQL via
+    ``_prefix_native_metric_fields``. Class-2 mappings need ES|QL so
+    transform/filter/scale semantics are honored.
     """
     metric_map = getattr(rule_pack, "metric_map", None) or {}
     if not metric_map:
         return None
-    mapped = sorted({name for name in metric_names if name in metric_map})
-    if not mapped:
+    from observability_migration.core.metric_mapping import binding_from_result, resolve_metric_map
+
+    class2_mapped: list[str] = []
+    for name in metric_names:
+        if name not in metric_map:
+            continue
+        result = resolve_metric_map(name, metric_map)
+        if result is None:
+            continue
+        binding = binding_from_result(result)
+        if not binding.native_promql_compatible:
+            class2_mapped.append(name)
+    if not class2_mapped:
         return None
+    mapped = sorted(set(class2_mapped))
     return (
-        f"metric_map not applied for {', '.join(mapped)}: native PROMQL requires "
-        "literal target metric names; use ES|QL translation "
+        f"metric_map class-2 entries not applied for {', '.join(mapped)}: "
+        "native PROMQL cannot honor transform/filter/scale; use ES|QL translation "
         "(--metric-map-file auto-selects it, or pass --translation-mode esql)"
     )
 
@@ -2180,6 +2223,11 @@ def _translate_panel_native_promql(
     )
     if metric_map_note:
         _append_unique(notes, metric_map_note)
+    for recording_rule_note in _recording_rule_metric_map_notes(
+        _collect_source_metrics(native_fragment),
+        rule_pack,
+    ):
+        _append_unique(notes, recording_rule_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -2360,6 +2408,8 @@ def _translate_multi_target_native_promql(
     metric_map_note = _metric_map_bypass_note(all_source_metrics, rule_pack)
     if metric_map_note:
         _append_unique(notes, metric_map_note)
+    for recording_rule_note in _recording_rule_metric_map_notes(all_source_metrics, rule_pack):
+        _append_unique(notes, recording_rule_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"

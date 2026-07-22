@@ -389,7 +389,7 @@ def build_target_readiness_contract(
     confirmed = sum(1 for v in serialized_fields.values() if v["status"] == "confirmed")
     missing = sum(1 for v in serialized_fields.values() if v["status"] == "missing")
     unknown = sum(1 for v in serialized_fields.values() if v["status"] == "unknown")
-    return {
+    contract = {
         "source": "datadog",
         "field_profile": field_map.name,
         "metric_index": field_map.metric_index,
@@ -407,6 +407,10 @@ def build_target_readiness_contract(
             "fields_unknown": unknown,
         },
     }
+    from observability_migration.core.metric_mapping.reporting import attach_metric_map_to_contract
+
+    attach_metric_map_to_contract(contract, field_map)
+    return contract
 
 
 def save_target_readiness_contract(contract: dict[str, Any], output_path: str | Path) -> None:
@@ -427,7 +431,11 @@ def _extract_required_fields(
             if q.metric_query:
                 mq = q.metric_query
                 required.append({
-                    "name": field_map.map_metric(mq.metric) if field_map else mq.metric,
+                    "name": (
+                        field_map.map_metric(mq.metric, source_labels=mq.scope_tags)
+                        if field_map
+                        else mq.metric
+                    ),
                     "source_name": mq.metric,
                     "usage": "aggregate",
                     "widget_id": widget.id,

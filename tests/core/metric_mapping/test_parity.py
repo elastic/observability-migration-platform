@@ -15,7 +15,10 @@ import yaml
 from observability_migration.adapters.source.datadog.field_map import FieldMapProfile, load_profile
 from observability_migration.adapters.source.datadog.models import MetricQuery, WidgetQuery
 from observability_migration.adapters.source.datadog.preflight import build_target_readiness_contract
-from observability_migration.adapters.source.grafana.panels import _metric_map_bypass_note
+from observability_migration.adapters.source.grafana.panels import (
+    _metric_map_bypass_note,
+    build_native_promql_query,
+)
 from observability_migration.adapters.source.grafana.preflight import build_target_schema_contract
 from observability_migration.adapters.source.grafana.rules import RulePackConfig, load_rule_pack_files
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
@@ -40,7 +43,7 @@ class MetricMapParityTests(unittest.TestCase):
         dd = FieldMapProfile(metric_map=entries)
         self.assertEqual(dd.map_metric("a.b"), "x.y")
 
-    def test_class2_gap_on_both_adapters(self):
+    def test_class2_applies_on_both_adapters(self):
         entries = normalize_metric_map(
             {
                 "src.metric": {
@@ -51,19 +54,23 @@ class MetricMapParityTests(unittest.TestCase):
         )
         shared = resolve_metric_map("src.metric", entries)
         self.assertEqual(shared.klass, CLASS_REQUIRES_TRANSFORM)
-        self.assertFalse(shared.applied)
+        self.assertTrue(shared.applied)
+        self.assertEqual(shared.target, "dst.metric")
+        self.assertEqual(shared.gap_reason, "")
 
         grafana = SchemaResolver(RulePackConfig(metric_map=entries), field_profile="otel")
-        # Gap: keep source name (no silent rename)
-        self.assertEqual(grafana.resolve_metric_field("src.metric"), "src.metric")
-        self.assertTrue(grafana.metric_map_gaps())
+        self.assertEqual(grafana.resolve_metric_field("src.metric"), "dst.metric")
+        self.assertFalse(grafana.metric_map_gaps())
+        self.assertEqual(grafana.metric_map_applied()["src.metric"], "dst.metric")
+        self.assertTrue(grafana.metric_map_warnings())
 
         dd = FieldMapProfile(metric_map=entries)
-        # Falls through to underscore form of source, not dst.metric
-        self.assertEqual(dd.map_metric("src.metric"), "src_metric")
-        self.assertTrue(dd.metric_map_gaps())
+        self.assertEqual(dd.map_metric("src.metric"), "dst.metric")
+        self.assertFalse(dd.metric_map_gaps())
+        self.assertEqual(dd.metric_map_applied()["src.metric"], "dst.metric")
+        self.assertTrue(dd.metric_map_warnings())
 
-    def test_unit_scale_gap_on_both_adapters(self):
+    def test_unit_scale_applies_on_both_adapters(self):
         entries = normalize_metric_map(
             {
                 "src.metric": {
@@ -74,16 +81,17 @@ class MetricMapParityTests(unittest.TestCase):
         )
         shared = resolve_metric_map("src.metric", entries)
         self.assertEqual(shared.klass, CLASS_REQUIRES_TRANSFORM)
-        self.assertFalse(shared.applied)
-        self.assertIn("unit_scale", shared.gap_reason)
+        self.assertTrue(shared.applied)
+        self.assertEqual(shared.target, "dst.metric")
+        self.assertEqual(shared.gap_reason, "")
 
         grafana = SchemaResolver(RulePackConfig(metric_map=entries), field_profile="otel")
-        self.assertEqual(grafana.resolve_metric_field("src.metric"), "src.metric")
-        self.assertTrue(grafana.metric_map_gaps())
+        self.assertEqual(grafana.resolve_metric_field("src.metric"), "dst.metric")
+        self.assertFalse(grafana.metric_map_gaps())
 
         dd = FieldMapProfile(metric_map=entries)
-        self.assertEqual(dd.map_metric("src.metric"), "src_metric")
-        self.assertTrue(dd.metric_map_gaps())
+        self.assertEqual(dd.map_metric("src.metric"), "dst.metric")
+        self.assertFalse(dd.metric_map_gaps())
 
     def test_grafana_rule_pack_loads_metric_map(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,8 +116,10 @@ class MetricMapParityTests(unittest.TestCase):
             self.assertIn("container_memory_working_set_bytes", pack.metric_map)
             exact = resolve_metric_map("container_memory_working_set_bytes", pack.metric_map)
             self.assertEqual(exact.klass, CLASS_EXACT)
-            gap = resolve_metric_map("net_rx", pack.metric_map)
-            self.assertEqual(gap.klass, CLASS_REQUIRES_TRANSFORM)
+            class2 = resolve_metric_map("net_rx", pack.metric_map)
+            self.assertEqual(class2.klass, CLASS_REQUIRES_TRANSFORM)
+            self.assertTrue(class2.applied)
+            self.assertEqual(class2.target, "k8s.pod.network.io")
 
     def test_datadog_yaml_profile_loads_rich_metric_map(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,9 +141,9 @@ class MetricMapParityTests(unittest.TestCase):
             )
             profile = load_profile(str(path))
             self.assertEqual(profile.map_metric("system.cpu.user"), "system.cpu.user.pct")
-            # class-2 gap: no silent rename to system.network.in.bytes
-            self.assertNotEqual(profile.map_metric("system.net.bytes_rcvd"), "system.network.in.bytes")
-            self.assertTrue(profile.metric_map_gaps())
+            self.assertEqual(profile.map_metric("system.net.bytes_rcvd"), "system.network.in.bytes")
+            self.assertFalse(profile.metric_map_gaps())
+            self.assertTrue(profile.metric_map_warnings())
 
     def test_grafana_contract_records_mapped_from(self):
         """Grafana's required_target_contract shows which source metric a rename came from."""
@@ -161,6 +171,8 @@ class MetricMapParityTests(unittest.TestCase):
         entry = contract["required_fields"]["http.server.request.duration"]
         self.assertEqual(entry["source_fields"], ["http_requests_total"])
         self.assertEqual(entry["mapped_from"], "http_requests_total")
+        self.assertIn("metric_map", contract)
+        self.assertEqual(contract["metric_map"]["totals"]["applied"], 1)
 
         # Unchanged (no rename) fields must not claim a mapped_from.
         unchanged_result = SimpleNamespace(
@@ -204,6 +216,7 @@ class MetricMapParityTests(unittest.TestCase):
         contract = build_target_readiness_contract([dashboard], field_map)
         entry = contract["required_fields"]["system.cpu.user.pct"]
         self.assertEqual(entry["mapped_from"], "system.cpu.user")
+        self.assertIn("metric_map", contract)
 
         # A field with no dots survives the default dot->underscore mapping
         # unchanged, so it must not claim a mapped_from either.
@@ -220,19 +233,45 @@ class MetricMapParityTests(unittest.TestCase):
         (unchanged_entry,) = unchanged_contract["required_fields"].values()
         self.assertNotIn("mapped_from", unchanged_entry)
 
-    def test_native_promql_bypass_note_flags_mapped_metric(self):
-        """Native PROMQL emits literal metric names; metric_map users must be told it did not apply."""
+    def test_native_promql_bypass_note_flags_class2_metric(self):
+        """Native PROMQL warns for class-2 metric_map entries that need ES|QL."""
         pack = RulePackConfig(
-            metric_map=normalize_metric_map({"http_requests_total": "http.server.request.duration"})
+            metric_map=normalize_metric_map(
+                {
+                    "http_requests_total": "http.server.request.duration",
+                    "net_rx": {
+                        "target": "k8s.pod.network.io",
+                        "attribute_filter": {"network.direction": "receive"},
+                    },
+                }
+            )
         )
-        note = _metric_map_bypass_note(["http_requests_total", "up"], pack)
+        note = _metric_map_bypass_note(["http_requests_total", "net_rx", "up"], pack)
         self.assertIsNotNone(note)
-        self.assertIn("http_requests_total", note)
+        self.assertIn("net_rx", note)
+        self.assertNotIn("http_requests_total", note)
+        self.assertIn("class-2", note)
         self.assertIn("--translation-mode esql", note)
-        # No metric_map entries referenced -> no note (native PROMQL is fine as-is).
         self.assertIsNone(_metric_map_bypass_note(["up"], pack))
-        # Empty metric_map -> no note regardless of metric names.
         self.assertIsNone(_metric_map_bypass_note(["http_requests_total"], RulePackConfig()))
+
+    def test_native_promql_class1_metric_map_rewrites_selector(self):
+        resolver = SchemaResolver(
+            RulePackConfig(
+                metric_map=normalize_metric_map(
+                    {"http_requests_total": "http.server.request.duration"}
+                )
+            ),
+            field_profile="otel",
+        )
+        query = build_native_promql_query(
+            "sum(http_requests_total)",
+            index="metrics-*",
+            kibana_type="metric",
+            resolver=resolver,
+        )
+        self.assertIn("http.server.request.duration", query)
+        self.assertNotIn("http_requests_total", query)
 
 
 if __name__ == "__main__":

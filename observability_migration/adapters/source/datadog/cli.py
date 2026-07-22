@@ -476,6 +476,9 @@ def _run_dashboard_pipeline(
         [dashboard for _, dashboard in dashboard_outputs],
         field_map,
     )
+    from observability_migration.core.metric_mapping.reporting import metric_map_summary_from_tracker
+
+    metric_map_summary = metric_map_summary_from_tracker(field_map)
     save_detailed_report(
         all_results,
         str(report_path),
@@ -483,6 +486,7 @@ def _run_dashboard_pipeline(
         validation_records=validation_records,
         smoke_payload=smoke_payload,
         verification_payload=verification_payload,
+        metric_map_summary=metric_map_summary,
     )
     save_migration_manifest(all_results, manifest_path)
     save_verification_packets(verification_payload, verification_path)

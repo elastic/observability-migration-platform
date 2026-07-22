@@ -533,6 +533,27 @@ def _collect_referenced_labels(results: list[Any]) -> set[str]:
 # Schema contract (existing)
 # ---------------------------------------------------------------------------
 
+def _recording_rule_metric_map_messages(
+    metric_names: set[str],
+    *,
+    metric_map_keys: set[str],
+) -> list[str]:
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
+    messages: list[str] = []
+    for metric_name in sorted(metric_names):
+        if not looks_like_recording_rule_metric(metric_name):
+            continue
+        if metric_name in metric_map_keys:
+            continue
+        messages.append(
+            "Recording-rule metric "
+            f"{metric_name!r} has no metric_map entry; add a mapping or "
+            "recreate the rule in the target"
+        )
+    return messages
+
+
 def build_target_schema_contract(
     results: list[Any],
     resolver: Any = None,
@@ -572,6 +593,12 @@ def build_target_schema_contract(
             field_capabilities_discovery = discovery_status_fn()
 
     seen_features: set[str] = set()
+    referenced_source_metrics: set[str] = set()
+    metric_map_keys: set[str] = set()
+    if resolver is not None:
+        rule_pack = getattr(resolver, "_rule_pack", None)
+        if rule_pack is not None:
+            metric_map_keys = set(getattr(rule_pack, "metric_map", {}) or {})
 
     for result in results:
         variables = getattr(result, "inventory", {}).get("variables", 0) or 0
@@ -595,6 +622,7 @@ def build_target_schema_contract(
                 required_indexes[target_index] += 1
 
             metric_fields = _metric_candidates(query_ir)
+            referenced_source_metrics.update(metric_fields)
             for metric_field in sorted(metric_fields):
                 target_metric = metric_field
                 if resolver and hasattr(resolver, "resolve_metric_field"):
@@ -716,7 +744,7 @@ def build_target_schema_contract(
     missing = sum(1 for v in field_status.values() if v["status"] == "missing")
     unknown = sum(1 for v in field_status.values() if v["status"] == "unknown")
 
-    return {
+    contract = {
         "field_profile": field_profile,
         "planned_schema_profile": planned_schema_profile,
         "detected_schema_profile": detected_schema_profile,
@@ -738,6 +766,29 @@ def build_target_schema_contract(
             "counters_expected": len(counter_status),
         },
     }
+    if resolver is not None:
+        from observability_migration.core.metric_mapping.reporting import (
+            attach_metric_map_to_contract,
+            build_metric_map_summary,
+        )
+
+        attach_metric_map_to_contract(contract, resolver)
+        recording_rule_gaps = _recording_rule_metric_map_messages(
+            referenced_source_metrics,
+            metric_map_keys=metric_map_keys,
+        )
+        if recording_rule_gaps:
+            if "metric_map" not in contract:
+                contract["metric_map"] = build_metric_map_summary(
+                    applied={},
+                    gaps=[],
+                    warnings=[],
+                )
+            contract["metric_map"]["gaps"] = (
+                list(contract["metric_map"].get("gaps", [])) + recording_rule_gaps
+            )
+            contract["metric_map"]["totals"]["gaps"] = len(contract["metric_map"]["gaps"])
+    return contract
 
 
 def build_target_contract_summary(results: list[Any]) -> dict[str, Any]:
