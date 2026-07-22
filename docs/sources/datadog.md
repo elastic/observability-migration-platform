@@ -147,7 +147,7 @@ A profile supplies:
 
 | Property | Purpose |
 |---|---|
-| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Shared with Grafana rule-pack `metric_map` via `core/metric_mapping`. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
+| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
 | `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
 | `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
@@ -158,7 +158,8 @@ A profile supplies:
 
 **Translation behavior for metrics:** When a Datadog metric name is encountered,
 the translator resolves `metric_map` through the shared metric-mapping core.
-Exact entries apply as overrides. Class-2 entries (`transform`,
+Exact entries from `--metric-map-file` override entries embedded in the selected
+field profile. Class-2 entries (`transform`,
 `attribute_filter`, or non-1 `unit_scale`) record a gap and fall through without
 renaming to the declared target. If no applicable map entry exists, it converts
 dots to underscores (`system.cpu.user` → `system_cpu_user`)

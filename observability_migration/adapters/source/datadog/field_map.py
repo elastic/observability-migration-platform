@@ -69,6 +69,12 @@ class FieldMapProfile:
     def metric_map_gaps(self) -> list[str]:
         return list(self._metric_map_gaps)
 
+    def merge_metric_map(self, entries: dict[str, Any]) -> None:
+        """Merge normalized metric_map entries, invalidating the resolve cache."""
+        self.metric_map.update(entries)
+        self._metric_map_entries_cache = None
+        self._metric_map_gaps = []
+
     def map_metric(self, dd_metric: str) -> str:
         from observability_migration.core.metric_mapping import resolve_metric_map
 

@@ -231,6 +231,16 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--kibana-api-key", default="")
     migrate.add_argument("--space-id", default="")
     migrate.add_argument("--rules-file", action="append", default=[])
+    migrate.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map entries. "
+            "Works for Grafana and Datadog; may be repeated. Later files override "
+            "earlier entries and the active field profile / loaded rule packs."
+        ),
+    )
     migrate.add_argument("--plugin", action="append", default=[])
     migrate.add_argument("--polish-metadata", action="store_true")
     migrate.add_argument("--preflight", action="store_true")
@@ -925,6 +935,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--shadow-space", args.space_id])
     for rf in args.rules_file:
         legacy_argv.extend(["--rules-file", rf])
+    for mmf in getattr(args, "metric_map_file", []):
+        legacy_argv.extend(["--metric-map-file", mmf])
     for pl in args.plugin:
         legacy_argv.extend(["--plugin", pl])
     if args.polish_metadata:
@@ -996,6 +1008,8 @@ def _run_datadog_migration(args: Any) -> None:
     if args.data_view:
         legacy_argv.extend(["--data-view", args.data_view])
     legacy_argv.extend(["--field-profile", args.field_profile])
+    for mmf in getattr(args, "metric_map_file", []):
+        legacy_argv.extend(["--metric-map-file", mmf])
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(

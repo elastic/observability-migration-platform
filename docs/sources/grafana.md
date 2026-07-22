@@ -168,12 +168,14 @@ Within the chosen profile, **labels** resolve through this order:
 | 5 | Built-in Prometheus → OTel candidate mappings | always available offline |
 | 6 (lowest) | Pass-through (use label as-is) | default fallback |
 
-**Metrics** may also use an optional rule-pack `query.metric_map` (shared
-building block with Datadog). Exact renames (`source: target` or
-`{target: ...}`) win over profile/passthrough. Entries with `transform` or
-`attribute_filter`, or a non-1 `unit_scale`, are **class-2**: recorded as gaps
-in v1 (never applied as a silent bare rename). Author maps for your environment;
-the tool does not auto-suggest metric renames. Preflight
+**Metrics** may also use `--metric-map-file` (shared building block with
+Datadog). The file uses a source-neutral top-level `metric_map` mapping. Exact
+renames (`source: target` or `{target: ...}`) win over profile/passthrough and
+over rule-pack `query.metric_map` entries with the same source metric. Entries
+with `transform` or `attribute_filter`, or a non-1 `unit_scale`, are
+**class-2**: recorded as gaps in v1 (never applied as a silent bare rename).
+Author maps for your environment; the tool does not auto-suggest metric
+renames. Preflight
 `required_target_contract.json` lists required fields (a worklist, not a full
 Prom→OTEL dictionary) and may include `mapped_from` when source ≠ target.
 
@@ -280,7 +282,7 @@ To emit a validated starter rule-pack template:
 | Operator model | Plan with `--field-profile`, then verify with `--es-url` | Same plan→verify model; **no `auto`** |
 | Metric name mapping | Planned profile rewrites (`otel`, Fleet remote_write, Metricbeat nested, native, passthrough) | Explicit `metric_map` + automatic dot-to-underscore + optional prefix/suffix |
 | Tag / label mapping | `SchemaResolver` with multi-level priority and live verification | `tag_map` dictionary with optional `tag_prefix` fallback |
-| Customization | Rule-pack YAML (`--rules-file`) | Custom profile YAML (`--field-profile path.yaml`) |
+| Customization | `--metric-map-file` for metric renames; rule-pack YAML (`--rules-file`) for advanced Grafana rules | `--metric-map-file` for metric renames; custom profile YAML (`--field-profile path.yaml`) for advanced Datadog profiles |
 | Live field discovery | `--es-url` verifies the plan; does not silently remap | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 | Named profiles | `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto` (Grafana-only) | `otel`, `elastic_agent`, `prometheus` (Metricbeat), `prometheus_native` (ES `/_prometheus`), `passthrough`, or YAML path |

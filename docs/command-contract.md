@@ -137,6 +137,7 @@ Datadog.
 | `--input-mode {files,api}` | Grafana, Datadog | Choose file imports or live extraction | Use with `--source` |
 | `--assets {dashboards,alerts,all}` | Grafana, Datadog | Run dashboard migration, alert migration, or both | Preferred explicit selector |
 | `--field-profile` | Grafana, Datadog | Target field mapping profile (plan, then verify with `--es-url`) | Defaults to `otel` for every source. **Grafana:** `otel`, `prometheus_remote_write` (Fleet `use_types` typed leaves), `prometheus_metrics` (classic Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native`, `passthrough`, `auto` (`auto` requires `--es-url`; ambiguous caps → `otel` + warn). **Datadog:** `otel`/`default`, `elastic_agent`, `prometheus` (Metricbeat `prometheus.metrics.*` / `prometheus.labels.*`), `prometheus_native` (ES `/_prometheus` `metrics.*` / `labels.*`), `passthrough`, YAML — **no `auto`**. Live `_field_caps` verify the plan; they do not silently remap to a different layout. Datadog Prometheus profiles apply label paths to metric queries while log queries retain ECS / OTel fields. |
+| `--metric-map-file` | Grafana, Datadog | Source metric name → target field override file | Source-neutral YAML with top-level `metric_map`. Use this for explicit metric renames while `--field-profile` continues to select the target schema family. May be repeated; later files override earlier entries and adapter-specific maps. |
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
@@ -443,38 +444,59 @@ if needed, hand-edit) which index it kept. This is intentional and does not
 warn, because dashboards that mix ES|QL log/metric panels with PromQL panels
 legitimately target different indexes on purpose.
 
-### Reusing existing OTEL metrics with `metric_map`
+### Reusing existing OTEL metrics with `--metric-map-file`
 
-Use `metric_map` when the dashboard was authored against one metric vocabulary
-but the target Elasticsearch data uses another one. This is common when a
-Grafana Kubernetes dashboard uses Prometheus/cAdvisor metric names while the
-target cluster already has OpenTelemetry semantic-convention metrics, or when a
-Datadog customer moves collection from the Datadog Agent to OTel.
+Use `--metric-map-file` when the dashboard was authored against one metric
+vocabulary but the target Elasticsearch data uses another one. This is common
+when a Grafana Kubernetes dashboard uses Prometheus/cAdvisor metric names while
+the target cluster already has OpenTelemetry semantic-convention metrics, or when
+a Datadog customer moves collection from the Datadog Agent to OTel.
 
-`metric_map` is an operator-authored override, not an auto-suggested mapping
-library. Build it from your target schema knowledge plus the migration
-artifacts (`required_target_contract.json` / `target_readiness_contract.json`
-and `schema_change_report.md`), then verify against real data with
-`--es-url --preflight`. Offline runs can validate the YAML shape, but live
-field status remains `unknown` until `_field_caps` can inspect the target
-index.
+`--metric-map-file` is an operator-authored override, not an auto-suggested
+mapping library. Build the YAML from your target schema knowledge plus the
+migration artifacts (`required_target_contract.json` /
+`target_readiness_contract.json` and `schema_change_report.md`), then verify
+against real data with `--es-url --preflight`. Offline runs can validate the YAML
+shape, but live field status remains `unknown` until `_field_caps` can inspect
+the target index.
 
-#### Grafana existing-OTEL example
+Keep the roles separate:
 
-Example `my-grafana-otel-map.yaml`:
+| Flag | Job |
+|---|---|
+| `--field-profile` | Target schema family (`otel`, `prometheus_native`, `auto`, …) |
+| `--data-view` / `--esql-index` | Which index / data view panels bind to and query |
+| `--metric-map-file` | Explicit source-metric → target-field renames |
+
+#### Shared metric map file
+
+Example `my-otel-metric-map.yaml` (same file works for Grafana and Datadog):
 
 ```yaml
-query:
-  metric_map:
-    # Exact same measurement/unit: v1 applies this rename.
-    container_memory_working_set_bytes: container.memory.working_set
+metric_map:
+  # Grafana / Prometheus exact rename: v1 applies this rename.
+  container_memory_working_set_bytes: container.memory.working_set
 
-    # Class-2: v1 records this as an explicit gap because the target needs a
-    # direction filter. It is not emitted as a silent bare rename.
-    container_network_receive_bytes_total:
-      target: k8s.pod.network.io
-      attribute_filter: { network.direction: receive }
+  # Grafana / Prometheus Class-2: v1 records this as an explicit gap because
+  # the target needs a direction filter. It is not emitted as a silent bare rename.
+  container_network_receive_bytes_total:
+    target: k8s.pod.network.io
+    attribute_filter: { network.direction: receive }
+
+  # Datadog exact rename: v1 applies this rename.
+  system.cpu.user: system.cpu.user.pct
+
+  # Datadog Class-2: v1 records a gap because rate/unit semantics are not emitted yet.
+  system.net.bytes_rcvd:
+    target: system.network.in.bytes
+    transform: to_rate
 ```
+
+The file must have a top-level `metric_map:` key. Grafana rule-pack wrappers
+(`query: { metric_map: … }`) and full Datadog field-profile YAML are **not**
+accepted by `--metric-map-file`.
+
+#### Grafana existing-OTEL example
 
 Run the migration against the existing OTEL metrics stream. Use
 `--translation-mode esql` when the map must apply to PromQL panels; native
@@ -489,7 +511,7 @@ map.
   --output-dir ./out_grafana_otel \
   --assets dashboards \
   --field-profile otel \
-  --rules-file ./my-grafana-otel-map.yaml \
+  --metric-map-file ./my-otel-metric-map.yaml \
   --translation-mode esql \
   --data-view metrics-otel-* \
   --esql-index metrics-otel-* \
@@ -510,29 +532,7 @@ Expected result:
   `--data-view` / `--esql-index` to the same metrics stream those dashboards
   use.
 
-#### Datadog metric-map profile override example
-
-Datadog uses the active field profile as the metric mapping surface. Put
-`metric_map` in a YAML profile and pass it with `--field-profile`; explicit
-`--data-view` overrides the profile's `metric_index` when both are present.
-
-Example `my-dd-otel-profile.yaml`:
-
-```yaml
-name: my-dd-otel
-metric_index: metrics-otel-*
-logs_index: logs-*
-metric_map:
-  # Exact: v1 applies this rename.
-  system.cpu.user: system.cpu.user.pct
-
-  # Class-2: v1 records a gap because rate/unit semantics are not emitted yet.
-  system.net.bytes_rcvd:
-    target: system.network.in.bytes
-    transform: to_rate
-```
-
-Run:
+#### Datadog existing-OTEL example
 
 ```bash
 .venv/bin/obs-migrate migrate \
@@ -541,7 +541,8 @@ Run:
   --input-dir ./datadog_exports \
   --output-dir ./out_dd_otel \
   --assets dashboards \
-  --field-profile ./my-dd-otel-profile.yaml \
+  --field-profile otel \
+  --metric-map-file ./my-otel-metric-map.yaml \
   --data-view metrics-otel-* \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --es-api-key "$KEY" \
@@ -556,6 +557,18 @@ Expected result:
   `mapped_from` for default or explicit metric renames.
 - Custom application metrics stay unmapped/missing until the operator authors
   explicit rows or keeps collection names aligned.
+
+#### Advanced alternatives
+
+Prefer `--metric-map-file` for metric renames. Keep these for broader adapter
+customization:
+
+- Grafana: `--rules-file` for label rewrites, metric kinds, panel overrides, and
+  optional embedded `query.metric_map` (overridden by `--metric-map-file` on
+  duplicate keys).
+- Datadog: YAML `--field-profile path.yaml` for a full custom profile
+  (`metric_index`, `tag_map`, prefixes, embedded `metric_map`). `--metric-map-file`
+  still overrides embedded `metric_map` entries for duplicate keys.
 
 `--logs-index` is the log analog: it sets the index / data stream written into
 translated Loki / LogQL panels. Unlike `--esql-index`, it does **not** fall back
@@ -1370,7 +1383,7 @@ not byte-identical. Intentional differences:
 
 | Topic | Unified `obs-migrate migrate` | `grafana-migrate` | `datadog-migrate` |
 |---|---|---|---|
-| Shared flags | `--assets`, `--input-mode`, `--data-view`, `--logs-index`, `--field-profile`, `--translation-mode`, `--ca-cert`/`--insecure`, smoke/upload/validate/select-* | same shared set | same shared set |
+| Shared flags | `--assets`, `--input-mode`, `--data-view`, `--logs-index`, `--field-profile`, `--metric-map-file`, `--translation-mode`, `--ca-cert`/`--insecure`, smoke/upload/validate/select-* | same shared set | same shared set |
 | `--esql-index` | Grafana-only (forwarded when set) | present | absent (metrics target comes from `--data-view` / `--field-profile`) |
 | Deprecated alert alias | `--fetch-alerts` (both sources) | `--fetch-alerts` | `--fetch-monitors` |
 | Kibana space | `--space-id` | `--shadow-space` (unified maps `--space-id` → `--shadow-space`) | `--space-id` |
@@ -1388,7 +1401,8 @@ CLIs has the same meaning.
 
 Use the shared asset contract above for `--assets` and the deprecated
 `--fetch-alerts` alias. For Grafana-specific runtime details, see [Grafana
-source adapter](sources/grafana.md).
+source adapter](sources/grafana.md). For existing-OTEL metric renames, see
+[Reusing existing OTEL metrics with `--metric-map-file`](#reusing-existing-otel-metrics-with---metric-map-file).
 
 ```bash
 # Files: dashboards only (native PROMQL is the default)
@@ -1442,7 +1456,8 @@ alerting preflight.
 
 Use the shared asset contract above for `--assets` and the deprecated
 `--fetch-monitors` alias. For Datadog-specific runtime details, see [Datadog
-source adapter](sources/datadog.md).
+source adapter](sources/datadog.md). For existing-OTEL metric renames, see
+[Reusing existing OTEL metrics with `--metric-map-file`](#reusing-existing-otel-metrics-with---metric-map-file).
 
 ```bash
 # Files: dashboards only

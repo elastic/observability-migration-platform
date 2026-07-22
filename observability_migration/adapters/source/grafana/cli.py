@@ -286,6 +286,15 @@ def parse_args(argv: list[str] | None = None):
         help="Optional YAML/JSON rule pack to extend simple mappings",
     )
     parser.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map entries. "
+            "May be repeated; later files override earlier entries and loaded rule packs."
+        ),
+    )
+    parser.add_argument(
         "--plugin",
         action="append",
         default=[],
@@ -1347,6 +1356,10 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
 
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
+    if getattr(args, "metric_map_file", None):
+        from observability_migration.core.metric_mapping import load_metric_map_files
+
+        rule_pack.metric_map.update(load_metric_map_files(args.metric_map_file))
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
     if args.dataset_filter:
@@ -1355,6 +1368,14 @@ def _load_configured_rule_pack(args: argparse.Namespace):
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _load_configured_rule_pack_or_exit(args: argparse.Namespace):
+    try:
+        return _load_configured_rule_pack(args)
+    except ValueError as exc:
+        print(f"  ERROR: {exc}")
+        sys.exit(1)
 
 
 def _attach_native_promql_validator(
@@ -2050,7 +2071,7 @@ def main(argv: list[str] | None = None):
         auto_enabled_upload, auto_enabled_validate = _normalize_execution_flags(args)
 
     if args.print_rule_catalog:
-        rule_pack = _load_configured_rule_pack(args)
+        rule_pack = _load_configured_rule_pack_or_exit(args)
         print(json.dumps(build_rule_catalog(rule_pack), indent=2))
         return
 
@@ -2087,7 +2108,7 @@ def main(argv: list[str] | None = None):
             )
         return
 
-    rule_pack = _load_configured_rule_pack(args)
+    rule_pack = _load_configured_rule_pack_or_exit(args)
     _apply_native_promql_to_rule_pack(rule_pack, args)
 
     if args.es_api_key:

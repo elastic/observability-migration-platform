@@ -21,6 +21,7 @@ from .entries import (
     parse_metric_map_entry,
     resolve_metric_map,
 )
+from .files import load_metric_map_files
 
 __all__ = [
     "CLASS_EXACT",
@@ -30,6 +31,7 @@ __all__ = [
     "MetricMapEntry",
     "MetricMapResult",
     "classify_metric_map_entry",
+    "load_metric_map_files",
     "normalize_metric_map",
     "parse_metric_map_entry",
     "resolve_metric_map",
