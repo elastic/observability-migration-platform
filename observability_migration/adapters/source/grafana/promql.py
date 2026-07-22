@@ -3891,6 +3891,12 @@ def _build_measure_spec(
                 )
             else:
                 count_field = inner_groups[0]
+            # The COUNT_DISTINCT is over a label, but this spec still emits a
+            # ``<metric> IS NOT NULL`` presence guard in the fused-measure
+            # pipeline. Resolve the metric to its physical field so a
+            # metric_map / profile rename is honored there too — otherwise the
+            # guard references the raw source name and empties the panel.
+            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
             is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
             gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
             if allow_tsds_gauge_promotion and (is_counter or gauge_uses_ts):

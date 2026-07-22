@@ -236,10 +236,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "Source-neutral YAML file with top-level metric_map entries. "
-            "Works for Grafana and Datadog; may be repeated. Later files override "
-            "earlier entries and the active field profile / loaded rule packs. "
-            "On Grafana with --translation-mode auto, also selects ES|QL so the map applies."
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames tags/labels "
+            "to ES fields). Works for Grafana and Datadog; may be repeated. Later "
+            "files override earlier entries and the active field profile / loaded "
+            "rule packs. On Grafana with --translation-mode auto, also selects "
+            "ES|QL so the map applies."
         ),
     )
     migrate.add_argument("--plugin", action="append", default=[])

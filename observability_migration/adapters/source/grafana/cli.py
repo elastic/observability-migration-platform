@@ -290,9 +290,11 @@ def parse_args(argv: list[str] | None = None):
         action="append",
         default=[],
         help=(
-            "Source-neutral YAML file with top-level metric_map entries. "
-            "May be repeated; later files override earlier entries and loaded rule packs. "
-            "When set with --translation-mode auto, selects ES|QL translation so the map applies."
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames label names "
+            "to ES fields). May be repeated; later files override earlier entries and "
+            "loaded rule packs. When set with --translation-mode auto, selects ES|QL "
+            "translation so the map applies."
         ),
     )
     parser.add_argument(
@@ -1369,9 +1371,13 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
     if getattr(args, "metric_map_file", None):
-        from observability_migration.core.metric_mapping import load_metric_map_files
+        from observability_migration.core.metric_mapping import (
+            load_metric_map_files,
+            load_tag_map_files,
+        )
 
         rule_pack.metric_map.update(load_metric_map_files(args.metric_map_file))
+        rule_pack.label_rewrites.update(load_tag_map_files(args.metric_map_file))
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
     if args.dataset_filter:

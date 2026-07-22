@@ -136,6 +136,15 @@ Grafana and Datadog share the same operator mental model for `--field-profile`:
    `confirmed` / `missing` / `unknown` on `target_readiness_contract.json`;
    live caps do not silently remap to a different layout.
 
+> **An offline run reporting a high success rate does not mean the panels will
+> have data.** Without `--es-url`, every mapped field's readiness status is
+> `unknown` — the run only proves the queries *translated*, not that the target
+> fields *exist*. Always finish with `--es-url --preflight` (add `--es-api-key`
+> if security is enabled): that flips each field to `confirmed` or `missing`, so
+> the underscore-flattened placeholders that no real index contains show up as
+> `missing` in `target_readiness_contract.json` instead of hiding behind a green
+> success rate.
+
 Datadog differs in one important way: there is **no `--field-profile auto`**.
 Always pick an explicit built-in profile or YAML path. Wrong profile →
 missing-field warnings in preflight; emitted queries still follow the chosen
@@ -148,7 +157,7 @@ A profile supplies:
 | Property | Purpose |
 |---|---|
 | `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
-| `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
+| `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`). Also settable via the source-neutral `--metric-map-file` (a top-level `tag_map:` block), which merges over the active profile's `tag_map` without authoring a full profile. |
 | `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
 | `tag_prefix` | Default prefix applied to unmapped tags |
@@ -165,6 +174,19 @@ renaming to the declared target. If no applicable map entry exists, it converts
 dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
+> **`otel` is not a Datadog → OTel metric dictionary.** The built-in `otel`
+> profile ships a rich **tag** baseline (`host` → `host.name`, `service` →
+> `service.name`, the Kubernetes keys below) but **zero** metric-name overrides.
+> So metric *names* are only dot-to-underscore flattened
+> (`kubernetes.cpu.usage.total` → `kubernetes_cpu_usage_total`), which will **not**
+> match an OTel-native index that stores dotted semantic-convention names like
+> `k8s.pod.cpu.usage`. Selecting `otel` does not translate Datadog metric names
+> into OTel semconv. To align metric names, supply `--metric-map-file` (or a
+> profile-embedded `metric_map`); the same file's optional `tag_map:` block
+> renames tags/attributes too. To confirm they exist, run `--es-url
+> --preflight`. `elastic_agent` is the only built-in profile with metric-name
+> overrides, and only for common `system.*` metrics.
+
 **Translation behavior for tags:** Metric queries check `tag_map`, then apply
 `tag_prefix` (if set) or keep the original tag name. Log queries use
 `log_tag_map` when the profile provides one; unmapped log attributes then stay
@@ -176,7 +198,7 @@ Prometheus profiles therefore keep ECS / OTel log fields rather than emitting
 
 | Profile | Default metric index | Metric prefix | Tag prefix / notes | Description |
 |---|---|---|---|---|
-| `otel` (default) | `metrics-*` | _(none)_ | ECS / OTel semantic maps | OpenTelemetry Collector field names |
+| `otel` (default) | `metrics-*` | _(none)_ | ECS / OTel semantic **tag** maps | OTel Collector **tag/attribute** names; metric names are only flattened (no OTel semconv metric renames — see note above) |
 | `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | `prometheus.labels.*` (`host` → `prometheus.labels.instance`) | Metricbeat / Agent Prometheus **remote_write** integration layout |
 | `prometheus_native` | `metrics-*.prometheus-*` | `metrics.` | `labels.*` (`host` → `labels.instance`) | Elasticsearch native `/_prometheus` remote-write layout |
 | `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
