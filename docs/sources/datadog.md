@@ -147,7 +147,7 @@ A profile supplies:
 
 | Property | Purpose |
 |---|---|
-| `metric_map` | Explicit Datadog metric name → ES field overrides (e.g. `system.cpu.user` → `system.cpu.user.pct`) |
+| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
 | `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
 | `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
@@ -157,8 +157,12 @@ A profile supplies:
 | `metrics_dataset_filter` / `logs_dataset_filter` | Auto-derived or explicit `data_stream.dataset` filter values |
 
 **Translation behavior for metrics:** When a Datadog metric name is encountered,
-the translator first checks `metric_map` for an explicit override. If none
-exists, it converts dots to underscores (`system.cpu.user` → `system_cpu_user`)
+the translator resolves `metric_map` through the shared metric-mapping core.
+Exact entries from `--metric-map-file` override entries embedded in the selected
+field profile. Class-2 entries (`transform`,
+`attribute_filter`, or non-1 `unit_scale`) record a gap and fall through without
+renaming to the declared target. If no applicable map entry exists, it converts
+dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
 **Translation behavior for tags:** Metric queries check `tag_map`, then apply
@@ -318,7 +322,11 @@ The dashboard pipeline also writes
 `<output-dir>/dashboards/target_readiness_contract.json`. The schema report is
 the per-panel source-field -> target-field table. The readiness contract records
 the active `field_profile`, metric/log index patterns, source fields, resolved
-target fields, and field `status` (`confirmed`, `missing`, or `unknown`).
+target fields, and field `status` (`confirmed`, `missing`, or `unknown`); each
+entry also carries `mapped_from` when the target field differs from its
+source field(s) — including default dot-to-underscore renames and explicit
+`metric_map` exact renames — mirroring the Grafana `required_target_contract.json`
+`mapped_from` field.
 `unknown` means live field caps were unavailable; it is not proof that a field
 exists.
 

@@ -158,6 +158,8 @@ class RulePackConfig:
     # Authoritative per-metric counter/gauge classification, keyed by metric name.
     # Overrides every inferred signal when seeding telemetry (see telemetry_contract).
     metric_kinds: dict = field(default_factory=dict)
+    # Source metric name → MetricMapEntry (shared core). Empty by default.
+    metric_map: dict = field(default_factory=dict)
     panel_type_overrides: dict = field(default_factory=dict)
     skip_panel_types: list = field(default_factory=list)
     index_rewrites: list = field(default_factory=list)
@@ -285,6 +287,9 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
         pack.label_rewrites.update(query_cfg.label_rewrites)
         for metric_name, kind in query_cfg.metric_kinds.items():
             pack.metric_kinds[metric_name] = str(kind).strip().lower()
+        from observability_migration.core.metric_mapping import normalize_metric_map
+
+        pack.metric_map.update(normalize_metric_map(query_cfg.metric_map))
         _merge_mapping_lists(pack.label_candidates, query_cfg.label_candidates)
         _merge_mapping_lists(pack.label_candidates, schema_cfg.label_candidates)
         pack.control_field_overrides.update(payload.controls.field_overrides)

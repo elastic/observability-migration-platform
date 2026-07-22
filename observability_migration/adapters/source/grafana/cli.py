@@ -286,6 +286,16 @@ def parse_args(argv: list[str] | None = None):
         help="Optional YAML/JSON rule pack to extend simple mappings",
     )
     parser.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map entries. "
+            "May be repeated; later files override earlier entries and loaded rule packs. "
+            "When set with --translation-mode auto, selects ES|QL translation so the map applies."
+        ),
+    )
+    parser.add_argument(
         "--plugin",
         action="append",
         default=[],
@@ -1287,6 +1297,10 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
     (issue #158): ``esql`` disables native PROMQL entirely, ``native`` forces it
     on (still probing only to warn when the command is confirmed absent), and
     ``auto`` keeps the probe behavior described above.
+
+    When ``--metric-map-file`` is set and mode is still ``auto``, prefer ES|QL
+    translation so exact metric renames actually apply (parity with Datadog).
+    Explicit ``--translation-mode native`` still wins.
     """
     mode = str(getattr(args, "translation_mode", "auto") or "auto").lower()
     es_url = getattr(args, "es_url", "") or ""
@@ -1295,6 +1309,13 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
         print(
             "  --translation-mode esql: native PROMQL disabled by user request; "
             "all panels use the ES|QL translator"
+        )
+        return False
+
+    if mode == "auto" and getattr(args, "metric_map_file", None):
+        print(
+            "  --metric-map-file set: using ES|QL translation so metric_map applies "
+            "(pass --translation-mode native to keep native PROMQL)"
         )
         return False
 
@@ -1347,6 +1368,10 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
 
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
+    if getattr(args, "metric_map_file", None):
+        from observability_migration.core.metric_mapping import load_metric_map_files
+
+        rule_pack.metric_map.update(load_metric_map_files(args.metric_map_file))
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
     if args.dataset_filter:
@@ -1355,6 +1380,14 @@ def _load_configured_rule_pack(args: argparse.Namespace):
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _load_configured_rule_pack_or_exit(args: argparse.Namespace):
+    try:
+        return _load_configured_rule_pack(args)
+    except ValueError as exc:
+        print(f"  ERROR: {exc}")
+        sys.exit(1)
 
 
 def _attach_native_promql_validator(
@@ -2050,7 +2083,7 @@ def main(argv: list[str] | None = None):
         auto_enabled_upload, auto_enabled_validate = _normalize_execution_flags(args)
 
     if args.print_rule_catalog:
-        rule_pack = _load_configured_rule_pack(args)
+        rule_pack = _load_configured_rule_pack_or_exit(args)
         print(json.dumps(build_rule_catalog(rule_pack), indent=2))
         return
 
@@ -2087,7 +2120,7 @@ def main(argv: list[str] | None = None):
             )
         return
 
-    rule_pack = _load_configured_rule_pack(args)
+    rule_pack = _load_configured_rule_pack_or_exit(args)
     _apply_native_promql_to_rule_pack(rule_pack, args)
 
     if args.es_api_key:

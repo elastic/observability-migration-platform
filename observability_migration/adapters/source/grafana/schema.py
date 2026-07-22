@@ -154,6 +154,18 @@ class SchemaResolver:
         # not advertise. Drives the run-summary empty-panel warning so a live
         # OTel-shaped target is not silently treated as verified.
         self._emitted_unverified_passthrough_field = False
+        self._metric_map_gaps: list[str] = []
+        self._metric_map_warnings: list[str] = []
+        self._metric_map_applied: dict[str, str] = {}
+
+    def metric_map_gaps(self) -> list[str]:
+        return list(self._metric_map_gaps)
+
+    def metric_map_warnings(self) -> list[str]:
+        return list(self._metric_map_warnings)
+
+    def metric_map_applied(self) -> dict[str, str]:
+        return dict(self._metric_map_applied)
 
     def _candidate_fields(self, label):
         candidates = []
@@ -770,7 +782,24 @@ class SchemaResolver:
         When the profile is active but no matching field exists in the cache,
         returns the expected default-layout name `prometheus.<metric>.value`
         so the contract layer can surface the missing field via preflight.
+
+        Explicit rule-pack ``metric_map`` wins over profile/passthrough when the
+        entry is an exact (class-1) rename. Class-2 entries (transform /
+        attribute_filter) are recorded as gaps and do not silently rename.
         """
+        from observability_migration.core.metric_mapping import resolve_metric_map
+
+        mapped = resolve_metric_map(metric_name, getattr(self._rule_pack, "metric_map", None))
+        if mapped is not None:
+            for warning in mapped.warnings:
+                if warning not in self._metric_map_warnings:
+                    self._metric_map_warnings.append(warning)
+            if mapped.gap_reason and mapped.gap_reason not in self._metric_map_gaps:
+                self._metric_map_gaps.append(mapped.gap_reason)
+            if mapped.applied:
+                self._metric_map_applied[metric_name] = mapped.target
+                return mapped.target
+            # Class-2: do not apply a bare rename; continue with source name.
         # Passthrough profile: emit the source metric name verbatim, skipping
         # discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:

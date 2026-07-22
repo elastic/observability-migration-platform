@@ -689,6 +689,13 @@ def build_target_schema_contract(
             "roles": sorted(info["roles"]),
             "panels": info["panels"],
         }
+        source_fields = field_status[field_name]["source_fields"]
+        if len(source_fields) == 1 and source_fields[0] != field_name:
+            field_status[field_name]["mapped_from"] = source_fields[0]
+        elif any(src != field_name for src in source_fields):
+            field_status[field_name]["mapped_from"] = [
+                src for src in source_fields if src != field_name
+            ]
 
     counter_status: dict[str, dict[str, Any]] = {}
     for metric_name, count in sorted(
