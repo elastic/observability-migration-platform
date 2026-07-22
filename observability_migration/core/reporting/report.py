@@ -50,6 +50,14 @@ class MigrationResult:
     skipped: int = 0
     panel_results: list = field(default_factory=list)
     yaml_panel_results: list = field(default_factory=list)
+    # Dashboard-level warnings for template-variable -> Kibana control
+    # translation that don't fit the per-panel PanelResult model (issue
+    # #269): a control dropped because the target schema lacks its field, or
+    # a cascading/label-filtered `label_values()` variable whose scope can't
+    # be expressed as an inter-control dependency in Kibana. Controls have no
+    # PanelResult-style tracking of their own, so this is dashboard-scoped
+    # rather than per-panel.
+    control_warnings: list = field(default_factory=list)
     compiled: bool = False
     compile_error: str = ""
     source_file: str = ""
@@ -488,6 +496,18 @@ def print_report(results, compile_results, field_discovery=None):
             if pr.promql_expr:
                 print(f"    PromQL: {pr.promql_expr[:100]}")
 
+    # Controls have no PanelResult-style tracking of their own (issue #269),
+    # so a dropped/degraded template-variable control is otherwise invisible
+    # in this summary even though it changes what the migrated dashboard can
+    # filter on.
+    control_warnings = [
+        (r.dashboard_title, warning) for r in results for warning in getattr(r, "control_warnings", [])
+    ]
+    if control_warnings:
+        print(f"\nCONTROL WARNINGS ({len(control_warnings)}):")
+        for dash_title, warning in control_warnings[:20]:
+            print(f"  [{dash_title}] {warning}")
+
     total_alerts = sum(len(getattr(r, "alert_results", [])) for r in results)
     if total_alerts:
         automated = sum(sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated") for r in results)
@@ -607,6 +627,7 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             ],
             "alert_results": getattr(r, "alert_results", []),
             "alert_summary": getattr(r, "alert_summary", {}),
+            "control_warnings": getattr(r, "control_warnings", []),
             "translation_error": r.translation_error,
         }
         report["dashboards"].append(d)
@@ -750,6 +771,16 @@ def build_summary_view(
                         reasons=list(pr.reasons),
                     )
                 )
+        control_warnings = list(getattr(r, "control_warnings", []) or [])
+        if control_warnings:
+            warning_items.append(
+                AttentionItem(
+                    dashboard=r.dashboard_title,
+                    panel="Dashboard controls",
+                    status="warning",
+                    reasons=control_warnings,
+                )
+            )
         # Red panels not already flagged above are added to the worklist (deduped).
         for pr in renderable:
             if _gate(pr, "Red") and pr.title not in seen_attention:

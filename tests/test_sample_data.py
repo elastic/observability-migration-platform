@@ -369,5 +369,30 @@ class RemoveSampleDataTests(unittest.TestCase):
         self.assertTrue(summary.skipped_not_owned)
 
 
+class BulkIngestTests(unittest.TestCase):
+    def test_version_conflicts_count_as_successful_idempotent_reseed(self):
+        from observability_migration.core.telemetry_data import IngestSummary, _flush_into_summary
+
+        summary = IngestSummary()
+        _flush_into_summary(
+            ['{"create":{}}', "{}"],
+            lambda *_args, **_kwargs: {
+                "items": [
+                    {
+                        "create": {
+                            "error": {
+                                "type": "version_conflict_engine_exception",
+                                "reason": "document already exists",
+                            }
+                        }
+                    }
+                ]
+            },
+            summary,
+        )
+        self.assertEqual(summary.ok, 1)
+        self.assertEqual(summary.errors, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

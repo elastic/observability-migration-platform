@@ -784,6 +784,47 @@
       "version": "5.0.2"
     },
     {
+      "bom-ref": "greenlet==3.5.3",
+      "description": "Lightweight in-process concurrent programming",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://greenlet.readthedocs.io"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Issues",
+          "type": "issue-tracker",
+          "url": "https://github.com/python-greenlet/greenlet/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://greenlet.readthedocs.io/en/latest/changes.html"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Repository",
+          "type": "vcs",
+          "url": "https://github.com/python-greenlet/greenlet"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Homepage",
+          "type": "website",
+          "url": "https://greenlet.readthedocs.io"
+        }
+      ],
+      "licenses": [
+        {
+          "acknowledgement": "declared",
+          "expression": "MIT AND PSF-2.0"
+        }
+      ],
+      "name": "greenlet",
+      "purl": "pkg:pypi/greenlet@3.5.3",
+      "type": "library",
+      "version": "3.5.3"
+    },
+    {
       "bom-ref": "h11==0.16.0",
       "description": "A pure-Python, bring-your-own-I/O implementation of HTTP/1.1",
       "externalReferences": [
@@ -1550,6 +1591,34 @@
       "version": "4.9.6"
     },
     {
+      "bom-ref": "playwright==1.61.0",
+      "description": "A high-level API to automate web browsers",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Release notes",
+          "type": "other",
+          "url": "https://github.com/microsoft/playwright-python/releases"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: homepage",
+          "type": "website",
+          "url": "https://github.com/Microsoft/playwright-python"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "name": "playwright",
+      "purl": "pkg:pypi/playwright@1.61.0",
+      "type": "library",
+      "version": "1.61.0"
+    },
+    {
       "bom-ref": "pluggy==1.6.0",
       "description": "plugin and hook calling mechanisms for python",
       "licenses": [
@@ -1764,6 +1833,34 @@
       "purl": "pkg:pypi/pydantic-core@2.46.2",
       "type": "library",
       "version": "2.46.2"
+    },
+    {
+      "bom-ref": "pyee==13.0.1",
+      "description": "A rough port of Node.js's EventEmitter to Python with a few tricks of its own",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://pyee.readthedocs.io"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Repository",
+          "type": "vcs",
+          "url": "https://github.com/jfhbrook/pyee"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pyee",
+      "purl": "pkg:pypi/pyee@13.0.1",
+      "type": "library",
+      "version": "13.0.1"
     },
     {
       "bom-ref": "pyparsing==3.3.2",
@@ -3008,6 +3105,12 @@
       "ref": "grafana-client==5.0.2"
     },
     {
+      "dependsOn": [
+        "setuptools==82.0.1"
+      ],
+      "ref": "greenlet==3.5.3"
+    },
+    {
       "ref": "h11==0.16.0"
     },
     {
@@ -3155,6 +3258,13 @@
     },
     {
       "dependsOn": [
+        "greenlet==3.5.3",
+        "pyee==13.0.1"
+      ],
+      "ref": "playwright==1.61.0"
+    },
+    {
+      "dependsOn": [
         "coverage==7.14.0",
         "pre_commit==4.5.1",
         "pytest==9.0.3"
@@ -3203,6 +3313,15 @@
         "typing_extensions==4.15.0"
       ],
       "ref": "pydantic_core==2.46.2"
+    },
+    {
+      "dependsOn": [
+        "build==1.4.4",
+        "mypy==1.20.1",
+        "pytest==9.0.3",
+        "typing_extensions==4.15.0"
+      ],
+      "ref": "pyee==13.0.1"
     },
     {
       "ref": "pyparsing==3.3.2"
@@ -3297,6 +3416,7 @@
         "lark==1.3.1",
         "mypy==1.20.1",
         "pip-licenses==5.5.5",
+        "playwright==1.61.0",
         "pre_commit==4.5.1",
         "promql-parser==0.8.0",
         "pydantic==2.13.2",

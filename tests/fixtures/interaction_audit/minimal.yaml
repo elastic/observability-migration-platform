@@ -1,0 +1,44 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+version: 1
+id: minimal
+title: Minimal dashboard
+source:
+  kind: grafana
+  path: infra/grafana/dashboards/redis-11835.json
+  control_schema: infra/grafana/dashboards/control_schemas/redis-11835.json
+dashboard:
+  title: Redis Dashboard for Prometheus Redis Exporter
+  time_from: now-3h
+  time_to: now
+controls:
+  - label: namespace
+    key: namespace
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      selection: [namespace]
+      affected_panels: query_dependency
+      query_contains: ["?namespace"]
+      minimum_rows: 1
+  - label: instance
+    key: instance
+    adapter: esql_value
+    capability: migrated_live
+    options:
+      strategy: every
+    assertions:
+      affected_panels: all_query_panels
+combinations:
+  - id: namespace-and-instance
+    selections:
+      namespace: namespace_1
+      instance: service.instance.id_2
+noise_allowances:
+  - endpoint: /internal/security/user_profile
+    method: GET
+    status: 404
+    rationale: Security is disabled in the local test stack.

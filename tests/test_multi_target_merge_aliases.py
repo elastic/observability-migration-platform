@@ -79,16 +79,32 @@ def _stats_assignments(query: str) -> list[str]:
     return [part.strip() for part in assignments_text.split(",") if "=" in part]
 
 
+def _assert_no_inner_case_ts_value_args(query: str) -> None:
+    """TS RATE-family funcs must not take CASE(...) as their value argument."""
+    assert re.search(
+        r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)\(\s*CASE\(",
+        query,
+        flags=re.IGNORECASE,
+    ) is None, query
+
+
 def _assert_no_bare_ts_alongside_case(query: str) -> None:
     assignments = _stats_assignments(query)
     if not any("CASE(" in a for a in assignments):
         return
     for assignment in assignments:
-        assert "IRATE(node_cpu_seconds_total, 1m)" not in assignment
-        assert re.search(
+        # Bare IRATE(field) is OK only when already nested in an outer CASE(...).
+        if re.search(
             rf"\b(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
             assignment,
-        ) is None or "CASE(" in assignment, assignment
+        ):
+            assert "CASE(" in assignment, assignment
+        # Reject truly bare measures: SUM(IRATE(field, w)) with no CASE at all.
+        if re.search(
+            rf"=\s*(?:SUM|AVG|MIN|MAX)?\(?\s*(?:RATE|IRATE|INCREASE)\({_ESQL_FIELD_REFERENCE_PATTERN}\s*,",
+            assignment,
+        ) and "CASE(" not in assignment:
+            raise AssertionError(f"bare TS alongside CASE siblings: {assignment}")
 
 
 def _assert_eval_rhs_defined_after_stats(query: str) -> None:
@@ -236,12 +252,12 @@ def test_merge_rewrites_reserved_alias_references_inside_eval():
     _assert_eval_rhs_defined_after_stats(query)
 
 
-def test_merge_wraps_bare_irate_when_sibling_uses_case_inline():
-    """Fused guest/total CPU ratios must not mix CASE-IRATE with bare IRATE.
+def test_merge_rewrites_inner_case_irate_to_outer_case():
+    """Fused guest/total CPU ratios must not emit IRATE(CASE(...)).
 
-    Elasticsearch TS STATS that combine ``IRATE(CASE(mode==..., metric, NULL))``
-    with bare ``IRATE(other_metric)`` can ClassCast at runtime. Wrap the bare
-    sibling so every time-series value arg is CASE-shaped.
+    Elasticsearch ClassCasts ``IRATE(CASE(cond, field, NULL), window)``. The
+    legal shape is ``CASE(cond, IRATE(field, window), NULL)``; bare IRATE
+    siblings are fine alongside that outer CASE.
     """
     q_user = (
         "TS metrics-*\n"
@@ -273,24 +289,26 @@ def test_merge_wraps_bare_irate_when_sibling_uses_case_inline():
     )
     assert merged is not None
     query = merged["query"]
-    assert "IRATE(CASE((mode == \"user\")" in query
-    assert "IRATE(CASE((mode == \"nice\")" in query
-    # Bare IRATE(node_cpu_seconds_total) must not survive alongside CASE siblings.
-    assert "IRATE(node_cpu_seconds_total, 1m)" not in query
-    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
+    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
+    assert 'CASE((mode == "nice"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+    _assert_no_inner_case_ts_value_args(query)
     _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
 
 
-def test_shared_helper_wraps_bare_irate_for_formula_fusion_and_merge():
+def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
     """Formula-plan fusion and pretranslated merge share the CASE-shape helper."""
     assignments = [
         'numerator = SUM(IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m))',
         "denominator = SUM(IRATE(node_cpu_seconds_total, 1m))",
     ]
     wrapped = _wrap_bare_ts_value_args_when_case_siblings(assignments)
-    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in wrapped[1]
-    assert "IRATE(node_cpu_seconds_total, 1m)" not in wrapped[1]
+    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in wrapped[0]
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in wrapped[1]
+    assert "IRATE(CASE(" not in wrapped[0]
+    assert "IRATE(CASE(" not in wrapped[1]
 
     specs = [
         MeasureSpec(
@@ -320,11 +338,13 @@ def test_shared_helper_wraps_bare_irate_for_formula_fusion_and_merge():
     assert result is not None
     parts, _, _ = result
     stats_line = next(line for line in parts if line.startswith("| STATS"))
-    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in stats_line
-    assert "IRATE(node_cpu_seconds_total, 1m)" not in stats_line
+    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in stats_line
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in stats_line
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in stats_line
+    assert "IRATE(CASE(" not in stats_line
 
 
-def test_shared_helper_wraps_backtick_quoted_recording_rule_field():
+def test_shared_helper_rewrites_backtick_quoted_recording_rule_field():
     assignments = [
         'numerator = SUM(IRATE(CASE((mode == "user"), `node:cpu:guest`, NULL), 1m))',
         "denominator = SUM(IRATE(`node:cpu:total`, 1m))",
@@ -332,10 +352,15 @@ def test_shared_helper_wraps_backtick_quoted_recording_rule_field():
 
     wrapped = _wrap_bare_ts_value_args_when_case_siblings(assignments)
 
-    assert wrapped[1] == (
-        "denominator = SUM(IRATE(CASE(true, `node:cpu:total`, NULL), 1m))"
+    assert wrapped[0] == (
+        'numerator = SUM(CASE((mode == "user"), IRATE(`node:cpu:guest`, 1m), NULL))'
     )
-    assert "IRATE(`node:cpu:total`, 1m)" not in wrapped[1]
+    assert wrapped[1] == (
+        "denominator = SUM(CASE(true, IRATE(`node:cpu:total`, 1m), NULL))"
+    )
+    assert "IRATE(`node:cpu:total`, 1m)" not in wrapped[1].replace(
+        "CASE(true, IRATE(`node:cpu:total`, 1m), NULL)", ""
+    )
 
 
 def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():
@@ -372,8 +397,8 @@ def test_merge_normalizes_bare_over_time_when_sibling_is_wrapped():
     assert structural_errors(check_esql_structure(query)) == []
 
 
-def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
-    """Single-target join-ratio fast path must share the CASE-shape invariant."""
+def test_join_family_emits_outer_case_irate_for_filtered_numerator():
+    """Single-target join-ratio fast path must use outer CASE, not IRATE(CASE)."""
     from observability_migration.adapters.source.grafana.translate import (
         translate_promql_to_esql,
     )
@@ -391,9 +416,11 @@ def test_join_family_wraps_bare_irate_denominator_with_case_numerator():
     )
     assert ctx.feasibility == "feasible"
     query = ctx.esql_query or ""
-    assert 'IRATE(CASE((mode == "user")' in query
-    assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
-    assert "IRATE(node_cpu_seconds_total, 1m)" not in query
+    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+    _assert_no_inner_case_ts_value_args(query)
+    _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
 
 
@@ -436,7 +463,9 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             assert "EVAL CPU = node_cpu_scaling_frequency_hertz\n" not in query
             _assert_eval_rhs_defined_after_stats(query)
         else:
-            assert "IRATE(node_cpu_seconds_total, 1m)" not in query
-            assert "IRATE(CASE(true, node_cpu_seconds_total, NULL), 1m)" in query
+            assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
+            assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+            assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+            _assert_no_inner_case_ts_value_args(query)
             _assert_no_bare_ts_alongside_case(query)
         assert structural_errors(check_esql_structure(query)) == []

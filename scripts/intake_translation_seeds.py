@@ -90,8 +90,20 @@ def _promql_or_targets(panel: dict) -> list | str:
     return []
 
 
-def _rule_hint(esql_query: str) -> str:
-    errs = structural_errors(check_esql_structure(esql_query or ""))
+def _rule_hint(esql_query: str, *, source: str = "grafana") -> str:
+    if source == "datadog":
+        from observability_migration.adapters.source.datadog.esql_structural_oracle import (
+            check_datadog_esql_structure,
+        )
+        from observability_migration.adapters.source.datadog.esql_structural_oracle import (
+            structural_errors as dd_structural_errors,
+        )
+
+        errs = dd_structural_errors(
+            check_datadog_esql_structure(esql_query or "", status="ok", backend="esql")
+        )
+    else:
+        errs = structural_errors(check_esql_structure(esql_query or ""))
     return errs[0].rule_id.value if errs else ""
 
 
@@ -130,7 +142,7 @@ def propose_seed(panel: dict, *, source: str, seed_id: str) -> dict | None:
         "esql_query": esql_query,
         "error": str(panel.get("error") or ""),
         "disposition": disposition,
-        "rule_hint": _rule_hint(esql_query),
+        "rule_hint": _rule_hint(esql_query, source=source),
     }
 
 

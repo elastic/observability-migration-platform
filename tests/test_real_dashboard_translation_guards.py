@@ -212,7 +212,7 @@ class GrafanaRealPromQLTranslationGuardTests(unittest.TestCase):
         self.assertIn("RLIKE ?target", result.esql_query)
         self.assertNotIn("$target", result.esql_query)
 
-    def test_flagger_histogram_quantile_unknown_histogram_type_degrades_honestly(self) -> None:
+    def test_flagger_histogram_quantile_unknown_histogram_type_assumes_and_warns(self) -> None:
         result = _translate_real_promql(
             (
                 "histogram_quantile(0.95, "
@@ -223,9 +223,10 @@ class GrafanaRealPromQLTranslationGuardTests(unittest.TestCase):
             panel_type="timeseries",
         )
 
-        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotEqual(result.feasibility, "not_feasible", result.warnings)
+        self.assertIn("PERCENTILE", result.esql_query)
         self.assertTrue(
-            any("field type could not be determined" in warning for warning in result.warnings),
+            any("assumed exponential_histogram" in warning for warning in result.warnings),
             result.warnings,
         )
 

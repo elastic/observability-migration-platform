@@ -147,7 +147,7 @@ A profile supplies:
 
 | Property | Purpose |
 |---|---|
-| `metric_map` | Explicit Datadog metric name → ES field overrides (e.g. `system.cpu.user` → `system.cpu.user.pct`) |
+| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
 | `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`) |
 | `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
@@ -157,8 +157,12 @@ A profile supplies:
 | `metrics_dataset_filter` / `logs_dataset_filter` | Auto-derived or explicit `data_stream.dataset` filter values |
 
 **Translation behavior for metrics:** When a Datadog metric name is encountered,
-the translator first checks `metric_map` for an explicit override. If none
-exists, it converts dots to underscores (`system.cpu.user` → `system_cpu_user`)
+the translator resolves `metric_map` through the shared metric-mapping core.
+Exact entries from `--metric-map-file` override entries embedded in the selected
+field profile. Class-2 entries (`transform`,
+`attribute_filter`, or non-1 `unit_scale`) record a gap and fall through without
+renaming to the declared target. If no applicable map entry exists, it converts
+dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
 **Translation behavior for tags:** Metric queries check `tag_map`, then apply
@@ -318,7 +322,11 @@ The dashboard pipeline also writes
 `<output-dir>/dashboards/target_readiness_contract.json`. The schema report is
 the per-panel source-field -> target-field table. The readiness contract records
 the active `field_profile`, metric/log index patterns, source fields, resolved
-target fields, and field `status` (`confirmed`, `missing`, or `unknown`).
+target fields, and field `status` (`confirmed`, `missing`, or `unknown`); each
+entry also carries `mapped_from` when the target field differs from its
+source field(s) — including default dot-to-underscore renames and explicit
+`metric_map` exact renames — mirroring the Grafana `required_target_contract.json`
+`mapped_from` field.
 `unknown` means live field caps were unavailable; it is not proof that a field
 exists.
 
@@ -401,6 +409,48 @@ The Datadog path is now organized around executable stages:
 5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload
    and kb-dashboard YAML, then hand off to review-artifact/report/compile steps.
 
+### Hostmap Fallback
+
+Datadog hostmaps store their metric requests under keyed `fill`/`size`
+objects rather than the standard request array. Those queries are normalized
+and, when they include a host/category grouping, emitted as a grouped Kibana
+datatable. This preserves the target dimension and metric values while
+explicitly warning that Datadog's tile layout and value-based coloring are not
+available. An ungrouped hostmap still requires manual redesign because no
+host/value table can be constructed.
+
+### Template-Variable Filter Limitations
+
+Tag-backed metric template variables can become Kibana options-list controls,
+but Datadog also supports variable shapes that do not have a faithful direct
+equivalent:
+
+- A variable referenced only by log widgets binds to the logs data view and
+  uses log-field mapping. Metric-only and unreferenced variables bind to the
+  metrics data view. A variable shared by metric and log widgets still needs
+  review because one Kibana options-list control cannot target two data views.
+- Source `available_values` and preselected defaults are retained in the typed
+  `ControlIR`. Kibana options-list controls populate from target field values,
+  so `available_values` is provenance rather than an enforced static
+  allow-list in generated YAML.
+- `$scope` represents an entire Datadog scope expression rather than one tag
+  field. It is omitted with an explicit manual-recreation warning; the
+  migration does not claim that a nonexistent single control replaces it.
+- Template variables inside Datadog log filters are removed from executable
+  ES|QL because the substitution cannot be bound exactly. The panel is marked
+  with a warning and the filter must be recreated in Kibana rather than being
+  silently reported as a clean translation.
+
+### Dynamic Group-By Template Variables
+
+A metric grouping such as `by {host}` maps to the corresponding target field
+(`host.name` in the OTel profile). A grouping that is itself a Datadog
+template variable, such as `by {$grouping}`, cannot be resolved to a stable
+target field during migration. It is therefore emitted as
+`requires_manual` with no executable ES|QL rather than querying a literal
+`` `$grouping` `` field that does not exist. Choose a fixed Datadog tag before
+migration or recreate the selector as a Kibana field control.
+
 ### Formula Translation Specifics
 
 The translator handles Datadog formulas at three layers:
@@ -410,6 +460,16 @@ The translator handles Datadog formulas at three layers:
   - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric, 5 minute) BY TBUCKET(5 minute)` (or `INCREASE(...)` for `diff`/`monotonic_diff`). This is the native ES|QL time-series aggregation — same pattern the Grafana adapter uses for PromQL `rate()`. Mirrors Datadog counter-rate semantics directly.
   - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
 - **Multi-query formulas with different filters** (e.g. `count:x{direction:in} / count:x{direction:out}`) translate via per-aggregation `WHERE` clauses inside `STATS`: each query's tag filters are attached to its own aggregation expression. The outer `WHERE` becomes the `TIME_FILTER` plus an `OR` of the spec filters. Different groupings are still surfaced as `requires_manual` because the resolution between divergent group sets is semantically ambiguous.
+- **Direct-reference table formulas with different request reducers** apply
+  each reducer independently (for example `AVG` for message-rate columns and
+  `LAST` for a lag column) after the shared time-bucket stage. Composite
+  formulas that mix queries with incompatible reducers remain blocked because
+  reducer ordering would be ambiguous.
+- **Value-filtered count aggregators** such as
+  `count(v: v>=0):metric{scope} by {service}` retain the numeric predicate as
+  an ES|QL metric filter before `COUNT(*)`. Function-chain behavior such as
+  `.as_rate()` and `.rollup(10)` then follows the existing warned rate/rollup
+  approximation path instead of forcing manual review.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 
 ### Parity Harness

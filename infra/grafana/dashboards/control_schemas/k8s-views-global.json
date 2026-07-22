@@ -1,0 +1,50 @@
+{
+  "index_pattern": "metrics-*",
+  "field_cache": {
+    "cluster": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "job": {
+      "keyword": {
+        "type": "keyword",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "node_cpu_seconds_total": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    },
+    "kube_node_info": {
+      "double": {
+        "type": "double",
+        "aggregatable": true,
+        "searchable": true
+      }
+    }
+  },
+  "cooccurrence_cache": [
+    {
+      "metric": "node_cpu_seconds_total",
+      "field": "cluster",
+      "cooccurs": true
+    },
+    {
+      "metric": "node_cpu_seconds_total",
+      "field": "job",
+      "cooccurs": true
+    },
+    {
+      "metric": "kube_node_info",
+      "field": "cluster",
+      "cooccurs": true
+    }
+  ]
+}

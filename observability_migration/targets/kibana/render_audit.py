@@ -603,59 +603,6 @@ def diff_render_snapshots(
     return regressions
 
 
-@dataclass
-class ControlInteraction:
-    """A dashboard control worth exercising in an interaction audit."""
-    variable_name: str
-    label: str
-    control_type: str
-    default: str = ""
-    multiple: bool = False
-
-
-def extract_controls(report: dict) -> list[ControlInteraction]:
-    """Extract the dashboard's controls (migrated template variables) from a
-    migration report / compiled dashboard dict.
-
-    Controls come in two YAML shapes: ES|QL parameter-binding controls
-    (``type: esql``) are keyed by ``variable_name``; ``options``/``range``
-    controls — the more common dashboard-level dropdown/slider filters
-    (Grafana ``query`` variables, Datadog template variables) — have no
-    ``variable_name`` and are instead keyed by the data-view ``field`` they
-    filter. Falling back to ``field`` here matters: without it, every
-    options/range control was silently excluded from the interaction audit
-    plan, leaving only the rarer ES|QL-param controls exercised.
-    """
-    controls: list[ControlInteraction] = []
-    for dashboard in report.get("dashboards", []):
-        for control in dashboard.get("controls") or []:
-            if not isinstance(control, dict):
-                continue
-            name = str(control.get("variable_name") or control.get("field") or "")
-            if not name:
-                continue
-            controls.append(
-                ControlInteraction(
-                    variable_name=name,
-                    label=str(control.get("label") or name),
-                    control_type=str(control.get("type") or ""),
-                    default=str(control.get("default") or ""),
-                    multiple=bool(control.get("multiple", False)),
-                )
-            )
-    return controls
-
-
-def build_interaction_plan(controls: Iterable[ControlInteraction]) -> list[dict[str, str]]:
-    """Plan one interaction step per control: select a non-default value and
-    re-audit. The live driver resolves concrete values from the control's
-    options; this is the deterministic 'what to exercise' list."""
-    return [
-        {"variable_name": c.variable_name, "label": c.label, "action": "select_nondefault"}
-        for c in controls
-    ]
-
-
 def interaction_regression(
     baseline: dict[str, str], after: dict[str, str], *, control_label: str
 ) -> list[str]:

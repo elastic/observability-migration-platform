@@ -32,6 +32,7 @@ from .preflight import (
     _metric_candidates,
 )
 from .promql import (
+    _APPROX_AGG_OVER_SUMMARY_RATIO_WARNING,
     _COUNTER_UNSAFE_OUTER_AGGS,
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
@@ -2616,21 +2617,27 @@ def histogram_quantile_family_rule(context):
         value_expr = physical_metric
     elif field_type == "histogram":
         value_expr = f"TO_TDIGEST({physical_metric})"
+    elif not field_type:
+        # Caps unavailable (offline / empty discovery): assume exponential_histogram
+        # so common Prometheus histogram_quantile panels still migrate. A wrong
+        # assumption fails at render; positively typed non-histogram fields still
+        # degrade below.
+        value_expr = physical_metric
+        _append_unique(
+            context.warnings,
+            "histogram_quantile target field type could not be determined; "
+            "assumed exponential_histogram and emitted PERCENTILE(). "
+            "If the field is a classic histogram, pin the mapping or re-run with "
+            "field capabilities so TO_TDIGEST() is used",
+        )
     else:
         context.feasibility = "not_feasible"
         context.confidence = 0.0
-        if field_type:
-            reason = (
-                f"histogram_quantile target field '{physical_metric}' is typed "
-                f"'{field_type}', not a histogram or exponential_histogram field, so it "
-                "cannot be translated to an ES|QL PERCENTILE() (requires manual redesign)"
-            )
-        else:
-            reason = (
-                "histogram_quantile target field type could not be determined; cannot "
-                "safely translate to ES|QL PERCENTILE() (verify the base metric is a "
-                "histogram or exponential_histogram field on the target index)"
-            )
+        reason = (
+            f"histogram_quantile target field '{physical_metric}' is typed "
+            f"'{field_type}', not a histogram or exponential_histogram field, so it "
+            "cannot be translated to an ES|QL PERCENTILE() (requires manual redesign)"
+        )
         _append_unique(context.warnings, reason)
         context.translation_complete = True
         return "histogram_quantile field type unsupported"
@@ -3664,6 +3671,28 @@ def or_vector_fallback_note_rule(context):
         "the fallback value",
     )
     return "noted or-vector zero-fill approximation"
+
+
+def _has_approximated_agg_over_summary_ratio(frag, _depth=0):
+    if frag is None or _depth > 8:
+        return False
+    if frag.extra.get("approximated_agg_over_summary_ratio"):
+        return True
+    return _has_approximated_agg_over_summary_ratio(
+        frag.extra.get("left_frag"), _depth + 1
+    ) or _has_approximated_agg_over_summary_ratio(frag.extra.get("right_frag"), _depth + 1)
+
+
+@QUERY_POSTPROCESSORS.register("approx_agg_over_summary_ratio_note", priority=94)
+def approx_agg_over_summary_ratio_note_rule(context):
+    """Warn when ``sum(m_sum/m_count)`` was rewritten as a ratio of aggregates."""
+    frag = context.fragment
+    if not frag or not context.esql_query or context.feasibility == "not_feasible":
+        return None
+    if not _has_approximated_agg_over_summary_ratio(frag):
+        return None
+    _append_unique(context.warnings, _APPROX_AGG_OVER_SUMMARY_RATIO_WARNING)
+    return "noted histogram summary-ratio approximation"
 
 
 @QUERY_POSTPROCESSORS.register("post_filter", priority=95)

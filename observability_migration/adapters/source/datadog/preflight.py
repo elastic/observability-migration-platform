@@ -365,15 +365,26 @@ def build_target_readiness_contract(
 
     serialized_fields = {}
     for field_name, info in sorted(required_fields.items()):
-        serialized_fields[field_name] = {
+        source_fields = sorted(info["source_fields"])
+        entry = {
             "target_field": info["target_field"],
-            "source_fields": sorted(info["source_fields"]),
+            "source_fields": source_fields,
             "roles": sorted(info["roles"]),
             "contexts": sorted(info["contexts"]),
             "widgets": sorted(info["widgets"]),
             "status": info["status"],
             "type": info["type"],
         }
+        # Parity with the Grafana contract (preflight.py): surface the
+        # source-metric name(s) a rename came from whenever they differ from
+        # the target field, so operators can see metric_map/field_map renames
+        # without diffing source_fields against target_field themselves.
+        renamed = [src for src in source_fields if src != field_name]
+        if len(renamed) == 1:
+            entry["mapped_from"] = renamed[0]
+        elif renamed:
+            entry["mapped_from"] = renamed
+        serialized_fields[field_name] = entry
 
     confirmed = sum(1 for v in serialized_fields.values() if v["status"] == "confirmed")
     missing = sum(1 for v in serialized_fields.values() if v["status"] == "missing")

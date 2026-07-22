@@ -158,24 +158,10 @@ def main(argv: list[str] | None = None) -> None:
     if selection.dashboards and args.upload and args.legacy_import and not args.compile:
         print("  Legacy import requested: auto-enabling compile step\n")
     try:
-        field_map = load_profile(args.field_profile)
+        field_map = _load_configured_field_map(args)
     except ValueError as exc:
         print(f"  ERROR: {exc}")
         sys.exit(1)
-    if args.data_view:
-        field_map.metric_index = args.data_view
-    if args.logs_index:
-        field_map.logs_index = args.logs_index
-    if args.dataset_filter:
-        field_map.metrics_dataset_filter = args.dataset_filter
-    if args.logs_dataset_filter:
-        field_map.logs_dataset_filter = args.logs_dataset_filter
-    if not field_map.metrics_dataset_filter:
-        from .field_map import derive_dataset_from_index
-        field_map.metrics_dataset_filter = derive_dataset_from_index(field_map.metric_index)
-    if not field_map.logs_dataset_filter:
-        from .field_map import derive_dataset_from_index
-        field_map.logs_dataset_filter = derive_dataset_from_index(field_map.logs_index)
     _load_live_field_capabilities(field_map, args, verify=verify)
     base_dir = Path(args.output_dir)
     dashboards_dir = dashboard_output_dir(base_dir)
@@ -243,6 +229,31 @@ def _clear_dashboard_artifacts(
                 child.unlink()
             removed += 1
     return removed
+
+
+def _load_configured_field_map(args: argparse.Namespace) -> FieldMapProfile:
+    field_map = load_profile(args.field_profile)
+    if getattr(args, "metric_map_file", None):
+        from observability_migration.core.metric_mapping import load_metric_map_files
+
+        field_map.merge_metric_map(load_metric_map_files(args.metric_map_file))
+    if args.data_view:
+        field_map.metric_index = args.data_view
+    if args.logs_index:
+        field_map.logs_index = args.logs_index
+    if args.dataset_filter:
+        field_map.metrics_dataset_filter = args.dataset_filter
+    if args.logs_dataset_filter:
+        field_map.logs_dataset_filter = args.logs_dataset_filter
+    if not field_map.metrics_dataset_filter:
+        from .field_map import derive_dataset_from_index
+
+        field_map.metrics_dataset_filter = derive_dataset_from_index(field_map.metric_index)
+    if not field_map.logs_dataset_filter:
+        from .field_map import derive_dataset_from_index
+
+        field_map.logs_dataset_filter = derive_dataset_from_index(field_map.logs_index)
+    return field_map
 
 
 def _run_dashboard_pipeline(
@@ -1466,6 +1477,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--field-profile", default="otel",
         help="Field mapping profile: otel, elastic_agent, prometheus, prometheus_native, passthrough, or path to YAML",
+    )
+    parser.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map entries. "
+            "May be repeated; later files override earlier entries and the active field profile."
+        ),
     )
     parser.add_argument(
         "--data-view",

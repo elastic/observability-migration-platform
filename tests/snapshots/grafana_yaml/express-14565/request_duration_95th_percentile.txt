@@ -1,6 +1,9 @@
 title: Request duration 95th percentile
 grafana_type: timeseries
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: histogram_quantile target field type could not be determined; cannot safely translate to ES|QL PERCENTILE() (verify the base metric is a histogram or exponential_histogram field on the target index)
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['http_request_duration_seconds']
+breakdown: service.name
+warning: histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used
+warning: histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.

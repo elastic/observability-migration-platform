@@ -44,7 +44,7 @@ from observability_migration.adapters.source.datadog.translate import translate_
 _WIDGETS = (
     "timeseries", "query_value", "toplist", "table", "heatmap", "pie",
     "bar_chart", "query_table", "distribution", "change",
-    "treemap", "sunburst", "scatterplot", "geomap",
+    "treemap", "sunburst", "scatterplot", "geomap", "hostmap",
 )
 _AGGS = ("avg", "sum", "min", "max")
 _BY: tuple[tuple[str, ...], ...] = ((), ("host",), ("host", "service"))
@@ -59,6 +59,8 @@ _DEFERRED_CELLS = {
     *(f"{widget}::{agg}::by0" for widget in ("pie", "treemap", "sunburst") for agg in _AGGS),
     # Heatmap needs a bucket/category dimension.
     *(f"heatmap::{agg}::by0" for agg in _AGGS),
+    # A hostmap without a host/category grouping cannot become a host/value table.
+    *(f"hostmap::{agg}::by0" for agg in _AGGS),
 }
 _NON_TRANSLATED_STATUSES = {"not_feasible", "requires_manual", "skipped"}
 

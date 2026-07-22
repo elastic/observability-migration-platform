@@ -1,2 +1,2 @@
-control: type=options field=cluster multiple=False
-control: type=options field=job multiple=True
+control: type=esql field=None multiple=False
+control: type=esql field=None multiple=False

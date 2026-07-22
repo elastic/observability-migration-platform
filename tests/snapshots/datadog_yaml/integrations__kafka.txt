@@ -4,12 +4,12 @@ widgets: 55
 panels: 46
 controls: 3
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 3, 'skipped': 9, 'warning': 28}
+statuses: {'not_feasible': 1, 'ok': 13, 'requires_manual': 1, 'skipped': 9, 'warning': 31}
 - title='Datadog image 5924016577024848'; kind=markdown
 - title='Datadog note 7914240170882312'; kind=markdown
 - title='Datadog note 8756831542082047'; kind=markdown
 - title='Kafka Topology for $topic, $env'; kind=markdown
-- title='Topic Health'; kind=markdown
+- title='Topic Health'; kind=esql; type=datatable; dimension=; metrics=['messages_in', 'messages_out', 'max_kafka_lag']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
 - title='Offline Partitions'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='Under Replicated Partitions'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
 - title='ISR Delta'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=
@@ -34,8 +34,8 @@ statuses: {'not_feasible': 2, 'ok': 13, 'requires_manual': 3, 'skipped': 9, 'war
 - title='Min Fetch Rate'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Datadog note 8236156193990667'; kind=markdown
 - title='Top 10 Max Kafka Lag by env'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['deployment.environment', 'topic']; primary=; metric=
-- title='Incoming messages by env, producing service for $topic'; kind=markdown
-- title='Outgoing messages by env, consuming service for $topic'; kind=markdown
+- title='Incoming messages by env, producing service for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['producer_throughput']; breakdowns=[]; primary=; metric=
+- title='Outgoing messages by env, consuming service for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['consumer_throughput']; breakdowns=[]; primary=; metric=
 - title='Top 10 p95 message size by env for $topic'; kind=esql; type=datatable; dimension=; metrics=['_rank']; breakdowns=['topic', 'deployment.environment']; primary=; metric=
 - title='Distribution of message size for $topic'; kind=esql; type=line; dimension=time_bucket; metrics=['avg', 'p50', 'p90', 'p99']; breakdowns=[]; primary=; metric=
 - title='Datadog note 3441872316411158'; kind=markdown

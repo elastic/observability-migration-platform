@@ -96,10 +96,13 @@ from .promql import (
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
+    ESQL_NAMED_PARAM_BINDING,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     binds_esql_named_params,
+    get_runtime_features,
     is_feature_supported,
+    set_runtime_feature,
 )
 from .schema import SchemaResolver
 from .series_labels import (
@@ -243,6 +246,11 @@ class VariableContext:
     control: dict | None = None
     handled: bool = False
     trace: list = field(default_factory=list)
+    # Deliberately separate from `trace` (which mixes internal/speculative
+    # notes, e.g. custom_variable_rule's note that is only accurate before
+    # `_ensure_param_controls` runs): entries here are user-facing
+    # dashboard-level warnings a caller can surface directly (issue #269).
+    control_warnings: list = field(default_factory=list)
 
 
 ESQLShape = _ESQLShapeCanonical
@@ -1914,6 +1922,33 @@ def _native_promql_query_survives_validation(rule_pack, query) -> bool:
     return False
 
 
+def _metric_map_bypass_note(metric_names, rule_pack):
+    """Warn when native PROMQL will skip a configured ``metric_map`` rename.
+
+    Native PROMQL embeds the *literal* source PromQL text and requires the
+    target to already store data under those exact Prometheus metric names
+    (see ``metrics_query_index`` / ``build_native_promql_query``). It never
+    calls ``resolve_metric_field``, so a ``metric_map`` entry for one of
+    ``metric_names`` has no effect on this panel — silently keeping the
+    source name would contradict the "no silent renames/gaps" contract
+    metric_map makes elsewhere (schema.py ``resolve_metric_field``). Surface
+    it as a panel note instead. ``--metric-map-file`` auto-selects ES|QL in
+    ``auto`` mode; this note usually means an explicit
+    ``--translation-mode native`` or a rule-pack-only map without that flag.
+    """
+    metric_map = getattr(rule_pack, "metric_map", None) or {}
+    if not metric_map:
+        return None
+    mapped = sorted({name for name in metric_names if name in metric_map})
+    if not mapped:
+        return None
+    return (
+        f"metric_map not applied for {', '.join(mapped)}: native PROMQL requires "
+        "literal target metric names; use ES|QL translation "
+        "(--metric-map-file auto-selects it, or pass --translation-mode esql)"
+    )
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
@@ -2140,6 +2175,11 @@ def _translate_panel_native_promql(
     _apply_series_override_axes(yaml_panel, panel, [])
 
     notes = list(panel_notes) + ["Native PROMQL: original PromQL reused via ES|QL PROMQL command"]
+    metric_map_note = _metric_map_bypass_note(
+        _collect_source_metrics(native_fragment), rule_pack
+    )
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -2166,12 +2206,12 @@ def _translate_panel_native_promql(
     query_ir.target_index = index
     query_ir.target_query = promql_query
 
-    confidence = 0.90
+    confidence = 0.90 if not metric_map_note else 0.7
     panel_result = PanelResult(
         title,
         panel_type,
         kibana_type,
-        "migrated",
+        "migrated_with_warnings" if metric_map_note else "migrated",
         confidence,
         promql_expr=expr,
         # Record the *emitted* panel query, not the bare ``PROMQL …`` command.
@@ -2183,6 +2223,7 @@ def _translate_panel_native_promql(
         # accessors (issue #109). ``query_ir.target_query`` stays bare for the
         # parity oracle.
         esql_query=native_panel.get("query", promql_query),
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
@@ -2313,6 +2354,12 @@ def _translate_multi_target_native_promql(
     notes = list(panel_notes) + [
         "Native PROMQL: multi-target combined via label_replace + or",
     ]
+    all_source_metrics = []
+    for frag in target_fragments:
+        all_source_metrics.extend(_collect_source_metrics(frag))
+    metric_map_note = _metric_map_bypass_note(all_source_metrics, rule_pack)
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -2377,8 +2424,14 @@ def _translate_multi_target_native_promql(
     query_ir.target_query = promql_query
 
     panel_result = PanelResult(
-        title, panel_type, kibana_type, "migrated", 0.80,
-        promql_expr=combined_expr, esql_query=promql_query,
+        title,
+        panel_type,
+        kibana_type,
+        "migrated_with_warnings" if metric_map_note else "migrated",
+        0.70 if metric_map_note else 0.80,
+        promql_expr=combined_expr,
+        esql_query=promql_query,
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
@@ -3055,7 +3108,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     fused_extra = []
     fused_series = [primary] if feasible_translations else []
     if len(feasible_translations) > 1:
-        if panel_type in {"table", "table-old", "bargauge"}:
+        if panel_type in {"table", "table-old", "bargauge", "stat", "singlestat", "gauge"}:
             fused_series = _best_compatible_translation_group(feasible_translations)
         elif kibana_type in ("line", "bar", "area"):
             fused_series = [primary]
@@ -3658,7 +3711,8 @@ def _merge_pretranslated_xy_queries(translations):
         # final series column to ``result_alias``.
         # When there are no EVAL stages the STATS output name *is* the metric —
         # remap it through alias_map so legend EVAL does not reference the
-        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss).
+        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss /
+        # fused multi-target STATS aliases such as node_network_up -> ..._A).
         metric_field = _canonical_esql_alias(item["metric_field"])
         rewritten_metric_expr = metric_field
         if rewritten_metric_expr in alias_map:
@@ -3808,6 +3862,10 @@ def _build_multi_target_series_query(translations):
         return None
 
     parts, output_group_fields, _ = shared
+    if len({tuple(spec.group_fields or []) for spec in all_specs}) > 1:
+        warnings.append(
+            "Unioned BY fields across multi-target series with mismatched grouping"
+        )
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
     target_provenance: list[dict[str, str]] = []
@@ -5167,6 +5225,39 @@ def _extract_variable_source_metric(query_text):
     return metric_match.group(1) if metric_match else ""
 
 
+def _extract_variable_scope_template_refs(query_text):
+    """Other template variables that scope a ``label_values()`` control (#269).
+
+    Grafana supports *chained* query variables, e.g.
+    ``label_values(container_memory_cache{instance="$instance"}, id)``: the
+    ``$id`` control's option list is meant to be scoped to whichever
+    ``$instance`` is currently selected, not every ``id`` in the index.
+
+    Kibana's ES|QL ``VALUES_FROM_QUERY`` control has no mechanism for one
+    control's populate-query to depend on another control's live selection
+    (there is no cross-control binding today), so this scope cannot be
+    reproduced exactly. Callers use this to detect the shape and attach an
+    explicit degradation warning instead of silently listing every value —
+    the control still works, it is just broader than the Grafana source.
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return []
+    refs: list[str] = []
+    for ref_match in _VARIABLE_REFERENCE_RE.finditer(selector_match.group("selector")):
+        name = ref_match.group(1) or ref_match.group(2)
+        if name and name not in refs:
+            refs.append(name)
+    return refs
+
+
 def _resolve_control_scope_metric(metric_name, resolver, rule_pack):
     """Resolve a control's scoping metric to its physical target field.
 
@@ -5398,6 +5489,31 @@ def _build_esql_param_control(
     return control
 
 
+def _build_static_esql_param_control(variable):
+    """Bind a Grafana custom variable from its literal option list.
+
+    Custom variables are values, not target fields.  Querying a field inferred
+    from the variable name (for example ``diskdevices``) is wrong when the
+    variable is used as a regex for another label (for example ``device``).
+    A static ES|QL values control preserves the source literals and guarantees
+    that the selected default is one of the options Kibana can bind.
+    """
+    name = str(variable.get("name") or "")
+    default = _variable_default_selection(variable)
+    choices = _grouping_candidate_label_names(variable)
+    if default and default not in choices:
+        choices.insert(0, default)
+    return {
+        "type": "esql",
+        "label": variable.get("label") or name,
+        "variable_name": name,
+        "variable_type": "values",
+        "choices": choices,
+        "multiple": False,
+        "default": default,
+    }
+
+
 def _grouping_candidate_label_names(variable):
     """Collect the label names a grouping template variable can select.
 
@@ -5434,18 +5550,40 @@ def _grouping_candidate_label_names(variable):
     return names
 
 
-def _resolve_group_choice_field(raw_name, resolver, rule_pack, metric_field=None):
-    """Resolve one grouping-variable option to an aggregatable target field."""
+def _resolve_group_choice_field(
+    raw_name, resolver, rule_pack, metric_field=None, *, allow_missing=False
+):
+    """Resolve one grouping-variable option to an aggregatable target field.
+
+    When live schema discovery remaps a bare Grafana option (``exporter``) to a
+    profile path that is not present yet (``labels.exporter``), treating that as
+    "unresolvable" empties the late-bound choice set and wrongly marks
+    ``by ($grouping)`` ``not_feasible``. Custom option lists are intentional
+    field names — absence is data readiness. Pass ``allow_missing=True`` for
+    those so the control still emits; the render audit / seeder can populate
+    the dimensions later.
+    """
     name = str(raw_name or "").strip()
     if not name:
         return None
     if resolver:
         field_name = resolver.resolve_control_field(name, metric_field=metric_field or None)
         if not field_name:
-            return None
-        if resolver.field_exists(field_name) is False:
-            return None
-        if resolver.field_exists(field_name) is True and not resolver.is_aggregatable_field(field_name):
+            field_name = name
+        exists = resolver.field_exists(field_name)
+        if exists is False:
+            raw_exists = resolver.field_exists(name) if field_name != name else False
+            if raw_exists is True:
+                field_name = name
+                exists = True
+            elif allow_missing:
+                # Prefer the Grafana option text: control choices and seeder
+                # contracts key off the dashboard's declared names.
+                field_name = name
+                exists = None
+            else:
+                return None
+        if exists is True and not resolver.is_aggregatable_field(field_name):
             return None
         return field_name
     return (rule_pack or RulePackConfig()).control_field_overrides.get(name, name)
@@ -5476,9 +5614,18 @@ def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
         metric_field = _resolve_control_scope_metric(
             _extract_variable_source_metric(query_text), resolver, rule_pack
         )
+        # Custom variables declare an explicit option list of field names.
+        # Missing target fields are data readiness, not an empty choice set.
+        allow_missing = variable.get("type") == "custom"
         choices: list[str] = []
         for raw in raw_names:
-            field_name = _resolve_group_choice_field(raw, resolver, rule_pack, metric_field)
+            field_name = _resolve_group_choice_field(
+                raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
             if field_name and field_name not in choices:
                 choices.append(field_name)
         if not choices:
@@ -5489,7 +5636,13 @@ def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
             default_raw = default_raw[0] if len(default_raw) == 1 else None
         default = None
         if default_raw not in (None, "", "$__all"):
-            default = _resolve_group_choice_field(default_raw, resolver, rule_pack, metric_field)
+            default = _resolve_group_choice_field(
+                default_raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
         if default not in choices:
             default = choices[0]
         choices_map[name] = {
@@ -5617,6 +5770,10 @@ def query_variable_rule(context):
     query_text = context.query_text or _variable_query_text(context.variable)
     context.query_text = query_text
     if "query_result(" in query_text.lower():
+        context.control_warnings.append(
+            f"variable '{name}' uses Grafana query_result(), which has no "
+            "equivalent Kibana control population query; no Kibana control was emitted"
+        )
         return f"skipped query_result helper variable {name}"
     source_field = _extract_variable_source_field(query_text) or name
     context.source_field = source_field
@@ -5632,14 +5789,55 @@ def query_variable_rule(context):
         rule_pack = context.rule_pack or RulePackConfig()
         field_name = rule_pack.control_field_overrides.get(source_field, source_field)
     if field_name is None:
+        context.control_warnings.append(
+            f"variable '{name}' could not resolve source field '{source_field}' "
+            "to a supported target field; no Kibana control was emitted"
+        )
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
-        return f"skipped unavailable control field {field_name}"
+        # Issue #269 Defect 1: keep the source control even when live schema
+        # discovery cannot find its field yet. Dropping it makes offline/live
+        # output structurally inconsistent, and `_ensure_param_controls`
+        # otherwise has to synthesize it again when a panel binds `?name`,
+        # contradicting a "dropped" warning. The kept control starts empty and
+        # self-heals once telemetry containing the field is ingested.
+        context.control_warnings.append(
+            f"variable '{name}' kept, but resolved field '{field_name}' is not "
+            "present on the target (data not yet ingested, or genuinely "
+            "absent); the control may have no options until the field is ingested"
+        )
     if resolver and resolver.field_exists(field_name) is True:
         if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to '{field_name}', but that field "
+                "has incompatible target types; no Kibana control was emitted"
+            )
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to non-aggregatable target field "
+                f"'{field_name}'; no Kibana control was emitted"
+            )
             return f"skipped non-aggregatable control field {field_name}"
+    scope_refs = [
+        ref for ref in _extract_variable_scope_template_refs(query_text) if ref != name
+    ]
+    if scope_refs:
+        # Issue #269 Defect 2: Grafana chains this variable's option list to
+        # whichever value(s) are currently selected on `scope_refs` (e.g.
+        # `label_values(metric{instance="$instance"}, id)`). Kibana's ES|QL
+        # VALUES_FROM_QUERY control has no cross-control dependency mechanism
+        # today, so the migrated control's populate-query cannot re-apply
+        # that scope -- it lists every value instead of just the ones under
+        # the selected scope. The control is still present and functional
+        # (not a silent drop), just broader than the Grafana source.
+        context.control_warnings.append(
+            f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in scope_refs)} in "
+            "Grafana (label_values() selector); Kibana ES|QL controls cannot "
+            "express that inter-control dependency, so the migrated control "
+            f"lists every '{field_name}' value instead of only those under the "
+            "selected scope"
+        )
     if binds_esql_named_params(context.rule_pack):
         # The target binds Grafana template variables as native ES|QL
         # parameters (``?<name>``), so the control must DEFINE that ES|QL
@@ -5696,6 +5894,10 @@ def textbox_variable_rule(context):
         return None
     name = context.variable.get("name", "")
     context.handled = True
+    context.control_warnings.append(
+        f"textbox variable '{name}' has no direct Kibana control equivalent; "
+        "use the Kibana query bar or a KQL filter instead"
+    )
     context.trace.append(
         f"textbox variable '{name}' has no direct Kibana control equivalent; "
         "use the Kibana query bar or KQL filter instead"
@@ -5746,7 +5948,16 @@ def translate_variables(
     resolver=None,
     repeat_variable_names=None,
     include_variable_names=False,
+    collect_warnings=None,
 ):
+    """Translate Grafana template variables into Kibana controls.
+
+    ``collect_warnings``, if given a list, is extended with any dashboard-
+    level control-translation warnings: broader chained controls, controls
+    retained against an absent target field, and unsupported variable shapes
+    that cannot emit a Kibana control. Optional and additive so existing
+    callers that only want ``controls`` are unaffected.
+    """
     rule_pack = rule_pack or RulePackConfig()
     controls = []
     for var in template_list:
@@ -5759,6 +5970,8 @@ def translate_variables(
             repeat_variable_names=set(repeat_variable_names or ()),
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
+        if collect_warnings is not None:
+            collect_warnings.extend(context.control_warnings)
         if context.control:
             control = dict(context.control)
             if include_variable_names and var.get("name"):
@@ -5947,6 +6160,42 @@ def _degrade_conflicting_late_bound_group_panels(panels, panel_results):
         _sync_visual_ir(panel_result, panel)
 
 
+def _maybe_enable_dashboard_named_param_binding(rule_pack, variables):
+    """Enable ES|QL ``?var`` emission when dashboard templating can bind controls.
+
+    Grafana ``$var`` label matchers become ``field == ?var`` only when the rule
+    pack advertises named-parameter binding. Offline / library callers that skip
+    the CLI probe historically left the feature unset and dropped those matchers
+    even when the dashboard had templating that ``_ensure_param_controls`` can
+    bind. Enable the feature for this translate pass when templating defines at
+    least one named variable.
+
+    Never overrides an existing runtime feature state — a live ``--es-url`` probe
+    that marked binding unsupported must continue dropping matchers (no unbound
+    ``?var`` uploads).
+    """
+    if rule_pack is None:
+        return
+    if ESQL_NAMED_PARAM_BINDING in get_runtime_features(rule_pack):
+        return
+    has_named = any(
+        isinstance(var, dict) and str(var.get("name") or "").strip()
+        for var in (variables or [])
+    )
+    if not has_named:
+        return
+    set_runtime_feature(
+        rule_pack,
+        ESQL_NAMED_PARAM_BINDING,
+        supported=True,
+        source="dashboard_templating",
+        confidence="assumed",
+        reason=(
+            "dashboard templating present; emit ?var matchers with binding controls"
+        ),
+    )
+
+
 def _ensure_param_controls(
     controls,
     emitted_params,
@@ -5987,6 +6236,9 @@ def _ensure_param_controls(
     }
     for name in missing:
         variable = variables_by_name.get(name, {})
+        if variable.get("type") == "custom":
+            controls.append(_build_static_esql_param_control(variable))
+            continue
         label = variable.get("label") or name
         query_text = _variable_query_text(variable)
         source_field = _extract_variable_source_field(query_text) or name
@@ -7371,6 +7623,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     metric_series_labels = build_metric_series_labels(dashboard)
 
     variables = dashboard.get("templating", {}).get("list", [])
+    # Gap A: when templating can bind controls, emit ``?var`` label matchers
+    # instead of dropping them. Must run before late-bound grouping choices
+    # (those also require ``binds_esql_named_params``).
+    _maybe_enable_dashboard_named_param_binding(rule_pack, variables)
     # Record which ``?var`` params default to the regex match-all so both the
     # ES|QL and native PROMQL matcher emitters loosen equality matchers on
     # All/multi variables into regex matches and render data on first load
@@ -7510,6 +7766,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
         include_variable_names=True,
+        collect_warnings=result.control_warnings,
     )
     # Issue #282: bind each emitted ``??var`` grouping identifier to a fields
     # control before the ``?var`` completeness pass so it is not shadowed by a

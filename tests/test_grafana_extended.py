@@ -424,14 +424,15 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        # histogram_quantile() is hard-blocked and always not_feasible
-        panel = _make_panel(1, "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))")
+        # Bare classic _bucket series (no sum by (le)) stays not_feasible —
+        # PERCENTILE cannot preserve per-series identity without an explicit le agg.
+        panel = _make_panel(1, "histogram_quantile(0.99, rate(http_duration_bucket[5m]))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
+        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -511,8 +512,9 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("sum without (instance) (rate(foo_total[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
-    def test_histogram_quantile_is_not_feasible(self):
-        ctx = _translate("histogram_quantile(0.9, rate(bucket[5m]))")
+    def test_histogram_quantile_bare_bucket_series_is_not_feasible(self):
+        # Bare classic *_bucket without sum by (le) cannot preserve series identity.
+        ctx = _translate("histogram_quantile(0.9, rate(http_duration_seconds_bucket[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
     def test_name_introspection_is_not_feasible(self):
@@ -586,7 +588,7 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
+        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -623,12 +625,14 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate(expr)
         self.assertEqual(ctx.feasibility, "feasible")
         query = ctx.esql_query or ""
-        # Numerator scoped via CASE on the extra filter. When any STATS sibling
-        # already uses CASE, the unscoped denominator is also CASE-shaped
-        # (``CASE(true, …)``) so ES does not ClassCast mixed value-arg forms.
+        # Numerator scoped via outer CASE on the extra filter (ES 9.5-safe).
+        # When any STATS sibling already uses that shape, the unscoped
+        # denominator is also outer-CASE-shaped (``CASE(true, RATE(...), NULL)``)
+        # so ES does not ClassCast mixed value-arg forms.
         self.assertIn('CASE((status RLIKE "5..")', query)
-        self.assertIn("RATE(CASE(true, http_requests_total, NULL), 5m)", query)
-        self.assertNotIn("RATE(http_requests_total, 5m)", query)
+        self.assertIn("CASE(true, RATE(http_requests_total, 5m), NULL)", query)
+        self.assertNotIn("SUM(RATE(http_requests_total, 5m))", query)
+        self.assertNotIn("RATE(CASE(", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
         # Final percentage EVAL composes the two stats columns.
@@ -956,6 +960,52 @@ class TestPanelTypeCoverage(unittest.TestCase):
         panel = _make_panel(1, "rate(foo_total[5m])", panel_type="heatmap")
         _, result = _translate_panel(panel)
         self.assertIn(result.kibana_type, ("heatmap", "line"))
+
+    def test_state_timeline_approximated_as_line_with_disclosure(self):
+        panel = _make_panel(1, "max(up)", panel_type="state-timeline", title="Pod state")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertEqual(result.grafana_type, "state-timeline")
+        self.assertEqual(result.kibana_type, "line")
+        self.assertTrue(result.esql_query or (yaml_panel and yaml_panel.get("esql")))
+        note = panels.APPROXIMATED_VIS_TYPE_NOTES["state-timeline"]
+        joined = " ".join(result.reasons or [])
+        self.assertIn(note.split(":")[0], joined)
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_status_history_approximated_as_line_with_disclosure(self):
+        panel = _make_panel(1, "max(up)", panel_type="status-history", title="Check status")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertEqual(result.grafana_type, "status-history")
+        self.assertEqual(result.kibana_type, "line")
+        self.assertTrue(result.esql_query or (yaml_panel and yaml_panel.get("esql")))
+        note = panels.APPROXIMATED_VIS_TYPE_NOTES["status-history"]
+        joined = " ".join(result.reasons or [])
+        self.assertIn(note.split(":")[0], joined)
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_discrete_state_panels_survive_native_dashboard_ir(self):
+        """state-timeline / status-history must land as native vis items, not drops."""
+        dashboard = {
+            "uid": "discrete-state",
+            "title": "Discrete state",
+            "panels": [
+                _make_panel(1, "max(up)", panel_type="state-timeline", title="State"),
+                _make_panel(2, "max(up)", panel_type="status-history", title="History"),
+            ],
+        }
+        result, _payload = _translate_dashboard(dashboard)
+        by_type = {pr.grafana_type: pr for pr in result.panel_results}
+        self.assertIn("state-timeline", by_type)
+        self.assertIn("status-history", by_type)
+        for pr in by_type.values():
+            self.assertEqual(pr.kibana_type, "line")
+            self.assertEqual(pr.status, "migrated_with_warnings")
+            self.assertTrue(pr.esql_query)
+        native = getattr(result, "native_dashboard", None)
+        if native is not None:
+            leaf_types = [item.type for item in native.items if getattr(item, "type", None)]
+            self.assertGreaterEqual(len(leaf_types), 2)
+            self.assertTrue(all(t == "vis" for t in leaf_types[:2]))
 
     def test_stacked_timeseries_becomes_area(self):
         panel = _make_panel(1, "rate(foo_total[5m])", panel_type="timeseries")
@@ -3643,6 +3693,71 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertNotIn("AVG(MAX_OVER_TIME(", ctx.esql_query)
         self.assertNotIn(", instance", ctx.esql_query)
         self.assertFalse(any("Added outer AVG" in w for w in ctx.warnings))
+
+    def test_rate_with_legend_format_drops_phantom_by_no_outer_avg(self):
+        # rate()/irate()/increase always run on TS. legendFormat {{input}} must not
+        # invent a BY label (Grafana display-only) or force AVG(RATE(...)) — that
+        # also breaks multi-target fusion when each series has a different legend
+        # placeholder (Redis Network I/O: {{input}} vs {{output}}).
+        ctx = self._translate(
+            'rate(redis_net_input_bytes_total{job="redis"}[5m])',
+            hints={
+                "preferred_group_labels": ["input"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("RATE(redis_net_input_bytes_total", ctx.esql_query)
+        self.assertNotIn("AVG(RATE(", ctx.esql_query)
+        self.assertNotIn(", input", ctx.esql_query)
+        self.assertEqual(ctx.output_group_fields, ["time_bucket"])
+
+    def test_redis_network_io_multi_target_fuses_both_series(self):
+        # Infra corpus: redis-11835 "Network I/O" — two rate() targets with
+        # legendFormat {{input}} / {{output}} must fuse into one multi-metric XY.
+        import json
+        from pathlib import Path
+
+        from observability_migration.adapters.source.grafana import panels as panels_mod
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra"
+            / "grafana"
+            / "dashboards"
+            / "redis-11835.json"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+
+        def walk(items):
+            for item in items or []:
+                if isinstance(item, dict):
+                    yield item
+                    yield from walk(item.get("panels") or [])
+
+        panel = next(p for p in walk(data.get("panels")) if p.get("title") == "Network I/O")
+        _yaml, result = panels_mod.translate_panel(
+            panel,
+            rule_pack=RulePackConfig(),
+            resolver=SchemaResolver(RulePackConfig()),
+            datasource_index="metrics-*",
+        )
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        self.assertTrue(result.esql_query)
+        self.assertIn("redis_net_input_bytes_total", result.esql_query)
+        self.assertIn("redis_net_output_bytes_total", result.esql_query)
+        self.assertFalse(
+            any("only 1 could be migrated" in (r or "") for r in (result.reasons or [])),
+            result.reasons,
+        )
+        # legendFormat placeholders become series aliases (EVAL/KEEP), not BY dims.
+        self.assertNotIn("BY time_bucket = TBUCKET(5 minute), input", result.esql_query)
+        self.assertNotIn("BY time_bucket = TBUCKET(5 minute), output", result.esql_query)
+        self.assertNotIn("AVG(RATE(", result.esql_query)
+        self.assertIn("RATE(redis_net_input_bytes_total", result.esql_query)
+        self.assertIn("RATE(redis_net_output_bytes_total", result.esql_query)
 
     def test_formula_range_func_non_tsds_keeps_legend_label(self):
         # Issue #99 review: the formula path applies the same TS-eligibility gate.

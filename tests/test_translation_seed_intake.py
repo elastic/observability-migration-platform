@@ -34,8 +34,14 @@ _GOOD_ALIAS_QUERY = (
 
 _GOOD_CASE_WRAP_QUERY = (
     "TS metrics-*\n"
-    '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
-    "b = SUM(IRATE(CASE(true, other, NULL), 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
+    "b = SUM(CASE(true, IRATE(other, 1m), NULL)) BY time_bucket = TBUCKET(5 minute)\n"
+)
+
+_DATADOG_GOOD_QUERY = (
+    "FROM metrics-*\n"
+    "| STATS freq_B = AVG(system.cpu.user) BY host\n"
+    "| EVAL CPU = freq_B\n"
 )
 
 
@@ -47,9 +53,72 @@ def corrupt_break_eval_alias(query: str) -> str:
     )
 
 
-def corrupt_strip_case_true_wrap(query: str) -> str:
-    """Remove CASE(true, ...) guard so bare TS mixes with CASE-wrapped IRATE."""
-    return query.replace("CASE(true, other, NULL)", "other")
+def corrupt_to_inner_case_irate(query: str) -> str:
+    """Emit illegal IRATE(CASE(...)) value-arg shape (ClassCast class)."""
+    return (
+        "TS metrics-*\n"
+        '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
+        "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+    )
+
+
+def corrupt_datadog_break_eval_alias(query: str) -> str:
+    return query.replace("EVAL CPU = freq_B", "EVAL CPU = system.cpu.user")
+
+
+def test_datadog_oracle_flags_alias_corruption():
+    from observability_migration.adapters.source.datadog.esql_structural_oracle import (
+        check_datadog_esql_structure,
+    )
+
+    bad = corrupt_datadog_break_eval_alias(_DATADOG_GOOD_QUERY)
+    errs = structural_errors(
+        check_datadog_esql_structure(bad, status="ok", backend="esql")
+    )
+    assert any(e.rule_id == StructuralRuleId.EVAL_UNDEFINED_COLUMN for e in errs)
+
+
+def test_datadog_intake_proposes_seed_for_structural_mutation(tmp_path):
+    bad_query = corrupt_datadog_break_eval_alias(_DATADOG_GOOD_QUERY)
+    report = {
+        "source": "datadog",
+        "panels": [
+            {
+                "title": "Datadog CPU Alias Bug",
+                "status": "fail",
+                "disposition": "real_bug",
+                "error": "Unknown column [system.cpu.user]",
+                "esql_query": bad_query,
+                "targets": [{"query": "avg:system.cpu.user{*}"}],
+            }
+        ],
+    }
+    report_path = tmp_path / "dd_smoke.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--report",
+            str(report_path),
+            "--out-dir",
+            str(tmp_path / "seeds"),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    assert proc.returncode == 0, proc.stderr
+    proposals = json.loads(proc.stdout)
+    assert len(proposals) == 1
+    seed = proposals[0]
+    assert seed["source"] == "datadog"
+    assert seed["panel_title"] == "Datadog CPU Alias Bug"
+    assert seed["disposition"] == "real_bug"
+    assert seed["esql_query"] == bad_query
+    assert seed["rule_hint"] == StructuralRuleId.EVAL_UNDEFINED_COLUMN.value
 
 
 def test_oracle_clean_query_passes_and_corruptions_error():
@@ -62,8 +131,8 @@ def test_oracle_clean_query_passes_and_corruptions_error():
     )
 
     assert structural_errors(check_esql_structure(_GOOD_CASE_WRAP_QUERY)) == []
-    case_errs = structural_errors(check_esql_structure(corrupt_strip_case_true_wrap(_GOOD_CASE_WRAP_QUERY)))
-    assert any(e.rule_id == StructuralRuleId.STATS_CASE_BARE_TS_MIX for e in case_errs)
+    case_errs = structural_errors(check_esql_structure(corrupt_to_inner_case_irate(_GOOD_CASE_WRAP_QUERY)))
+    assert any(e.rule_id == StructuralRuleId.STATS_TS_CASE_VALUE_ARG for e in case_errs)
 
 
 def test_intake_proposes_seed_for_structural_mutation(tmp_path):
