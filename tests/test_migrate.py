@@ -7354,13 +7354,20 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(len(controls), 1)
         query = controls[0]["query"]
+        # No concrete ``current`` → default is match-all (".*"), so the
+        # VALUES_FROM_QUERY must include that token via MV_APPEND while still
+        # keeping the source-metric scope from label_values(metric, label).
         self.assertEqual(
             query,
             "FROM metrics-* | WHERE redis_up IS NOT NULL AND "
             "`service.instance.id` IS NOT NULL"
             " | STATS count = COUNT(*) BY `service.instance.id`"
-            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
-            " | LIMIT 1000",
+            ' | EVAL options = MV_APPEND(".*", `service.instance.id`)'
+            " | MV_EXPAND options"
+            " | STATS count = COUNT(*) BY options"
+            " | KEEP options"
+            " | RENAME options AS `service.instance.id`"
+            " | SORT `service.instance.id` ASC | LIMIT 1000",
         )
 
     def test_query_variable_control_unscoped_when_no_source_metric(self):
@@ -7393,8 +7400,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             query,
             "FROM metrics-* | WHERE `service.instance.id` IS NOT NULL"
             " | STATS count = COUNT(*) BY `service.instance.id`"
-            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
-            " | LIMIT 1000",
+            ' | EVAL options = MV_APPEND(".*", `service.instance.id`)'
+            " | MV_EXPAND options"
+            " | STATS count = COUNT(*) BY options"
+            " | KEEP options"
+            " | RENAME options AS `service.instance.id`"
+            " | SORT `service.instance.id` ASC | LIMIT 1000",
         )
 
     def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):

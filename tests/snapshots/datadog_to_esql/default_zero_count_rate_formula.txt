@@ -4,7 +4,7 @@ status: warning
 backend: esql
 kibana_type: xy
 warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
-warning: rate semantics approximated with delta over observed bucket span
+warning: rate semantics approximated with delta over observed bucket span; when switching Agent→OTel collection, map counters with --metric-map-file (transform/unit_scale) so RATE() emits against the OTel counter field
 warning: default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted
 ---
 FROM metrics-*
