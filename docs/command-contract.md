@@ -535,7 +535,9 @@ metric_map:
 Run:
 
 ```bash
-datadog-migrate \
+.venv/bin/obs-migrate migrate \
+  --source datadog \
+  --input-mode files \
   --input-dir ./datadog_exports \
   --output-dir ./out_dd_otel \
   --assets dashboards \
@@ -1357,7 +1359,9 @@ They accept the same `--input-mode {files,api}` extraction selector as unified
 is still accepted as a compatibility alias; if both are provided, they must
 match. Both dedicated CLIs also accept the same `--select-*` metadata selection
 flags described under [Migrate](#migrate) (with the same per-source availability
-and graceful-degradation behavior).
+and graceful-degradation behavior). Prefer the unified `obs-migrate migrate`
+spelling in docs, runbooks, and user workflows; use dedicated CLIs only for
+compatibility or adapter-local debugging.
 
 ### CLI parity (unified vs dedicated)
 
@@ -1388,7 +1392,8 @@ source adapter](sources/grafana.md).
 
 ```bash
 # Files: dashboards only (native PROMQL is the default)
-.venv/bin/grafana-migrate \
+.venv/bin/obs-migrate migrate \
+  --source grafana \
   --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
@@ -1399,13 +1404,15 @@ source adapter](sources/grafana.md).
 
 # Live Grafana API: alerts only
 KIBANA_URL= GRAFANA_URL=http://localhost:23000 GRAFANA_USER=admin GRAFANA_PASS=admin \
-.venv/bin/grafana-migrate \
+.venv/bin/obs-migrate migrate \
+  --source grafana \
   --input-mode api \
   --output-dir migration_output \
   --assets alerts
 
 # Files: dashboards + alerts + integrated smoke
-.venv/bin/python -m observability_migration.adapters.source.grafana.cli \
+.venv/bin/obs-migrate migrate \
+  --source grafana \
   --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
@@ -1425,7 +1432,7 @@ Without `--es-url`, Grafana skips schema discovery and emitted-query
 validation. Dashboard-capable runs (`--assets dashboards` or `--assets all`)
 still write dashboard YAML, `dashboards/native/*.native.json`,
 `dashboards/ir/*.ir.json`, and the normal dashboard report artifacts (local
-NDJSON compilation is opt-in via `--compile`, matching datadog-migrate).
+NDJSON compilation is opt-in via `--compile`, matching Datadog dashboard runs).
 Alerts-only runs (`--assets alerts`) skip dashboard emission and
 write alert artifacts under `<output-dir>/alerts`. For pure source-side alert
 extraction, set `KIBANA_URL=` in the shell to suppress the default local Kibana
@@ -1439,7 +1446,8 @@ source adapter](sources/datadog.md).
 
 ```bash
 # Files: dashboards only
-.venv/bin/datadog-migrate \
+.venv/bin/obs-migrate migrate \
+  --source datadog \
   --input-mode files \
   --input-dir infra/datadog/dashboards \
   --output-dir datadog_migration_output \
@@ -1448,7 +1456,8 @@ source adapter](sources/datadog.md).
   --data-view "metrics-*"
 
 # Live Datadog API with explicit dashboard scoping
-.venv/bin/datadog-migrate \
+.venv/bin/obs-migrate migrate \
+  --source datadog \
   --input-mode api \
   --env-file datadog_creds.env \
   --dashboard-ids abc-def-123 \
@@ -1457,7 +1466,8 @@ source adapter](sources/datadog.md).
   --data-view "metrics-*"
 
 # Live Datadog API: alerts only
-.venv/bin/datadog-migrate \
+.venv/bin/obs-migrate migrate \
+  --source datadog \
   --input-mode api \
   --env-file datadog_creds.env \
   --output-dir datadog_migration_output \

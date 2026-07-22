@@ -42,7 +42,8 @@ def test_command_contract_has_metric_map_operator_examples():
         "metric_index: metrics-otel-*",
         "system.cpu.user: system.cpu.user.pct",
         "system.net.bytes_rcvd:",
-        "datadog-migrate",
+        ".venv/bin/obs-migrate migrate",
+        "--source datadog",
         "--field-profile ./my-dd-otel-profile.yaml",
         "--data-view metrics-otel-*",
         "Class-2",
@@ -51,6 +52,11 @@ def test_command_contract_has_metric_map_operator_examples():
 
     for fragment in expected_fragments:
         assert fragment in text
+
+    metric_map_section = text.split("### Reusing existing OTEL metrics with `metric_map`", 1)[1]
+    metric_map_section = metric_map_section.split("`--logs-index` is the log analog", 1)[0]
+    assert "datadog-migrate" not in metric_map_section
+    assert "grafana-migrate" not in metric_map_section
 
 
 def test_command_contract_metric_map_yaml_examples_load():
@@ -77,3 +83,21 @@ def test_command_contract_metric_map_yaml_examples_load():
         # Class-2 example remains a v1 gap, not a silent target rename.
         assert profile.map_metric("system.net.bytes_rcvd") == "system_net_bytes_rcvd"
         assert profile.metric_map_gaps()
+
+
+def test_command_contract_examples_prefer_unified_cli():
+    text = _command_contract()
+    bash_examples = "\n".join(
+        match.group(1)
+        for match in re.finditer(r"```bash\n(.*?)\n```", text, flags=re.DOTALL)
+    )
+
+    dedicated_example_spellings = [
+        ".venv/bin/grafana-migrate",
+        ".venv/bin/datadog-migrate",
+        "python -m observability_migration.adapters.source.grafana.cli",
+        "python -m observability_migration.adapters.source.datadog.cli",
+    ]
+
+    for spelling in dedicated_example_spellings:
+        assert spelling not in bash_examples
