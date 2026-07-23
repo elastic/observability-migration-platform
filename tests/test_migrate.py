@@ -4629,7 +4629,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         # approximation would collapse them into one STATS pipeline.
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        self.assertNotIn("STATS", query)
+        # Gauge tiles collapse the range via LAST (not same-bucket ES|QL math).
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         # No approximation: the same-bucket ES|QL fallback warning must not
         # be attached.
         joined = " ".join(result.notes) + " ".join(result.reasons)
@@ -4668,7 +4670,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_time_seconds", query)
         self.assertIn("node_boot_time_seconds", query)
-        self.assertNotIn("STATS", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -4710,7 +4713,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_network_receive_bytes_total", query)
         self.assertIn("node_network_transmit_bytes_total", query)
-        self.assertNotIn("STATS", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -4723,8 +4727,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         two metrics, so the single-value gate keeps it native. When multiple
         instances are scraped this matches per-instance and fans out to one
         series each rather than collapsing to a single scalar — so the gauge
-        surfaces a multi-row instant result. This is intended (#146): the
-        instant query preserves the original arithmetic and Kibana
+        surfaces a multi-row latest-value result. This is intended (#146): the
+        range+LAST query preserves the original arithmetic and Kibana
         reduces/repeats the multi-row result the same way Grafana does,
         mirroring #138's accepted line-chart behavior. The gate's
         distinct-metric count is a deliberate proxy for "derived value", not a
@@ -4754,8 +4758,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        # Stays on the native instant path — not the aggregating ES|QL fallback.
-        self.assertNotIn("STATS", query)
+        # Multi-series keep one latest value per series.
+        self.assertIn("| STATS value = LAST(value, step) BY _timeseries", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -4766,9 +4771,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         """The canonical Prometheus error-rate ratio divides the *same* metric
         under two different label selectors (``rate(http_requests_total
         {code=~"5.."}[5m]) / rate(http_requests_total[5m])``). With no outer
-        aggregation the shape is ``['_timeseries']`` (per-series instant
+        aggregation the shape is ``['_timeseries']`` (per-series
         result), so it reaches the single-value gate. This is genuine derived
-        arithmetic that the instant query preserves and collapses to a latest
+        arithmetic that the native query preserves and collapses to a latest
         value — exactly like the distinct-metric ratio #146 keeps native. The
         gate counts metric *occurrences*, not distinct names, so a same-metric
         ratio (two occurrences of one name) is NOT mistaken for a bare
@@ -4797,9 +4802,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("PROMQL", query)
         self.assertIn("http_requests_total", query)
-        # The native command preserves the ratio; the ES|QL approximation would
-        # collapse it into one STATS pipeline instead.
-        self.assertNotIn("STATS", query)
+        # Native ratio preserved; LAST collapses the range for the gauge tile.
+        self.assertIn("| STATS value = LAST(value, step) BY _timeseries", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -4935,8 +4940,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("AVG(node_systemd_units)", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
-        # Issue #8: proven TSDS gauge takes the TS path (TBUCKET), not FROM (BUCKET).
-        self.assertIn("BY time_bucket = TBUCKET(5 minute), state", query)
+        # Issue #8 / #316: proven TSDS gauge takes the TS path with adaptive TBUCKET.
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
         self.assertFalse(any("No explicit aggregation" in r for r in result.reasons))
@@ -7765,14 +7770,12 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
-        includeAll must bind a regex match (``RLIKE ?var``) so the control's
-        ".*" default selects every series on first load (PR #133).
+        includeAll must loosen to a regex match so the control's ``.*`` default
+        selects every series on first load (PR #133).
 
-        Even with ``native_promql`` enabled, a control-bound label matcher must
-        route to native ES|QL — where the control binds — instead of the PROMQL
-        command, which would trap ``?var`` in its opaque string and leave it
-        unbound (issue #230). The includeAll loosening (regex, not exact) is
-        preserved on the ES|QL path: ``RLIKE ?var`` rather than ``== ?var``."""
+        When ``promql_label_matcher_params`` is supported (#319), keep native
+        PROMQL with ``host=~?host`` (issue #230's ES|QL fallthrough only applies
+        when that feature is unsupported — see the companion test below)."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -7820,9 +7823,61 @@ class TranslatorRegressionTests(unittest.TestCase):
             doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
 
         rendered = yaml.dump(doc)
-        # Bound via native ES|QL (control binds), not trapped in a PROMQL command.
+        self.assertIn("PROMQL", rendered)
+        self.assertIn("host=~?host", rendered)
+        self.assertNotIn("RLIKE ?host", rendered)
+
+    def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
+        """Issue #230: without PromQL label-matcher params, control-bound matchers
+        must route to ES|QL (``RLIKE ?var``) so Kibana can bind the control."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=False, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Native Equality All Fallback",
+            "uid": "native-equality-all-fallback",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": True,
+                        "includeAll": True,
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$host"})'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
         self.assertNotIn("PROMQL", rendered)
-        # includeAll -> regex match so the ".*" default selects every series.
         self.assertIn("RLIKE ?host", rendered)
         self.assertNotIn("== ?host", rendered)
 
@@ -9535,7 +9590,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("BY time_bucket = TBUCKET(5 minute)", query)
+        # Dashboard panels use adaptive TBUCKET (issue #316); summary gauges still
+        # collapse over that bucket with a null-safe MAX reduction.
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)", query)
         self.assertIn("| SORT time_bucket ASC", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         self.assertIn(
