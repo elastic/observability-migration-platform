@@ -5623,6 +5623,73 @@ def _extract_variable_scope_template_refs(query_text):
     return refs
 
 
+def _extract_variable_scope_filters(query_text, resolver=None, rule_pack=None):
+    """Literal label matchers that scope a ``label_values()`` control (#312).
+
+    Grafana's ``label_values(metric{device!="nbd1"}, device)`` restricts the
+    listed values to series where ``device != "nbd1"``. Kibana's ES|QL
+    ``VALUES_FROM_QUERY`` control can express that restriction directly as an
+    extra ``WHERE`` predicate, so the migrated dropdown does not offer values
+    (``nbd1``) the Grafana source excluded.
+
+    Only *literal* matchers are returned as ``(field, esql_predicate)`` pairs:
+
+    * ``label="v"`` / ``label!="v"`` become ``field == "v"`` / ``field != "v"``.
+    * ``label=~"re"`` / ``label!~"re"`` become ``field RLIKE "re"`` /
+      ``NOT field RLIKE "re"``.
+
+    Matchers whose value references another template variable
+    (``instance="$instance"``) are skipped here: they are chained scopes handled
+    by :func:`_extract_variable_scope_template_refs` (Kibana controls cannot
+    express that inter-control dependency, so those emit a degradation warning
+    instead of a wrong literal predicate).
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return []
+    filters: list[str] = []
+    for matcher_text in _split_top_level_csv(selector_match.group("selector")):
+        matcher = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+        if not matcher:
+            continue
+        value = matcher.group("value")
+        if _VARIABLE_REFERENCE_RE.search(value):
+            # Chained scope on another variable -- handled separately (#269).
+            continue
+        raw_label = matcher.group("label")
+        if resolver is not None:
+            field = resolver.resolve_control_field(raw_label) or raw_label
+        elif rule_pack is not None:
+            field = rule_pack.control_field_overrides.get(raw_label, raw_label)
+        else:
+            field = raw_label
+        column = _esql_identifier(field)
+        literal = _esql_string_literal(value)
+        op = matcher.group("op")
+        if op == "=":
+            filters.append(f"{column} == {literal}")
+        elif op == "!=":
+            filters.append(f"{column} != {literal}")
+        elif op == "=~":
+            filters.append(f"{column} RLIKE {literal}")
+        elif op == "!~":
+            filters.append(f"NOT {column} RLIKE {literal}")
+    return filters
+
+
+def _esql_string_literal(value):
+    """Quote a string value as an ES|QL double-quoted literal."""
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def _resolve_control_scope_metric(metric_name, resolver, rule_pack):
     """Resolve a control's scoping metric to its physical target field.
 
@@ -5726,7 +5793,9 @@ def _field_has_ts_metadata_conflict(field_name, resolver):
     return has_dimension and has_metric
 
 
-def _esql_values_control_query(field_name, data_view, metric_field=None, *, include_match_all=False):
+def _esql_values_control_query(
+    field_name, data_view, metric_field=None, *, include_match_all=False, extra_filters=None
+):
     """Build an ES|QL query that enumerates a control's selectable values.
 
     Mirrors Grafana's ``label_values()`` query variable: return the field's
@@ -5739,17 +5808,23 @@ def _esql_values_control_query(field_name, data_view, metric_field=None, *, incl
     values coming from that metric instead of every value of the field in the
     index (issue #152).
 
+    ``extra_filters`` carries literal label-matcher predicates from the source
+    selector (``label_values(metric{device!="nbd1"}, device)`` -> ``device !=
+    "nbd1"``) so the migrated dropdown excludes the values Grafana excluded
+    instead of listing every value (issue #312).
+
     When ``include_match_all`` is true (includeAll / All default), prepend the
     regex match-all token ``.*`` via ``MV_APPEND`` so Kibana's selected default
     is a valid options-list value instead of an incompatible selection.
     """
     field = _esql_identifier(field_name)
     index = data_view or "metrics-*"
+    clauses = []
     if metric_field:
-        metric = _esql_identifier(metric_field)
-        where = f"WHERE {metric} IS NOT NULL AND {field} IS NOT NULL"
-    else:
-        where = f"WHERE {field} IS NOT NULL"
+        clauses.append(f"{_esql_identifier(metric_field)} IS NOT NULL")
+    clauses.append(f"{field} IS NOT NULL")
+    clauses.extend(extra_filters or [])
+    where = "WHERE " + " AND ".join(clauses)
     if include_match_all:
         return (
             f"FROM {index} | {where}"
@@ -5835,6 +5910,7 @@ def _build_esql_param_control(
     metric_field=None,
     source_field="",
     include_internal_metadata=False,
+    extra_filters=None,
 ):
     """Build an ES|QL parameter-binding control (issue #107).
 
@@ -5866,6 +5942,7 @@ def _build_esql_param_control(
             data_view,
             metric_field=metric_field,
             include_match_all=include_match_all,
+            extra_filters=extra_filters,
         ),
         "multiple": False,
     }
@@ -6235,6 +6312,7 @@ def query_variable_rule(context):
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
         # cluster-wide ES|QL fallback run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
+        scope_filters = _extract_variable_scope_filters(query_text, resolver, context.rule_pack)
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
@@ -6244,11 +6322,17 @@ def query_variable_rule(context):
             metric_field=metric_field,
             source_field=source_field,
             include_internal_metadata=True,
+            extra_filters=scope_filters,
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
-            context.trace.append(
+            # Kibana binds this control's value into a scalar ES|QL parameter
+            # position (``== ?var`` / ``RLIKE ?var``), which cannot accept a
+            # multi-value selection. Report the gap (issue #312 criterion 3)
+            # rather than silently dropping multi-select.
+            context.control_warnings.append(
                 f"variable '{name}' was multi-select in Grafana but binds a scalar "
-                "ES|QL parameter; emitted a single-select control"
+                "ES|QL parameter in Kibana; emitted a single-select control "
+                "(select one value at a time)"
             )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"
@@ -6638,6 +6722,7 @@ def _ensure_param_controls(
             resolved = resolver.resolve_control_field(source_field, metric_field=metric_field or None)
             if resolved:
                 field_name = resolved
+        scope_filters = _extract_variable_scope_filters(query_text, resolver, rule_pack)
         controls.append(
             _build_esql_param_control(
                 variable_name=name,
@@ -6648,6 +6733,7 @@ def _ensure_param_controls(
                 metric_field=metric_field,
                 source_field=source_field,
                 include_internal_metadata=True,
+                extra_filters=scope_filters,
             )
         )
     return controls

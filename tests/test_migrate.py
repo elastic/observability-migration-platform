@@ -7486,6 +7486,93 @@ class TranslatorRegressionTests(unittest.TestCase):
             " | SORT `service.instance.id` ASC | LIMIT 1000",
         )
 
+    def _device_scope_resolver(self):
+        """Resolver where ``device`` and ``node_disk_read_bytes_total`` both
+        resolve to themselves and exist (issue #312 fixtures)."""
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "offline"
+        resolver._field_cache = {
+            "device": {
+                "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+            },
+            "node_disk_read_bytes_total": {
+                "double": {"type": "double", "aggregatable": True, "searchable": True}
+            },
+        }
+        resolver.resolve_metric_field = lambda name, **kw: name
+        return resolver
+
+    def test_query_variable_control_preserves_exclude_filter(self):
+        """Issue #312: ``label_values(metric{device!="nbd1"}, device)`` excludes
+        ``nbd1`` in Grafana, so the migrated values control must keep that
+        exclusion (``AND device != "nbd1"``) instead of listing every device."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "current": {"text": ["vda"], "value": ["vda"]},
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+        )
+        self.assertEqual(len(controls), 1)
+        query = controls[0]["query"]
+        self.assertEqual(
+            query,
+            "FROM metrics-* | WHERE node_disk_read_bytes_total IS NOT NULL"
+            ' AND device IS NOT NULL AND device != "nbd1"'
+            " | STATS count = COUNT(*) BY device"
+            " | SORT device ASC | KEEP device | LIMIT 1000",
+        )
+
+    def test_query_variable_multi_select_scalar_bind_reports_gap(self):
+        """Issue #312: a multi-select Grafana variable that must bind a scalar
+        ES|QL parameter is forced single-select. That loss must be reported as a
+        user-facing control gap (not left as a silent internal trace)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+            collect_warnings=warnings,
+        )
+        self.assertIs(controls[0]["multiple"], False)
+        self.assertTrue(
+            any(
+                "device_filtered" in warning
+                and "multi-select" in warning
+                and "single-select" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
+
     def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
         """A multi-select Grafana variable still binds a scalar ES|QL parameter
         (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
