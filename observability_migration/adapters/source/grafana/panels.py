@@ -1002,6 +1002,7 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     # CLI / tests hang on the pack (regex defaults, validators, runtime notes).
     for attr in (
         "_regex_default_param_names",
+        "_late_bound_group_var_choices",
         "runtime_features",
         "native_promql_validator",
         "_runtime_feature_notes",
