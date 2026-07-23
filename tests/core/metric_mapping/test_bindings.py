@@ -83,6 +83,19 @@ class PlanRateTransformTests(unittest.TestCase):
         self.assertEqual(action, "gap")
         self.assertIn("counter", reason)
 
+    def test_drop_rate_with_unknown_target_kind_still_drops(self):
+        """Operator-authored drop_rate must win when live caps are silent.
+
+        Offline migrate / missing time_series_metric on the target used to
+        return a gap and keep RATE(...), which 400s on OTel gauges such as
+        container.cpu.usage (plain double without counter typing).
+        """
+        action, reason = plan_rate_transform(
+            source_has_rate=True, transform="drop_rate", target_is_counter=None
+        )
+        self.assertEqual(action, "drop_rate")
+        self.assertEqual(reason, "")
+
     def test_drop_rate_without_rate(self):
         self.assertEqual(plan_rate_transform(source_has_rate=False, transform="drop_rate", target_is_counter=False), ("none", ""))
 

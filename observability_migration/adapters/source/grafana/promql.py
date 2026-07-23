@@ -288,10 +288,18 @@ def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
     if result is None or not result.applied or result.entry is None:
         return esql_inner, is_counter, warnings
     transform = result.entry.transform
-    if transform == "none":
-        return esql_inner, is_counter, warnings
     source_has_rate = getattr(frag, "range_func", None) in {"rate", "irate", "increase"}
     target_is_counter = _metric_map_target_is_counter(resolver, result)
+    # Rename-only maps onto a known gauge still must drop RATE(...); otherwise
+    # ``sum(rate(prom_counter))`` becomes ``SUM(RATE(otel.gauge))`` and ES 400s.
+    if transform == "none":
+        if source_has_rate and target_is_counter is False:
+            warnings.append(
+                f"metric_map[{metric_name!r}] targets a gauge field; "
+                "dropped source rate()/irate()/increase() to avoid RATE(gauge)"
+            )
+            return "", False, warnings
+        return esql_inner, is_counter, warnings
     action, gap_reason = plan_rate_transform(
         source_has_rate=source_has_rate,
         transform=transform,

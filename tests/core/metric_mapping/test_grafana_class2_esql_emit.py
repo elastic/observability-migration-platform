@@ -196,6 +196,57 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         self.assertRegex(result.esql_query, r"SUM\(\s*(TO_DOUBLE\()?target\.bytes\)?")
         self.assertNotIn(", 5m)", result.esql_query)
 
+    def test_drop_rate_strips_rate_inside_topk(self) -> None:
+        """topk(sum(rate(...))) must honor drop_rate (Views/Cluster TOP CPU)."""
+        result = self._translate_result(
+            'topk(5, sum(rate(container_cpu_usage_seconds_total{image!=""}[2m])) by (pod_name))',
+            {
+                "container_cpu_usage_seconds_total": {
+                    "target": "container.cpu.usage",
+                    "transform": "drop_rate",
+                }
+            },
+            metric_kinds={"container.cpu.usage": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("container.cpu.usage", result.esql_query)
+        self.assertNotIn("RATE(", result.esql_query)
+
+    def test_drop_rate_strips_rate_when_target_kind_unknown(self) -> None:
+        """drop_rate must strip RATE even when metric_kinds/caps are silent.
+
+        Reproduces Views / Nodes ``sum(rate(container_cpu_usage_seconds_total))``
+        → ``SUM(RATE(container.cpu.usage, 5m))`` when discovery had not yet
+        typed the OTel gauge.
+        """
+        result = self._translate_result(
+            'sum(rate(container_cpu_usage_seconds_total{image!=""}[$__rate_interval])) by (pod)',
+            {
+                "container_cpu_usage_seconds_total": {
+                    "target": "container.cpu.usage",
+                    "transform": "drop_rate",
+                }
+            },
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("container.cpu.usage", result.esql_query)
+        self.assertNotIn("RATE(", result.esql_query)
+        self.assertNotIn("drop_rate requires known target counter/gauge kind", " ".join(map(str, result.warnings)))
+
+    def test_mapped_gauge_target_strips_rate_without_explicit_drop_rate(self) -> None:
+        """Rename-only map onto a known gauge must not emit RATE(gauge)."""
+        result = self._translate_result(
+            "sum(rate(container_cpu_usage_seconds_total[5m])) by (pod)",
+            {"container_cpu_usage_seconds_total": {"target": "container.cpu.usage"}},
+            metric_kinds={"container.cpu.usage": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("container.cpu.usage", result.esql_query)
+        self.assertNotIn("RATE(", result.esql_query)
+
     def test_drop_rate_on_recording_rule_forces_gauge_emit(self) -> None:
         """Pre-rated recording rules have no rate() AST node; drop_rate must
         still force gauge emit so multi-target panels don't inflate siblings."""

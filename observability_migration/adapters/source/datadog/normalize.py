@@ -246,10 +246,14 @@ def _extract_from_request(
         # Modern Datadog log/event queries put the filter expression in a
         # nested `search.query` field; fall back to it when the legacy
         # `query` field is empty so we don't lose the filter.
+        # list_stream / logs_stream widgets instead use `query_string` on the
+        # singular `query` dict (no `queries[]` array and no `query` string).
         if not raw_query_str and data_source in LOG_DATA_SOURCES:
             search = raw_q.get("search")
             if isinstance(search, dict):
                 raw_query_str = search.get("query", "") or ""
+            if not raw_query_str:
+                raw_query_str = raw_q.get("query_string", "") or ""
 
         wq = WidgetQuery(
             name=name,

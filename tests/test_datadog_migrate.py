@@ -793,6 +793,56 @@ class TestNormalization(unittest.TestCase):
         plan = plan_widget(nd.widgets[0])
         self.assertEqual(plan.backend, "markdown")
 
+    def test_list_stream_logs_query_string_preserves_status_filter(self):
+        """list_stream widgets use query.query_string, not query.query.
+
+        The singular ``query`` dict path (shared with distribution histograms)
+        must read ``query_string`` so Error Logs keep ``status:error`` instead
+        of collapsing to a match-all time filter.
+        """
+        raw = {
+            "title": "Redis",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "list_stream",
+                        "title": "Error Logs",
+                        "requests": [
+                            {
+                                "response_format": "event_list",
+                                "query": {
+                                    "data_source": "logs_stream",
+                                    "query_string": "source:redis $scope $host status:error",
+                                    "indexes": [],
+                                },
+                                "columns": [{"field": "content", "width": "compact"}],
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        self.assertEqual(widget.queries[0].query_type, "log")
+        self.assertEqual(
+            widget.queries[0].raw_query,
+            "source:redis $scope $host status:error",
+        )
+        self.assertIsNotNone(widget.queries[0].log_query)
+        self.assertIsNotNone(widget.queries[0].log_query.ast)
+
+        from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+        from observability_migration.adapters.source.datadog.planner import plan_widget
+        from observability_migration.adapters.source.datadog.translate import (
+            _build_log_widget_query,
+        )
+
+        plan = plan_widget(widget)
+        esql = _build_log_widget_query(widget, plan, OTEL_PROFILE)
+        self.assertIn('log.level == "error"', esql)
+        self.assertIn('service.name == "redis"', esql)
+
     def test_modern_bare_metric_query_is_parsed(self):
         raw = {
             "title": "Bare metric",

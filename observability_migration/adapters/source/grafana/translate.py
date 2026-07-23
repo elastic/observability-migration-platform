@@ -1966,6 +1966,14 @@ def topk_family_rule(context):
         )
         if counter_warning:
             _append_unique(context.warnings, counter_warning)
+        esql_inner, is_counter, map_rate_warnings = _plan_metric_map_rate_transform(
+            frag, resolver, esql_inner, is_counter
+        )
+        for warning in map_rate_warnings:
+            _append_unique(context.warnings, warning)
+        # Prefer gauge field after drop_rate / mapped-gauge strip.
+        if not is_counter and prefer == "counter":
+            physical_metric = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
         topk_cast_needed = _counter_unsafe_cast_needed(physical_metric, resolver)
         if (
             not is_counter
@@ -1974,7 +1982,11 @@ def topk_family_rule(context):
         ):
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
         inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=topk_cast_needed)
-        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+        if esql_inner:
+            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+        else:
+            # drop_rate / mapped gauge: outer agg operates on the bare field.
+            inner_expr = inner_arg
         stats_expr = _agg_stats_expr(
             OUTER_AGG_MAP.get(frag.outer_agg or "avg", "AVG"),
             inner_expr,

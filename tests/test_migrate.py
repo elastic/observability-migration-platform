@@ -981,12 +981,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
 
     def test_panel_with_control_bound_label_matcher_routes_to_native_esql(self):
-        """Issue #230: Kibana dashboard controls cannot bind a ``?param`` that
-        lives inside the opaque PROMQL command string, so a panel whose label
-        matcher carries a control-bound template variable must route to native
-        ES|QL — where the control binds via a visible ``... RLIKE ?var`` — and
-        NOT the PROMQL command (``{instance=~?instance}``), which renders
-        ``Parameter [?instance] value not found``."""
+        """Issue #319: when PromQL label-matcher params are supported, keep native
+        PROMQL with ``?var`` inside the matcher (ES/Kibana 9.5+). Issue #230's
+        ES|QL fallthrough remains only when the feature is unsupported.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -1010,12 +1008,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         yaml_panel, _result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
 
-        # The control binding must survive the migration...
-        self.assertIn("?instance", query)
-        # ...as a native ES|QL clause Kibana can actually bind, NOT trapped
-        # inside the opaque PROMQL command string (where it stays unbound).
-        self.assertNotIn("PROMQL", query)
-        self.assertIn("RLIKE ?instance", query)
+        self.assertIn("PROMQL", query)
+        self.assertIn("instance=~?instance", query)
+        self.assertNotIn("RLIKE ?instance", query)
 
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
@@ -1421,11 +1416,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("?host", rendered)
 
     def test_panel_template_label_matcher_binds_via_native_esql_when_feature_supported(self):
-        """Issue #230: with the param-binding feature supported, a control-bound
-        label matcher must route to native ES|QL so the control binds via a
-        visible ``WHERE host == ?host`` clause — even when ``native_promql`` is
-        enabled. It must NOT emit a PROMQL command with ``?host`` trapped in its
-        opaque string, where Kibana's controls can't bind it."""
+        """Issue #319: with ``promql_label_matcher_params`` supported, keep native
+        PROMQL and rewrite ``$host`` → ``?host`` inside the matcher.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
         )
@@ -1451,8 +1444,8 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "migrated")
         query = yaml_panel["esql"]["query"]
-        self.assertNotIn("PROMQL", query)
-        self.assertIn("== ?host", query)
+        self.assertIn("PROMQL", query)
+        self.assertIn("host=?host", query)
 
     def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
         self.seed_field_caps({
@@ -15809,7 +15802,7 @@ class NativePromqlTests(unittest.TestCase):
         self.assertNotIn("PROMQL index=", query)
         # Both targets are gauges and now assume TSDS -> TS/TBUCKET. The test's intent is
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
-        self.assertIn("BY time_bucket = TBUCKET(5 minute), device", query)
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), device", query)
         self.assertNotIn(", interface", query)
         self.assertIn("EVAL Operational_state_UP = node_network_up_A", query)
         self.assertIn("EVAL Physical_link_state = node_network_carrier_B", query)

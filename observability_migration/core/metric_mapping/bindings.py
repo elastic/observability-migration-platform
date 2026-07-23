@@ -88,11 +88,12 @@ def plan_rate_transform(
         return "none", ""
     if normalized == "drop_rate":
         if source_has_rate:
-            if target_is_counter is False:
-                return "drop_rate", ""
             if target_is_counter is True:
                 return "gap", "drop_rate incompatible with counter target"
-            return "gap", "drop_rate requires known target counter/gauge kind"
+            # Unknown kind (offline / silent caps): honor the operator-authored
+            # drop_rate. Requiring a proven gauge previously kept RATE(...) and
+            # 400'd on OTel gauges such as container.cpu.usage.
+            return "drop_rate", ""
         return "none", ""
     if normalized == "to_rate":
         if source_has_rate:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -947,6 +947,68 @@ _NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
 _NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
     f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
 )
+# Adaptive ES|QL TS calendar buckets (issue #316) — count form needs the range
+# args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
+# (FROM path still uses 50 via ``from_bucket``).
+_NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
+
+
+def _grafana_panel_fixed_interval(panel) -> str | None:
+    """Return a concrete Grafana panel ``interval`` suitable for PROMQL ``step=``.
+
+    Skips empty values and Grafana macros (``$__interval`` / ``$__rate_interval``
+    / …) — those stay on the adaptive path. Accepts PromQL-style durations
+    (``1h``, ``5m``, ``30s``).
+    """
+    if not isinstance(panel, dict):
+        return None
+    raw = panel.get("interval")
+    if raw is None or raw == "":
+        return None
+    text = str(raw).strip()
+    if not text or text.startswith("$") or "${" in text:
+        return None
+    # Reject obviously non-duration tokens.
+    if not re.fullmatch(r"\d+(?:\.\d+)?(ms|s|m|h|d|w)", text.replace(" ", "")):
+        return None
+    return text.replace(" ", "")
+
+
+def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
+    """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
+
+    Dashboard panels use adaptive ``TBUCKET(100, ?_tstart, ?_tend)`` by default
+    so zooming changes resolution. An explicit Grafana panel ``interval`` becomes
+    a fixed ``TBUCKET(<duration>)``. Direct ``translate_promql_to_esql`` callers
+    keep ``rule_pack.ts_bucket`` unchanged.
+    """
+    interval = _grafana_panel_fixed_interval(panel)
+    new_bucket = None
+    if interval:
+        from observability_migration.adapters.source.grafana.esql_validate import (
+            _promql_window_to_esql_interval,
+        )
+
+        esql_dur = _promql_window_to_esql_interval(interval)
+        if esql_dur:
+            new_bucket = f"time_bucket = TBUCKET({esql_dur})"
+    elif rule_pack.ts_bucket == "time_bucket = TBUCKET(5 minute)":
+        # Adaptive auto resolution for dashboard panels (issue #316).
+        new_bucket = _NATIVE_ESQL_ADAPTIVE_TBUCKET
+    if new_bucket is None or new_bucket == rule_pack.ts_bucket:
+        return rule_pack
+    updated = replace(rule_pack, ts_bucket=new_bucket)
+    # ``replace`` only copies dataclass fields; preserve dynamic attributes the
+    # CLI / tests hang on the pack (regex defaults, validators, runtime notes).
+    for attr in (
+        "_regex_default_param_names",
+        "runtime_features",
+        "native_promql_validator",
+        "_runtime_feature_notes",
+    ):
+        if hasattr(rule_pack, attr):
+            setattr(updated, attr, getattr(rule_pack, attr))
+    return updated
 
 # Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
 # $__auto_interval_*). Grafana sizes these from the panel width and selected time
@@ -2037,15 +2099,11 @@ def _translate_panel_native_promql(
             )
         return None
     # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
-    # would be emitted as a named param *inside* the opaque PROMQL command
-    # string (``{instance=~?instance}``). Kibana dashboard controls only bind
-    # ``?param`` references they can see in native ES|QL, so a param trapped in
-    # the PROMQL command stays unbound and the panel fails at render with
-    # "Parameter [?instance] value not found". Fall through to ES|QL
-    # translation, which surfaces the binding as a visible ``WHERE … RLIKE
-    # ?var`` clause the control can bind (issue #230).
-    if _promql_label_matcher_has_template_variable(expr):
-        return None
+    # used to force an ES|QL fallthrough (#230) because Kibana could not bind
+    # ``?param`` inside an opaque PROMQL command. When the target advertises
+    # ``promql_label_matcher_params`` (issue #319 / ES+Kibana 9.5+), keep native
+    # PROMQL and let ``_clean_promql_for_native`` rewrite ``$var`` → ``?var``.
+    # The unsupported case is already rejected by ``can_use_native_promql`` above.
     # Pre-flight type check: if the source PromQL applies a counter-style
     # range function (``rate``/``irate``/``increase``) to a metric that
     # the target index has typed as gauge, the native PROMQL command will
@@ -2145,18 +2203,21 @@ def _translate_panel_native_promql(
             and not _is_bare_counter_reference(expr, resolver, rule_pack)
         ):
             return None
-    # Emit an instant (``time=?_tend``) query when the source target is one:
-    # single-value tiles, or a ``instant: true`` table-format target (issue
-    # #102). ``_target_summary_mode`` already encodes that policy for the ES|QL
-    # path, so reuse it for parity; ``kibana_type in (metric, gauge)`` keeps the
-    # existing single-value behavior even when the panel type doesn't map there.
+    # Dashboard metric/gauge tiles collapse a *range* query via
+    # ``LAST(value, step)`` (below) instead of PROMQL instant-at-``?_tend``.
+    # Instant-at-now returns empty when the latest sample lags the dashboard
+    # end (seeded/lab data, scrape stalls); ES|QL gauges already reduce over
+    # the view window — match that. True instant (``time=?_tend``) stays for
+    # ``instant: true`` table targets (#102). Alert instant (#200) calls
+    # ``build_native_promql_query`` directly and is unchanged.
     #
-    # But never let an instant query reach an XY (line/bar/area) spec: those bind
+    # Never let an instant query reach an XY (line/bar/area) spec: those bind
     # the x-axis to the ``step`` time column, which an instant query does NOT emit
     # (phantom axis / 400 — the #127 failure mode). ``_target_summary_mode``
     # returns True unconditionally for ``bargauge`` (→ ``bar``), so without this
     # guard a Prometheus ``bargauge`` panel would regress to a broken bar chart.
-    instant = kibana_type in ("metric", "gauge") or (
+    range_collapsed_tile = kibana_type in ("metric", "gauge")
+    instant = (not range_collapsed_tile) and (
         _target_summary_mode(panel_type, target)
         and kibana_type not in ("line", "bar", "area")
     )
@@ -2166,6 +2227,13 @@ def _translate_panel_native_promql(
     # emitted windowless so its lookback tracks the view too (#273). Instant
     # tiles ignore both (they carry no step). Alerts never take this path — they
     # call ``build_native_promql_query`` directly with an explicit/default step.
+    #
+    # Explicit Grafana panel ``interval`` wins over adaptive bucketing and is
+    # emitted as ``step=`` (issue #318). Bare stepless PROMQL is rejected by ES,
+    # so auto panels keep ``start/end/buckets``. Keep ``adaptive_step=True`` even
+    # with an explicit step so ``$__rate_interval`` still becomes windowless
+    # (#273) — ``step=`` only overrides the timing selector precedence.
+    panel_step = _grafana_panel_fixed_interval(panel)
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
@@ -2174,7 +2242,16 @@ def _translate_panel_native_promql(
                                              instant=instant,
                                              regex_default_params=regex_default_params,
                                              resolver=resolver,
+                                             step=panel_step,
                                              adaptive_step=True)
+    if range_collapsed_tile:
+        # Keep one row per series at the latest step in the view. Scalars have
+        # no ``_timeseries``; multi-series tiles group on it so Kibana still
+        # sees one current value per series (same fan-out instant used to emit).
+        if "_timeseries" in group_cols:
+            promql_query = f"{promql_query}\n| STATS value = LAST(value, step) BY _timeseries"
+        else:
+            promql_query = f"{promql_query}\n| STATS value = LAST(value, step)"
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -2188,13 +2265,21 @@ def _translate_panel_native_promql(
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
-    static_legend_label = (legend_format or "").strip() and not legend_labels
+    raw_legend = (legend_format or "").strip()
+    # ``__auto`` is Grafana's "derive series identity from labels" sentinel —
+    # not a literal series name. Treating it as a static label made Lens break
+    # down on a missing ``label`` column (issue #317).
+    static_legend_label = bool(raw_legend) and raw_legend != "__auto" and not legend_labels
     if "_timeseries" in group_cols:
         if legend_labels:
             effective_group_cols = legend_labels
         elif static_legend_label:
             # Single static label per series.
             effective_group_cols = ["label"]
+        elif raw_legend == "__auto":
+            # Native PROMQL keeps the ``_timeseries`` label blob; break down on
+            # it so each series gets a legend entry (issue #317).
+            effective_group_cols = ["_timeseries"]
         else:
             # No legend dimension; the query keeps just step+value.
             effective_group_cols = []
@@ -2328,11 +2413,9 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        # Control-bound label-matcher variables can't bind inside the opaque
-        # PROMQL command string; fall through to ES|QL so the control binds via
-        # a visible ``WHERE … RLIKE ?var`` clause (issue #230).
-        if _promql_label_matcher_has_template_variable(expr):
-            return None
+        # Label-matcher template vars keep native PROMQL when
+        # ``promql_label_matcher_params`` is supported (#319); otherwise
+        # ``can_use_native_promql`` already returned above (#230).
         regex_default = getattr(
             rule_pack, "_regex_default_param_names", frozenset()
         )
@@ -2367,14 +2450,17 @@ def _translate_multi_target_native_promql(
         )
 
     combined_expr = " or ".join(parts)
-    # #272: bind the overlay to the dashboard time range at view time via
-    # ``start=?_tstart end=?_tend buckets=50`` (no baked-in ``step=``) so Elastic
-    # re-buckets it to the view while staying an executable query — a bare
-    # stepless range command is rejected by ES. The command still emits a
-    # ``step`` column for the x-axis.
-    promql_query = (
-        f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
-    )
+    # #272 / #318: bind the overlay to the dashboard time range at view time, or
+    # honor an explicit Grafana panel ``interval`` as ``step=``.
+    panel_step = _grafana_panel_fixed_interval(panel)
+    if panel_step:
+        promql_query = (
+            f"PROMQL index={index} step={panel_step} value=({combined_expr})"
+        )
+    else:
+        promql_query = (
+            f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
+        )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
     # ES|QL translation; a data/field gap keeps native (issue #158).
@@ -2933,7 +3019,7 @@ def metrics_query_index(datasource_index=None, esql_index=None) -> str:
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                     llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
-    rule_pack = rule_pack or RulePackConfig()
+    rule_pack = _rule_pack_for_panel(rule_pack or RulePackConfig(), panel)
     # Single metrics read target for native PROMQL and ES|QL (see metrics_query_index).
     query_index = metrics_query_index(datasource_index, esql_index)
     panel_type = panel.get("type", "unknown")
@@ -5717,21 +5803,24 @@ def _variable_default_selection(variable):
 
 
 def _collect_regex_default_param_names(variables):
-    """Names of template variables whose binding control defaults to the regex
-    match-all (".*").
+    """Names of template variables that need regex PromQL/ES|QL matchers.
 
-    ``_matcher_to_esql`` emits equality matchers (``field == ?var``) on these
-    params as regex matches instead, so the control's ".*" default actually
-    selects every series on first load rather than comparing the field against
-    the literal string ".*" (PR #133 review). Keyed by Grafana variable name,
-    which is exactly the ES|QL parameter name the matcher references.
+    Includes:
+    * variables whose binding control defaults to the regex match-all (".*")
+      so ``label="$var"`` does not compare against the literal string ".*"
+      (PR #133 review / issue #131)
+    * multi-select variables — Grafana rewrites ``label="$var"`` to a regex
+      matcher for multi/All, and native PROMQL must emit ``label=~?var``
+      (issues #64 / #319)
     """
     names = set()
     for var in variables:
         if not isinstance(var, dict):
             continue
         name = var.get("name")
-        if name and _variable_default_selection(var) == _MATCH_ALL_SELECTION:
+        if not name:
+            continue
+        if _variable_default_selection(var) == _MATCH_ALL_SELECTION or bool(var.get("multi")):
             names.add(name)
     return names
 

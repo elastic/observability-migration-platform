@@ -549,10 +549,18 @@ class SchemaResolver:
         # When a named Prometheus plan is active, the operator-selected layout
         # wins over bare caps (e.g. OTel-shaped targets that also carry bare
         # source labels) — skip this shortcut so emit follows the plan.
+        #
+        # Skip non-filterable object parents (ECS ``service`` / ``host`` / …):
+        # field_caps lists them, but ES|QL rejects ``WHERE service == …`` with
+        # ``Unknown column [service], did you mean [service.name]?``.
         if (
             self._field_cache
             and label in self._field_cache
             and planned not in self._NAMED_PROMETHEUS_PLANS
+            and (
+                self.is_searchable_field(label)
+                or self.is_aggregatable_field(label)
+            )
         ):
             return label
         # Fleet `prometheus.remote_write` data streams store the original
