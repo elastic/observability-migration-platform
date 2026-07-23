@@ -471,6 +471,27 @@ def save_detailed_report(
     print(f"  Detailed report saved: {output_path}")
 
 
+def _attention_reasons(pr) -> list[str]:
+    """Return the actual blocking cause for a must-fix worklist row.
+
+    For not_feasible / requires_manual / blocked panels, ``reasons`` typically
+    holds only the target-mapping label ("timeseries → esql XY panel") while the
+    real failure cause lives in ``semantic_losses`` / ``warnings`` — the mapping
+    label alone made the worklist non-actionable (issue #238). Prefer the
+    warning/semantic-loss text (``warnings`` mirrors every semantic loss with a
+    human-readable prefix and also carries field-issue causes that never reach
+    ``semantic_losses``), falling back to ``reasons`` only when a panel carries
+    neither (e.g. planner refusals like "unsupported widget type: X" whose cause
+    lives solely in ``reasons``).
+    """
+    preferred: list[str] = []
+    for value in (getattr(pr, "warnings", None) or []):
+        _append_unique(preferred, str(value))
+    if preferred:
+        return preferred
+    return list(pr.reasons)
+
+
 def build_summary_view(results, *, review_queue=None, run_id: str = "") -> SummaryView:
     """Build a normalized SummaryView from a Datadog DashboardResult list."""
     import time as _time
@@ -559,7 +580,7 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
                         dashboard=dr.dashboard_title,
                         panel=pr.title,
                         status=pr.status,
-                        reasons=list(pr.reasons),
+                        reasons=_attention_reasons(pr),
                         source_query=query,
                     )
                 )
